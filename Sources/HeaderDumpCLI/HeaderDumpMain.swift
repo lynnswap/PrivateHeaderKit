@@ -490,19 +490,20 @@ private func dumpObjC(
 #if canImport(ObjectiveC)
 private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [ObjCClassInfo] {
     guard options.useRuntimeFallback else { return [] }
-    guard let handle = dlopen(imagePath, RTLD_LAZY) else {
+    let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
+    guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
         if options.verbose {
-            fputs("classdump-dyld: runtime dlopen failed for \(imagePath)\n", stderr)
+            fputs("classdump-dyld: runtime dlopen failed for \(resolvedPath)\n", stderr)
         }
         return []
     }
     defer { dlclose(handle) }
 
     var count: UInt32 = 0
-    guard let namesPtr = objc_copyClassNamesForImage(imagePath, &count) else {
+    guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
         if options.verbose {
             fputs(
-                "classdump-dyld: runtime fallback objc_copyClassNamesForImage returned nil for \(imagePath)\n",
+                "classdump-dyld: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -513,7 +514,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     if count == 0 {
         if options.verbose {
             fputs(
-                "classdump-dyld: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(imagePath)\n",
+                "classdump-dyld: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
                 stderr
             )
         }
