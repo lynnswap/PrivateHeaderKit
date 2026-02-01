@@ -1,0 +1,775 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+
+@dataclass
+class RuntimeInfo:
+    version: str
+    build: str
+    identifier: str
+    runtime_root: str
+
+
+@dataclass
+class DeviceInfo:
+    name: str
+    udid: str
+    state: str
+
+
+@dataclass
+class Context:
+    exec_mode: str
+    classdump_bin: Path
+    version: str
+    runtime_root: str
+    runtime_id: str
+    runtime_build: str
+    device: DeviceInfo | None
+    out_dir: Path
+    skip_existing: bool
+    categories: list[str]
+    framework_names: set[str]
+    framework_filters: list[str]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="dump_headers",
+        description="PrivateHeaderKit header dumper (Python)",
+    )
+    parser.add_argument("version", nargs="?", help="iOS runtime version (e.g. 26.0.1)")
+    parser.add_argument("--device", help="Simulator device UDID or name")
+    parser.add_argument("--out", type=Path, help="Output directory")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip existing headers")
+    parser.add_argument("--exec-mode", choices=["host", "simulator"], help="Force exec mode")
+    parser.add_argument("--list-runtimes", action="store_true", help="List runtimes and exit")
+    parser.add_argument("--list-devices", action="store_true", help="List devices and exit")
+    parser.add_argument("--runtime", help="Runtime version for --list-devices")
+    parser.add_argument("--json", action="store_true", help="JSON output for list commands")
+    parser.add_argument(
+        "--framework",
+        action="append",
+        help="Exact framework name to dump (repeatable)",
+    )
+    parser.add_argument(
+        "--filter",
+        action="append",
+        help="Substring filter for framework names (repeatable)",
+    )
+
+    args = parser.parse_args()
+
+    try:
+        if args.list_runtimes:
+            list_runtimes_command(args.json)
+            return 0
+        if args.list_devices:
+            list_devices_command(args.runtime, args.json)
+            return 0
+
+        root_dir = find_root_dir()
+        classdump_host = root_dir / "classdump-dyld/macosx/usr/local/bin/classdump-dyld"
+        classdump_simulator = root_dir / "classdump-dyld/iphonesimulator/classdump-dyld"
+        classdump_sim = root_dir / "classdump-dyld/iphoneos/classdump-dyld"
+
+        exec_mode = resolve_exec_mode(
+            args.exec_mode or os.getenv("PH_EXEC_MODE"),
+            classdump_host,
+            classdump_simulator,
+            classdump_sim,
+        )
+        classdump_bin = (
+            classdump_host
+            if exec_mode == "host"
+            else (classdump_simulator if classdump_simulator.is_file() else classdump_sim)
+        )
+
+        categories, framework_names, framework_filters = build_selection(args)
+
+        if args.version:
+            ctx = non_interactive_setup(
+                root_dir,
+                classdump_bin,
+                exec_mode,
+                args,
+                categories,
+                framework_names,
+                framework_filters,
+            )
+        else:
+            ctx = interactive_setup(
+                root_dir,
+                classdump_bin,
+                exec_mode,
+                args,
+                categories,
+                framework_names,
+                framework_filters,
+            )
+
+        if ctx.exec_mode == "simulator":
+            device = ctx.device
+            if device is None:
+                raise RuntimeError("no simulator device available")
+            if device.state != "Booted":
+                print(f"Booting simulator: {device.name} ({device.udid})")
+                run_simple_command(
+                    "xcrun",
+                    ["simctl", "boot", device.udid],
+                    "failed to boot simulator",
+                )
+                run_simple_command(
+                    "xcrun",
+                    ["simctl", "bootstatus", device.udid, "-b"],
+                    "failed to wait for simulator boot",
+                )
+                device.state = "Booted"
+
+        ctx.out_dir.mkdir(parents=True, exist_ok=True)
+
+        for category in ctx.categories:
+            dump_category(category, ctx)
+            relocate_output(ctx, category)
+
+        write_metadata(ctx)
+        print(f"Done: {ctx.out_dir}")
+        return 0
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+def resolve_exec_mode(
+    requested: str | None, classdump_host: Path, classdump_simulator: Path, classdump_sim: Path
+) -> str:
+    if requested in ("host", "simulator"):
+        return requested
+    if classdump_simulator.is_file():
+        return "simulator"
+    if classdump_host.is_file():
+        return "host"
+    if classdump_sim.is_file():
+        return "simulator"
+    raise RuntimeError(
+        "classdump-dyld binary not found in macosx, iphonesimulator, or iphoneos directories"
+    )
+
+
+def build_selection(args) -> tuple[list[str], set[str], list[str]]:
+    categories = ["Frameworks", "PrivateFrameworks"]
+
+    framework_names = set()
+    if args.framework:
+        for name in args.framework:
+            normalized = normalize_framework_name(name)
+            framework_names.add(normalized.lower())
+
+    framework_filters = []
+    if args.filter:
+        framework_filters = [f.lower() for f in args.filter if f.strip()]
+
+    return categories, framework_names, framework_filters
+
+
+def list_runtimes_command(json_output: bool) -> None:
+    runtimes = list_runtimes()
+    if json_output:
+        payload = [
+            {
+                "version": r.version,
+                "build": r.build,
+                "identifier": r.identifier,
+                "runtime_root": r.runtime_root,
+            }
+            for r in runtimes
+        ]
+        print(json.dumps(payload, indent=2))
+        return
+    print("Available iOS runtimes:")
+    for idx, runtime in enumerate(runtimes, start=1):
+        print(f"  [{idx}] iOS {runtime.version} ({runtime.build})")
+        print(f"      {runtime.identifier}")
+        print(f"      {runtime.runtime_root}")
+
+
+def list_devices_command(version: str | None, json_output: bool) -> None:
+    runtime = find_runtime(version) if version else latest_runtime()
+    devices = list_devices(runtime.identifier)
+    if json_output:
+        payload = {
+            "runtime": {
+                "version": runtime.version,
+                "build": runtime.build,
+                "identifier": runtime.identifier,
+                "runtime_root": runtime.runtime_root,
+            },
+            "devices": [
+                {
+                    "name": d.get("name", "") or "",
+                    "udid": d.get("udid", "") or "",
+                    "state": d.get("state", "") or "",
+                }
+                for d in devices
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+    print(f"Devices for iOS {runtime.version} ({runtime.build}):")
+    print(f"  {runtime.identifier}")
+    for idx, d in enumerate(devices, start=1):
+        name = d.get("name", "") or ""
+        state = d.get("state", "") or ""
+        udid = d.get("udid", "") or ""
+        print(f"  [{idx}] {name} ({state})")
+        print(f"      {udid}")
+
+
+def find_root_dir() -> Path:
+    candidates = [Path(__file__).resolve().parent, Path.cwd()]
+    for start in candidates:
+        current = start
+        while True:
+            if (current / "classdump-dyld").is_dir():
+                if (
+                    (current / "classdump-dyld/iphoneos/classdump-dyld").is_file()
+                    or (current / "classdump-dyld/iphonesimulator/classdump-dyld").is_file()
+                    or (current / "classdump-dyld/macosx/usr/local/bin/classdump-dyld").is_file()
+                ):
+                    return current
+            if current.parent == current:
+                break
+            current = current.parent
+    raise RuntimeError("repository root not found (classdump-dyld missing)")
+
+
+def interactive_setup(
+    root_dir: Path,
+    classdump_bin: Path,
+    exec_mode: str,
+    args,
+    categories: list[str],
+    framework_names: set[str],
+    framework_filters: list[str],
+) -> Context:
+    print("Interactive mode")
+    runtimes = list_runtimes()
+    if not runtimes:
+        raise RuntimeError("no available iOS runtimes found")
+    runtime = pick_runtime_interactive(runtimes)
+
+    device = None
+    if exec_mode == "simulator":
+        devices = list_devices(runtime.identifier)
+        if not devices:
+            print(f"No devices available for runtime: {runtime.identifier}")
+            create_default_device(runtime.identifier, runtime.version)
+            devices = list_devices(runtime.identifier)
+            if not devices:
+                raise RuntimeError(
+                    f"failed to create simulator device for runtime: {runtime.identifier}"
+                )
+        print_devices(devices)
+        if args.device:
+            device = match_device(devices, args.device)
+            if device is None:
+                raise RuntimeError(f"no simulator device found for runtime: {runtime.identifier}")
+        else:
+            device = pick_default_device(devices)
+
+    default_out = root_dir / "generated-headers/iOS" / runtime.version
+    out_dir = (
+        args.out
+        or Path(os.getenv("PH_OUT_DIR")) if os.getenv("PH_OUT_DIR") else None
+    ) or default_out
+    skip_existing = args.skip_existing or os.getenv("PH_SKIP_EXISTING") == "1"
+
+    if device:
+        print(f"Using device: {device.name} ({device.state})")
+    print(f"Output directory: {out_dir}")
+
+    return Context(
+        exec_mode=exec_mode,
+        classdump_bin=classdump_bin.resolve(),
+        version=runtime.version,
+        runtime_root=runtime.runtime_root,
+        runtime_id=runtime.identifier,
+        runtime_build=runtime.build,
+        device=device,
+        out_dir=out_dir.resolve(),
+        skip_existing=skip_existing,
+        categories=categories,
+        framework_names=framework_names,
+        framework_filters=framework_filters,
+    )
+
+
+def non_interactive_setup(
+    root_dir: Path,
+    classdump_bin: Path,
+    exec_mode: str,
+    args,
+    categories: list[str],
+    framework_names: set[str],
+    framework_filters: list[str],
+) -> Context:
+    version = args.version or ""
+    runtime = find_runtime(version)
+
+    device = None
+    if exec_mode == "simulator":
+        devices = list_devices(runtime.identifier)
+        if not devices:
+            create_default_device(runtime.identifier, runtime.version)
+            devices = list_devices(runtime.identifier)
+        if not devices:
+            raise RuntimeError(f"no simulator device found for runtime: {runtime.identifier}")
+        if args.device:
+            device = match_device(devices, args.device)
+            if device is None:
+                raise RuntimeError(f"no simulator device found for runtime: {runtime.identifier}")
+        else:
+            device = pick_default_device(devices)
+
+    out_dir = args.out or root_dir / "generated-headers/iOS" / version
+
+    return Context(
+        exec_mode=exec_mode,
+        classdump_bin=classdump_bin.resolve(),
+        version=version,
+        runtime_root=runtime.runtime_root,
+        runtime_id=runtime.identifier,
+        runtime_build=runtime.build,
+        device=device,
+        out_dir=out_dir.resolve(),
+        skip_existing=args.skip_existing,
+        categories=categories,
+        framework_names=framework_names,
+        framework_filters=framework_filters,
+    )
+
+
+def list_runtimes() -> list[RuntimeInfo]:
+    output = run_capture_command("xcrun", ["simctl", "list", "runtimes", "-j"])
+    data = json.loads(output)
+    runtimes = []
+    for entry in data.get("runtimes", []):
+        name = entry.get("name") or ""
+        if not name.startswith("iOS"):
+            continue
+        if not entry.get("isAvailable", False):
+            continue
+        version = entry.get("version") or ""
+        identifier = entry.get("identifier") or ""
+        runtime_root = entry.get("runtimeRoot") or ""
+        if not version or not identifier or not runtime_root:
+            continue
+        build = entry.get("buildversion") or ""
+        runtimes.append(
+            RuntimeInfo(
+                version=version,
+                build=build,
+                identifier=identifier,
+                runtime_root=runtime_root,
+            )
+        )
+    runtimes.sort(key=lambda r: version_key(r.version))
+    return runtimes
+
+
+def pick_runtime_interactive(runtimes: list[RuntimeInfo]) -> RuntimeInfo:
+    print("Available iOS runtimes:")
+    for idx, runtime in enumerate(runtimes, start=1):
+        print(f"  [{idx}] iOS {runtime.version} ({runtime.build})")
+    default_index = len(runtimes)
+    choice = read_line("Select runtime (Enter for latest): ")
+    if not choice:
+        return runtimes[default_index - 1]
+    try:
+        idx = int(choice)
+    except ValueError as exc:
+        raise RuntimeError("invalid selection") from exc
+    if idx <= 0 or idx > len(runtimes):
+        raise RuntimeError("invalid selection")
+    return runtimes[idx - 1]
+
+
+def find_runtime(version: str) -> RuntimeInfo:
+    for runtime in list_runtimes():
+        if runtime.version == version:
+            return runtime
+    raise RuntimeError(f"iOS runtime not found or unavailable: {version}")
+
+
+def latest_runtime() -> RuntimeInfo:
+    runtimes = list_runtimes()
+    if not runtimes:
+        raise RuntimeError("no available iOS runtimes found")
+    return runtimes[-1]
+
+
+def list_devices(runtime_id: str) -> list[dict]:
+    output = run_capture_command("xcrun", ["simctl", "list", "devices", "-j"])
+    data = json.loads(output)
+    return list(data.get("devices", {}).get(runtime_id, []))
+
+
+def match_device(devices: list[dict], query: str) -> DeviceInfo | None:
+    needle = query.lower()
+    for d in devices:
+        udid = (d.get("udid") or "").lower()
+        if udid == needle:
+            return DeviceInfo(
+                name=d.get("name") or "",
+                udid=d.get("udid") or "",
+                state=d.get("state") or "",
+            )
+    for d in devices:
+        name = (d.get("name") or "").lower()
+        if name == needle:
+            return DeviceInfo(
+                name=d.get("name") or "",
+                udid=d.get("udid") or "",
+                state=d.get("state") or "",
+            )
+    return None
+
+
+def pick_default_device(devices: list[dict]) -> DeviceInfo:
+    for d in devices:
+        if d.get("state") == "Booted":
+            return DeviceInfo(
+                name=d.get("name") or "",
+                udid=d.get("udid") or "",
+                state=d.get("state") or "",
+            )
+    first = devices[0]
+    return DeviceInfo(
+        name=first.get("name") or "",
+        udid=first.get("udid") or "",
+        state=first.get("state") or "",
+    )
+
+
+def print_devices(devices: list[dict]) -> None:
+    print("Devices:")
+    for idx, d in enumerate(devices, start=1):
+        name = d.get("name") or ""
+        state = d.get("state") or ""
+        print(f"  [{idx}] {name} ({state})")
+
+
+def create_default_device(runtime_id: str, version: str) -> None:
+    output = run_capture_command("xcrun", ["simctl", "list", "devicetypes", "-j"])
+    data = json.loads(output)
+    device_types = data.get("devicetypes", [])
+    preferred = [
+        "iPhone 17 Pro",
+        "iPhone 17 Pro Max",
+        "iPhone 17",
+        "iPhone 16 Pro",
+        "iPhone 16",
+        "iPhone 15 Pro",
+        "iPhone 15",
+    ]
+    choice = None
+    for name in preferred:
+        for entry in device_types:
+            if entry.get("name") == name:
+                choice = entry
+                break
+        if choice:
+            break
+    if choice is None:
+        for entry in device_types:
+            if (entry.get("name") or "").startswith("iPhone"):
+                choice = entry
+                break
+    if not choice:
+        raise RuntimeError("no device types available")
+    device_name = choice.get("name") or ""
+    device_type = choice.get("identifier") or ""
+    if not device_name or not device_type:
+        raise RuntimeError("failed to resolve device type for creation")
+    created_name = f"{device_name} ({version})"
+    print(f"Creating device: {created_name}")
+    run_simple_command(
+        "xcrun",
+        ["simctl", "create", created_name, device_type, runtime_id],
+        "failed to create simulator device",
+    )
+
+
+def dump_category(category: str, ctx: Context) -> None:
+    print(f"Dumping: {category}")
+    if needs_split(ctx):
+        dump_category_split(category, ctx)
+        return
+    status, killed, last_lines = run_classdump(category, ctx)
+    if killed:
+        print("Retrying per-framework to avoid simulator kill.")
+        dump_category_split(category, ctx)
+        return
+    if status != 0:
+        report_last_lines(last_lines)
+        raise RuntimeError(f"classdump-dyld failed for {category}")
+
+
+def dump_category_split(category: str, ctx: Context) -> None:
+    frameworks = list_frameworks(category, ctx)
+    if not frameworks:
+        print(f"Skipping {category}: no frameworks found under /System/Library/{category}")
+        return
+    failures = []
+    total = len(frameworks)
+    for idx, item in enumerate(frameworks, start=1):
+        print(f"Dumping: {category} ({idx}/{total}) {item}")
+        path = f"{category}/{item}"
+        status, killed, last_lines = run_classdump(path, ctx)
+        if killed or status != 0:
+            report_last_lines(last_lines)
+            failures.append(path)
+    if failures:
+        summary = f"classdump-dyld failed for {len(failures)} items under {category}"
+        print(summary, file=sys.stderr)
+        write_failures(ctx, summary, failures)
+
+
+def relocate_output(ctx: Context, category: str) -> None:
+    src = ctx.out_dir / "System" / "Library" / category
+    if not src.exists():
+        return
+    dest = ctx.out_dir / category
+    merge_directories(src, dest)
+    try_remove_empty(src)
+    try_remove_empty(src.parent)
+    try_remove_empty(src.parent.parent)
+
+
+def run_classdump(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
+    if ctx.exec_mode == "host":
+        return run_classdump_host(category, ctx)
+    return run_classdump_simulator(category, ctx)
+
+
+def run_classdump_host(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
+    source_path = Path(ctx.runtime_root) / "System/Library" / category
+    is_recursive = "/" not in category
+    cmd = [str(ctx.classdump_bin), "-o", str(ctx.out_dir)]
+    if is_recursive:
+        cmd += ["-r", str(source_path)]
+    else:
+        cmd.append(str(source_path))
+    cmd += ["-b", "-h"]
+    if ctx.skip_existing:
+        cmd.append("-s")
+    return run_command_stream(cmd)
+
+
+def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
+    device = ctx.device
+    if device is None:
+        raise RuntimeError("no simulator device available")
+    source_path = f"/System/Library/{category}"
+    is_recursive = "/" not in category
+    cmd = [
+        "xcrun",
+        "simctl",
+        "spawn",
+        device.udid,
+        str(ctx.classdump_bin),
+        "-o",
+        str(ctx.out_dir),
+    ]
+    if is_recursive:
+        cmd += ["-r", source_path]
+    else:
+        cmd.append(source_path)
+    cmd += ["-b", "-h"]
+    if ctx.skip_existing:
+        cmd.append("-s")
+    env = os.environ.copy()
+    env["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = ctx.runtime_root
+    env["SIMCTL_CHILD_DYLD_ROOT_PATH"] = ctx.runtime_root
+    return run_command_stream(cmd, env=env)
+
+
+def run_command_stream(cmd: list[str], env: dict | None = None) -> tuple[int, bool, list[str]]:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        bufsize=1,
+    )
+    last_lines: deque[str] = deque(maxlen=8)
+    killed = False
+    if proc.stdout:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                print(line, flush=True)
+                last_lines.append(line)
+                if "Killed: 9" in line or "killed: 9" in line:
+                    killed = True
+    returncode = proc.wait()
+    if returncode == -9:
+        killed = True
+    return returncode, killed, list(last_lines)
+
+
+def report_last_lines(lines: list[str]) -> None:
+    if not lines:
+        return
+    print("--- last output ---", file=sys.stderr)
+    for line in lines:
+        print(line, file=sys.stderr)
+
+
+def write_failures(ctx: Context, summary: str, failures: list[str]) -> None:
+    path = ctx.out_dir / "_failures.txt"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"{summary}:\n")
+        for item in failures:
+            f.write(f"  - {item}\n")
+
+
+def write_metadata(ctx: Context) -> None:
+    header_count = count_headers(ctx.out_dir)
+    try:
+        xcode = run_capture_command("xcodebuild", ["-version"]).splitlines()
+        xcode_info = " ".join(xcode)
+    except RuntimeError:
+        xcode_info = "unknown"
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
+    skip = "-s" if ctx.skip_existing else ""
+    metadata = (
+        f"Generated: {generated_at}\n"
+        f"RuntimeRoot: {ctx.runtime_root}\n"
+        f"RuntimeIdentifier: {ctx.runtime_id}\n"
+        f"RuntimeBuild: {ctx.runtime_build}\n"
+        f"iOS: {ctx.version}\n"
+        f"HeadersPath: {ctx.out_dir}\n"
+        f"HeaderCount: {header_count}\n"
+        f"Xcode: {xcode_info}\n"
+        f"Notes: classdump-dyld output; /System/Library/{{Frameworks,PrivateFrameworks}}; -b -h {skip}\n"
+    )
+    path = ctx.out_dir / "_metadata.txt"
+    path.write_text(metadata, encoding="utf-8")
+
+
+def count_headers(dir_path: Path) -> int:
+    count = 0
+    for root, _, files in os.walk(dir_path):
+        for name in files:
+            if name.endswith(".h"):
+                count += 1
+    return count
+
+
+def list_frameworks(category: str, ctx: Context) -> list[str]:
+    dir_path = Path(ctx.runtime_root) / "System/Library" / category
+    if not dir_path.is_dir():
+        raise RuntimeError(f"failed to read {dir_path}")
+    frameworks = [p.name for p in dir_path.iterdir() if p.name.endswith(".framework")]
+    frameworks.sort()
+    frameworks = filter_frameworks(frameworks, ctx)
+    return frameworks
+
+
+def filter_frameworks(frameworks: list[str], ctx: Context) -> list[str]:
+    filtered = frameworks
+    if ctx.framework_names:
+        filtered = [f for f in filtered if f.lower() in ctx.framework_names]
+    if ctx.framework_filters:
+        filtered = [
+            f
+            for f in filtered
+            if any(token in f.lower() for token in ctx.framework_filters)
+        ]
+    return filtered
+
+
+def merge_directories(src: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for entry in src.iterdir():
+        target = dest / entry.name
+        if entry.is_dir():
+            merge_directories(entry, target)
+            try_remove_empty(entry)
+        else:
+            if target.exists():
+                entry.unlink()
+            else:
+                shutil.move(str(entry), str(target))
+    try_remove_empty(src)
+
+
+def try_remove_empty(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        return
+
+
+def normalize_framework_name(name: str) -> str:
+    trimmed = name.strip()
+    if not trimmed:
+        return trimmed
+    return trimmed if trimmed.endswith(".framework") else f"{trimmed}.framework"
+
+
+def needs_split(ctx: Context) -> bool:
+    return bool(
+        ctx.exec_mode == "simulator"
+        or ctx.framework_names
+        or ctx.framework_filters
+    )
+
+
+def run_capture_command(cmd: str, args: list[str]) -> str:
+    result = subprocess.run(
+        [cmd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"{cmd} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def run_simple_command(cmd: str, args: list[str], err: str) -> None:
+    result = subprocess.run([cmd, *args])
+    if result.returncode != 0:
+        raise RuntimeError(err)
+
+
+def read_line(prompt: str) -> str:
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return ""
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    parts = []
+    for part in version.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
