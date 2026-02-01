@@ -968,9 +968,8 @@ def write_metadata(ctx: Context) -> None:
 def count_headers(dir_path: Path) -> int:
     count = 0
     for root, dirs, files in os.walk(dir_path):
-        if ".tmp" in dirs:
-            dirs.remove(".tmp")
-        if os.path.basename(root) == ".tmp":
+        dirs[:] = [name for name in dirs if not name.startswith(".tmp")]
+        if os.path.basename(root).startswith(".tmp"):
             continue
         for name in files:
             if name.endswith(".h"):
