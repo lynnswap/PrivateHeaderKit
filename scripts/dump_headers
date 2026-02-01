@@ -621,6 +621,7 @@ def dump_category(category: str, ctx: Context) -> None:
     status, killed, last_lines = run_classdump(category, ctx)
     if killed:
         print("Retrying per-framework to avoid simulator kill.")
+        reset_stage_dir(ctx)
         dump_category_split(category, ctx)
         return
     if status != 0:
