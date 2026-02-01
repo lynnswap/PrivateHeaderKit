@@ -4,9 +4,13 @@ import MachOObjCSection
 import ObjCDump
 import MachOSwiftSection
 @_spi(Support) import SwiftInterface
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 #if canImport(ObjectiveC)
 import ObjectiveC
-import Darwin
 #endif
 
 protocol FileExistenceChecking {
@@ -456,6 +460,76 @@ func normalizePath(_ path: String) -> String {
     return normalized
 }
 
+private let maxPathComponentBytes = 255
+private let truncatedNameHashLength = 16
+
+private func safeFileName(baseName: String, extension ext: String) -> String {
+    let normalizedExt = ext.isEmpty ? "" : (ext.hasPrefix(".") ? ext : ".\(ext)")
+    let maxBaseBytes = maxPathComponentBytes - normalizedExt.utf8.count
+    if baseName.utf8.count <= maxBaseBytes {
+        return baseName + normalizedExt
+    }
+    let hash = stableHashHex(baseName)
+    let suffix = "~\(hash)"
+    let maxPrefixBytes = max(0, maxBaseBytes - suffix.utf8.count)
+    let prefix = truncateToByteCount(baseName, maxBytes: maxPrefixBytes)
+    return prefix + suffix + normalizedExt
+}
+
+private func truncateToByteCount(_ value: String, maxBytes: Int) -> String {
+    guard maxBytes > 0 else { return "" }
+    if value.utf8.count <= maxBytes {
+        return value
+    }
+    var used = 0
+    var scalars = String.UnicodeScalarView()
+    for scalar in value.unicodeScalars {
+        let size = scalar.utf8.count
+        if used + size > maxBytes {
+            break
+        }
+        scalars.append(scalar)
+        used += size
+    }
+    return String(scalars)
+}
+
+private func stableHashHex(_ value: String) -> String {
+    var hash: UInt64 = 0xcbf29ce484222325
+    for byte in value.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 0x100000001b3
+    }
+    let hex = String(hash, radix: 16)
+    if hex.count >= truncatedNameHashLength {
+        return hex
+    }
+    return String(repeating: "0", count: truncatedNameHashLength - hex.count) + hex
+}
+
+private func withSilencedStdout<T>(_ enabled: Bool, _ body: () async throws -> T) async rethrows -> T {
+    guard enabled else { return try await body() }
+    let stdoutFD = fileno(stdout)
+    let saved = dup(stdoutFD)
+    if saved == -1 {
+        return try await body()
+    }
+    let devNull = open("/dev/null", O_WRONLY)
+    if devNull == -1 {
+        close(saved)
+        return try await body()
+    }
+    fflush(stdout)
+    dup2(devNull, stdoutFD)
+    close(devNull)
+    defer {
+        fflush(stdout)
+        dup2(saved, stdoutFD)
+        close(saved)
+    }
+    return try await body()
+}
+
 private func dumpObjC(
     machO: MachOFile,
     imagePath: String,
@@ -527,19 +601,23 @@ private func dumpObjC(
 
     for info in classInfos.values {
         if let only = options.onlyOneClass, only != info.name { continue }
-        let fileURL = outputDir.appendingPathComponent("\(info.name).h")
+        let fileName = safeFileName(baseName: info.name, extension: ".h")
+        let fileURL = outputDir.appendingPathComponent(fileName)
         try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
     }
 
     for info in protocolInfos.values {
         if let only = options.onlyOneClass, only != info.name { continue }
-        let fileURL = outputDir.appendingPathComponent("\(info.name).h")
+        let fileName = safeFileName(baseName: info.name, extension: ".h")
+        let fileURL = outputDir.appendingPathComponent(fileName)
         try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
     }
 
     for info in categoryInfos.values {
         if let only = options.onlyOneClass, only != info.className && only != info.name { continue }
-        let fileURL = outputDir.appendingPathComponent("\(info.className)+\(info.name).h")
+        let baseName = "\(info.className)+\(info.name)"
+        let fileName = safeFileName(baseName: baseName, extension: ".h")
+        let fileURL = outputDir.appendingPathComponent(fileName)
         try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
     }
 }
@@ -690,8 +768,10 @@ func dumpSwift(
 
     let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
     do {
-        try await builder.prepare()
-        let text = try await builder.printRoot()
+        let text = try await withSilencedStdout(!options.verbose) {
+            try await builder.prepare()
+            return try await builder.printRoot()
+        }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return
         }
