@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from collections import deque
@@ -38,10 +40,49 @@ class Context:
     runtime_build: str
     device: DeviceInfo | None
     out_dir: Path
+    stage_dir: Path
     skip_existing: bool
+    layout: str
     categories: list[str]
     framework_names: set[str]
     framework_filters: list[str]
+
+
+_CLEANUP_PATHS: set[Path] = set()
+_CLEANUP_INSTALLED = False
+
+
+def register_cleanup(path: Path) -> None:
+    global _CLEANUP_INSTALLED
+    _CLEANUP_PATHS.add(path)
+    if _CLEANUP_INSTALLED:
+        return
+    _CLEANUP_INSTALLED = True
+    atexit.register(run_cleanup)
+    install_signal_handlers()
+
+
+def run_cleanup() -> None:
+    for path in list(_CLEANUP_PATHS):
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def install_signal_handlers() -> None:
+    def handler(_signum, _frame) -> None:
+        run_cleanup()
+        raise SystemExit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, handler)
+        except Exception:
+            continue
+    if hasattr(signal, "SIGHUP"):
+        try:
+            signal.signal(signal.SIGHUP, handler)
+        except Exception:
+            pass
 
 
 def main() -> int:
@@ -59,6 +100,11 @@ def main() -> int:
     parser.add_argument("--runtime", help="Runtime version for --list-devices")
     parser.add_argument("--json", action="store_true", help="JSON output for list commands")
     parser.add_argument(
+        "--layout",
+        choices=["bundle", "headers"],
+        help="Output layout (bundle: .framework dirs, headers: plain dirs without suffix)",
+    )
+    parser.add_argument(
         "--framework",
         action="append",
         help="Exact framework name to dump (repeatable)",
@@ -71,6 +117,7 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    ctx: Context | None = None
     try:
         if args.list_runtimes:
             list_runtimes_command(args.json)
@@ -95,6 +142,7 @@ def main() -> int:
         )
 
         categories, framework_names, framework_filters = build_selection(args)
+        layout = resolve_layout(args.layout)
 
         if args.version:
             ctx = non_interactive_setup(
@@ -105,6 +153,7 @@ def main() -> int:
                 categories,
                 framework_names,
                 framework_filters,
+                layout,
             )
         else:
             ctx = interactive_setup(
@@ -115,6 +164,7 @@ def main() -> int:
                 categories,
                 framework_names,
                 framework_filters,
+                layout,
             )
 
         if ctx.exec_mode == "simulator":
@@ -136,17 +186,26 @@ def main() -> int:
                 device.state = "Booted"
 
         ctx.out_dir.mkdir(parents=True, exist_ok=True)
+        register_cleanup(ctx.stage_dir)
+        prepare_output_layout(ctx)
 
         for category in ctx.categories:
+            reset_stage_dir(ctx)
             dump_category(category, ctx)
-            relocate_output(ctx, category)
+            finalize_category_output(ctx, category)
 
         write_metadata(ctx)
         print(f"Done: {ctx.out_dir}")
         return 0
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        return 130
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if ctx is not None:
+            run_cleanup()
 
 
 def resolve_exec_mode(
@@ -163,6 +222,13 @@ def resolve_exec_mode(
     raise RuntimeError(
         "classdump-dyld binary not found in macosx, iphonesimulator, or iphoneos directories"
     )
+
+
+def resolve_layout(requested: str | None) -> str:
+    layout = (requested or os.getenv("PH_LAYOUT") or "headers").strip().lower()
+    if layout not in ("bundle", "headers"):
+        raise RuntimeError(f"invalid layout: {layout}")
+    return layout
 
 
 def build_selection(args) -> tuple[list[str], set[str], list[str]]:
@@ -290,6 +356,7 @@ def interactive_setup(
     categories: list[str],
     framework_names: set[str],
     framework_filters: list[str],
+    layout: str,
 ) -> Context:
     print("Interactive mode")
     runtimes = list_runtimes()
@@ -321,6 +388,7 @@ def interactive_setup(
         args.out
         or Path(os.getenv("PH_OUT_DIR")) if os.getenv("PH_OUT_DIR") else None
     ) or default_out
+    stage_dir = out_dir / ".tmp"
     skip_existing = args.skip_existing or os.getenv("PH_SKIP_EXISTING") == "1"
 
     if device:
@@ -336,7 +404,9 @@ def interactive_setup(
         runtime_build=runtime.build,
         device=device,
         out_dir=out_dir.resolve(),
+        stage_dir=stage_dir.resolve(),
         skip_existing=skip_existing,
+        layout=layout,
         categories=categories,
         framework_names=framework_names,
         framework_filters=framework_filters,
@@ -351,6 +421,7 @@ def non_interactive_setup(
     categories: list[str],
     framework_names: set[str],
     framework_filters: list[str],
+    layout: str,
 ) -> Context:
     version = args.version or ""
     runtime = find_runtime(version)
@@ -371,6 +442,7 @@ def non_interactive_setup(
             device = pick_default_device(devices)
 
     out_dir = args.out or root_dir / "generated-headers/iOS" / version
+    stage_dir = out_dir / ".tmp"
 
     return Context(
         exec_mode=exec_mode,
@@ -381,7 +453,9 @@ def non_interactive_setup(
         runtime_build=runtime.build,
         device=device,
         out_dir=out_dir.resolve(),
+        stage_dir=stage_dir.resolve(),
         skip_existing=args.skip_existing,
+        layout=layout,
         categories=categories,
         framework_names=framework_names,
         framework_filters=framework_filters,
@@ -568,21 +642,149 @@ def dump_category_split(category: str, ctx: Context) -> None:
         if killed or status != 0:
             report_last_lines(last_lines)
             failures.append(path)
+        else:
+            relocate_framework_output(ctx, category, item)
+            if ctx.layout == "headers":
+                normalize_framework_dir(ctx, category, item)
     if failures:
         summary = f"classdump-dyld failed for {len(failures)} items under {category}"
         print(summary, file=sys.stderr)
         write_failures(ctx, summary, failures)
 
 
-def relocate_output(ctx: Context, category: str) -> None:
-    src = ctx.out_dir / "System" / "Library" / category
-    if not src.exists():
+def relocate_framework_output(ctx: Context, category: str, framework_name: str) -> None:
+    src = ctx.stage_dir / "System" / "Library" / category / framework_name
+    if not src.exists() or src.is_symlink():
         return
-    dest = ctx.out_dir / category
-    merge_directories(src, dest)
-    try_remove_empty(src)
-    try_remove_empty(src.parent)
-    try_remove_empty(src.parent.parent)
+    dest_dir = ctx.out_dir / category
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / framework_name
+    if dest.exists():
+        merge_directories(src, dest)
+        try_remove_empty(src)
+    else:
+        shutil.move(str(src), str(dest))
+
+
+def relocate_frameworks_in_category(ctx: Context, category: str) -> None:
+    src_dir = ctx.stage_dir / "System" / "Library" / category
+    if not src_dir.is_dir() or src_dir.is_symlink():
+        return
+    dest_dir = ctx.out_dir / category
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for entry in src_dir.iterdir():
+        if entry.is_symlink():
+            continue
+        dest = dest_dir / entry.name
+        if dest.exists():
+            if entry.is_dir():
+                merge_directories(entry, dest)
+                try_remove_empty(entry)
+            else:
+                entry.unlink()
+        else:
+            shutil.move(str(entry), str(dest))
+
+
+def prepare_output_layout(ctx: Context) -> None:
+    for category in ctx.categories:
+        if ctx.layout == "headers":
+            normalize_framework_dirs(ctx, category)
+        else:
+            denormalize_framework_dirs(ctx, category)
+
+
+def reset_stage_dir(ctx: Context) -> None:
+    if ctx.stage_dir.exists():
+        shutil.rmtree(ctx.stage_dir)
+    ctx.stage_dir.mkdir(parents=True, exist_ok=True)
+
+
+def finalize_category_output(ctx: Context, category: str) -> None:
+    relocate_frameworks_in_category(ctx, category)
+    if ctx.layout == "headers":
+        normalize_framework_dirs(ctx, category)
+
+
+def normalize_framework_dirs(ctx: Context, category: str) -> None:
+    base = ctx.out_dir / category
+    if not base.is_dir():
+        return
+    framework_ext = ".framework"
+    entries = list(base.iterdir())
+    for entry in entries:
+        if entry.is_symlink() and entry.name.endswith(framework_ext):
+            entry.unlink()
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if not entry.is_dir():
+            continue
+        if not entry.name.endswith(framework_ext):
+            continue
+        framework_name = entry.name
+        target_name = framework_name[: -len(framework_ext)]
+        target = base / target_name
+        if target.exists():
+            if target.is_symlink():
+                target.unlink()
+            if target.exists():
+                merge_directories(entry, target)
+                try_remove_empty(entry)
+            else:
+                entry.rename(target)
+        else:
+            entry.rename(target)
+
+
+def normalize_framework_dir(ctx: Context, category: str, framework_name: str) -> None:
+    base = ctx.out_dir / category
+    if not base.is_dir():
+        return
+    framework_ext = ".framework"
+    if not framework_name.endswith(framework_ext):
+        return
+    entry = base / framework_name
+    if entry.is_symlink() or not entry.is_dir():
+        return
+    target = base / framework_name[: -len(framework_ext)]
+    if target.exists():
+        if target.is_symlink():
+            target.unlink()
+        if target.exists():
+            merge_directories(entry, target)
+            try_remove_empty(entry)
+        else:
+            entry.rename(target)
+    else:
+        entry.rename(target)
+
+
+def denormalize_framework_dirs(ctx: Context, category: str) -> None:
+    base = ctx.out_dir / category
+    if not base.is_dir():
+        return
+    framework_ext = ".framework"
+    entries = list(base.iterdir())
+    for entry in entries:
+        if entry.is_symlink() and entry.name.endswith(framework_ext):
+            entry.unlink()
+    for entry in list(base.iterdir()):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        if entry.name.endswith(framework_ext):
+            continue
+        dest = base / f"{entry.name}{framework_ext}"
+        if dest.exists():
+            if dest.is_symlink():
+                dest.unlink()
+            if dest.exists():
+                merge_directories(entry, dest)
+                try_remove_empty(entry)
+            else:
+                entry.rename(dest)
+        else:
+            entry.rename(dest)
 
 
 def run_classdump(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
@@ -594,7 +796,7 @@ def run_classdump(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
 def run_classdump_host(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
     source_path = Path(ctx.runtime_root) / "System/Library" / category
     is_recursive = "/" not in category
-    cmd = [str(ctx.classdump_bin), "-o", str(ctx.out_dir)]
+    cmd = [str(ctx.classdump_bin), "-o", str(ctx.stage_dir)]
     if is_recursive:
         cmd += ["-r", str(source_path)]
     else:
@@ -618,7 +820,7 @@ def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, lis
         device.udid,
         str(ctx.classdump_bin),
         "-o",
-        str(ctx.out_dir),
+        str(ctx.stage_dir),
     ]
     if is_recursive:
         cmd += ["-r", source_path]
@@ -690,6 +892,7 @@ def write_metadata(ctx: Context) -> None:
         f"RuntimeBuild: {ctx.runtime_build}\n"
         f"iOS: {ctx.version}\n"
         f"HeadersPath: {ctx.out_dir}\n"
+        f"Layout: {ctx.layout}\n"
         f"HeaderCount: {header_count}\n"
         f"Xcode: {xcode_info}\n"
         f"Notes: classdump-dyld output; /System/Library/{{Frameworks,PrivateFrameworks}}; -b -h {skip}\n"
@@ -700,7 +903,11 @@ def write_metadata(ctx: Context) -> None:
 
 def count_headers(dir_path: Path) -> int:
     count = 0
-    for root, _, files in os.walk(dir_path):
+    for root, dirs, files in os.walk(dir_path):
+        if ".tmp" in dirs:
+            dirs.remove(".tmp")
+        if os.path.basename(root) == ".tmp":
+            continue
         for name in files:
             if name.endswith(".h"):
                 count += 1
@@ -764,6 +971,7 @@ def needs_split(ctx: Context) -> bool:
         ctx.exec_mode == "simulator"
         or ctx.framework_names
         or ctx.framework_filters
+        or ctx.layout == "headers"
     )
 
 

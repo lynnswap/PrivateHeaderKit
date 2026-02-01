@@ -42,6 +42,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - `--exec-mode <host|simulator>`: Force execution mode (default: host if available)
 - `--framework <name>`: Dump only the exact framework name (repeatable, `.framework` optional)
 - `--filter <substring>`: Substring filter for framework names (repeatable)
+- `--layout <bundle|headers>`: Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix)
 - `--list-runtimes`: List available iOS runtimes and exit
 - `--list-devices`: List devices for a runtime and exit (use `--runtime`)
 - `--runtime <version>`: Runtime version for `--list-devices`
@@ -53,7 +54,8 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - If the submodule isn't initialized, the script runs `git submodule update --init --recursive`.
 - Requires Python 3.
 - Simulator mode uses `xcrun simctl spawn`.
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`
+- During dumping, raw output is staged under `<out>/.tmp` and then moved to the final layout.
+- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`, `PH_LAYOUT`
 
 ## License
 

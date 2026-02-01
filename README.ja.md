@@ -43,6 +43,7 @@ python3 scripts/dump_headers
 - `--category <frameworks|private>`: 対象カテゴリを限定（複数指定可）
 - `--framework <name>`: 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可）
 - `--filter <substring>`: フレームワーク名の部分一致フィルタ（複数指定可）
+- `--layout <bundle|headers>`: 出力レイアウト（`bundle` は `.framework` を保持、`headers` は `.framework` を外す）
 - `--list-runtimes`: 利用可能な iOS ランタイム一覧を表示して終了
 - `--list-devices`: ランタイム内のデバイス一覧を表示して終了（`--runtime` 併用）
 - `--runtime <version>`: `--list-devices` 用のランタイム指定
@@ -54,7 +55,8 @@ python3 scripts/dump_headers
 - サブモジュールが未初期化なら `git submodule update --init --recursive` を自動実行します。
 - Python 3 が必要です。
 - `simulator` モード時は `xcrun simctl spawn` 経由です。
-- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`
+- ダンプ中の一時出力は `<out>/.tmp` に作成し、最後にレイアウトへ移動します。
+- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`, `PH_LAYOUT`
 
 ## ライセンス
 
