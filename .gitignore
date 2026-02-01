@@ -1,5 +1,6 @@
 .DS_Store
 /.vscode/
+/.swiftpm/
 /.swiftpm/xcode/xcuserdata/
 /.swiftpm/xcode/package.xcworkspace/xcuserdata/
 /.build
