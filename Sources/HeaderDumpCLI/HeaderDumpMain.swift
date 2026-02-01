@@ -279,7 +279,12 @@ private func loadMachOFile(url: URL, options: DumpOptions) -> MachOFile? {
 }
 
 private func isSupported(_ machO: MachOFile) -> Bool {
-    machO.header.cpuType == .arm64
+    switch machO.header.cpuType {
+    case .arm64, .x86_64:
+        return true
+    default:
+        return false
+    }
 }
 
 private func loadFromSharedCache(imagePath: String) -> MachOFile? {
@@ -476,6 +481,7 @@ private func dumpObjC(
     }
 
     for info in categoryInfos.values {
+        if let only = options.onlyOneClass, only != info.className && only != info.name { continue }
         let fileURL = outputDir.appendingPathComponent("\(info.className)+\(info.name).h")
         try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
     }
