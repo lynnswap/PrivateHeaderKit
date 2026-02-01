@@ -533,7 +533,7 @@ def interactive_setup(
             if device is None:
                 raise RuntimeError(f"no simulator device found for runtime: {runtime.identifier}")
         else:
-            device = pick_default_device(devices)
+            device = resolve_default_device(runtime, devices)
 
     default_out = root_dir / "generated-headers/iOS" / runtime.version
     out_dir = (
@@ -595,7 +595,7 @@ def non_interactive_setup(
             if device is None:
                 raise RuntimeError(f"no simulator device found for runtime: {runtime.identifier}")
         else:
-            device = pick_default_device(devices)
+            device = resolve_default_device(runtime, devices)
 
     out_dir = args.out or root_dir / "generated-headers/iOS" / version
     stage_dir = build_stage_dir(out_dir)
@@ -721,6 +721,39 @@ def pick_default_device(devices: list[dict]) -> DeviceInfo:
         udid=first.get("udid") or "",
         state=first.get("state") or "",
     )
+
+
+def default_clone_name(version: str) -> str:
+    return f"Dumping Device (iOS {version})"
+
+
+def clone_device(base: DeviceInfo, runtime_id: str, clone_name: str) -> DeviceInfo:
+    print(f"Cloning simulator: {base.name} -> {clone_name}")
+    output = run_capture_command("xcrun", ["simctl", "clone", base.udid, clone_name])
+    udid = ""
+    for line in reversed(output.splitlines()):
+        candidate = line.strip()
+        if candidate:
+            udid = candidate
+            break
+    if not udid:
+        devices = list_devices(runtime_id)
+        clone = match_device(devices, clone_name)
+        if clone:
+            return clone
+        raise RuntimeError("failed to determine cloned simulator udid")
+    return DeviceInfo(name=clone_name, udid=udid, state="Shutdown")
+
+
+def resolve_default_device(runtime: RuntimeInfo, devices: list[dict]) -> DeviceInfo:
+    clone_name = default_clone_name(runtime.version)
+    clone = match_device(devices, clone_name)
+    if clone:
+        return clone
+    base = pick_default_device(devices)
+    if base.name == clone_name:
+        return base
+    return clone_device(base, runtime.identifier, clone_name)
 
 
 def print_devices(devices: list[dict]) -> None:
