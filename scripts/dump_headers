@@ -239,8 +239,8 @@ def main() -> int:
 
         for category in ctx.categories:
             reset_stage_dir(ctx)
-            dump_category(category, ctx)
-            finalize_category_output(ctx, category)
+            had_failures = dump_category(category, ctx)
+            finalize_category_output(ctx, category, had_failures)
 
         write_metadata(ctx)
         print(f"Done: {ctx.out_dir}")
@@ -664,27 +664,26 @@ def create_default_device(runtime_id: str, version: str) -> None:
     )
 
 
-def dump_category(category: str, ctx: Context) -> None:
+def dump_category(category: str, ctx: Context) -> bool:
     print(f"Dumping: {category}")
     if needs_split(ctx):
-        dump_category_split(category, ctx)
-        return
+        return dump_category_split(category, ctx)
     status, killed, last_lines = run_classdump(category, ctx)
     if killed:
         print("Retrying per-framework to avoid simulator kill.")
         reset_stage_dir(ctx)
-        dump_category_split(category, ctx)
-        return
+        return dump_category_split(category, ctx)
     if status != 0:
         report_last_lines(last_lines)
         raise RuntimeError(f"classdump-dyld failed for {category}")
+    return False
 
 
-def dump_category_split(category: str, ctx: Context) -> None:
+def dump_category_split(category: str, ctx: Context) -> bool:
     frameworks = list_frameworks(category, ctx)
     if not frameworks:
         print(f"Skipping {category}: no frameworks found under /System/Library/{category}")
-        return
+        return False
     failures = []
     total = len(frameworks)
     existing = set()
@@ -704,10 +703,12 @@ def dump_category_split(category: str, ctx: Context) -> None:
             relocate_framework_output(ctx, category, item)
             if ctx.layout == "headers":
                 normalize_framework_dir(ctx, category, item)
-    if failures:
+    had_failures = bool(failures)
+    if had_failures:
         summary = f"classdump-dyld failed for {len(failures)} items under {category}"
         print(summary, file=sys.stderr)
         write_failures(ctx, summary, failures)
+    return had_failures
 
 
 def relocate_framework_output(ctx: Context, category: str, framework_name: str) -> None:
@@ -758,8 +759,9 @@ def reset_stage_dir(ctx: Context) -> None:
     ctx.stage_dir.mkdir(parents=True, exist_ok=True)
 
 
-def finalize_category_output(ctx: Context, category: str) -> None:
-    relocate_frameworks_in_category(ctx, category)
+def finalize_category_output(ctx: Context, category: str, had_failures: bool = False) -> None:
+    if not had_failures:
+        relocate_frameworks_in_category(ctx, category)
     if ctx.layout == "headers":
         normalize_framework_dirs(ctx, category)
 
@@ -1072,8 +1074,8 @@ def resolve_skip_existing(args) -> bool:
     if getattr(args, "force", False):
         return False
     env_force = os.getenv("PH_FORCE")
-    if env_force is not None:
-        return env_force != "1"
+    if env_force == "1":
+        return False
     env_value = os.getenv("PH_SKIP_EXISTING")
     if env_value is not None:
         return env_value == "1"
