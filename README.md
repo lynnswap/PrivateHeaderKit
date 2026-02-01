@@ -38,7 +38,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 
 - `--device <udid|name>`: Choose a simulator device
 - `--out <dir>`: Output directory
-- `--skip-existing`: Skip headers that already exist
+- `--force`: Always dump headers even if they already exist
 - `--exec-mode <host|simulator>`: Force execution mode (default: host if available)
 - `--framework <name>`: Dump only the exact framework name (repeatable, `.framework` optional)
 - `--filter <substring>`: Substring filter for framework names (repeatable)
@@ -56,7 +56,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - Simulator mode uses `xcrun simctl spawn`.
 - During dumping, raw output is staged under `<out>/.tmp-<run-id>` and then moved to the final layout.
 - The output directory is locked for the duration of a run to avoid concurrent writes.
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`, `PH_LAYOUT`
+- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`
 
 ## License
 

@@ -129,7 +129,16 @@ def main() -> int:
     parser.add_argument("version", nargs="?", help="iOS runtime version (e.g. 26.0.1)")
     parser.add_argument("--device", help="Simulator device UDID or name")
     parser.add_argument("--out", type=Path, help="Output directory")
-    parser.add_argument("--skip-existing", action="store_true", help="Skip existing headers")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Always dump headers even if they already exist",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--exec-mode", choices=["host", "simulator"], help="Force exec mode")
     parser.add_argument("--list-runtimes", action="store_true", help="List runtimes and exit")
     parser.add_argument("--list-devices", action="store_true", help="List devices and exit")
@@ -430,7 +439,7 @@ def interactive_setup(
         or Path(os.getenv("PH_OUT_DIR")) if os.getenv("PH_OUT_DIR") else None
     ) or default_out
     stage_dir = build_stage_dir(out_dir)
-    skip_existing = args.skip_existing or os.getenv("PH_SKIP_EXISTING") == "1"
+    skip_existing = resolve_skip_existing(args)
 
     if device:
         print(f"Using device: {device.name} ({device.state})")
@@ -484,6 +493,7 @@ def non_interactive_setup(
 
     out_dir = args.out or root_dir / "generated-headers/iOS" / version
     stage_dir = build_stage_dir(out_dir)
+    skip_existing = resolve_skip_existing(args)
 
     return Context(
         exec_mode=exec_mode,
@@ -495,7 +505,7 @@ def non_interactive_setup(
         device=device,
         out_dir=out_dir.resolve(),
         stage_dir=stage_dir.resolve(),
-        skip_existing=args.skip_existing,
+        skip_existing=skip_existing,
         layout=layout,
         categories=categories,
         framework_names=framework_names,
@@ -677,7 +687,13 @@ def dump_category_split(category: str, ctx: Context) -> None:
         return
     failures = []
     total = len(frameworks)
+    existing = set()
+    if ctx.skip_existing:
+        existing = existing_frameworks_in_category(ctx, category, set(frameworks))
     for idx, item in enumerate(frameworks, start=1):
+        if ctx.skip_existing and item in existing:
+            print(f"Skipping existing: {category} ({idx}/{total}) {item}")
+            continue
         print(f"Dumping: {category} ({idx}/{total}) {item}")
         path = f"{category}/{item}"
         status, killed, last_lines = run_classdump(path, ctx)
@@ -987,6 +1003,29 @@ def list_frameworks(category: str, ctx: Context) -> list[str]:
     return frameworks
 
 
+def existing_frameworks_in_category(
+    ctx: Context, category: str, frameworks: set[str]
+) -> set[str]:
+    category_dir = ctx.out_dir / category
+    if not category_dir.is_dir():
+        return set()
+    existing: set[str] = set()
+    for root, dirs, files in os.walk(category_dir):
+        dirs[:] = [name for name in dirs if not name.startswith(".tmp")]
+        if not files:
+            continue
+        if not any(name.endswith(".h") for name in files):
+            continue
+        rel = Path(root).relative_to(category_dir)
+        if not rel.parts:
+            continue
+        top = rel.parts[0]
+        framework_name = normalize_framework_name(top) if ctx.layout == "headers" else top
+        if framework_name in frameworks:
+            existing.add(framework_name)
+    return existing
+
+
 def filter_frameworks(frameworks: list[str], ctx: Context) -> list[str]:
     filtered = frameworks
     if ctx.framework_names:
@@ -1029,11 +1068,24 @@ def normalize_framework_name(name: str) -> str:
     return trimmed if trimmed.endswith(".framework") else f"{trimmed}.framework"
 
 
+def resolve_skip_existing(args) -> bool:
+    if getattr(args, "force", False):
+        return False
+    env_force = os.getenv("PH_FORCE")
+    if env_force is not None:
+        return env_force != "1"
+    env_value = os.getenv("PH_SKIP_EXISTING")
+    if env_value is not None:
+        return env_value == "1"
+    return True
+
+
 def needs_split(ctx: Context) -> bool:
     return bool(
         ctx.exec_mode == "simulator"
         or ctx.framework_names
         or ctx.framework_filters
+        or ctx.skip_existing
     )
 
 

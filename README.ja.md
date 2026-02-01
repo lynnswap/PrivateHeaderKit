@@ -38,7 +38,7 @@ python3 scripts/dump_headers
 
 - `--device <udid|name>`: 対象シミュレーターを指定
 - `--out <dir>`: 出力先を指定
-- `--skip-existing`: 既存ヘッダの上書きを避ける
+- `--force`: 既存ヘッダがあっても常に再生成する
 - `--exec-mode <host|simulator>`: 実行モードを強制（デフォルトは host）
 - `--category <frameworks|private>`: 対象カテゴリを限定（複数指定可）
 - `--framework <name>`: 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可）
@@ -57,7 +57,7 @@ python3 scripts/dump_headers
 - `simulator` モード時は `xcrun simctl spawn` 経由です。
 - ダンプ中の一時出力は `<out>/.tmp-<run-id>` に作成し、最後にレイアウトへ移動します。
 - 実行中は出力ディレクトリをロックして、同時書き込みを防ぎます。
-- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`, `PH_LAYOUT`
+- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`
 
 ## ライセンス
 
