@@ -39,7 +39,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - `--device <udid|name>`: Choose a simulator device
 - `--out <dir>`: Output directory
 - `--force`: Always dump headers even if they already exist
-- `--exec-mode <host|simulator>`: Force execution mode (default: host if available)
+- `--exec-mode <host|simulator>`: Force execution mode
 - `--framework <name>`: Dump only the exact framework name (repeatable, `.framework` optional)
 - `--filter <substring>`: Substring filter for framework names (repeatable)
 - `--layout <bundle|headers>`: Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix)

@@ -39,7 +39,7 @@ python3 scripts/dump_headers
 - `--device <udid|name>`: 対象シミュレーターを指定
 - `--out <dir>`: 出力先を指定
 - `--force`: 既存ヘッダがあっても常に再生成する
-- `--exec-mode <host|simulator>`: 実行モードを強制（デフォルトは host）
+- `--exec-mode <host|simulator>`: 実行モードを強制
 - `--category <frameworks|private>`: 対象カテゴリを限定（複数指定可）
 - `--framework <name>`: 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可）
 - `--filter <substring>`: フレームワーク名の部分一致フィルタ（複数指定可）
