@@ -1,5 +1,7 @@
 .DS_Store
 /.vscode/
+/.swiftpm/xcode/xcuserdata/
+/.swiftpm/xcode/package.xcworkspace/xcuserdata/
 /.build
 /DerivedData
 /generated-headers/*
