@@ -347,6 +347,18 @@ private func sharedCachePath() -> String {
     ].compactMap { $0 }
 
     for runtimeRoot in rootCandidates {
+        let simArm64eCandidate = URL(fileURLWithPath: runtimeRoot)
+            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64e")
+        if FileManager.default.fileExists(atPath: simArm64eCandidate.path) {
+            return simArm64eCandidate.path
+        }
+
+        let simArm64Candidate = URL(fileURLWithPath: runtimeRoot)
+            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64")
+        if FileManager.default.fileExists(atPath: simArm64Candidate.path) {
+            return simArm64Candidate.path
+        }
+
         let candidate = URL(fileURLWithPath: runtimeRoot)
             .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
         if FileManager.default.fileExists(atPath: candidate.path) {
