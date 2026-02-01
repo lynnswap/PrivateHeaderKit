@@ -45,17 +45,17 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - `--runtime <version>`: Runtime version for `--list-devices`
 - `--json`: JSON output for list commands
 - `--shared-cache`: Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable)
+- `--rebuild-classdump`: Rebuild `classdump-dyld` even if a binary already exists
 
 ## Notes
 
-- Uses the SwiftPM executable built from this repository (`classdump-dyld`).
 - Requires Python 3.
 - Simulator mode uses `xcrun simctl spawn`.
 - During dumping, raw output is staged under `<out>/.tmp-<run-id>` and then moved to the final layout.
 - The output directory is locked for the duration of a run to avoid concurrent writes.
 - Verbose mode suppresses skipped-class logs by default; set `PH_VERBOSE_SKIP=1` to show them.
 - You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`
+- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_REBUILD_CLASSDUMP=1`
 
 ## License
 
