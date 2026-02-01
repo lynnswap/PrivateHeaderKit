@@ -51,6 +51,7 @@ python3 scripts/dump_headers
 ## メモ
 
 - `classdump-dyld` サブモジュールを利用します。
+- サブモジュールが未初期化なら `git submodule update --init --recursive` を自動実行します。
 - Python 3 が必要です。
 - `simulator` モード時は `xcrun simctl spawn` 経由です。
 - 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`

@@ -50,6 +50,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 ## Notes
 
 - Uses the `classdump-dyld` submodule.
+- If the submodule isn't initialized, the script runs `git submodule update --init --recursive`.
 - Requires Python 3.
 - Simulator mode uses `xcrun simctl spawn`.
 - Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`
