@@ -29,8 +29,8 @@ let package = Package(
         ),
     ],
     targets: [
-        .executableTarget(
-            name: "HeaderDumpCLI",
+        .target(
+            name: "HeaderDumpCore",
             dependencies: [
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
@@ -38,7 +38,21 @@ let package = Package(
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
+            path: "Sources/HeaderDumpCore"
+        ),
+        .executableTarget(
+            name: "HeaderDumpCLI",
+            dependencies: [
+                "HeaderDumpCore",
+            ],
             path: "Sources/HeaderDumpCLI"
+        ),
+        .testTarget(
+            name: "HeaderDumpCLITests",
+            dependencies: [
+                "HeaderDumpCore",
+                .product(name: "MachOKit", package: "MachOKit"),
+            ]
         ),
     ]
 )
