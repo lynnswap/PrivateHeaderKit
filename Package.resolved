@@ -1,5 +1,5 @@
 {
-  "originHash" : "525b66144d76f6dbf5e7c9f465473a17f9010777c09c6b6a7480b591854a3d66",
+  "originHash" : "6182ad954e5c1785cd3a27da04dd01f07b1cd7c17512912c9a585b72a2880dd3",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -61,7 +61,7 @@
       "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
         "branch" : "main",
-        "revision" : "4ba7e50bfdc4ad4da63693509443bb6ac34c8e29"
+        "revision" : "90d3afbae7412edabbaff1fc4da4ee44d014af9c"
       }
     },
     {
