@@ -80,9 +80,7 @@ def main() -> int:
             return 0
 
         root_dir = find_root_dir()
-        classdump_host = root_dir / "classdump-dyld/macosx/usr/local/bin/classdump-dyld"
-        classdump_simulator = root_dir / "classdump-dyld/iphonesimulator/classdump-dyld"
-        classdump_sim = root_dir / "classdump-dyld/iphoneos/classdump-dyld"
+        classdump_host, classdump_simulator, classdump_sim = classdump_paths(root_dir)
 
         exec_mode = resolve_exec_mode(
             args.exec_mode or os.getenv("PH_EXEC_MODE"),
@@ -236,17 +234,47 @@ def list_devices_command(version: str | None, json_output: bool) -> None:
         print(f"      {udid}")
 
 
+def classdump_paths(root_dir: Path) -> tuple[Path, Path, Path]:
+    classdump_host = root_dir / "classdump-dyld/macosx/usr/local/bin/classdump-dyld"
+    classdump_simulator = root_dir / "classdump-dyld/iphonesimulator/classdump-dyld"
+    classdump_sim = root_dir / "classdump-dyld/iphoneos/classdump-dyld"
+    return classdump_host, classdump_simulator, classdump_sim
+
+
+def classdump_binaries_present(root_dir: Path) -> bool:
+    return any(path.is_file() for path in classdump_paths(root_dir))
+
+
+def ensure_classdump_submodule(root_dir: Path) -> None:
+    if classdump_binaries_present(root_dir):
+        return
+    submodule_dir = root_dir / "classdump-dyld"
+    if not submodule_dir.exists():
+        return
+    print("classdump-dyld submodule not initialized. Initializing...")
+    run_simple_command(
+        "git",
+        ["submodule", "update", "--init", "--recursive"],
+        "failed to initialize submodules (run: git submodule update --init --recursive)",
+        cwd=root_dir,
+    )
+    if not classdump_binaries_present(root_dir):
+        raise RuntimeError(
+            "classdump-dyld binary not found after submodule init "
+            "(run: git submodule update --init --recursive)"
+        )
+
+
 def find_root_dir() -> Path:
     candidates = [Path(__file__).resolve().parent, Path.cwd()]
     for start in candidates:
         current = start
         while True:
-            if (current / "classdump-dyld").is_dir():
-                if (
-                    (current / "classdump-dyld/iphoneos/classdump-dyld").is_file()
-                    or (current / "classdump-dyld/iphonesimulator/classdump-dyld").is_file()
-                    or (current / "classdump-dyld/macosx/usr/local/bin/classdump-dyld").is_file()
-                ):
+            if classdump_binaries_present(current):
+                return current
+            if (current / ".gitmodules").is_file():
+                ensure_classdump_submodule(current)
+                if classdump_binaries_present(current):
                     return current
             if current.parent == current:
                 break
@@ -748,8 +776,8 @@ def run_capture_command(cmd: str, args: list[str]) -> str:
     return result.stdout
 
 
-def run_simple_command(cmd: str, args: list[str], err: str) -> None:
-    result = subprocess.run([cmd, *args])
+def run_simple_command(cmd: str, args: list[str], err: str, cwd: Path | None = None) -> None:
+    result = subprocess.run([cmd, *args], cwd=str(cwd) if cwd else None)
     if result.returncode != 0:
         raise RuntimeError(err)
 
