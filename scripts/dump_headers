@@ -1034,7 +1034,6 @@ def needs_split(ctx: Context) -> bool:
         ctx.exec_mode == "simulator"
         or ctx.framework_names
         or ctx.framework_filters
-        or ctx.layout == "headers"
     )
 
 
