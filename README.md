@@ -14,9 +14,6 @@ Tooling for generating private headers.
 
 If you prefer explicit Python:
 
-```
-python3 scripts/dump_headers
-```
 
 ### 2) Dump headers with args
 
@@ -47,18 +44,19 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - `--list-devices`: List devices for a runtime and exit (use `--runtime`)
 - `--runtime <version>`: Runtime version for `--list-devices`
 - `--json`: JSON output for list commands
+- `--shared-cache`: Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable)
 
 ## Notes
 
-- Uses the `classdump-dyld` submodule.
-- If the submodule isn't initialized, the script runs `git submodule update --init --recursive`.
+- Uses the SwiftPM executable built from this repository (`classdump-dyld`).
 - Requires Python 3.
 - Simulator mode uses `xcrun simctl spawn`.
 - During dumping, raw output is staged under `<out>/.tmp-<run-id>` and then moved to the final layout.
 - The output directory is locked for the duration of a run to avoid concurrent writes.
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`
+- Verbose mode suppresses skipped-class logs by default; set `PH_VERBOSE_SKIP=1` to show them.
+- You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
+- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`
 
 ## License
 
 - MIT for this workspace: see `LICENSE`.
-- Third-party: see `THIRD_PARTY_NOTICES.md`.

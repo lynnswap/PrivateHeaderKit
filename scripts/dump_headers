@@ -43,6 +43,8 @@ class Context:
     out_dir: Path
     stage_dir: Path
     skip_existing: bool
+    use_shared_cache: bool
+    verbose: bool
     layout: str
     categories: list[str]
     framework_names: set[str]
@@ -159,6 +161,17 @@ def main() -> int:
         action="append",
         help="Substring filter for framework names (repeatable)",
     )
+    parser.add_argument(
+        "--shared-cache",
+        action="store_true",
+        help="Use dyld shared cache when dumping",
+    )
+    parser.add_argument(
+        "-D",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging in classdump-dyld",
+    )
 
     args = parser.parse_args()
 
@@ -189,6 +202,8 @@ def main() -> int:
 
         categories, framework_names, framework_filters = build_selection(args)
         layout = resolve_layout(args.layout)
+        use_shared_cache = resolve_shared_cache(args)
+        verbose = resolve_verbose(args)
 
         if args.version:
             ctx = non_interactive_setup(
@@ -200,6 +215,8 @@ def main() -> int:
                 framework_names,
                 framework_filters,
                 layout,
+                use_shared_cache,
+                verbose,
             )
         else:
             ctx = interactive_setup(
@@ -211,7 +228,11 @@ def main() -> int:
                 framework_names,
                 framework_filters,
                 layout,
+                use_shared_cache,
+                verbose,
             )
+
+        ctx.classdump_bin = ensure_classdump_binary(root_dir, ctx)
 
         if ctx.exec_mode == "simulator":
             device = ctx.device
@@ -269,9 +290,10 @@ def resolve_exec_mode(
         return "host"
     if classdump_sim.is_file():
         return "simulator"
-    raise RuntimeError(
-        "classdump-dyld binary not found in macosx, iphonesimulator, or iphoneos directories"
-    )
+    try:
+        return "simulator" if list_runtimes() else "host"
+    except Exception:
+        return "host"
 
 
 def resolve_layout(requested: str | None) -> str:
@@ -351,34 +373,26 @@ def list_devices_command(version: str | None, json_output: bool) -> None:
 
 
 def classdump_paths(root_dir: Path) -> tuple[Path, Path, Path]:
-    classdump_host = root_dir / "classdump-dyld/macosx/usr/local/bin/classdump-dyld"
-    classdump_simulator = root_dir / "classdump-dyld/iphonesimulator/classdump-dyld"
-    classdump_sim = root_dir / "classdump-dyld/iphoneos/classdump-dyld"
+    classdump_host = root_dir / ".build" / "debug" / "classdump-dyld"
+    classdump_simulator = (
+        root_dir
+        / ".build"
+        / "DerivedData"
+        / "Build"
+        / "Products"
+        / "Debug-iphonesimulator"
+        / "classdump-dyld"
+    )
+    classdump_sim = root_dir / ".build" / "Debug-iphoneos" / "classdump-dyld"
     return classdump_host, classdump_simulator, classdump_sim
+
+
+def classdump_source_present(root_dir: Path) -> bool:
+    return (root_dir / "Package.swift").is_file()
 
 
 def classdump_binaries_present(root_dir: Path) -> bool:
     return any(path.is_file() for path in classdump_paths(root_dir))
-
-
-def ensure_classdump_submodule(root_dir: Path) -> None:
-    if classdump_binaries_present(root_dir):
-        return
-    submodule_dir = root_dir / "classdump-dyld"
-    if not submodule_dir.exists():
-        return
-    print("classdump-dyld submodule not initialized. Initializing...")
-    run_simple_command(
-        "git",
-        ["submodule", "update", "--init", "--recursive"],
-        "failed to initialize submodules (run: git submodule update --init --recursive)",
-        cwd=root_dir,
-    )
-    if not classdump_binaries_present(root_dir):
-        raise RuntimeError(
-            "classdump-dyld binary not found after submodule init "
-            "(run: git submodule update --init --recursive)"
-        )
 
 
 def find_root_dir() -> Path:
@@ -386,16 +400,68 @@ def find_root_dir() -> Path:
     for start in candidates:
         current = start
         while True:
-            if classdump_binaries_present(current):
+            if classdump_binaries_present(current) or classdump_source_present(current):
                 return current
-            if (current / ".gitmodules").is_file():
-                ensure_classdump_submodule(current)
-                if classdump_binaries_present(current):
-                    return current
             if current.parent == current:
                 break
             current = current.parent
-    raise RuntimeError("repository root not found (classdump-dyld missing)")
+    raise RuntimeError("repository root not found (Package.swift missing)")
+
+
+def build_classdump_host(root_dir: Path) -> Path:
+    print("Building classdump-dyld for host (SwiftPM)...")
+    run_simple_command(
+        "swift",
+        ["build", "-c", "debug", "--product", "classdump-dyld"],
+        "failed to build classdump-dyld for host",
+        cwd=root_dir,
+    )
+    bin_path = root_dir / ".build" / "debug" / "classdump-dyld"
+    if not bin_path.is_file():
+        raise RuntimeError("classdump-dyld host build output not found")
+    return bin_path
+
+
+def build_classdump_simulator(root_dir: Path, device: DeviceInfo) -> Path:
+    derived_data = root_dir / ".build" / "DerivedData"
+    print("Building classdump-dyld for iOS Simulator (SwiftPM)...")
+    scheme = os.getenv("PH_XCODE_SCHEME") or "PrivateHeaderKit"
+    run_simple_command(
+        "xcodebuild",
+        [
+            "-scheme",
+            scheme,
+            "-configuration",
+            "Debug",
+            "-destination",
+            f"id={device.udid}",
+            "-derivedDataPath",
+            str(derived_data),
+            "-skipMacroValidation",
+            "-skipPackagePluginValidation",
+        ],
+        "failed to build classdump-dyld for iOS Simulator",
+        cwd=root_dir,
+    )
+    bin_path = derived_data / "Build" / "Products" / "Debug-iphonesimulator" / "classdump-dyld"
+    if not bin_path.is_file():
+        raise RuntimeError("classdump-dyld simulator build output not found")
+    return bin_path
+
+
+def ensure_classdump_binary(root_dir: Path, ctx: Context) -> Path:
+    classdump_host, classdump_simulator, classdump_sim = classdump_paths(root_dir)
+    if ctx.exec_mode == "host":
+        if classdump_host.is_file():
+            return classdump_host
+        return build_classdump_host(root_dir)
+    if classdump_simulator.is_file():
+        return classdump_simulator
+    if classdump_sim.is_file():
+        return classdump_sim
+    if ctx.device is None:
+        raise RuntimeError("no simulator device available for classdump-dyld build")
+    return build_classdump_simulator(root_dir, ctx.device)
 
 
 def interactive_setup(
@@ -407,6 +473,8 @@ def interactive_setup(
     framework_names: set[str],
     framework_filters: list[str],
     layout: str,
+    use_shared_cache: bool,
+    verbose: bool,
 ) -> Context:
     print("Interactive mode")
     runtimes = list_runtimes()
@@ -456,6 +524,8 @@ def interactive_setup(
         out_dir=out_dir.resolve(),
         stage_dir=stage_dir.resolve(),
         skip_existing=skip_existing,
+        use_shared_cache=use_shared_cache,
+        verbose=verbose,
         layout=layout,
         categories=categories,
         framework_names=framework_names,
@@ -472,6 +542,8 @@ def non_interactive_setup(
     framework_names: set[str],
     framework_filters: list[str],
     layout: str,
+    use_shared_cache: bool,
+    verbose: bool,
 ) -> Context:
     version = args.version or ""
     runtime = find_runtime(version)
@@ -506,6 +578,8 @@ def non_interactive_setup(
         out_dir=out_dir.resolve(),
         stage_dir=stage_dir.resolve(),
         skip_existing=skip_existing,
+        use_shared_cache=use_shared_cache,
+        verbose=verbose,
         layout=layout,
         categories=categories,
         framework_names=framework_names,
@@ -627,23 +701,29 @@ def create_default_device(runtime_id: str, version: str) -> None:
     output = run_capture_command("xcrun", ["simctl", "list", "devicetypes", "-j"])
     data = json.loads(output)
     device_types = data.get("devicetypes", [])
-    preferred = [
-        "iPhone 17 Pro",
-        "iPhone 17 Pro Max",
-        "iPhone 17",
-        "iPhone 16 Pro",
-        "iPhone 16",
-        "iPhone 15 Pro",
-        "iPhone 15",
-    ]
     choice = None
-    for name in preferred:
+    env_device_type = (os.getenv("PH_DEVICE_TYPE") or "").strip()
+    if env_device_type:
         for entry in device_types:
-            if entry.get("name") == name:
+            if entry.get("identifier") == env_device_type or entry.get("name") == env_device_type:
                 choice = entry
                 break
-        if choice:
-            break
+        if choice is None:
+            env_lower = env_device_type.lower()
+            for entry in device_types:
+                if (entry.get("identifier") or "").lower() == env_lower:
+                    choice = entry
+                    break
+                if (entry.get("name") or "").lower() == env_lower:
+                    choice = entry
+                    break
+        if choice is None:
+            raise RuntimeError(f"device type not found: {env_device_type}")
+    if choice is None:
+        for entry in device_types:
+            if entry.get("productFamily") == "iPhone":
+                choice = entry
+                break
     if choice is None:
         for entry in device_types:
             if (entry.get("name") or "").startswith("iPhone"):
@@ -711,9 +791,30 @@ def dump_category_split(category: str, ctx: Context) -> bool:
     return had_failures
 
 
+def stage_system_library_roots(ctx: Context) -> list[Path]:
+    roots = [ctx.stage_dir / "System" / "Library"]
+    try:
+        runtime_root = Path(ctx.runtime_root)
+        if runtime_root.is_absolute():
+            rel_root = runtime_root.relative_to("/")
+            roots.append(ctx.stage_dir / rel_root / "System" / "Library")
+    except Exception:
+        pass
+    unique: list[Path] = []
+    for root in roots:
+        if root not in unique:
+            unique.append(root)
+    return unique
+
+
 def relocate_framework_output(ctx: Context, category: str, framework_name: str) -> None:
-    src = ctx.stage_dir / "System" / "Library" / category / framework_name
-    if not src.exists() or src.is_symlink():
+    src = None
+    for base in stage_system_library_roots(ctx):
+        candidate = base / category / framework_name
+        if candidate.exists() and not candidate.is_symlink():
+            src = candidate
+            break
+    if src is None:
         return
     dest_dir = ctx.out_dir / category
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -726,23 +827,24 @@ def relocate_framework_output(ctx: Context, category: str, framework_name: str) 
 
 
 def relocate_frameworks_in_category(ctx: Context, category: str) -> None:
-    src_dir = ctx.stage_dir / "System" / "Library" / category
-    if not src_dir.is_dir() or src_dir.is_symlink():
-        return
     dest_dir = ctx.out_dir / category
     dest_dir.mkdir(parents=True, exist_ok=True)
-    for entry in src_dir.iterdir():
-        if entry.is_symlink():
+    for base in stage_system_library_roots(ctx):
+        src_dir = base / category
+        if not src_dir.is_dir() or src_dir.is_symlink():
             continue
-        dest = dest_dir / entry.name
-        if dest.exists():
-            if entry.is_dir():
-                merge_directories(entry, dest)
-                try_remove_empty(entry)
+        for entry in src_dir.iterdir():
+            if entry.is_symlink():
+                continue
+            dest = dest_dir / entry.name
+            if dest.exists():
+                if entry.is_dir():
+                    merge_directories(entry, dest)
+                    try_remove_empty(entry)
+                else:
+                    entry.unlink()
             else:
-                entry.unlink()
-        else:
-            shutil.move(str(entry), str(dest))
+                shutil.move(str(entry), str(dest))
 
 
 def prepare_output_layout(ctx: Context) -> None:
@@ -862,9 +964,16 @@ def run_classdump_host(category: str, ctx: Context) -> tuple[int, bool, list[str
     else:
         cmd.append(str(source_path))
     cmd += ["-b", "-h"]
+    if ctx.verbose:
+        cmd.append("-D")
     if ctx.skip_existing:
         cmd.append("-s")
-    return run_command_stream(cmd)
+    env = None
+    if ctx.use_shared_cache:
+        cmd.append("-c")
+        env = os.environ.copy()
+        env["SIMCTL_CHILD_DYLD_ROOT_PATH"] = ctx.runtime_root
+    return run_command_stream(cmd, env=env)
 
 
 def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
@@ -887,8 +996,12 @@ def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, lis
     else:
         cmd.append(source_path)
     cmd += ["-b", "-h"]
+    if ctx.verbose:
+        cmd.append("-D")
     if ctx.skip_existing:
         cmd.append("-s")
+    if ctx.use_shared_cache:
+        cmd.append("-c")
     env = os.environ.copy()
     env["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = ctx.runtime_root
     env["SIMCTL_CHILD_DYLD_ROOT_PATH"] = ctx.runtime_root
@@ -918,8 +1031,11 @@ def run_command_stream(cmd: list[str], env: dict | None = None) -> tuple[int, bo
                     if "Killed: 9" in line or "killed: 9" in line:
                         killed = True
         returncode = proc.wait()
-        if returncode == -9:
+        if returncode < 0:
             killed = True
+            last_lines.append(f"Terminated by signal {-returncode}")
+        elif returncode != 0 and not last_lines:
+            last_lines.append(f"Exited with status {returncode}")
         return returncode, killed, list(last_lines)
     except KeyboardInterrupt:
         try:
@@ -1080,6 +1196,24 @@ def resolve_skip_existing(args) -> bool:
     if env_value is not None:
         return env_value == "1"
     return True
+
+
+def resolve_shared_cache(args) -> bool:
+    if getattr(args, "shared_cache", False):
+        return True
+    env_value = os.getenv("PH_SHARED_CACHE")
+    if env_value is not None:
+        return env_value == "1"
+    return True
+
+
+def resolve_verbose(args) -> bool:
+    if getattr(args, "verbose", False):
+        return True
+    env_value = os.getenv("PH_VERBOSE")
+    if env_value is not None:
+        return env_value == "1"
+    return False
 
 
 def needs_split(ctx: Context) -> bool:
