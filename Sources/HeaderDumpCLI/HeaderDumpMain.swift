@@ -547,12 +547,13 @@ private func runtimeClassInfosByImageName(
 
     let count = objc_getClassList(AutoreleasingUnsafeMutablePointer(buffer), initialCount)
     if count <= 0 { return [] }
+    let cappedCount = min(count, initialCount)
 
     let targetPath = normalizedImagePath(stripRuntimeRoot(from: imagePath))
     var infos: [ObjCClassInfo] = []
-    infos.reserveCapacity(Int(count))
+    infos.reserveCapacity(Int(cappedCount))
 
-    for index in 0..<Int(count) {
+    for index in 0..<Int(cappedCount) {
         guard let cls = buffer[index] else { continue }
         guard let imageNamePtr = class_getImageName(cls) else { continue }
         let imageName = String(cString: imageNamePtr)
