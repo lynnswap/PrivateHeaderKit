@@ -55,7 +55,8 @@ python3 scripts/dump_headers
 - サブモジュールが未初期化なら `git submodule update --init --recursive` を自動実行します。
 - Python 3 が必要です。
 - `simulator` モード時は `xcrun simctl spawn` 経由です。
-- ダンプ中の一時出力は `<out>/.tmp` に作成し、最後にレイアウトへ移動します。
+- ダンプ中の一時出力は `<out>/.tmp-<run-id>` に作成し、最後にレイアウトへ移動します。
+- 実行中は出力ディレクトリをロックして、同時書き込みを防ぎます。
 - 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`, `PH_LAYOUT`
 
 ## ライセンス

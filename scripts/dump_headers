@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import fcntl
 import json
 import os
 import shutil
@@ -50,6 +51,7 @@ class Context:
 
 _CLEANUP_PATHS: set[Path] = set()
 _CLEANUP_INSTALLED = False
+_ACTIVE_PROC: subprocess.Popen | None = None
 
 
 def register_cleanup(path: Path) -> None:
@@ -64,14 +66,26 @@ def register_cleanup(path: Path) -> None:
 
 def run_cleanup() -> None:
     for path in list(_CLEANUP_PATHS):
-        if path.exists():
+        if not path.exists():
+            continue
+        if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
+            continue
+        try:
+            path.unlink()
+        except Exception:
+            pass
 
 
 def install_signal_handlers() -> None:
     def handler(_signum, _frame) -> None:
-        run_cleanup()
-        raise SystemExit(130)
+        global _ACTIVE_PROC
+        if _ACTIVE_PROC is not None:
+            try:
+                _ACTIVE_PROC.terminate()
+            except Exception:
+                pass
+        raise KeyboardInterrupt
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -83,6 +97,28 @@ def install_signal_handlers() -> None:
             signal.signal(signal.SIGHUP, handler)
         except Exception:
             pass
+
+
+def build_stage_dir(out_dir: Path) -> Path:
+    token = f"{os.getpid()}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    return out_dir / f".tmp-{token}"
+
+
+def acquire_output_lock(out_dir: Path):
+    lock_path = out_dir / ".dump_headers.lock"
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock_file.close()
+        raise RuntimeError(f"output directory is locked: {out_dir}") from exc
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(
+        f"pid={os.getpid()}\nstarted={datetime.now().isoformat(timespec='seconds')}\n"
+    )
+    lock_file.flush()
+    return lock_file
 
 
 def main() -> int:
@@ -118,6 +154,7 @@ def main() -> int:
     args = parser.parse_args()
 
     ctx: Context | None = None
+    lock_file = None
     try:
         if args.list_runtimes:
             list_runtimes_command(args.json)
@@ -186,6 +223,8 @@ def main() -> int:
                 device.state = "Booted"
 
         ctx.out_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = acquire_output_lock(ctx.out_dir)
+        register_cleanup(ctx.out_dir / ".dump_headers.lock")
         register_cleanup(ctx.stage_dir)
         prepare_output_layout(ctx)
 
@@ -204,6 +243,8 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     finally:
+        if lock_file is not None:
+            lock_file.close()
         if ctx is not None:
             run_cleanup()
 
@@ -388,7 +429,7 @@ def interactive_setup(
         args.out
         or Path(os.getenv("PH_OUT_DIR")) if os.getenv("PH_OUT_DIR") else None
     ) or default_out
-    stage_dir = out_dir / ".tmp"
+    stage_dir = build_stage_dir(out_dir)
     skip_existing = args.skip_existing or os.getenv("PH_SKIP_EXISTING") == "1"
 
     if device:
@@ -442,7 +483,7 @@ def non_interactive_setup(
             device = pick_default_device(devices)
 
     out_dir = args.out or root_dir / "generated-headers/iOS" / version
-    stage_dir = out_dir / ".tmp"
+    stage_dir = build_stage_dir(out_dir)
 
     return Context(
         exec_mode=exec_mode,
@@ -837,6 +878,7 @@ def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, lis
 
 
 def run_command_stream(cmd: list[str], env: dict | None = None) -> tuple[int, bool, list[str]]:
+    global _ACTIVE_PROC
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -845,20 +887,41 @@ def run_command_stream(cmd: list[str], env: dict | None = None) -> tuple[int, bo
         env=env,
         bufsize=1,
     )
+    _ACTIVE_PROC = proc
     last_lines: deque[str] = deque(maxlen=8)
     killed = False
-    if proc.stdout:
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                print(line, flush=True)
-                last_lines.append(line)
-                if "Killed: 9" in line or "killed: 9" in line:
-                    killed = True
-    returncode = proc.wait()
-    if returncode == -9:
-        killed = True
-    return returncode, killed, list(last_lines)
+    try:
+        if proc.stdout:
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    print(line, flush=True)
+                    last_lines.append(line)
+                    if "Killed: 9" in line or "killed: 9" in line:
+                        killed = True
+        returncode = proc.wait()
+        if returncode == -9:
+            killed = True
+        return returncode, killed, list(last_lines)
+    except KeyboardInterrupt:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        raise
+    finally:
+        _ACTIVE_PROC = None
 
 
 def report_last_lines(lines: list[str]) -> None:

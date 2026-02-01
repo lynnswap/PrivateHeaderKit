@@ -54,7 +54,8 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - If the submodule isn't initialized, the script runs `git submodule update --init --recursive`.
 - Requires Python 3.
 - Simulator mode uses `xcrun simctl spawn`.
-- During dumping, raw output is staged under `<out>/.tmp` and then moved to the final layout.
+- During dumping, raw output is staged under `<out>/.tmp-<run-id>` and then moved to the final layout.
+- The output directory is locked for the duration of a run to avoid concurrent writes.
 - Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_SKIP_EXISTING=1`, `PH_LAYOUT`
 
 ## License
