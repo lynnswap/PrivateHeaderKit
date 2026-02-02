@@ -12,9 +12,6 @@
 ./scripts/dump_headers
 ```
 
-必要に応じて明示的に Python を使う場合:
-
-
 ### 2) 引数を指定して実行
 
 ```
@@ -37,7 +34,6 @@
 - `--out <dir>`: 出力先を指定
 - `--force`: 既存ヘッダがあっても常に再生成する
 - `--exec-mode <host|simulator>`: 実行モードを強制
-- `--category <frameworks|private>`: 対象カテゴリを限定（複数指定可）
 - `--framework <name>`: 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可）
 - `--filter <substring>`: フレームワーク名の部分一致フィルタ（複数指定可）
 - `--layout <bundle|headers>`: 出力レイアウト（`bundle` は `.framework` を保持、`headers` は `.framework` を外す）

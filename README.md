@@ -12,9 +12,6 @@ Tooling for generating private headers.
 ./scripts/dump_headers
 ```
 
-If you prefer explicit Python:
-
-
 ### 2) Dump headers with args
 
 ```
