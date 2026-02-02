@@ -46,7 +46,8 @@
 - `--runtime <version>`: `--list-devices` 用のランタイム指定
 - `--json`: list 系の JSON 出力
 - `--shared-cache`: dyld shared cache を使ってダンプ（デフォルト有効。無効化は `PH_SHARED_CACHE=0`）
-- `--clean-build`, `--cleanbuild`, `--rebuild`, `--rebuild-classdump`: `.build` を削除して `classdump-dyld` を再ビルド
+- `--clean-build`, `--cleanbuild`: `.build` を削除して `headerdump` を再ビルド
+- `--rebuild`: `headerdump` のみ再ビルド
 
 ## メモ
 
@@ -56,7 +57,7 @@
 - 実行中は出力ディレクトリをロックして、同時書き込みを防ぎます。
 - `-D` での詳細ログ時も、スキップクラスのログはデフォルトで出さない（`PH_VERBOSE_SKIP=1` で表示）。
 - 自動作成するデバイスタイプは `PH_DEVICE_TYPE` で指定可能（デバイス名または identifier）。
-- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_REBUILD_CLASSDUMP=1`
+- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_REBUILD_HEADERDUMP=1`
 
 ## ライセンス
 

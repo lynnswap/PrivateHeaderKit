@@ -8,7 +8,7 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
-        .executable(name: "classdump-dyld", targets: ["HeaderDumpCLI"]),
+        .executable(name: "headerdump", targets: ["HeaderDumpCLI"]),
     ],
     dependencies: [
         .package(
