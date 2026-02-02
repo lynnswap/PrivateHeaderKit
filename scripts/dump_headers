@@ -184,9 +184,13 @@ def main() -> int:
         help="Use dyld shared cache when dumping",
     )
     parser.add_argument(
+        "--clean-build",
+        "--cleanbuild",
+        "--rebuild",
         "--rebuild-classdump",
         action="store_true",
-        help="Rebuild classdump-dyld even if a binary already exists",
+        dest="rebuild_classdump",
+        help="Clear .build and rebuild classdump-dyld",
     )
     parser.add_argument(
         "-D",
@@ -208,18 +212,18 @@ def main() -> int:
             return 0
 
         root_dir = find_root_dir()
+        rebuild_classdump = resolve_rebuild_classdump(args)
+        if rebuild_classdump:
+            clear_build_artifacts(root_dir)
         classdump_host, classdump_simulator, classdump_sim = classdump_paths(root_dir)
 
+        requested_exec_mode = args.exec_mode or os.getenv("PH_EXEC_MODE")
+        auto_exec_mode = requested_exec_mode is None
         exec_mode = resolve_exec_mode(
-            args.exec_mode or os.getenv("PH_EXEC_MODE"),
+            requested_exec_mode,
             classdump_host,
             classdump_simulator,
             classdump_sim,
-        )
-        classdump_bin = (
-            classdump_host
-            if exec_mode == "host"
-            else (classdump_simulator if classdump_simulator.is_file() else classdump_sim)
         )
 
         categories, framework_names, framework_filters = build_selection(args)
@@ -227,45 +231,61 @@ def main() -> int:
         use_shared_cache = resolve_shared_cache(args)
         verbose = resolve_verbose(args)
 
-        if args.version:
-            ctx = non_interactive_setup(
-                root_dir,
-                classdump_bin,
-                exec_mode,
-                args,
-                categories,
-                framework_names,
-                framework_filters,
-                layout,
-                use_shared_cache,
-                verbose,
+        def setup_context(exec_mode: str) -> Context:
+            classdump_bin = (
+                classdump_host
+                if exec_mode == "host"
+                else (classdump_simulator if classdump_simulator.is_file() else classdump_sim)
             )
-        else:
-            ctx = interactive_setup(
+            if args.version:
+                ctx = non_interactive_setup(
+                    root_dir,
+                    classdump_bin,
+                    exec_mode,
+                    args,
+                    categories,
+                    framework_names,
+                    framework_filters,
+                    layout,
+                    use_shared_cache,
+                    verbose,
+                )
+            else:
+                ctx = interactive_setup(
+                    root_dir,
+                    classdump_bin,
+                    exec_mode,
+                    args,
+                    categories,
+                    framework_names,
+                    framework_filters,
+                    layout,
+                    use_shared_cache,
+                    verbose,
+                )
+
+            ctx.classdump_bin = ensure_classdump_binary(
                 root_dir,
-                classdump_bin,
-                exec_mode,
-                args,
-                categories,
-                framework_names,
-                framework_filters,
-                layout,
-                use_shared_cache,
-                verbose,
+                ctx,
+                rebuild_classdump=rebuild_classdump
             )
 
-        rebuild_classdump = resolve_rebuild_classdump(args)
-        ctx.classdump_bin = ensure_classdump_binary(
-            root_dir,
-            ctx,
-            rebuild_classdump=rebuild_classdump
-        )
+            if ctx.exec_mode == "simulator":
+                device = ctx.device
+                if device is None:
+                    raise RuntimeError("no simulator device available")
+                ensure_device_booted(device)
+            return ctx
 
-        if ctx.exec_mode == "simulator":
-            device = ctx.device
-            if device is None:
-                raise RuntimeError("no simulator device available")
-            ensure_device_booted(device)
+        try:
+            ctx = setup_context(exec_mode)
+        except RuntimeError as exc:
+            if auto_exec_mode and exec_mode == "simulator" and should_fallback_to_host(exc):
+                print(f"Simulator unavailable; falling back to host: {exc}", file=sys.stderr)
+                exec_mode = "host"
+                ctx = setup_context(exec_mode)
+            else:
+                raise
 
         ctx.out_dir.mkdir(parents=True, exist_ok=True)
         lock_file = acquire_output_lock(ctx.out_dir)
@@ -299,25 +319,34 @@ def resolve_exec_mode(
 ) -> str:
     if requested in ("host", "simulator"):
         return requested
-    host_exists = classdump_host.is_file()
-    sim_exists = classdump_simulator.is_file()
-    if host_exists and sim_exists:
-        try:
-            host_mtime = classdump_host.stat().st_mtime
-            sim_mtime = classdump_simulator.stat().st_mtime
-            return "host" if host_mtime >= sim_mtime else "simulator"
-        except Exception:
-            pass
-    if sim_exists:
-        return "simulator"
-    if host_exists:
-        return "host"
-    if classdump_sim.is_file():
-        return "simulator"
     try:
-        return "simulator" if list_runtimes() else "host"
+        if list_runtimes():
+            return "simulator"
     except Exception:
+        pass
+    if classdump_host.is_file():
         return "host"
+    if classdump_simulator.is_file() or classdump_sim.is_file():
+        return "simulator"
+    return "host"
+
+
+def should_fallback_to_host(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    if "no available ios runtimes found" in message:
+        return False
+    if "ios runtime not found or unavailable" in message:
+        return False
+    fallback_tokens = (
+        "no simulator device available",
+        "no simulator device found",
+        "failed to create simulator device",
+        "failed to boot simulator",
+        "failed to wait for simulator boot",
+        "failed to build classdump-dyld for ios simulator",
+        "no simulator device available for classdump-dyld build",
+    )
+    return any(token in message for token in fallback_tokens)
 
 
 def resolve_layout(requested: str | None) -> str:
@@ -409,6 +438,14 @@ def classdump_paths(root_dir: Path) -> tuple[Path, Path, Path]:
     )
     classdump_sim = root_dir / ".build" / "Debug-iphoneos" / "classdump-dyld"
     return classdump_host, classdump_simulator, classdump_sim
+
+
+def clear_build_artifacts(root_dir: Path) -> None:
+    build_dir = root_dir / ".build"
+    if not build_dir.exists():
+        return
+    print("Clearing build artifacts: .build")
+    shutil.rmtree(build_dir, ignore_errors=True)
 
 
 def classdump_source_present(root_dir: Path) -> bool:

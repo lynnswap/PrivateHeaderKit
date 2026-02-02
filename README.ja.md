@@ -46,7 +46,7 @@
 - `--runtime <version>`: `--list-devices` 用のランタイム指定
 - `--json`: list 系の JSON 出力
 - `--shared-cache`: dyld shared cache を使ってダンプ（デフォルト有効。無効化は `PH_SHARED_CACHE=0`）
-- `--rebuild-classdump`: 既存の `classdump-dyld` があっても再ビルド
+- `--clean-build`, `--cleanbuild`, `--rebuild`, `--rebuild-classdump`: `.build` を削除して `classdump-dyld` を再ビルド
 
 ## メモ
 

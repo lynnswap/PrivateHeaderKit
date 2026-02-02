@@ -45,7 +45,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - `--runtime <version>`: Runtime version for `--list-devices`
 - `--json`: JSON output for list commands
 - `--shared-cache`: Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable)
-- `--rebuild-classdump`: Rebuild `classdump-dyld` even if a binary already exists
+- `--clean-build`, `--cleanbuild`, `--rebuild`, `--rebuild-classdump`: Clear `.build` and rebuild `classdump-dyld`
 
 ## Notes
 
