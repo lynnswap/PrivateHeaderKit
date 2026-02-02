@@ -34,7 +34,7 @@ class DeviceInfo:
 @dataclass
 class Context:
     exec_mode: str
-    classdump_bin: Path
+    headerdump_bin: Path
     version: str
     runtime_root: str
     runtime_id: str
@@ -186,17 +186,21 @@ def main() -> int:
     parser.add_argument(
         "--clean-build",
         "--cleanbuild",
-        "--rebuild",
-        "--rebuild-classdump",
         action="store_true",
-        dest="rebuild_classdump",
-        help="Clear .build and rebuild classdump-dyld",
+        dest="clean_build",
+        help="Clear .build and rebuild headerdump",
+    )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        dest="rebuild_headerdump",
+        help="Rebuild headerdump only",
     )
     parser.add_argument(
         "-D",
         "--verbose",
         action="store_true",
-        help="Enable verbose logging in classdump-dyld",
+        help="Enable verbose logging in headerdump",
     )
 
     args = parser.parse_args()
@@ -212,18 +216,19 @@ def main() -> int:
             return 0
 
         root_dir = find_root_dir()
-        rebuild_classdump = resolve_rebuild_classdump(args)
-        if rebuild_classdump:
+        clean_build = resolve_clean_build(args)
+        rebuild_headerdump = resolve_rebuild_headerdump(args)
+        if clean_build:
             clear_build_artifacts(root_dir)
-        classdump_host, classdump_simulator, classdump_sim = classdump_paths(root_dir)
+        headerdump_host, headerdump_simulator, headerdump_sim = headerdump_paths(root_dir)
 
         requested_exec_mode = args.exec_mode or os.getenv("PH_EXEC_MODE")
         auto_exec_mode = requested_exec_mode is None
         exec_mode = resolve_exec_mode(
             requested_exec_mode,
-            classdump_host,
-            classdump_simulator,
-            classdump_sim,
+            headerdump_host,
+            headerdump_simulator,
+            headerdump_sim,
         )
 
         categories, framework_names, framework_filters = build_selection(args)
@@ -232,15 +237,19 @@ def main() -> int:
         verbose = resolve_verbose(args)
 
         def setup_context(exec_mode: str) -> Context:
-            classdump_bin = (
-                classdump_host
+            headerdump_bin = (
+                headerdump_host
                 if exec_mode == "host"
-                else (classdump_simulator if classdump_simulator.is_file() else classdump_sim)
+                else (
+                    headerdump_simulator
+                    if headerdump_simulator.is_file()
+                    else headerdump_sim
+                )
             )
             if args.version:
                 ctx = non_interactive_setup(
                     root_dir,
-                    classdump_bin,
+                    headerdump_bin,
                     exec_mode,
                     args,
                     categories,
@@ -253,7 +262,7 @@ def main() -> int:
             else:
                 ctx = interactive_setup(
                     root_dir,
-                    classdump_bin,
+                    headerdump_bin,
                     exec_mode,
                     args,
                     categories,
@@ -264,10 +273,10 @@ def main() -> int:
                     verbose,
                 )
 
-            ctx.classdump_bin = ensure_classdump_binary(
+            ctx.headerdump_bin = ensure_headerdump_binary(
                 root_dir,
                 ctx,
-                rebuild_classdump=rebuild_classdump
+                rebuild_headerdump=rebuild_headerdump
             )
 
             if ctx.exec_mode == "simulator":
@@ -315,7 +324,7 @@ def main() -> int:
 
 
 def resolve_exec_mode(
-    requested: str | None, classdump_host: Path, classdump_simulator: Path, classdump_sim: Path
+    requested: str | None, headerdump_host: Path, headerdump_simulator: Path, headerdump_sim: Path
 ) -> str:
     if requested in ("host", "simulator"):
         return requested
@@ -324,9 +333,9 @@ def resolve_exec_mode(
             return "simulator"
     except Exception:
         pass
-    if classdump_host.is_file():
+    if headerdump_host.is_file():
         return "host"
-    if classdump_simulator.is_file() or classdump_sim.is_file():
+    if headerdump_simulator.is_file() or headerdump_sim.is_file():
         return "simulator"
     return "host"
 
@@ -343,8 +352,8 @@ def should_fallback_to_host(exc: RuntimeError) -> bool:
         "failed to create simulator device",
         "failed to boot simulator",
         "failed to wait for simulator boot",
-        "failed to build classdump-dyld for ios simulator",
-        "no simulator device available for classdump-dyld build",
+        "failed to build headerdump for ios simulator",
+        "no simulator device available for headerdump build",
     )
     return any(token in message for token in fallback_tokens)
 
@@ -425,19 +434,19 @@ def list_devices_command(version: str | None, json_output: bool) -> None:
         print(f"      {udid}")
 
 
-def classdump_paths(root_dir: Path) -> tuple[Path, Path, Path]:
-    classdump_host = root_dir / ".build" / "debug" / "classdump-dyld"
-    classdump_simulator = (
+def headerdump_paths(root_dir: Path) -> tuple[Path, Path, Path]:
+    headerdump_host = root_dir / ".build" / "debug" / "headerdump"
+    headerdump_simulator = (
         root_dir
         / ".build"
         / "DerivedData"
         / "Build"
         / "Products"
         / "Debug-iphonesimulator"
-        / "classdump-dyld"
+        / "headerdump"
     )
-    classdump_sim = root_dir / ".build" / "Debug-iphoneos" / "classdump-dyld"
-    return classdump_host, classdump_simulator, classdump_sim
+    headerdump_sim = root_dir / ".build" / "Debug-iphoneos" / "headerdump"
+    return headerdump_host, headerdump_simulator, headerdump_sim
 
 
 def clear_build_artifacts(root_dir: Path) -> None:
@@ -448,12 +457,12 @@ def clear_build_artifacts(root_dir: Path) -> None:
     shutil.rmtree(build_dir, ignore_errors=True)
 
 
-def classdump_source_present(root_dir: Path) -> bool:
+def headerdump_source_present(root_dir: Path) -> bool:
     return (root_dir / "Package.swift").is_file()
 
 
-def classdump_binaries_present(root_dir: Path) -> bool:
-    return any(path.is_file() for path in classdump_paths(root_dir))
+def headerdump_binaries_present(root_dir: Path) -> bool:
+    return any(path.is_file() for path in headerdump_paths(root_dir))
 
 
 def find_root_dir() -> Path:
@@ -461,7 +470,7 @@ def find_root_dir() -> Path:
     for start in candidates:
         current = start
         while True:
-            if classdump_binaries_present(current) or classdump_source_present(current):
+            if headerdump_binaries_present(current) or headerdump_source_present(current):
                 return current
             if current.parent == current:
                 break
@@ -469,23 +478,23 @@ def find_root_dir() -> Path:
     raise RuntimeError("repository root not found (Package.swift missing)")
 
 
-def build_classdump_host(root_dir: Path) -> Path:
-    print("Building classdump-dyld for host (SwiftPM)...")
+def build_headerdump_host(root_dir: Path) -> Path:
+    print("Building headerdump for host (SwiftPM)...")
     run_simple_command(
         "swift",
-        ["build", "-c", "debug", "--product", "classdump-dyld"],
-        "failed to build classdump-dyld for host",
+        ["build", "-c", "debug", "--product", "headerdump"],
+        "failed to build headerdump for host",
         cwd=root_dir,
     )
-    bin_path = root_dir / ".build" / "debug" / "classdump-dyld"
+    bin_path = root_dir / ".build" / "debug" / "headerdump"
     if not bin_path.is_file():
-        raise RuntimeError("classdump-dyld host build output not found")
+        raise RuntimeError("headerdump host build output not found")
     return bin_path
 
 
-def build_classdump_simulator(root_dir: Path, device: DeviceInfo) -> Path:
+def build_headerdump_simulator(root_dir: Path, device: DeviceInfo) -> Path:
     derived_data = root_dir / ".build" / "DerivedData"
-    print("Building classdump-dyld for iOS Simulator (SwiftPM)...")
+    print("Building headerdump for iOS Simulator (SwiftPM)...")
     scheme = os.getenv("PH_XCODE_SCHEME") or "PrivateHeaderKit"
     run_simple_command(
         "xcodebuild",
@@ -501,43 +510,43 @@ def build_classdump_simulator(root_dir: Path, device: DeviceInfo) -> Path:
             "-skipMacroValidation",
             "-skipPackagePluginValidation",
         ],
-        "failed to build classdump-dyld for iOS Simulator",
+        "failed to build headerdump for iOS Simulator",
         cwd=root_dir,
     )
-    bin_path = derived_data / "Build" / "Products" / "Debug-iphonesimulator" / "classdump-dyld"
+    bin_path = derived_data / "Build" / "Products" / "Debug-iphonesimulator" / "headerdump"
     if not bin_path.is_file():
-        raise RuntimeError("classdump-dyld simulator build output not found")
+        raise RuntimeError("headerdump simulator build output not found")
     return bin_path
 
 
-def ensure_classdump_binary(
+def ensure_headerdump_binary(
     root_dir: Path,
     ctx: Context,
-    rebuild_classdump: bool
+    rebuild_headerdump: bool
 ) -> Path:
-    classdump_host, classdump_simulator, classdump_sim = classdump_paths(root_dir)
-    if rebuild_classdump:
+    headerdump_host, headerdump_simulator, headerdump_sim = headerdump_paths(root_dir)
+    if rebuild_headerdump:
         if ctx.exec_mode == "host":
-            try_remove_file(classdump_host)
+            try_remove_file(headerdump_host)
         else:
-            try_remove_file(classdump_simulator)
-            try_remove_file(classdump_sim)
+            try_remove_file(headerdump_simulator)
+            try_remove_file(headerdump_sim)
     if ctx.exec_mode == "host":
-        if classdump_host.is_file():
-            return classdump_host
-        return build_classdump_host(root_dir)
-    if classdump_simulator.is_file():
-        return classdump_simulator
-    if classdump_sim.is_file():
-        return classdump_sim
+        if headerdump_host.is_file():
+            return headerdump_host
+        return build_headerdump_host(root_dir)
+    if headerdump_simulator.is_file():
+        return headerdump_simulator
+    if headerdump_sim.is_file():
+        return headerdump_sim
     if ctx.device is None:
-        raise RuntimeError("no simulator device available for classdump-dyld build")
-    return build_classdump_simulator(root_dir, ctx.device)
+        raise RuntimeError("no simulator device available for headerdump build")
+    return build_headerdump_simulator(root_dir, ctx.device)
 
 
 def interactive_setup(
     root_dir: Path,
-    classdump_bin: Path,
+    headerdump_bin: Path,
     exec_mode: str,
     args,
     categories: list[str],
@@ -586,7 +595,7 @@ def interactive_setup(
 
     return Context(
         exec_mode=exec_mode,
-        classdump_bin=classdump_bin.resolve(),
+        headerdump_bin=headerdump_bin.resolve(),
         version=runtime.version,
         runtime_root=runtime.runtime_root,
         runtime_id=runtime.identifier,
@@ -606,7 +615,7 @@ def interactive_setup(
 
 def non_interactive_setup(
     root_dir: Path,
-    classdump_bin: Path,
+    headerdump_bin: Path,
     exec_mode: str,
     args,
     categories: list[str],
@@ -640,7 +649,7 @@ def non_interactive_setup(
 
     return Context(
         exec_mode=exec_mode,
-        classdump_bin=classdump_bin.resolve(),
+        headerdump_bin=headerdump_bin.resolve(),
         version=version,
         runtime_root=runtime.runtime_root,
         runtime_id=runtime.identifier,
@@ -852,14 +861,14 @@ def dump_category(category: str, ctx: Context) -> bool:
     print(f"Dumping: {category}")
     if needs_split(ctx):
         return dump_category_split(category, ctx)
-    status, killed, last_lines = run_classdump(category, ctx)
+    status, killed, last_lines = run_headerdump(category, ctx)
     if killed:
         print("Retrying per-framework to avoid simulator kill.")
         reset_stage_dir(ctx)
         return dump_category_split(category, ctx)
     if status != 0:
         report_last_lines(last_lines)
-        raise RuntimeError(f"classdump-dyld failed for {category}")
+        raise RuntimeError(f"headerdump failed for {category}")
     return False
 
 
@@ -879,7 +888,7 @@ def dump_category_split(category: str, ctx: Context) -> bool:
             continue
         print(f"Dumping: {category} ({idx}/{total}) {item}")
         path = f"{category}/{item}"
-        status, killed, last_lines = run_classdump(path, ctx)
+        status, killed, last_lines = run_headerdump(path, ctx)
         if killed or status != 0:
             report_last_lines(last_lines)
             failures.append(path)
@@ -889,7 +898,7 @@ def dump_category_split(category: str, ctx: Context) -> bool:
                 normalize_framework_dir(ctx, category, item)
     had_failures = bool(failures)
     if had_failures:
-        summary = f"classdump-dyld failed for {len(failures)} items under {category}"
+        summary = f"headerdump failed for {len(failures)} items under {category}"
         print(summary, file=sys.stderr)
         write_failures(ctx, summary, failures)
     return had_failures
@@ -1053,16 +1062,16 @@ def denormalize_framework_dirs(ctx: Context, category: str) -> None:
             entry.rename(dest)
 
 
-def run_classdump(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
+def run_headerdump(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
     if ctx.exec_mode == "host":
-        return run_classdump_host(category, ctx)
-    return run_classdump_simulator(category, ctx)
+        return run_headerdump_host(category, ctx)
+    return run_headerdump_simulator(category, ctx)
 
 
-def run_classdump_host(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
+def run_headerdump_host(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
     source_path = Path(ctx.runtime_root) / "System/Library" / category
     is_recursive = "/" not in category
-    cmd = [str(ctx.classdump_bin), "-o", str(ctx.stage_dir)]
+    cmd = [str(ctx.headerdump_bin), "-o", str(ctx.stage_dir)]
     if is_recursive:
         cmd += ["-r", str(source_path)]
     else:
@@ -1080,7 +1089,7 @@ def run_classdump_host(category: str, ctx: Context) -> tuple[int, bool, list[str
     return run_command_stream(cmd, env=env)
 
 
-def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
+def run_headerdump_simulator(category: str, ctx: Context) -> tuple[int, bool, list[str]]:
     device = ctx.device
     if device is None:
         raise RuntimeError("no simulator device available")
@@ -1091,7 +1100,7 @@ def run_classdump_simulator(category: str, ctx: Context) -> tuple[int, bool, lis
         "simctl",
         "spawn",
         device.udid,
-        str(ctx.classdump_bin),
+        str(ctx.headerdump_bin),
         "-o",
         str(ctx.stage_dir),
     ]
@@ -1211,7 +1220,7 @@ def write_metadata(ctx: Context) -> None:
         f"Layout: {ctx.layout}\n"
         f"HeaderCount: {header_count}\n"
         f"Xcode: {xcode_info}\n"
-        f"Notes: classdump-dyld output; /System/Library/{{Frameworks,PrivateFrameworks}}; -b -h {skip}\n"
+        f"Notes: headerdump output; /System/Library/{{Frameworks,PrivateFrameworks}}; -b -h {skip}\n"
     )
     path = ctx.out_dir / "_metadata.txt"
     path.write_text(metadata, encoding="utf-8")
@@ -1325,10 +1334,14 @@ def resolve_skip_existing(args) -> bool:
     return True
 
 
-def resolve_rebuild_classdump(args) -> bool:
-    if getattr(args, "rebuild_classdump", False):
+def resolve_clean_build(args) -> bool:
+    return getattr(args, "clean_build", False)
+
+
+def resolve_rebuild_headerdump(args) -> bool:
+    if getattr(args, "rebuild_headerdump", False):
         return True
-    env_value = os.getenv("PH_REBUILD_CLASSDUMP")
+    env_value = os.getenv("PH_REBUILD_HEADERDUMP")
     return env_value == "1"
 
 

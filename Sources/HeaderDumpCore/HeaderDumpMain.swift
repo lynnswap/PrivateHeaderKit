@@ -74,7 +74,7 @@ public struct HeaderDumpCLI {
         do {
             try await run(parsed: parsed)
         } catch {
-            fputs("classdump-dyld: error: \(error)\n", stderr)
+            fputs("headerdump: error: \(error)\n", stderr)
             exit(EXIT_FAILURE)
         }
     }
@@ -144,8 +144,8 @@ func parseArguments(
 
 private func printUsage() {
     let text = """
-    Usage: classdump-dyld [<options>] <filename|framework>
-           classdump-dyld [<options>] -r <sourcePath>
+    Usage: headerdump [<options>] <filename|framework>
+           headerdump [<options>] -r <sourcePath>
 
     Options:
         -o   Output directory
@@ -218,7 +218,7 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
         includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
         options: [.skipsHiddenFiles]
     ) else {
-        throw NSError(domain: "classdump-dyld", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
+        throw NSError(domain: "headerdump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
     }
 
     while let url = enumerator.nextObject() as? URL {
@@ -560,7 +560,7 @@ private func dumpObjC(
         let runtimeInfos = runtimeClassInfos(for: imagePath, options: options)
         if options.verbose, !runtimeInfos.isEmpty {
             fputs(
-                "classdump-dyld: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
+                "headerdump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
                 stderr
             )
         }
@@ -628,7 +628,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
     guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
         if options.verbose {
-            fputs("classdump-dyld: runtime dlopen failed for \(resolvedPath)\n", stderr)
+            fputs("headerdump: runtime dlopen failed for \(resolvedPath)\n", stderr)
         }
         return []
     }
@@ -638,7 +638,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
         if options.verbose {
             fputs(
-                "classdump-dyld: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
+                "headerdump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -649,7 +649,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     if count == 0 {
         if options.verbose {
             fputs(
-                "classdump-dyld: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
+                "headerdump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -702,7 +702,7 @@ private func runtimeClassInfosByImageName(
 
     if options.verbose, !infos.isEmpty {
         fputs(
-            "classdump-dyld: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
+            "headerdump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
             stderr
         )
     }
@@ -746,7 +746,7 @@ private func logClassInfoFailure<T: ObjCClassProtocol>(
     let displayName = name ?? "<unknown>"
     let metaImage = meta?.0.imagePath ?? "<nil>"
     fputs(
-        "classdump-dyld: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
+        "headerdump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
         stderr
     )
 }

@@ -45,7 +45,8 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - `--runtime <version>`: Runtime version for `--list-devices`
 - `--json`: JSON output for list commands
 - `--shared-cache`: Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable)
-- `--clean-build`, `--cleanbuild`, `--rebuild`, `--rebuild-classdump`: Clear `.build` and rebuild `classdump-dyld`
+- `--clean-build`, `--cleanbuild`: Clear `.build` and rebuild `headerdump`
+- `--rebuild`: Rebuild `headerdump` only
 
 ## Notes
 
@@ -55,7 +56,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 - The output directory is locked for the duration of a run to avoid concurrent writes.
 - Verbose mode suppresses skipped-class logs by default; set `PH_VERBOSE_SKIP=1` to show them.
 - You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_REBUILD_CLASSDUMP=1`
+- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_REBUILD_HEADERDUMP=1`
 
 ## License
 
