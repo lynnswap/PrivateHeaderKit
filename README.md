@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Tooling for generating private headers.
+Generate iOS private framework headers from simulator runtimes (dyld shared cache).
 
 ## Usage
 

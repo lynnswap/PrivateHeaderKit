@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-プライベートヘッダを生成するためのツールです。
+iOS Simulator のランタイム（dyld shared cache）から private framework のヘッダを生成します。
 
 ## 使い方
 
