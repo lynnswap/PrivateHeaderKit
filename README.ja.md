@@ -32,7 +32,7 @@ iOS Simulator のランタイム（dyld shared cache）から private framework 
 
 - `--device <udid|name>`: 対象シミュレーターを指定
 - `--out <dir>`: 出力先を指定
-- `--force`: 既存ヘッダがあっても常に再生成する
+- `--force`: 既存ヘッダがあっても常に再生成する（成功したフレームワークは出力を丸ごと置換。失敗分は既存出力を残し `_failures.txt` に記録）
 - `--exec-mode <host|simulator>`: 実行モードを強制
 - `--framework <name>`: 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可）
 - `--filter <substring>`: フレームワーク名の部分一致フィルタ（複数指定可）

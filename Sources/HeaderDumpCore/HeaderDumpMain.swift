@@ -154,7 +154,7 @@ private func printUsage() {
         -h   Add Headers folder for bundles
         -s   Skip already found files
         -j   Only dump a single class/protocol name
-        -c   Attempt dyld shared cache lookup when file is missing
+        -c   Use dyld shared cache when dumping (recommended for simulator runtimes)
         -D   Verbose logging
         -R   Prefer Objective-C runtime metadata (auto-enabled in simulator)
     """
