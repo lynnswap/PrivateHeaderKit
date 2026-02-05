@@ -895,7 +895,7 @@ def dump_category_split(category: str, ctx: Context) -> bool:
         else:
             relocate_framework_output(ctx, category, item)
             if ctx.layout == "headers":
-                normalize_framework_dir(ctx, category, item)
+                normalize_framework_dir(ctx, category, item, overwrite=not ctx.skip_existing)
     had_failures = bool(failures)
     if had_failures:
         summary = f"headerdump failed for {len(failures)} items under {category}"
@@ -933,8 +933,12 @@ def relocate_framework_output(ctx: Context, category: str, framework_name: str) 
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / framework_name
     if dest.exists():
-        merge_directories(src, dest)
-        try_remove_empty(src)
+        overwrite = not ctx.skip_existing
+        if overwrite:
+            move_replace(src, dest)
+        else:
+            merge_directories(src, dest)
+            try_remove_empty(src)
     else:
         shutil.move(str(src), str(dest))
 
@@ -942,6 +946,7 @@ def relocate_framework_output(ctx: Context, category: str, framework_name: str) 
 def relocate_frameworks_in_category(ctx: Context, category: str) -> None:
     dest_dir = ctx.out_dir / category
     dest_dir.mkdir(parents=True, exist_ok=True)
+    overwrite = not ctx.skip_existing
     for base in stage_system_library_roots(ctx):
         src_dir = base / category
         if not src_dir.is_dir() or src_dir.is_symlink():
@@ -951,11 +956,14 @@ def relocate_frameworks_in_category(ctx: Context, category: str) -> None:
                 continue
             dest = dest_dir / entry.name
             if dest.exists():
-                if entry.is_dir():
-                    merge_directories(entry, dest)
-                    try_remove_empty(entry)
+                if overwrite:
+                    move_replace(entry, dest)
                 else:
-                    entry.unlink()
+                    if entry.is_dir():
+                        merge_directories(entry, dest)
+                        try_remove_empty(entry)
+                    else:
+                        entry.unlink()
             else:
                 shutil.move(str(entry), str(dest))
 
@@ -963,7 +971,7 @@ def relocate_frameworks_in_category(ctx: Context, category: str) -> None:
 def prepare_output_layout(ctx: Context) -> None:
     for category in ctx.categories:
         if ctx.layout == "headers":
-            normalize_framework_dirs(ctx, category)
+            normalize_framework_dirs(ctx, category, overwrite=False)
         else:
             denormalize_framework_dirs(ctx, category)
 
@@ -978,10 +986,10 @@ def finalize_category_output(ctx: Context, category: str, had_failures: bool = F
     if not had_failures:
         relocate_frameworks_in_category(ctx, category)
     if ctx.layout == "headers":
-        normalize_framework_dirs(ctx, category)
+        normalize_framework_dirs(ctx, category, overwrite=not ctx.skip_existing)
 
 
-def normalize_framework_dirs(ctx: Context, category: str) -> None:
+def normalize_framework_dirs(ctx: Context, category: str, overwrite: bool = False) -> None:
     base = ctx.out_dir / category
     if not base.is_dir():
         return
@@ -1004,15 +1012,21 @@ def normalize_framework_dirs(ctx: Context, category: str) -> None:
             if target.is_symlink():
                 target.unlink()
             if target.exists():
-                merge_directories(entry, target)
-                try_remove_empty(entry)
+                if overwrite:
+                    try_remove_file(target)
+                    entry.rename(target)
+                else:
+                    merge_directories(entry, target)
+                    try_remove_empty(entry)
             else:
                 entry.rename(target)
         else:
             entry.rename(target)
 
 
-def normalize_framework_dir(ctx: Context, category: str, framework_name: str) -> None:
+def normalize_framework_dir(
+    ctx: Context, category: str, framework_name: str, overwrite: bool = False
+) -> None:
     base = ctx.out_dir / category
     if not base.is_dir():
         return
@@ -1027,8 +1041,12 @@ def normalize_framework_dir(ctx: Context, category: str, framework_name: str) ->
         if target.is_symlink():
             target.unlink()
         if target.exists():
-            merge_directories(entry, target)
-            try_remove_empty(entry)
+            if overwrite:
+                try_remove_file(target)
+                entry.rename(target)
+            else:
+                merge_directories(entry, target)
+                try_remove_empty(entry)
         else:
             entry.rename(target)
     else:
@@ -1299,6 +1317,14 @@ def merge_directories(src: Path, dest: Path) -> None:
     try_remove_empty(src)
 
 
+def move_replace(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try_remove_file(dest)
+    if dest.exists() or dest.is_symlink():
+        raise RuntimeError(f"failed to remove existing path: {dest}")
+    shutil.move(str(src), str(dest))
+
+
 def try_remove_empty(path: Path) -> None:
     try:
         path.rmdir()
@@ -1311,6 +1337,11 @@ def try_remove_file(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+    except PermissionError:
+        # On macOS, unlinking a directory can raise EPERM (PermissionError).
+        if not path.is_dir():
+            raise
+        shutil.rmtree(path, ignore_errors=True)
     except IsADirectoryError:
         shutil.rmtree(path, ignore_errors=True)
 
@@ -1325,6 +1356,8 @@ def normalize_framework_name(name: str) -> str:
 def resolve_skip_existing(args) -> bool:
     if getattr(args, "force", False):
         return False
+    if getattr(args, "skip_existing", False):
+        return True
     env_force = os.getenv("PH_FORCE")
     if env_force == "1":
         return False
