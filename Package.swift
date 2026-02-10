@@ -9,6 +9,8 @@ let package = Package(
     ],
     products: [
         .executable(name: "headerdump", targets: ["HeaderDumpCLI"]),
+        .executable(name: "privateheaderkit-dump", targets: ["PrivateHeaderKitDump"]),
+        .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstall"]),
     ],
     dependencies: [
         .package(
@@ -40,12 +42,28 @@ let package = Package(
             ],
             path: "Sources/HeaderDumpCore"
         ),
+        .target(
+            name: "PrivateHeaderKitTooling",
+            dependencies: []
+        ),
         .executableTarget(
             name: "HeaderDumpCLI",
             dependencies: [
                 "HeaderDumpCore",
             ],
             path: "Sources/HeaderDumpCLI"
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitDump",
+            dependencies: [
+                "PrivateHeaderKitTooling",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitInstall",
+            dependencies: [
+                "PrivateHeaderKitTooling",
+            ]
         ),
         .testTarget(
             name: "HeaderDumpCLITests",

@@ -158,10 +158,34 @@ private func buildSwiftFixture(in dir: URL, moduleName: String) throws -> URL {
 
     let outputURL = dir.appendingPathComponent("\(moduleName).dylib")
     let xcrunURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    _ = try runProcess(
-        xcrunURL,
-        ["--sdk", "macosx", "swiftc", "-emit-library", "-module-name", moduleName, sourceURL.path, "-o", outputURL.path]
-    )
+    do {
+        // Avoid dyld chained fixups in the test fixture to prevent flaky crashes during parsing.
+        _ = try runProcess(
+            xcrunURL,
+            [
+                "--sdk", "macosx",
+                "swiftc",
+                "-emit-library",
+                "-module-name", moduleName,
+                sourceURL.path,
+                "-Xlinker", "-no_fixup_chains",
+                "-o", outputURL.path,
+            ]
+        )
+    } catch {
+        // Fallback for older toolchains where `-no_fixup_chains` isn't supported.
+        _ = try runProcess(
+            xcrunURL,
+            [
+                "--sdk", "macosx",
+                "swiftc",
+                "-emit-library",
+                "-module-name", moduleName,
+                sourceURL.path,
+                "-o", outputURL.path,
+            ]
+        )
+    }
     return outputURL
 }
 
