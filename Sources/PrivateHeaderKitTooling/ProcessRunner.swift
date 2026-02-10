@@ -124,12 +124,48 @@ public final class ProcessRunner: CommandRunning {
         // Close the parent-side write handles so reads complete at EOF.
         try? stdoutPipe.fileHandleForWriting.close()
         try? stderrPipe.fileHandleForWriting.close()
-        process.waitUntilExit()
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdoutText = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
+        // Drain both pipes concurrently before (and while) waiting for exit, otherwise a large amount
+        // of output can fill the pipe buffers and deadlock the child process.
+        let group = DispatchGroup()
+        final class DataBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = Data()
+
+            func set(_ data: Data) {
+                lock.lock()
+                value = data
+                lock.unlock()
+            }
+
+            func get() -> Data {
+                lock.lock()
+                let data = value
+                lock.unlock()
+                return data
+            }
+        }
+
+        let stdoutBox = DataBox()
+        let stderrBox = DataBox()
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            stdoutBox.set(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            stderrBox.set(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+
+        process.waitUntilExit()
+        group.wait()
+
+        let stdoutText = String(data: stdoutBox.get(), encoding: .utf8) ?? ""
+        let stderrText = String(data: stderrBox.get(), encoding: .utf8) ?? ""
         return (process.terminationStatus, stdoutText, stderrText)
     }
 }

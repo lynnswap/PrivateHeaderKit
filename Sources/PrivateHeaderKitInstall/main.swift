@@ -122,6 +122,15 @@ private func repositoryRoot(from executableURL: URL) -> URL? {
     return nil
 }
 
+private func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileManager) -> Bool {
+    // Avoid accidentally treating some other Swift package as this repository.
+    let markers = [
+        repoRoot.appendingPathComponent("Sources/HeaderDumpCore/HeaderDumpMain.swift"),
+        repoRoot.appendingPathComponent("Sources/HeaderDumpCLI/HeaderDumpMain.swift"),
+    ]
+    return markers.allSatisfy { fileManager.fileExists(atPath: $0.path) }
+}
+
 private func buildProducts(_ products: [String], in directory: URL, runner: CommandRunning) throws {
     for product in products {
         try runner.runSimple(["swift", "build", "-c", "release", "--product", product], env: nil, cwd: directory)
@@ -260,10 +269,28 @@ private func install(options: InstallOptions) throws {
 
     let runner = ProcessRunner()
     let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-    let repoRoot = PathUtils.findRepositoryRoot(startingAt: cwdURL) ?? repositoryRoot(from: selfURL)
-    if let repoRoot, fileManager.fileExists(atPath: repoRoot.appendingPathComponent("Package.swift").path) {
+    let repoRootFromSelf = repositoryRoot(from: selfURL)
+    let repoRootFromCwd = PathUtils.findRepositoryRoot(startingAt: cwdURL)
+    let repoRoot: URL?
+    if let root = repoRootFromSelf, looksLikePrivateHeaderKitRepo(root, fileManager: fileManager) {
+        repoRoot = root
+    } else if let root = repoRootFromCwd, looksLikePrivateHeaderKitRepo(root, fileManager: fileManager) {
+        repoRoot = root
+    } else {
+        // If invoked from some other package's directory, skip building and install from existing binaries.
+        if repoRootFromCwd != nil {
+            logError("warning: ignoring Package.swift found in current directory (not PrivateHeaderKit)")
+        }
+        repoRoot = nil
+    }
+
+    if let repoRoot {
         // Always build installed products when possible, so users get the latest binaries after pulling updates.
-        try buildProducts(hostBinaries, in: repoRoot, runner: runner)
+        do {
+            try buildProducts(hostBinaries, in: repoRoot, runner: runner)
+        } catch {
+            logError("warning: swift build failed: \(error)")
+        }
     }
 
     // Build everything first, then copy, so failures don't leave a partial install.
@@ -282,7 +309,7 @@ private func install(options: InstallOptions) throws {
     }
 
     let hostBinaryDir: URL
-    if let repoRoot, fileManager.fileExists(atPath: repoRoot.appendingPathComponent("Package.swift").path) {
+    if let repoRoot {
         hostBinaryDir = resolveSwiftBinDir(repoRoot: repoRoot, runner: runner) ?? baseURL
     } else {
         hostBinaryDir = baseURL
