@@ -356,6 +356,7 @@ private func install(options: InstallOptions) throws {
 struct PrivateHeaderKitInstallMain {
     static func main() {
         fputs("privateheaderkit-install: unsupported on this platform\n", stderr)
+        exit(1)
     }
 }
 
