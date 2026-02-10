@@ -92,6 +92,22 @@ private func throwIfTerminationRequested() throws {
     }
 }
 
+private func defaultOutDir(version: String, fallbackRoot: URL) -> URL {
+    let fileManager = FileManager.default
+    let home = fileManager.homeDirectoryForCurrentUser
+    if home.path.hasPrefix("/") {
+        return home
+            .appendingPathComponent("PrivateHeaderKit", isDirectory: true)
+            .appendingPathComponent("generated-headers/iOS", isDirectory: true)
+            .appendingPathComponent(version, isDirectory: true)
+    }
+
+    // Extremely defensive fallback (shouldn't happen on macOS): keep the old repo-relative behavior.
+    return fallbackRoot
+        .appendingPathComponent("generated-headers/iOS", isDirectory: true)
+        .appendingPathComponent(version, isDirectory: true)
+}
+
 private func runDumpStreaming(_ command: [String], env: [String: String]? = nil, cwd: URL? = nil) throws -> StreamingCommandResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -536,9 +552,7 @@ private func interactiveSetup(
     }
 
     let env = ProcessInfo.processInfo.environment
-    let defaultOut = rootDir
-        .appendingPathComponent("generated-headers/iOS", isDirectory: true)
-        .appendingPathComponent(runtime.version, isDirectory: true)
+    let defaultOut = defaultOutDir(version: runtime.version, fallbackRoot: rootDir)
     let envOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
     let outDir = args.outDir
         ?? envOutDir.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
@@ -610,9 +624,7 @@ private func nonInteractiveSetup(
     }
 
     let env = ProcessInfo.processInfo.environment
-    let defaultOut = rootDir
-        .appendingPathComponent("generated-headers/iOS", isDirectory: true)
-        .appendingPathComponent(version, isDirectory: true)
+    let defaultOut = defaultOutDir(version: version, fallbackRoot: rootDir)
     let envOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
     let outDir = args.outDir
         ?? envOutDir.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
