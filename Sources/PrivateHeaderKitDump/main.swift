@@ -513,8 +513,9 @@ private func run() throws {
 
     let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
     let repoRoot = PathUtils.findRepositoryRoot(startingAt: cwdURL)
-    if repoRoot == nil, parsed.outDir == nil {
-        throw ToolingError.message("repository root not found (Package.swift missing); run from the repo root or pass --out")
+    let hasEnvOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    if repoRoot == nil, parsed.outDir == nil, !hasEnvOutDir {
+        throw ToolingError.message("repository root not found (Package.swift missing); run from the repo root, pass --out, or set PH_OUT_DIR")
     }
     let rootDir = repoRoot ?? cwdURL
 
@@ -976,6 +977,7 @@ private func countHeaders(in dir: URL) -> Int {
 struct PrivateHeaderKitDumpMain {
     static func main() {
         fputs("privateheaderkit-dump: unsupported on this platform\n", stderr)
+        exit(1)
     }
 }
 
