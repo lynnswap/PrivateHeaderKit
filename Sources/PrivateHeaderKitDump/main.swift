@@ -55,14 +55,50 @@ private struct Context {
     }
 }
 
+// Keep this async-signal-safe: store-only, no allocations/IO.
+nonisolated(unsafe) private var gTerminationSignal: sig_atomic_t = 0
+
+private func terminationSignalHandler(_ sig: Int32) {
+    if gTerminationSignal == 0 {
+        gTerminationSignal = sig
+    }
+}
+
+private func installTerminationSignalHandlers() {
+    _ = signal(SIGINT, terminationSignalHandler)
+    _ = signal(SIGTERM, terminationSignalHandler)
+}
+
+private func terminationExitCode() -> Int32? {
+    switch Int32(gTerminationSignal) {
+    case SIGINT:
+        return 130
+    case SIGTERM:
+        return 143
+    default:
+        return nil
+    }
+}
+
+private func throwIfTerminationRequested() throws {
+    if gTerminationSignal != 0 {
+        throw ToolingError.message("interrupted")
+    }
+}
+
 @main
 struct PrivateHeaderKitDumpMain {
     static func main() {
+        installTerminationSignalHandlers()
         do {
             try run()
         } catch {
-            fputs("privateheaderkit-dump: error: \(error)\n", stderr)
-            exit(1)
+            if let code = terminationExitCode() {
+                exit(code)
+            } else {
+                fputs("privateheaderkit-dump: error: \(error)\n", stderr)
+                exit(1)
+            }
         }
     }
 }
@@ -359,6 +395,7 @@ private func interactiveSetup(
     let defaultIndex = runtimes.count
     print("Select runtime (Enter for latest): ", terminator: "")
     let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    try throwIfTerminationRequested()
     let runtime: RuntimeInfo
     if choice.isEmpty {
         runtime = runtimes[defaultIndex - 1]
@@ -512,6 +549,7 @@ private func run() throws {
 
     let args = Array(CommandLine.arguments.dropFirst())
     let parsed = try parseArguments(args)
+    try throwIfTerminationRequested()
 
     if parsed.listRuntimes {
         try listRuntimesCommand(jsonOutput: parsed.json, runner: runner)
@@ -675,6 +713,7 @@ private func existingFrameworksInCategory(ctx: Context, category: String, framew
 }
 
 private func dumpCategory(category: String, ctx: Context, runner: CommandRunning) throws -> Bool {
+    try throwIfTerminationRequested()
     print("Dumping: \(category)")
     if ctx.isSplit {
         return try dumpCategorySplit(category: category, ctx: ctx, runner: runner)
@@ -694,6 +733,7 @@ private func dumpCategory(category: String, ctx: Context, runner: CommandRunning
 }
 
 private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRunning) throws -> Bool {
+    try throwIfTerminationRequested()
     let frameworks = try listFrameworks(category: category, ctx: ctx)
     if frameworks.isEmpty {
         print("Skipping \(category): no frameworks found under /System/Library/\(category)")
@@ -709,6 +749,7 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
     }
 
     for (idx, item) in frameworks.enumerated() {
+        try throwIfTerminationRequested()
         if ctx.skipExisting, existing.contains(item) {
             print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
             continue
