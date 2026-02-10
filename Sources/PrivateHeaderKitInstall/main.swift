@@ -153,10 +153,11 @@ private func resolveSwiftBinDir(repoRoot: URL, runner: CommandRunning) -> URL? {
 
 private func resolveXcodeScheme(repoRoot: URL, runner: CommandRunning) throws -> String {
     struct ListOutput: Decodable {
-        struct Workspace: Decodable {
+        struct Container: Decodable {
             let schemes: [String]?
         }
-        let workspace: Workspace?
+        let workspace: Container?
+        let project: Container?
     }
 
     let output = try runner.runCapture(["xcodebuild", "-list", "-json"], env: nil, cwd: repoRoot)
@@ -169,7 +170,16 @@ private func resolveXcodeScheme(repoRoot: URL, runner: CommandRunning) throws ->
     }
 
     let decoded = try JSONDecoder().decode(ListOutput.self, from: Data(jsonText.utf8))
-    let schemes = decoded.workspace?.schemes ?? []
+    let workspaceSchemes = decoded.workspace?.schemes ?? []
+    let projectSchemes = decoded.project?.schemes ?? []
+    var schemes: [String] = []
+    for scheme in workspaceSchemes + projectSchemes {
+        let trimmed = scheme.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { continue }
+        if !schemes.contains(trimmed) {
+            schemes.append(trimmed)
+        }
+    }
 
     let configuredRaw = ProcessInfo.processInfo.environment["PH_XCODE_SCHEME"]
     let configured = configuredRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
