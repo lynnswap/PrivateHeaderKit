@@ -64,8 +64,14 @@ private func printUsage() {
 
 private func parseOptions(_ args: [String], environment: [String: String]) throws -> InstallOptions {
     var options = InstallOptions(prefix: nil, bindir: nil, dryRun: false)
-    options.prefix = environment["PREFIX"]
-    options.bindir = environment["BINDIR"]
+    if let envPrefix = environment["PREFIX"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !envPrefix.isEmpty {
+        options.prefix = envPrefix
+    }
+    if let envBindir = environment["BINDIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !envBindir.isEmpty {
+        options.bindir = envBindir
+    }
 
     var didSetPrefix = false
     var didSetBindir = false
@@ -78,14 +84,22 @@ private func parseOptions(_ args: [String], environment: [String: String]) throw
             guard index + 1 < args.count else {
                 throw InstallError.message("--prefix requires a value")
             }
-            options.prefix = args[index + 1]
+            let value = args[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                throw InstallError.message("--prefix requires a value")
+            }
+            options.prefix = value
             didSetPrefix = true
             index += 2
         case "--bindir":
             guard index + 1 < args.count else {
                 throw InstallError.message("--bindir requires a value")
             }
-            options.bindir = args[index + 1]
+            let value = args[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                throw InstallError.message("--bindir requires a value")
+            }
+            options.bindir = value
             didSetBindir = true
             index += 2
         case "--dry-run":
