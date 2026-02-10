@@ -459,9 +459,15 @@ private func nonInteractiveSetup(
         }
     }
 
-    let outDir = args.outDir ?? rootDir.appendingPathComponent("generated-headers/iOS", isDirectory: true).appendingPathComponent(version, isDirectory: true)
-    let stageDir = FileOps.buildStageDir(outDir: outDir)
     let env = ProcessInfo.processInfo.environment
+    let defaultOut = rootDir
+        .appendingPathComponent("generated-headers/iOS", isDirectory: true)
+        .appendingPathComponent(version, isDirectory: true)
+    let envOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let outDir = args.outDir
+        ?? envOutDir.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        ?? defaultOut
+    let stageDir = FileOps.buildStageDir(outDir: outDir)
     let skipExisting = resolveSkipExisting(args, env: env)
 
     return Context(
