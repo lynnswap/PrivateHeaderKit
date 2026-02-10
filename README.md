@@ -54,7 +54,7 @@ privateheaderkit-dump 26.2
 
 Default output directory is `~/PrivateHeaderKit/generated-headers/iOS/<version>`.
 This dumps both `Frameworks` and `PrivateFrameworks`.
-(If you want the old repo-relative output, pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
+(Relative paths passed to `--out` / `PH_OUT_DIR` are resolved from the current directory. If you want the old output under this repo, run from the repo root and pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
 
 ### 3) List runtimes / devices
 

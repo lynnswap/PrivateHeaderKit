@@ -54,7 +54,7 @@ privateheaderkit-dump 26.2
 
 デフォルト出力先は `~/PrivateHeaderKit/generated-headers/iOS/<version>` です。  
 `Frameworks` と `PrivateFrameworks` をまとめて出力します。  
-（従来どおりリポジトリ配下に出したい場合は `--out generated-headers/iOS/<version>` または `PH_OUT_DIR` を指定してください）
+（`--out` / `PH_OUT_DIR` に指定した相対パスはカレントディレクトリを基準に解釈されます。従来どおりリポジトリ配下に出したい場合は、リポジトリrootで実行して `--out generated-headers/iOS/<version>` を指定するか `PH_OUT_DIR` を指定してください）
 
 ### 3) ランタイム/デバイス一覧
 
