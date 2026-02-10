@@ -390,9 +390,14 @@ private func interactiveSetup(
         }
     }
 
-    let defaultOut = rootDir.appendingPathComponent("generated-headers/iOS", isDirectory: true).appendingPathComponent(runtime.version, isDirectory: true)
     let env = ProcessInfo.processInfo.environment
-    let outDir = args.outDir ?? (env["PH_OUT_DIR"].map { URL(fileURLWithPath: $0) }) ?? defaultOut
+    let defaultOut = rootDir
+        .appendingPathComponent("generated-headers/iOS", isDirectory: true)
+        .appendingPathComponent(runtime.version, isDirectory: true)
+    let envOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let outDir = args.outDir
+        ?? envOutDir.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        ?? defaultOut
     let stageDir = FileOps.buildStageDir(outDir: outDir)
     let skipExisting = resolveSkipExisting(args, env: env)
 
