@@ -63,10 +63,11 @@ private func terminationSignalHandler(_ sig: Int32) {
     if gTerminationSignal == 0 {
         gTerminationSignal = sig
     }
-    let pid = gActiveDumpSubprocessPid
-    if pid != 0 {
-        _ = kill(pid, sig)
-    }
+    let dumpPid = gActiveDumpSubprocessPid
+    if dumpPid != 0 { _ = kill(dumpPid, sig) }
+
+    let toolingPid = gActiveToolingSubprocessPid
+    if toolingPid != 0, toolingPid != dumpPid { _ = kill(toolingPid, sig) }
 }
 
 private func installTerminationSignalHandlers() {
@@ -361,6 +362,15 @@ private func resolveHeaderdumpBinaries(rootDir: URL?, env: [String: String]) -> 
     return (host, sim)
 }
 
+private func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileManager) -> Bool {
+    // Avoid accidentally treating some other Swift package as this repository.
+    let markers = [
+        repoRoot.appendingPathComponent("Sources/HeaderDumpCore/HeaderDumpMain.swift"),
+        repoRoot.appendingPathComponent("Sources/HeaderDumpCLI/HeaderDumpMain.swift"),
+    ]
+    return markers.allSatisfy { fileManager.fileExists(atPath: $0.path) }
+}
+
 private func resolveExecMode(_ requested: ExecMode?, headerdumpHost: URL?, headerdumpSim: URL?, runner: CommandRunning) -> ExecMode {
     if let requested { return requested }
     if let _ = headerdumpSim, (try? Simctl.listRuntimes(runner: runner))?.isEmpty == false {
@@ -644,6 +654,7 @@ private func prepareOutputLayout(ctx: Context) throws {
 private func run() throws {
     let runner = ProcessRunner()
     let env = ProcessInfo.processInfo.environment
+    let fileManager = FileManager.default
 
     let args = Array(CommandLine.arguments.dropFirst())
     let parsed = try parseArguments(args)
@@ -659,7 +670,13 @@ private func run() throws {
     }
 
     let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-    let repoRoot = PathUtils.findRepositoryRoot(startingAt: cwdURL)
+    let repoRootFromCwd = PathUtils.findRepositoryRoot(startingAt: cwdURL)
+    let repoRoot: URL?
+    if let root = repoRootFromCwd, looksLikePrivateHeaderKitRepo(root, fileManager: fileManager) {
+        repoRoot = root
+    } else {
+        repoRoot = nil
+    }
     let rootDir = repoRoot ?? cwdURL
 
     let binaries = resolveHeaderdumpBinaries(rootDir: repoRoot, env: env)

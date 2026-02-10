@@ -59,6 +59,13 @@ public final class ProcessRunner: CommandRunning {
         var wasKilled = false
 
         try process.run()
+        let pid = process.processIdentifier
+        gActiveToolingSubprocessPid = pid
+        defer {
+            if gActiveToolingSubprocessPid == pid {
+                gActiveToolingSubprocessPid = 0
+            }
+        }
         // Close the parent-side write handle so the reader reliably receives EOF.
         // (The child process still has its own write end inherited by exec.)
         try? pipe.fileHandleForWriting.close()
@@ -127,6 +134,13 @@ public final class ProcessRunner: CommandRunning {
         process.standardError = stderrPipe
 
         try process.run()
+        let pid = process.processIdentifier
+        gActiveToolingSubprocessPid = pid
+        defer {
+            if gActiveToolingSubprocessPid == pid {
+                gActiveToolingSubprocessPid = 0
+            }
+        }
         // Close the parent-side write handles so reads complete at EOF.
         try? stdoutPipe.fileHandleForWriting.close()
         try? stderrPipe.fileHandleForWriting.close()
