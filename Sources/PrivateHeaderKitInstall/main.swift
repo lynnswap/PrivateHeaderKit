@@ -67,6 +67,9 @@ private func parseOptions(_ args: [String], environment: [String: String]) throw
     options.prefix = environment["PREFIX"]
     options.bindir = environment["BINDIR"]
 
+    var didSetPrefix = false
+    var didSetBindir = false
+
     var index = 1
     while index < args.count {
         let arg = args[index]
@@ -76,12 +79,14 @@ private func parseOptions(_ args: [String], environment: [String: String]) throw
                 throw InstallError.message("--prefix requires a value")
             }
             options.prefix = args[index + 1]
+            didSetPrefix = true
             index += 2
         case "--bindir":
             guard index + 1 < args.count else {
                 throw InstallError.message("--bindir requires a value")
             }
             options.bindir = args[index + 1]
+            didSetBindir = true
             index += 2
         case "--dry-run":
             options.dryRun = true
@@ -92,6 +97,11 @@ private func parseOptions(_ args: [String], environment: [String: String]) throw
         default:
             throw InstallError.message("unknown option: \(arg)")
         }
+    }
+
+    // Treat BINDIR as a default only. If the user explicitly set --prefix, use it unless --bindir was also set.
+    if didSetPrefix, !didSetBindir {
+        options.bindir = nil
     }
     return options
 }
