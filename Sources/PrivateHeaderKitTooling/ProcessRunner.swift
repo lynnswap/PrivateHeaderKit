@@ -4,6 +4,12 @@ public struct StreamingCommandResult {
     public let status: Int32
     public let wasKilled: Bool
     public let lastLines: [String]
+
+    public init(status: Int32, wasKilled: Bool, lastLines: [String]) {
+        self.status = status
+        self.wasKilled = wasKilled
+        self.lastLines = lastLines
+    }
 }
 
 public protocol CommandRunning {

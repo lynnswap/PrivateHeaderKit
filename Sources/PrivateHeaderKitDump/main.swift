@@ -55,12 +55,17 @@ private struct Context {
     }
 }
 
-// Keep this async-signal-safe: store-only, no allocations/IO.
+// Keep this async-signal-safe: store-only + kill(2), no allocations/IO.
 nonisolated(unsafe) private var gTerminationSignal: sig_atomic_t = 0
+nonisolated(unsafe) private var gActiveDumpSubprocessPid: pid_t = 0
 
 private func terminationSignalHandler(_ sig: Int32) {
     if gTerminationSignal == 0 {
         gTerminationSignal = sig
+    }
+    let pid = gActiveDumpSubprocessPid
+    if pid != 0 {
+        _ = kill(pid, sig)
     }
 }
 
@@ -84,6 +89,82 @@ private func throwIfTerminationRequested() throws {
     if gTerminationSignal != 0 {
         throw ToolingError.message("interrupted")
     }
+}
+
+private func runDumpStreaming(_ command: [String], env: [String: String]? = nil, cwd: URL? = nil) throws -> StreamingCommandResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = command
+    if let cwd { process.currentDirectoryURL = cwd }
+
+    var environment = ProcessInfo.processInfo.environment
+    if let env {
+        for (k, v) in env { environment[k] = v }
+    }
+    process.environment = environment
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    let handle = pipe.fileHandleForReading
+
+    var lastLines: [String] = []
+    lastLines.reserveCapacity(8)
+    var wasKilled = false
+
+    try process.run()
+    // Close the parent-side write handle so the reader reliably receives EOF.
+    // (The child process still has its own write end inherited by exec.)
+    try? pipe.fileHandleForWriting.close()
+
+    let pid = process.processIdentifier
+    gActiveDumpSubprocessPid = pid
+    defer {
+        if gActiveDumpSubprocessPid == pid {
+            gActiveDumpSubprocessPid = 0
+        }
+    }
+
+    var buffer = ""
+    while true {
+        let data = handle.availableData
+        if data.isEmpty { break }
+        FileHandle.standardOutput.write(data)
+
+        let chunk = String(decoding: data, as: UTF8.self)
+        buffer += chunk
+        while let range = buffer.range(of: "\n") {
+            let line = String(buffer[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            buffer.removeSubrange(..<range.upperBound)
+            if line.isEmpty { continue }
+            lastLines.append(line)
+            if lastLines.count > 8 {
+                lastLines.removeFirst(lastLines.count - 8)
+            }
+            if line.lowercased().contains("killed: 9") {
+                wasKilled = true
+            }
+        }
+    }
+
+    process.waitUntilExit()
+    if !buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        lastLines.append(buffer.trimmingCharacters(in: .whitespacesAndNewlines))
+        if lastLines.count > 8 {
+            lastLines.removeFirst(lastLines.count - 8)
+        }
+    }
+    if process.terminationReason == .uncaughtSignal {
+        wasKilled = true
+        lastLines.append("Terminated by signal \(process.terminationStatus)")
+        if lastLines.count > 8 {
+            lastLines.removeFirst(lastLines.count - 8)
+        }
+    } else if process.terminationStatus != 0, lastLines.isEmpty {
+        lastLines.append("Exited with status \(process.terminationStatus)")
+    }
+
+    return StreamingCommandResult(status: process.terminationStatus, wasKilled: wasKilled, lastLines: lastLines)
 }
 
 @main
@@ -906,7 +987,9 @@ private func runHeaderdumpHost(category: String, ctx: Context, runner: CommandRu
         cmd.append("-c")
         env = ["SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.runtimeRoot]
     }
-    return try runner.runStreaming(cmd, env: env, cwd: nil)
+    let result = try runDumpStreaming(cmd, env: env, cwd: nil)
+    try throwIfTerminationRequested()
+    return result
 }
 
 private func shouldRetrySimulatorBoot(_ lastLines: [String]) -> Bool {
@@ -939,10 +1022,12 @@ private func runHeaderdumpSimulator(category: String, ctx: Context, runner: Comm
         "SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.runtimeRoot,
     ]
 
-    var result = try runner.runStreaming(cmd, env: env, cwd: nil)
+    var result = try runDumpStreaming(cmd, env: env, cwd: nil)
+    try throwIfTerminationRequested()
     if result.status != 0, shouldRetrySimulatorBoot(result.lastLines) {
         try Simctl.ensureDeviceBooted(&device, runner: runner, force: true)
-        result = try runner.runStreaming(cmd, env: env, cwd: nil)
+        result = try runDumpStreaming(cmd, env: env, cwd: nil)
+        try throwIfTerminationRequested()
     }
     return result
 }
