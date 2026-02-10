@@ -1,5 +1,5 @@
 {
-  "originHash" : "6182ad954e5c1785cd3a27da04dd01f07b1cd7c17512912c9a585b72a2880dd3",
+  "originHash" : "510b380a50ece780468b01d398fd3fe77ee0366df88a4ff589b08165115ddefe",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -31,28 +31,28 @@
     {
       "identity" : "dyldprivate",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/DyldPrivate",
+      "location" : "https://github.com/lynnswap/DyldPrivate.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "3b4d596b702d7c8f589d0babe42c7387e5d24dbc"
+        "revision" : "3b4d596b702d7c8f589d0babe42c7387e5d24dbc",
+        "version" : "0.1.0"
       }
     },
     {
       "identity" : "frameworktoolbox",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Mx-Iris/FrameworkToolbox",
+      "location" : "https://github.com/lynnswap/FrameworkToolbox.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "b0f1043d407fa10b8af42e0dc9c11ff2363b3632"
+        "revision" : "b0f1043d407fa10b8af42e0dc9c11ff2363b3632",
+        "version" : "0.3.3"
       }
     },
     {
       "identity" : "machokit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+      "location" : "https://github.com/lynnswap/MachOKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "a177cf8a55a40c70b0e20a987023e47c58e7e582"
+        "revision" : "a177cf8a55a40c70b0e20a987023e47c58e7e582",
+        "version" : "0.45.1"
       }
     },
     {
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "90d3afbae7412edabbaff1fc4da4ee44d014af9c"
+        "revision" : "010657becfacdd79e4abb65c5dd86db82c8a7be3",
+        "version" : "0.5.2"
       }
     },
     {
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "6dfabf7de4a6f1eefb656253b119a60da2dcbcda"
+        "revision" : "3d6165d8dd4edd17937be00811a76225c0a947b6",
+        "version" : "0.8.3"
       }
     },
     {
@@ -94,19 +94,19 @@
     {
       "identity" : "sourcekitd",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Mx-Iris/SourceKitD",
+      "location" : "https://github.com/lynnswap/SourceKitD.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "47ddc958a3962f9bb0fe08de1c8f39723e472228"
+        "revision" : "47ddc958a3962f9bb0fe08de1c8f39723e472228",
+        "version" : "0.1.0"
       }
     },
     {
       "identity" : "swift-apinotes",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-DeveloperTool-Forks/swift-apinotes",
+      "location" : "https://github.com/lynnswap/swift-apinotes.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "2fe208c1824f053c04778c5dad2a6fe93d8ab3bf"
+        "revision" : "2fe208c1824f053c04778c5dad2a6fe93d8ab3bf",
+        "version" : "0.1.0"
       }
     },
     {
@@ -211,10 +211,10 @@
     {
       "identity" : "swift-objc-dump",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
+      "location" : "https://github.com/lynnswap/swift-objc-dump.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "cab0d684eb13189d0221489ec196533a16997513"
+        "revision" : "e8e2cb57aadd5cca91ff3527b01ca785d8936e6f",
+        "version" : "0.8.2"
       }
     },
     {

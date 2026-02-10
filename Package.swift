@@ -14,20 +14,20 @@ let package = Package(
     ],
     dependencies: [
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            branch: "main"
+            url: "https://github.com/lynnswap/MachOKit.git",
+            from: "0.45.1"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",
-            branch: "main"
+            from: "0.5.2"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            branch: "main"
+            from: "0.8.3"
         ),
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
-            branch: "main"
+            url: "https://github.com/lynnswap/swift-objc-dump.git",
+            from: "0.8.2"
         ),
     ],
     targets: [
