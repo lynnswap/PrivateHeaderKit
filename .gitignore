@@ -5,8 +5,3 @@
 /.swiftpm/xcode/package.xcworkspace/xcuserdata/
 /.build
 /DerivedData
-/generated-headers/*
-!/generated-headers/.gitkeep
-/PrivateHeaders/
-__pycache__/
-*.pyc
