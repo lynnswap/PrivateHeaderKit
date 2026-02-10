@@ -4,18 +4,52 @@
 
 iOS Simulator のランタイム（dyld shared cache）から private framework のヘッダを生成します。
 
+## インストール
+
+```bash
+swift run -c release privateheaderkit-install
+```
+
+既定では `~/.local/bin` に以下のバイナリをインストールします:
+
+- `privateheaderkit-dump`
+- `headerdump`（host）
+- `headerdump-sim`（iOS Simulator）
+
+`~/.local/bin` が `PATH` に入っていない場合は追加してください:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+配置先を変更したい場合:
+
+```bash
+swift run -c release privateheaderkit-install --prefix "$HOME/.local"
+# または
+swift run -c release privateheaderkit-install --bindir "$HOME/bin"
+```
+
+ビルド済みのバイナリを直接実行したい場合:
+
+```bash
+swift build -c release --product privateheaderkit-install
+"$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
+```
+
 ## 使い方
 
 ### 1) ヘッダの一括ダンプ
 
 ```
-./scripts/dump_headers
+privateheaderkit-dump
 ```
 
 ### 2) 引数を指定して実行
 
 ```
-./scripts/dump_headers 26.2
+privateheaderkit-dump 26.2
 ```
 
 デフォルト出力先は `generated-headers/iOS/<version>` です。  
@@ -24,8 +58,8 @@ iOS Simulator のランタイム（dyld shared cache）から private framework 
 ### 3) ランタイム/デバイス一覧
 
 ```
-./scripts/dump_headers --list-runtimes
-./scripts/dump_headers --list-devices --runtime 26.0.1
+privateheaderkit-dump --list-runtimes
+privateheaderkit-dump --list-devices --runtime 26.0.1
 ```
 
 #### オプション
@@ -33,6 +67,7 @@ iOS Simulator のランタイム（dyld shared cache）から private framework 
 - `--device <udid|name>`: 対象シミュレーターを指定
 - `--out <dir>`: 出力先を指定
 - `--force`: 既存ヘッダがあっても常に再生成する（成功したフレームワークは出力を丸ごと置換。失敗分は既存出力を残し `_failures.txt` に記録）
+- `--skip-existing`: 既に出力済みのフレームワークはスキップ（`PH_FORCE=1` を一時的に打ち消したい場合など）
 - `--exec-mode <host|simulator>`: 実行モードを強制
 - `--framework <name>`: 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可）
 - `--filter <substring>`: フレームワーク名の部分一致フィルタ（複数指定可）
@@ -42,18 +77,17 @@ iOS Simulator のランタイム（dyld shared cache）から private framework 
 - `--runtime <version>`: `--list-devices` 用のランタイム指定
 - `--json`: list 系の JSON 出力
 - `--shared-cache`: dyld shared cache を使ってダンプ（デフォルト有効。無効化は `PH_SHARED_CACHE=0`）
-- `--clean-build`, `--cleanbuild`: `.build` を削除して `headerdump` を再ビルド
-- `--rebuild`: `headerdump` のみ再ビルド
+- `-D`, `--verbose`: 詳細ログ
 
 ## メモ
 
-- Python 3 が必要です。
+- Xcode command line tools（`xcrun`, `xcodebuild`）が必要です。
 - `simulator` モード時は `xcrun simctl spawn` 経由です。
 - ダンプ中の一時出力は `<out>/.tmp-<run-id>` に作成し、最後にレイアウトへ移動します。
 - 実行中は出力ディレクトリをロックして、同時書き込みを防ぎます。
 - `-D` での詳細ログ時も、スキップクラスのログはデフォルトで出さない（`PH_VERBOSE_SKIP=1` で表示）。
 - 自動作成するデバイスタイプは `PH_DEVICE_TYPE` で指定可能（デバイス名または identifier）。
-- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_REBUILD_HEADERDUMP=1`
+- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`
 
 ## ライセンス
 
