@@ -372,6 +372,23 @@ private func resolveExecMode(_ requested: ExecMode?, headerdumpHost: URL?, heade
 }
 
 private func shouldFallbackToHost(_ error: Error) -> Bool {
+    // Prefer structured detection for ToolingError to avoid brittle string matching.
+    if let toolingError = error as? ToolingError {
+        switch toolingError {
+        case .commandFailed(let command, _, let stderr):
+            let cmd = command.joined(separator: " ").lowercased()
+            if cmd.contains("simctl") {
+                // If the runtime itself is missing, host fallback won't help.
+                let message = (cmd + "\n" + stderr).lowercased()
+                if message.contains("no available ios runtimes found") { return false }
+                if message.contains("ios runtime not found or unavailable") { return false }
+                return true
+            }
+        default:
+            break
+        }
+    }
+
     let message = String(describing: error).lowercased()
     if message.contains("no available ios runtimes found") { return false }
     if message.contains("ios runtime not found or unavailable") { return false }
