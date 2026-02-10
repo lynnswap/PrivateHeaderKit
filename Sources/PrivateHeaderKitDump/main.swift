@@ -715,8 +715,18 @@ private func run() throws {
 
     if ctx.execMode == .simulator {
         guard var device = ctx.device else { throw ToolingError.message("no simulator device available") }
-        try Simctl.ensureDeviceBooted(&device, runner: runner, force: false)
-        ctx.device = device
+        do {
+            try Simctl.ensureDeviceBooted(&device, runner: runner, force: false)
+            ctx.device = device
+        } catch {
+            if autoExecMode, execMode == .simulator, binaries.host != nil {
+                fputs("Simulator unavailable; falling back to host: \(error)\n", stderr)
+                execMode = .host
+                ctx = try setupContext(execMode)
+            } else {
+                throw error
+            }
+        }
     }
 
     try PathUtils.ensureDirectory(ctx.outDir)
