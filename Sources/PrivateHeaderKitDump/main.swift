@@ -1073,10 +1073,20 @@ private func runHeaderdumpSimulator(category: String, ctx: Context, runner: Comm
     if ctx.skipExisting { cmd.append("-s") }
     if ctx.useSharedCache { cmd.append("-c") }
 
-    let env: [String: String] = [
+    var env: [String: String] = [
         "SIMCTL_CHILD_PH_RUNTIME_ROOT": ctx.runtimeRoot,
         "SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.runtimeRoot,
     ]
+    // `simctl spawn` only forwards environment variables to the child when they are prefixed with
+    // `SIMCTL_CHILD_`. Map the unprefixed host env vars to the child-prefixed versions so users
+    // can just set `PH_PROFILE=1` / `PH_SWIFT_EVENTS=1` when running `privateheaderkit-dump`.
+    let parentEnv = ProcessInfo.processInfo.environment
+    if parentEnv["SIMCTL_CHILD_PH_PROFILE"] == nil, parentEnv["PH_PROFILE"] == "1" {
+        env["SIMCTL_CHILD_PH_PROFILE"] = "1"
+    }
+    if parentEnv["SIMCTL_CHILD_PH_SWIFT_EVENTS"] == nil, parentEnv["PH_SWIFT_EVENTS"] == "1" {
+        env["SIMCTL_CHILD_PH_SWIFT_EVENTS"] = "1"
+    }
 
     var result = try runDumpStreaming(cmd, env: env, cwd: nil)
     try throwIfTerminationRequested()

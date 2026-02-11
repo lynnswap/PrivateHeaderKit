@@ -307,6 +307,58 @@ struct HeaderDumpCLITests {
         #expect(disabled == false)
     }
 
+    @Test func shouldProfileFromEnv() {
+        let enabled = withEnvironment([
+            "PH_PROFILE": "1",
+            "SIMCTL_CHILD_PH_PROFILE": nil
+        ]) {
+            shouldProfile()
+        }
+        #expect(enabled == true)
+
+        let enabledSim = withEnvironment([
+            "PH_PROFILE": nil,
+            "SIMCTL_CHILD_PH_PROFILE": "1"
+        ]) {
+            shouldProfile()
+        }
+        #expect(enabledSim == true)
+
+        let disabled = withEnvironment([
+            "PH_PROFILE": "0",
+            "SIMCTL_CHILD_PH_PROFILE": nil
+        ]) {
+            shouldProfile()
+        }
+        #expect(disabled == false)
+    }
+
+    @Test func shouldLogSwiftEventsFromEnv() {
+        let enabled = withEnvironment([
+            "PH_SWIFT_EVENTS": "1",
+            "SIMCTL_CHILD_PH_SWIFT_EVENTS": nil
+        ]) {
+            shouldLogSwiftEvents()
+        }
+        #expect(enabled == true)
+
+        let enabledSim = withEnvironment([
+            "PH_SWIFT_EVENTS": nil,
+            "SIMCTL_CHILD_PH_SWIFT_EVENTS": "1"
+        ]) {
+            shouldLogSwiftEvents()
+        }
+        #expect(enabledSim == true)
+
+        let disabled = withEnvironment([
+            "PH_SWIFT_EVENTS": "0",
+            "SIMCTL_CHILD_PH_SWIFT_EVENTS": nil
+        ]) {
+            shouldLogSwiftEvents()
+        }
+        #expect(disabled == false)
+    }
+
     @Test func resolveRuntimeURLUsesRuntimeRoot() throws {
         let tempDir = try makeTempDir()
         let runtimeRoot = tempDir.appendingPathComponent("Runtime")

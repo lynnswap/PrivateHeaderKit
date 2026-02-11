@@ -88,7 +88,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 - The output directory is locked for the duration of a run to avoid concurrent writes.
 - Verbose mode suppresses skipped-class logs by default; set `PH_VERBOSE_SKIP=1` to show them.
 - You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`
+- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
 
 ## License
 
