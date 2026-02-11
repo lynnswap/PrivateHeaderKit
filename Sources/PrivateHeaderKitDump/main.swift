@@ -607,6 +607,7 @@ private func interactiveSetup(
     headerdumpBin: URL,
     execMode: ExecMode,
     args: DumpArguments,
+    allowMacOSSelection: Bool,
     categories: [String],
     frameworkNames: Set<String>,
     frameworkFilters: [String],
@@ -617,13 +618,24 @@ private func interactiveSetup(
 ) throws -> Context {
     print("Interactive mode")
     let runtimes = try Simctl.listRuntimes(runner: runner)
-    let macOSSelectionIndex = runtimes.count + 1
+    let macOSSelectionIndex = allowMacOSSelection ? runtimes.count + 1 : nil
     print("Available targets:")
     for (idx, r) in runtimes.enumerated() {
         print("  [\(idx + 1)] iOS \(r.version) (\(r.build))")
     }
-    print("  [\(macOSSelectionIndex)] macOS")
-    let defaultLabel = runtimes.isEmpty ? "macOS" : "latest iOS"
+    if let macOSSelectionIndex {
+        print("  [\(macOSSelectionIndex)] macOS")
+    }
+    let defaultLabel: String
+    if runtimes.isEmpty {
+        if allowMacOSSelection {
+            defaultLabel = "macOS"
+        } else {
+            throw ToolingError.message("no iOS runtimes available")
+        }
+    } else {
+        defaultLabel = "latest iOS"
+    }
     print("Select target (Enter for \(defaultLabel)): ", terminator: "")
     let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     try throwIfTerminationRequested()
@@ -637,14 +649,16 @@ private func interactiveSetup(
     if choice.isEmpty {
         if let runtime = runtimes.last {
             target = .ios(runtime)
-        } else {
+        } else if allowMacOSSelection {
             target = .macos
+        } else {
+            throw ToolingError.message("no iOS runtimes available")
         }
     } else if let idx = Int(choice), idx > 0, idx <= runtimes.count {
         target = .ios(runtimes[idx - 1])
-    } else if let idx = Int(choice), idx == macOSSelectionIndex {
+    } else if allowMacOSSelection, let idx = Int(choice), idx == macOSSelectionIndex {
         target = .macos
-    } else if choice == "macos" {
+    } else if allowMacOSSelection, choice == "macos" {
         target = .macos
     } else {
         throw ToolingError.message("invalid selection")
@@ -866,6 +880,7 @@ private func run() throws {
     let args = Array(CommandLine.arguments.dropFirst())
     let parsed = try parseArguments(args)
     try throwIfTerminationRequested()
+    let hasExplicitPlatform = parsed.platform != nil || normalizedEnvValue(env["PH_PLATFORM"]) != nil
     let platform = try resolvePlatform(parsed, env: env)
     let requestedExecMode = try resolveRequestedExecMode(parsed, env: env)
     try validatePlatformArguments(args: parsed, platform: platform, requestedExecMode: requestedExecMode)
@@ -944,6 +959,7 @@ private func run() throws {
                 headerdumpBin: headerdumpBin,
                 execMode: mode,
                 args: parsed,
+                allowMacOSSelection: !hasExplicitPlatform,
                 categories: categories,
                 frameworkNames: frameworkNames,
                 frameworkFilters: frameworkFilters,
