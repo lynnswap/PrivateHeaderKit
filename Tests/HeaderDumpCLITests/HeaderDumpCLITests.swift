@@ -405,6 +405,8 @@ struct HeaderDumpCLITests {
         }
         #expect(paths.first == path)
         #expect(paths.contains("/System/Library/Frameworks/Foo.framework/Foo"))
+        #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/Current/Foo"))
+        #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
         #expect(Set(paths).count == paths.count)
 
         let usrPath = "/Runtime/usr/lib/libobjc.A.dylib"
@@ -413,6 +415,17 @@ struct HeaderDumpCLITests {
         }
         #expect(usrPaths.contains("/usr/lib/libobjc.A.dylib"))
     }
+
+#if canImport(ObjectiveC)
+    @Test func runtimeFallbackTargetImagePathsIncludeVersionedCandidates() {
+        let imagePath = "/System/Library/Frameworks/Foo.framework/Foo"
+        let targets = runtimeFallbackTargetImagePaths(for: imagePath)
+
+        #expect(targets.contains("/System/Library/Frameworks/Foo.framework/Foo"))
+        #expect(targets.contains("/System/Library/Frameworks/Foo.framework/Versions/Current/Foo"))
+        #expect(targets.contains("/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
+    }
+#endif
 
     @Test func writeDirectoryBuildsBundlePaths() {
         let outputRoot = URL(fileURLWithPath: "/tmp/out")
@@ -495,6 +508,19 @@ struct HeaderDumpCLITests {
             bundleExecutableURL: { _ in explicit }
         )
         #expect(resolvedExplicit?.path == explicit.path)
+    }
+
+    @Test func resolveBundleExecutableURLFallsBackToCanonicalPathForCacheOnlyBundles() {
+        let bundleURL = URL(fileURLWithPath: "/tmp/Foo.framework", isDirectory: true)
+        let fake = FakeFileManager(existing: [])
+
+        let resolved = resolveBundleExecutableURL(
+            bundleURL,
+            fileManager: fake,
+            bundleExecutableURL: { _ in nil }
+        )
+
+        #expect(resolved?.path == "/tmp/Foo.framework/Foo")
     }
 
 #if os(macOS)

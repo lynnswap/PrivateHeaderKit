@@ -315,7 +315,11 @@ func resolveBundleExecutableURL(
             return candidate
         }
     }
-    return nil
+
+    // Some system bundles (especially on modern macOS) only expose a dyld shared-cache image path
+    // while the on-disk executable symlink is intentionally absent/broken. Return the canonical
+    // in-bundle executable path so shared-cache lookup can still resolve the image.
+    return bundleURL.appendingPathComponent(baseName)
 }
 
 private func dumpImage(
@@ -412,6 +416,21 @@ private func loadFromSharedCache(imagePath: String) -> MachOFile? {
 func normalizedCacheImagePaths(for path: String) -> [String] {
     var results: [String] = [path]
 
+    // On macOS, cache entries for frameworks frequently use versioned image paths
+    // (e.g. ".../Foo.framework/Versions/A/Foo"), while callers may provide
+    // ".../Foo.framework/Foo". Include common versioned variants so cache lookup
+    // still resolves when the unversioned symlink target is absent.
+    if let frameworkRange = path.range(of: ".framework/"), !path.contains(".framework/Versions/") {
+        let frameworkPrefix = String(path[..<frameworkRange.upperBound])
+        let imageName = URL(fileURLWithPath: path).lastPathComponent
+        if !imageName.isEmpty {
+            results.append(frameworkPrefix + "Versions/Current/" + imageName)
+            results.append(frameworkPrefix + "Versions/A/" + imageName)
+            results.append(frameworkPrefix + "Versions/B/" + imageName)
+            results.append(frameworkPrefix + "Versions/C/" + imageName)
+        }
+    }
+
     let env = ProcessInfo.processInfo.environment
     let rootCandidates = [
         env["PH_RUNTIME_ROOT"],
@@ -483,8 +502,12 @@ func sharedCachePath(fileManager: FileExistenceChecking = FileManager.default) -
     }
 
     let candidates = [
+        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64",
+        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_x86_64",
         "/private/var/db/dyld/dyld_shared_cache_arm64e",
         "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
+        "/private/var/db/dyld/dyld_shared_cache_x86_64",
         "/private/var/db/dyld/dyld_shared_cache_arm64"
     ]
     for candidate in candidates where fileManager.fileExists(atPath: candidate) {
@@ -896,6 +919,7 @@ private func dumpObjC(
 #if canImport(ObjectiveC)
 private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [ObjCClassInfo] {
     guard options.useRuntimeFallback else { return [] }
+    let targetPaths = runtimeFallbackTargetImagePaths(for: imagePath)
     let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
     guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
         if options.verbose {
@@ -913,7 +937,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
                 stderr
             )
         }
-        return runtimeClassInfosByImageName(imagePath: imagePath, options: options)
+        return runtimeClassInfosByImageName(targetPaths: targetPaths, imagePath: imagePath, options: options)
     }
     defer { free(namesPtr) }
 
@@ -924,7 +948,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
                 stderr
             )
         }
-        return runtimeClassInfosByImageName(imagePath: imagePath, options: options)
+        return runtimeClassInfosByImageName(targetPaths: targetPaths, imagePath: imagePath, options: options)
     }
 
     let names = UnsafeBufferPointer(start: namesPtr, count: Int(count))
@@ -938,10 +962,14 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
             infos.append(ObjCClassInfo(cls))
         }
     }
+    if infos.isEmpty {
+        return runtimeClassInfosByImageName(targetPaths: targetPaths, imagePath: imagePath, options: options)
+    }
     return infos
 }
 
 private func runtimeClassInfosByImageName(
+    targetPaths: Set<String>,
     imagePath: String,
     options: DumpOptions
 ) -> [ObjCClassInfo] {
@@ -955,7 +983,6 @@ private func runtimeClassInfosByImageName(
     if count <= 0 { return [] }
     let cappedCount = min(count, initialCount)
 
-    let targetPath = normalizedImagePath(stripRuntimeRoot(from: imagePath))
     var infos: [ObjCClassInfo] = []
     infos.reserveCapacity(Int(cappedCount))
 
@@ -964,7 +991,7 @@ private func runtimeClassInfosByImageName(
         guard let imageNamePtr = class_getImageName(cls) else { continue }
         let imageName = String(cString: imageNamePtr)
         let normalizedImage = normalizedImagePath(stripRuntimeRoot(from: imageName))
-        if normalizedImage != targetPath { continue }
+        if !targetPaths.contains(normalizedImage) { continue }
 
         let name = String(cString: class_getName(cls))
         if let only = options.onlyOneClass, only != name { continue }
@@ -978,6 +1005,14 @@ private func runtimeClassInfosByImageName(
         )
     }
     return infos
+}
+
+func runtimeFallbackTargetImagePaths(for imagePath: String) -> Set<String> {
+    Set(
+        normalizedCacheImagePaths(for: imagePath).map {
+            normalizedImagePath(stripRuntimeRoot(from: $0))
+        }
+    )
 }
 
 private func normalizedImagePath(_ path: String) -> String {
