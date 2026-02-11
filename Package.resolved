@@ -1,5 +1,5 @@
 {
-  "originHash" : "510b380a50ece780468b01d398fd3fe77ee0366df88a4ff589b08165115ddefe",
+  "originHash" : "c3992bea1b70be553882a54339e966047669983f2461f947289b59b2ce0bb7cf",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -69,8 +69,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "3d6165d8dd4edd17937be00811a76225c0a947b6",
-        "version" : "0.8.3"
+        "revision" : "61584dcd738df90c348afe2f0aec57403c83596c"
       }
     },
     {
