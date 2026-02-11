@@ -603,6 +603,7 @@ private func printDevices(_ devices: [DeviceInfo]) {
 
 private func interactiveSetup(
     rootDir: URL,
+    hostHeaderdumpBin: URL?,
     headerdumpBin: URL,
     execMode: ExecMode,
     args: DumpArguments,
@@ -616,22 +617,58 @@ private func interactiveSetup(
 ) throws -> Context {
     print("Interactive mode")
     let runtimes = try Simctl.listRuntimes(runner: runner)
-    guard !runtimes.isEmpty else { throw ToolingError.message("no available iOS runtimes found") }
-
-    print("Available iOS runtimes:")
+    let macOSSelectionIndex = runtimes.count + 1
+    print("Available targets:")
     for (idx, r) in runtimes.enumerated() {
         print("  [\(idx + 1)] iOS \(r.version) (\(r.build))")
     }
-    let defaultIndex = runtimes.count
-    print("Select runtime (Enter for latest): ", terminator: "")
-    let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    print("  [\(macOSSelectionIndex)] macOS")
+    let defaultLabel = runtimes.isEmpty ? "macOS" : "latest iOS"
+    print("Select target (Enter for \(defaultLabel)): ", terminator: "")
+    let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     try throwIfTerminationRequested()
-    let runtime: RuntimeInfo
+
+    enum InteractiveTarget {
+        case ios(RuntimeInfo)
+        case macos
+    }
+
+    let target: InteractiveTarget
     if choice.isEmpty {
-        runtime = runtimes[defaultIndex - 1]
+        if let runtime = runtimes.last {
+            target = .ios(runtime)
+        } else {
+            target = .macos
+        }
     } else if let idx = Int(choice), idx > 0, idx <= runtimes.count {
-        runtime = runtimes[idx - 1]
+        target = .ios(runtimes[idx - 1])
+    } else if let idx = Int(choice), idx == macOSSelectionIndex {
+        target = .macos
+    } else if choice == "macos" {
+        target = .macos
     } else {
+        throw ToolingError.message("invalid selection")
+    }
+
+    if case .macos = target {
+        guard let hostHeaderdumpBin else {
+            throw ToolingError.message("headerdump not found (run `swift run -c release privateheaderkit-install` first)")
+        }
+        return try macOSSetup(
+            rootDir: rootDir,
+            headerdumpBin: hostHeaderdumpBin,
+            args: args,
+            categories: categories,
+            frameworkNames: frameworkNames,
+            frameworkFilters: frameworkFilters,
+            layout: layout,
+            useSharedCache: useSharedCache,
+            verbose: verbose,
+            runner: runner
+        )
+    }
+
+    guard case let .ios(runtime) = target else {
         throw ToolingError.message("invalid selection")
     }
 
@@ -903,6 +940,7 @@ private func run() throws {
         if parsed.version == nil {
             return try interactiveSetup(
                 rootDir: rootDir,
+                hostHeaderdumpBin: binaries.host,
                 headerdumpBin: headerdumpBin,
                 execMode: mode,
                 args: parsed,
