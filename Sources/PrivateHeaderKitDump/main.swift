@@ -606,6 +606,7 @@ private func interactiveSetup(
     hostHeaderdumpBin: URL?,
     headerdumpBin: URL,
     execMode: ExecMode,
+    requestedExecMode: ExecMode?,
     args: DumpArguments,
     allowMacOSSelection: Bool,
     categories: [String],
@@ -665,6 +666,7 @@ private func interactiveSetup(
     }
 
     if case .macos = target {
+        try validatePlatformArguments(args: args, platform: .macos, requestedExecMode: requestedExecMode)
         guard let hostHeaderdumpBin else {
             throw ToolingError.message("headerdump not found (run `swift run -c release privateheaderkit-install` first)")
         }
@@ -958,6 +960,7 @@ private func run() throws {
                 hostHeaderdumpBin: binaries.host,
                 headerdumpBin: headerdumpBin,
                 execMode: mode,
+                requestedExecMode: requestedExecMode,
                 args: parsed,
                 allowMacOSSelection: !hasExplicitPlatform,
                 categories: categories,
