@@ -23,7 +23,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "61584dcd738df90c348afe2f0aec57403c83596c"
+            revision: "5d032fd36443dd060d149c79e1beb945b0f4f2f8"
         ),
         .package(
             url: "https://github.com/lynnswap/swift-objc-dump.git",
