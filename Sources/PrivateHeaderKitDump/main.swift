@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import PrivateHeaderKitTooling
 
 #if canImport(Darwin)
@@ -108,7 +109,12 @@ private func defaultOutDir(version: String, fallbackRoot: URL) -> URL {
         .appendingPathComponent(version, isDirectory: true)
 }
 
-private func runDumpStreaming(_ command: [String], env: [String: String]? = nil, cwd: URL? = nil) throws -> StreamingCommandResult {
+private func runDumpStreaming(
+    _ command: [String],
+    env: [String: String]? = nil,
+    cwd: URL? = nil,
+    streamOutput: Bool = true
+) throws -> StreamingCommandResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = command
@@ -146,7 +152,9 @@ private func runDumpStreaming(_ command: [String], env: [String: String]? = nil,
     while true {
         let data = handle.availableData
         if data.isEmpty { break }
-        FileHandle.standardOutput.write(data)
+        if streamOutput {
+            FileHandle.standardOutput.write(data)
+        }
 
         let chunk = String(decoding: data, as: UTF8.self)
         buffer += chunk
@@ -664,6 +672,7 @@ private func prepareOutputLayout(ctx: Context) throws {
 }
 
 private func run() throws {
+    let runStart = DispatchTime.now().uptimeNanoseconds
     let runner = ProcessRunner()
     let env = ProcessInfo.processInfo.environment
     let fileManager = FileManager.default
@@ -789,7 +798,9 @@ private func run() throws {
     }
 
     try writeMetadata(ctx: ctx, runner: runner)
-    print("Done: \(ctx.outDir.path)")
+    let elapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds &- runStart) / 1_000_000_000.0
+    let elapsedText = String(format: "%.1f", elapsedSeconds)
+    print("Done: \(ctx.outDir.path) (elapsed: \(elapsedText)s)")
 }
 
 private func listFrameworks(category: String, ctx: Context) throws -> [String] {
@@ -879,6 +890,7 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
 
     let total = frameworks.count
     var failures: [String] = []
+    let inlineProgress = canInlineFrameworkProgress(ctx: ctx)
 
     var existing: Set<String> = []
     if ctx.skipExisting {
@@ -891,16 +903,36 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
             print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
             continue
         }
-        print("Dumping: \(category) (\(idx + 1)/\(total)) \(item)")
+
+        let progressText = "Dumping: \(category) (\(idx + 1)/\(total)) \(item)"
+        if inlineProgress {
+            renderInlineProgressStart(progressText)
+        } else {
+            print(progressText)
+        }
+
+        let frameworkStart = DispatchTime.now().uptimeNanoseconds
         let path = "\(category)/\(item)"
-        let result = try runHeaderdump(category: path, ctx: ctx, runner: runner)
+        let result = try runHeaderdump(category: path, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+        let frameworkElapsedText = formatElapsedSeconds(since: frameworkStart)
         if result.wasKilled || result.status != 0 {
+            if inlineProgress {
+                renderInlineProgressEnd("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
+            }
             reportLastLines(result.lastLines)
             failures.append(path)
+            if !inlineProgress {
+                print("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
+            }
         } else {
             try relocateFrameworkOutput(ctx: ctx, category: category, frameworkName: item)
             if ctx.layout == "headers" {
                 try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: !ctx.skipExisting)
+            }
+            if inlineProgress {
+                renderInlineProgressEnd("\(progressText) (elapsed: \(frameworkElapsedText)s)")
+            } else {
+                print("Completed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
             }
         }
     }
@@ -1013,15 +1045,29 @@ private func finalizeCategoryOutput(category: String, ctx: Context, hadFailures:
 }
 
 private func runHeaderdump(category: String, ctx: Context, runner: CommandRunning) throws -> StreamingCommandResult {
+    try runHeaderdump(category: category, ctx: ctx, runner: runner, streamOutput: true)
+}
+
+private func runHeaderdump(
+    category: String,
+    ctx: Context,
+    runner: CommandRunning,
+    streamOutput: Bool
+) throws -> StreamingCommandResult {
     switch ctx.execMode {
     case .host:
-        return try runHeaderdumpHost(category: category, ctx: ctx, runner: runner)
+        return try runHeaderdumpHost(category: category, ctx: ctx, runner: runner, streamOutput: streamOutput)
     case .simulator:
-        return try runHeaderdumpSimulator(category: category, ctx: ctx, runner: runner)
+        return try runHeaderdumpSimulator(category: category, ctx: ctx, runner: runner, streamOutput: streamOutput)
     }
 }
 
-private func runHeaderdumpHost(category: String, ctx: Context, runner: CommandRunning) throws -> StreamingCommandResult {
+private func runHeaderdumpHost(
+    category: String,
+    ctx: Context,
+    runner: CommandRunning,
+    streamOutput: Bool
+) throws -> StreamingCommandResult {
     let sourcePath = URL(fileURLWithPath: ctx.runtimeRoot, isDirectory: true)
         .appendingPathComponent("System/Library", isDirectory: true)
         .appendingPathComponent(category, isDirectory: false)
@@ -1043,7 +1089,7 @@ private func runHeaderdumpHost(category: String, ctx: Context, runner: CommandRu
         cmd.append("-c")
         env = ["SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.runtimeRoot]
     }
-    let result = try runDumpStreaming(cmd, env: env, cwd: nil)
+    let result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
     return result
 }
@@ -1057,7 +1103,12 @@ private func shouldRetrySimulatorBoot(_ lastLines: [String]) -> Bool {
     return false
 }
 
-private func runHeaderdumpSimulator(category: String, ctx: Context, runner: CommandRunning) throws -> StreamingCommandResult {
+private func runHeaderdumpSimulator(
+    category: String,
+    ctx: Context,
+    runner: CommandRunning,
+    streamOutput: Bool
+) throws -> StreamingCommandResult {
     guard var device = ctx.device else { throw ToolingError.message("no simulator device available") }
     let sourcePath = "/System/Library/\(category)"
     let isRecursive = !category.contains("/")
@@ -1088,11 +1139,11 @@ private func runHeaderdumpSimulator(category: String, ctx: Context, runner: Comm
         env["SIMCTL_CHILD_PH_SWIFT_EVENTS"] = "1"
     }
 
-    var result = try runDumpStreaming(cmd, env: env, cwd: nil)
+    var result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
     if result.status != 0, shouldRetrySimulatorBoot(result.lastLines) {
         try Simctl.ensureDeviceBooted(&device, runner: runner, force: true)
-        result = try runDumpStreaming(cmd, env: env, cwd: nil)
+        result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
         try throwIfTerminationRequested()
     }
     return result
@@ -1104,6 +1155,30 @@ private func reportLastLines(_ lines: [String]) {
     for line in lines {
         fputs(line + "\n", stderr)
     }
+}
+
+private func formatElapsedSeconds(since startNanos: UInt64) -> String {
+    let elapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds &- startNanos) / 1_000_000_000.0
+    return String(format: "%.1f", elapsedSeconds)
+}
+
+private func canInlineFrameworkProgress(ctx: Context) -> Bool {
+    guard isatty(STDOUT_FILENO) != 0 else { return false }
+    guard !ctx.verbose else { return false }
+    let env = ProcessInfo.processInfo.environment
+    if env["PH_PROFILE"] == "1" || env["SIMCTL_CHILD_PH_PROFILE"] == "1" { return false }
+    if env["PH_SWIFT_EVENTS"] == "1" || env["SIMCTL_CHILD_PH_SWIFT_EVENTS"] == "1" { return false }
+    if env["PH_SYMBOL_PROFILE"] == "1" || env["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] == "1" { return false }
+    return true
+}
+
+private func renderInlineProgressStart(_ text: String) {
+    FileHandle.standardOutput.write(Data(text.utf8))
+}
+
+private func renderInlineProgressEnd(_ text: String) {
+    let line = "\r\u{001B}[2K\(text)\n"
+    FileHandle.standardOutput.write(Data(line.utf8))
 }
 
 private func writeFailures(ctx: Context, summary: String, failures: [String]) throws {
