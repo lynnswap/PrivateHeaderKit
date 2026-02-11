@@ -59,15 +59,7 @@ Default output directory is `~/PrivateHeaderKit/generated-headers/iOS/<version>`
 This dumps both `Frameworks` and `PrivateFrameworks`.
 (Relative paths passed to `--out` / `PH_OUT_DIR` are resolved from the current directory. If you want the old output under this repo, run from the repo root and pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
 
-### 3) Dump macOS headers
-
-```
-privateheaderkit-dump --platform macos
-```
-
-Default output directory is `~/PrivateHeaderKit/generated-headers/macOS/<productVersion>`.
-
-### 4) List runtimes / devices (iOS only)
+### 3) List runtimes / devices (iOS only)
 
 ```
 privateheaderkit-dump --list-runtimes
@@ -76,21 +68,23 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 
 #### Options
 
-- `--platform <ios|macos>`: Target platform (default: `ios`; you can also set `PH_PLATFORM`)
-- `--device <udid|name>`: Choose a simulator device
-- `--out <dir>`: Output directory
-- `--force`: Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`)
-- `--skip-existing`: Skip frameworks that already exist (useful to override `PH_FORCE=1`)
-- `--exec-mode <host|simulator>`: Force execution mode
-- `--framework <name>`: Dump only the exact framework name (repeatable, `.framework` optional)
-- `--filter <substring>`: Substring filter for framework names (repeatable)
-- `--layout <bundle|headers>`: Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix)
-- `--list-runtimes`: List available iOS runtimes and exit
-- `--list-devices`: List devices for a runtime and exit (use `--runtime`)
-- `--runtime <version>`: Runtime version for `--list-devices`
-- `--json`: JSON output for list commands
-- `--shared-cache`: Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable)
-- `-D`, `--verbose`: Enable verbose logging
+| Option | Description |
+| --- | --- |
+| `--platform <ios\|macos>` | Target platform (default: `ios`; you can also set `PH_PLATFORM`) |
+| `--device <udid\|name>` | Choose a simulator device |
+| `--out <dir>` | Output directory |
+| `--force` | Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`) |
+| `--skip-existing` | Skip frameworks that already exist (useful to override `PH_FORCE=1`) |
+| `--exec-mode <host\|simulator>` | Force execution mode |
+| `--framework <name>` | Dump only the exact framework name (repeatable, `.framework` optional) |
+| `--filter <substring>` | Substring filter for framework names (repeatable) |
+| `--layout <bundle\|headers>` | Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix) |
+| `--list-runtimes` | List available iOS runtimes and exit |
+| `--list-devices` | List devices for a runtime and exit (use `--runtime`) |
+| `--runtime <version>` | Runtime version for `--list-devices` |
+| `--json` | JSON output for list commands |
+| `--shared-cache` | Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable) |
+| `-D`, `--verbose` | Enable verbose logging |
 
 `--list-runtimes`, `--list-devices`, `--runtime`, and `--device` are iOS-only options.
 

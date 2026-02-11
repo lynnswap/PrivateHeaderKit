@@ -603,9 +603,12 @@ private func printDevices(_ devices: [DeviceInfo]) {
 
 private func interactiveSetup(
     rootDir: URL,
+    hostHeaderdumpBin: URL?,
     headerdumpBin: URL,
     execMode: ExecMode,
+    requestedExecMode: ExecMode?,
     args: DumpArguments,
+    allowMacOSSelection: Bool,
     categories: [String],
     frameworkNames: Set<String>,
     frameworkFilters: [String],
@@ -616,22 +619,72 @@ private func interactiveSetup(
 ) throws -> Context {
     print("Interactive mode")
     let runtimes = try Simctl.listRuntimes(runner: runner)
-    guard !runtimes.isEmpty else { throw ToolingError.message("no available iOS runtimes found") }
-
-    print("Available iOS runtimes:")
+    let macOSSelectionIndex = allowMacOSSelection ? runtimes.count + 1 : nil
+    print("Available targets:")
     for (idx, r) in runtimes.enumerated() {
         print("  [\(idx + 1)] iOS \(r.version) (\(r.build))")
     }
-    let defaultIndex = runtimes.count
-    print("Select runtime (Enter for latest): ", terminator: "")
-    let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    try throwIfTerminationRequested()
-    let runtime: RuntimeInfo
-    if choice.isEmpty {
-        runtime = runtimes[defaultIndex - 1]
-    } else if let idx = Int(choice), idx > 0, idx <= runtimes.count {
-        runtime = runtimes[idx - 1]
+    if let macOSSelectionIndex {
+        print("  [\(macOSSelectionIndex)] macOS")
+    }
+    let defaultLabel: String
+    if runtimes.isEmpty {
+        if allowMacOSSelection {
+            defaultLabel = "macOS"
+        } else {
+            throw ToolingError.message("no iOS runtimes available")
+        }
     } else {
+        defaultLabel = "latest iOS"
+    }
+    print("Select target (Enter for \(defaultLabel)): ", terminator: "")
+    let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    try throwIfTerminationRequested()
+
+    enum InteractiveTarget {
+        case ios(RuntimeInfo)
+        case macos
+    }
+
+    let target: InteractiveTarget
+    if choice.isEmpty {
+        if let runtime = runtimes.last {
+            target = .ios(runtime)
+        } else if allowMacOSSelection {
+            target = .macos
+        } else {
+            throw ToolingError.message("no iOS runtimes available")
+        }
+    } else if let idx = Int(choice), idx > 0, idx <= runtimes.count {
+        target = .ios(runtimes[idx - 1])
+    } else if allowMacOSSelection, let idx = Int(choice), idx == macOSSelectionIndex {
+        target = .macos
+    } else if allowMacOSSelection, choice == "macos" {
+        target = .macos
+    } else {
+        throw ToolingError.message("invalid selection")
+    }
+
+    if case .macos = target {
+        try validatePlatformArguments(args: args, platform: .macos, requestedExecMode: requestedExecMode)
+        guard let hostHeaderdumpBin else {
+            throw ToolingError.message("headerdump not found (run `swift run -c release privateheaderkit-install` first)")
+        }
+        return try macOSSetup(
+            rootDir: rootDir,
+            headerdumpBin: hostHeaderdumpBin,
+            args: args,
+            categories: categories,
+            frameworkNames: frameworkNames,
+            frameworkFilters: frameworkFilters,
+            layout: layout,
+            useSharedCache: useSharedCache,
+            verbose: verbose,
+            runner: runner
+        )
+    }
+
+    guard case let .ios(runtime) = target else {
         throw ToolingError.message("invalid selection")
     }
 
@@ -829,6 +882,7 @@ private func run() throws {
     let args = Array(CommandLine.arguments.dropFirst())
     let parsed = try parseArguments(args)
     try throwIfTerminationRequested()
+    let hasExplicitPlatform = parsed.platform != nil || normalizedEnvValue(env["PH_PLATFORM"]) != nil
     let platform = try resolvePlatform(parsed, env: env)
     let requestedExecMode = try resolveRequestedExecMode(parsed, env: env)
     try validatePlatformArguments(args: parsed, platform: platform, requestedExecMode: requestedExecMode)
@@ -903,9 +957,12 @@ private func run() throws {
         if parsed.version == nil {
             return try interactiveSetup(
                 rootDir: rootDir,
+                hostHeaderdumpBin: binaries.host,
                 headerdumpBin: headerdumpBin,
                 execMode: mode,
+                requestedExecMode: requestedExecMode,
                 args: parsed,
+                allowMacOSSelection: !hasExplicitPlatform && requestedExecMode != .simulator,
                 categories: categories,
                 frameworkNames: frameworkNames,
                 frameworkFilters: frameworkFilters,
