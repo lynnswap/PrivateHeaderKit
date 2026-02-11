@@ -1138,6 +1138,9 @@ private func runHeaderdumpSimulator(
     if parentEnv["SIMCTL_CHILD_PH_SWIFT_EVENTS"] == nil, parentEnv["PH_SWIFT_EVENTS"] == "1" {
         env["SIMCTL_CHILD_PH_SWIFT_EVENTS"] = "1"
     }
+    if parentEnv["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] == nil, parentEnv["PH_SYMBOL_PROFILE"] == "1" {
+        env["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] = "1"
+    }
 
     var result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
