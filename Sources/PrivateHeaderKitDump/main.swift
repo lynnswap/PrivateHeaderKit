@@ -962,7 +962,7 @@ private func run() throws {
                 execMode: mode,
                 requestedExecMode: requestedExecMode,
                 args: parsed,
-                allowMacOSSelection: !hasExplicitPlatform,
+                allowMacOSSelection: !hasExplicitPlatform && requestedExecMode != .simulator,
                 categories: categories,
                 frameworkNames: frameworkNames,
                 frameworkFilters: frameworkFilters,
