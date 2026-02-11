@@ -1,5 +1,5 @@
 {
-  "originHash" : "510b380a50ece780468b01d398fd3fe77ee0366df88a4ff589b08165115ddefe",
+  "originHash" : "a76ec9cad0a8cdadac34a4a7d9bba58472fd46ba3d7f4a94143c29783018540e",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -69,8 +69,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "3d6165d8dd4edd17937be00811a76225c0a947b6",
-        "version" : "0.8.3"
+        "revision" : "5d032fd36443dd060d149c79e1beb945b0f4f2f8"
       }
     },
     {
@@ -168,8 +167,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-dependencies",
       "state" : {
-        "revision" : "411297072220a96f1501211afebd3715316907d2",
-        "version" : "1.10.1"
+        "revision" : "c79f72b3e67a1eb64f66f76704c22ed6a5c1ed84",
+        "version" : "1.11.0"
       }
     },
     {
@@ -249,8 +248,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jpsim/Yams",
       "state" : {
-        "revision" : "51b5127c7fb6ffac106ad6d199aaa33c5024895f",
-        "version" : "6.2.0"
+        "revision" : "deaf82e867fa2cbd3cd865978b079bfcf384ac28",
+        "version" : "6.2.1"
       }
     }
   ],
