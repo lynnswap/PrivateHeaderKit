@@ -2,7 +2,10 @@
 
 [English](README.md)
 
-iOS Simulator のランタイム（dyld shared cache）から private framework のヘッダを生成します。
+iOS / macOS の private framework ヘッダを生成します。
+
+- iOS: Simulator ランタイム（dyld shared cache）から生成
+- macOS: ホストの `/System/Library/{Frameworks,PrivateFrameworks}` から生成
 
 ## インストール
 
@@ -56,7 +59,15 @@ privateheaderkit-dump 26.2
 `Frameworks` と `PrivateFrameworks` をまとめて出力します。  
 （`--out` / `PH_OUT_DIR` に指定した相対パスはカレントディレクトリを基準に解釈されます。従来どおりリポジトリ配下に出したい場合は、リポジトリrootで実行して `--out generated-headers/iOS/<version>` を指定するか `PH_OUT_DIR` を指定してください）
 
-### 3) ランタイム/デバイス一覧
+### 3) macOS ヘッダをダンプ
+
+```
+privateheaderkit-dump --platform macos
+```
+
+デフォルト出力先は `~/PrivateHeaderKit/generated-headers/macOS/<productVersion>` です。
+
+### 4) ランタイム/デバイス一覧（iOS専用）
 
 ```
 privateheaderkit-dump --list-runtimes
@@ -65,6 +76,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 
 #### オプション
 
+- `--platform <ios|macos>`: 対象プラットフォーム（デフォルトは `ios`。`PH_PLATFORM` でも指定可）
 - `--device <udid|name>`: 対象シミュレーターを指定
 - `--out <dir>`: 出力先を指定
 - `--force`: 既存ヘッダがあっても常に再生成する（成功したフレームワークは出力を丸ごと置換。失敗分は既存出力を残し `_failures.txt` に記録）
@@ -80,6 +92,8 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 - `--shared-cache`: dyld shared cache を使ってダンプ（デフォルト有効。無効化は `PH_SHARED_CACHE=0`）
 - `-D`, `--verbose`: 詳細ログ
 
+`--list-runtimes` / `--list-devices` / `--runtime` / `--device` は iOS 専用オプションです。
+
 ## メモ
 
 - Xcode command line tools（`xcrun`, `xcodebuild`）が必要です。
@@ -88,7 +102,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 - 実行中は出力ディレクトリをロックして、同時書き込みを防ぎます。
 - `-D` での詳細ログ時も、スキップクラスのログはデフォルトで出さない（`PH_VERBOSE_SKIP=1` で表示）。
 - 自動作成するデバイスタイプは `PH_DEVICE_TYPE` で指定可能（デバイス名または identifier）。
-- 環境変数で上書き可能: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
+- 環境変数で上書き可能: `PH_PLATFORM`, `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
 
 ## ライセンス
 

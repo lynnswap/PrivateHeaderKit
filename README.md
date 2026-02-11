@@ -2,7 +2,10 @@
 
 [日本語](README.ja.md)
 
-Generate iOS private framework headers from simulator runtimes (dyld shared cache).
+Generate private framework headers for iOS and macOS.
+
+- iOS: dump from simulator runtimes (dyld shared cache).
+- macOS: dump from host `/System/Library/{Frameworks,PrivateFrameworks}`.
 
 ## Installation
 
@@ -56,7 +59,15 @@ Default output directory is `~/PrivateHeaderKit/generated-headers/iOS/<version>`
 This dumps both `Frameworks` and `PrivateFrameworks`.
 (Relative paths passed to `--out` / `PH_OUT_DIR` are resolved from the current directory. If you want the old output under this repo, run from the repo root and pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
 
-### 3) List runtimes / devices
+### 3) Dump macOS headers
+
+```
+privateheaderkit-dump --platform macos
+```
+
+Default output directory is `~/PrivateHeaderKit/generated-headers/macOS/<productVersion>`.
+
+### 4) List runtimes / devices (iOS only)
 
 ```
 privateheaderkit-dump --list-runtimes
@@ -65,6 +76,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 
 #### Options
 
+- `--platform <ios|macos>`: Target platform (default: `ios`; you can also set `PH_PLATFORM`)
 - `--device <udid|name>`: Choose a simulator device
 - `--out <dir>`: Output directory
 - `--force`: Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`)
@@ -80,6 +92,8 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 - `--shared-cache`: Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable)
 - `-D`, `--verbose`: Enable verbose logging
 
+`--list-runtimes`, `--list-devices`, `--runtime`, and `--device` are iOS-only options.
+
 ## Notes
 
 - Requires Xcode command line tools (`xcrun`, `xcodebuild`).
@@ -88,7 +102,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 - The output directory is locked for the duration of a run to avoid concurrent writes.
 - Verbose mode suppresses skipped-class logs by default; set `PH_VERBOSE_SKIP=1` to show them.
 - You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
-- Environment overrides: `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
+- Environment overrides: `PH_PLATFORM`, `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
 
 ## License
 

@@ -15,6 +15,11 @@ private enum ExecMode: String {
     case simulator
 }
 
+private enum TargetPlatform: String {
+    case ios
+    case macos
+}
+
 private struct DumpArguments {
     var version: String?
     var device: String?
@@ -26,6 +31,7 @@ private struct DumpArguments {
     var listDevices: Bool = false
     var runtimeForListDevices: String?
     var json: Bool = false
+    var platform: TargetPlatform?
     var layout: String?
     var frameworks: [String] = []
     var filters: [String] = []
@@ -33,13 +39,20 @@ private struct DumpArguments {
     var verbose: Bool = false
 }
 
+private struct MacOSVersionInfo {
+    let productVersion: String
+    let buildVersion: String
+}
+
 private struct Context {
+    var platform: TargetPlatform
     var execMode: ExecMode
     var headerdumpBin: URL
-    var version: String
-    var runtimeRoot: String
-    var runtimeId: String
-    var runtimeBuild: String
+    var osVersionLabel: String
+    var systemRoot: String
+    var runtimeId: String?
+    var runtimeBuild: String?
+    var macOSBuildVersion: String?
     var device: DeviceInfo?
     var outDir: URL
     var stageDir: URL
@@ -52,7 +65,8 @@ private struct Context {
     var frameworkFilters: [String]
 
     var isSplit: Bool {
-        execMode == .simulator || !frameworkNames.isEmpty || !frameworkFilters.isEmpty || skipExisting
+        // macOS host dumps are more reliable/observable per framework than a single recursive run.
+        platform == .macos || execMode == .simulator || !frameworkNames.isEmpty || !frameworkFilters.isEmpty || skipExisting
     }
 }
 
@@ -93,20 +107,28 @@ private func throwIfTerminationRequested() throws {
     }
 }
 
-private func defaultOutDir(version: String, fallbackRoot: URL) -> URL {
+private func defaultOutDir(platform: TargetPlatform, version: String, fallbackRoot: URL) -> URL {
+    let platformDir = platform == .ios ? "iOS" : "macOS"
     let fileManager = FileManager.default
     let home = fileManager.homeDirectoryForCurrentUser
     if home.path.hasPrefix("/") {
         return home
             .appendingPathComponent("PrivateHeaderKit", isDirectory: true)
-            .appendingPathComponent("generated-headers/iOS", isDirectory: true)
+            .appendingPathComponent("generated-headers/\(platformDir)", isDirectory: true)
             .appendingPathComponent(version, isDirectory: true)
     }
 
     // Extremely defensive fallback (shouldn't happen on macOS): keep the old repo-relative behavior.
     return fallbackRoot
-        .appendingPathComponent("generated-headers/iOS", isDirectory: true)
+        .appendingPathComponent("generated-headers/\(platformDir)", isDirectory: true)
         .appendingPathComponent(version, isDirectory: true)
+}
+
+private func normalizedEnvValue(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+        return nil
+    }
+    return trimmed
 }
 
 private func runDumpStreaming(
@@ -217,10 +239,12 @@ private func printUsage() {
     Examples:
       privateheaderkit-dump
       privateheaderkit-dump 26.2
+      privateheaderkit-dump --platform macos --framework AppKit
       privateheaderkit-dump --list-runtimes
       privateheaderkit-dump --list-devices --runtime 26.0.1
 
     Options:
+      --platform <ios|macos>    Target platform (default: ios; can also use PH_PLATFORM)
       --device <udid|name>        Choose a simulator device
       --out <dir>                Output directory
       --force                    Always dump even if headers already exist
@@ -252,6 +276,14 @@ private func parseArguments(_ args: [String]) throws -> DumpArguments {
         case "--device":
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--device requires a value") }
             parsed.device = args[idx + 1]
+            idx += 2
+        case "--platform":
+            guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--platform requires a value") }
+            let value = args[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let platform = TargetPlatform(rawValue: value) else {
+                throw ToolingError.invalidArgument("invalid platform: \(args[idx + 1])")
+            }
+            parsed.platform = platform
             idx += 2
         case "--out":
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--out requires a value") }
@@ -315,6 +347,63 @@ private func parseArguments(_ args: [String]) throws -> DumpArguments {
         }
     }
     return parsed
+}
+
+private func resolvePlatform(_ args: DumpArguments, env: [String: String]) throws -> TargetPlatform {
+    if let platform = args.platform {
+        return platform
+    }
+    if let envPlatform = normalizedEnvValue(env["PH_PLATFORM"])?.lowercased() {
+        guard let platform = TargetPlatform(rawValue: envPlatform) else {
+            throw ToolingError.invalidArgument("invalid PH_PLATFORM: \(envPlatform)")
+        }
+        return platform
+    }
+    return .ios
+}
+
+private func resolveRequestedExecMode(_ args: DumpArguments, env: [String: String]) throws -> ExecMode? {
+    if let execMode = args.execMode {
+        return execMode
+    }
+    if let envMode = normalizedEnvValue(env["PH_EXEC_MODE"])?.lowercased() {
+        guard let execMode = ExecMode(rawValue: envMode) else {
+            throw ToolingError.invalidArgument("invalid PH_EXEC_MODE: \(envMode)")
+        }
+        return execMode
+    }
+    return nil
+}
+
+private func validatePlatformArguments(args: DumpArguments, platform: TargetPlatform, requestedExecMode: ExecMode?) throws {
+    guard platform == .macos else { return }
+
+    if args.version != nil {
+        throw ToolingError.invalidArgument("version argument is not supported for --platform macos")
+    }
+    if args.listRuntimes || args.listDevices || args.runtimeForListDevices != nil {
+        throw ToolingError.invalidArgument("--list-runtimes / --list-devices / --runtime are iOS-only options")
+    }
+    if args.device != nil {
+        throw ToolingError.invalidArgument("--device is an iOS-only option")
+    }
+    if requestedExecMode == .simulator {
+        throw ToolingError.invalidArgument("--exec-mode simulator is not supported for --platform macos")
+    }
+}
+
+private func swVersValue(_ args: [String], runner: CommandRunning) throws -> String {
+    let output = try runner.runCapture(args, env: nil, cwd: nil)
+    guard let value = normalizedEnvValue(output) else {
+        throw ToolingError.message("failed to read value from: \(args.joined(separator: " "))")
+    }
+    return value
+}
+
+private func readMacOSVersionInfo(runner: CommandRunning) throws -> MacOSVersionInfo {
+    let productVersion = try swVersValue(["sw_vers", "-productVersion"], runner: runner)
+    let buildVersion = try swVersValue(["sw_vers", "-buildVersion"], runner: runner)
+    return MacOSVersionInfo(productVersion: productVersion, buildVersion: buildVersion)
 }
 
 private func resolveLayout(_ requested: String?, env: [String: String]) throws -> String {
@@ -395,7 +484,16 @@ private func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileMan
     return markers.allSatisfy { fileManager.fileExists(atPath: $0.path) }
 }
 
-private func resolveExecMode(_ requested: ExecMode?, headerdumpHost: URL?, headerdumpSim: URL?, runner: CommandRunning) -> ExecMode {
+private func resolveExecMode(
+    platform: TargetPlatform,
+    requested: ExecMode?,
+    headerdumpHost: URL?,
+    headerdumpSim: URL?,
+    runner: CommandRunning
+) -> ExecMode {
+    if platform == .macos {
+        return .host
+    }
     if let requested { return requested }
     if let _ = headerdumpSim, (try? Simctl.listRuntimes(runner: runner))?.isEmpty == false {
         return .simulator
@@ -560,10 +658,10 @@ private func interactiveSetup(
     }
 
     let env = ProcessInfo.processInfo.environment
-    let defaultOut = defaultOutDir(version: runtime.version, fallbackRoot: rootDir)
-    let envOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let defaultOut = defaultOutDir(platform: .ios, version: runtime.version, fallbackRoot: rootDir)
+    let envOutDir = normalizedEnvValue(env["PH_OUT_DIR"])
     let outDir = args.outDir
-        ?? envOutDir.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        ?? envOutDir.map { URL(fileURLWithPath: $0) }
         ?? defaultOut
     let stageDir = FileOps.buildStageDir(outDir: outDir)
     let skipExisting = resolveSkipExisting(args, env: env)
@@ -574,12 +672,14 @@ private func interactiveSetup(
     print("Output directory: \(outDir.path)")
 
     return Context(
+        platform: .ios,
         execMode: execMode,
         headerdumpBin: headerdumpBin.resolvingSymlinksInPath(),
-        version: runtime.version,
-        runtimeRoot: runtime.runtimeRoot,
+        osVersionLabel: runtime.version,
+        systemRoot: runtime.runtimeRoot,
         runtimeId: runtime.identifier,
         runtimeBuild: runtime.build,
+        macOSBuildVersion: nil,
         device: device,
         outDir: outDir.resolvingSymlinksInPath(),
         stageDir: stageDir.resolvingSymlinksInPath(),
@@ -632,22 +732,71 @@ private func nonInteractiveSetup(
     }
 
     let env = ProcessInfo.processInfo.environment
-    let defaultOut = defaultOutDir(version: version, fallbackRoot: rootDir)
-    let envOutDir = env["PH_OUT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let defaultOut = defaultOutDir(platform: .ios, version: version, fallbackRoot: rootDir)
+    let envOutDir = normalizedEnvValue(env["PH_OUT_DIR"])
     let outDir = args.outDir
-        ?? envOutDir.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        ?? envOutDir.map { URL(fileURLWithPath: $0) }
         ?? defaultOut
     let stageDir = FileOps.buildStageDir(outDir: outDir)
     let skipExisting = resolveSkipExisting(args, env: env)
 
     return Context(
+        platform: .ios,
         execMode: execMode,
         headerdumpBin: headerdumpBin.resolvingSymlinksInPath(),
-        version: version,
-        runtimeRoot: runtime.runtimeRoot,
+        osVersionLabel: version,
+        systemRoot: runtime.runtimeRoot,
         runtimeId: runtime.identifier,
         runtimeBuild: runtime.build,
+        macOSBuildVersion: nil,
         device: device,
+        outDir: outDir.resolvingSymlinksInPath(),
+        stageDir: stageDir.resolvingSymlinksInPath(),
+        skipExisting: skipExisting,
+        useSharedCache: useSharedCache,
+        verbose: verbose,
+        layout: layout,
+        categories: categories,
+        frameworkNames: frameworkNames,
+        frameworkFilters: frameworkFilters
+    )
+}
+
+private func macOSSetup(
+    rootDir: URL,
+    headerdumpBin: URL,
+    args: DumpArguments,
+    categories: [String],
+    frameworkNames: Set<String>,
+    frameworkFilters: [String],
+    layout: String,
+    useSharedCache: Bool,
+    verbose: Bool,
+    runner: CommandRunning
+) throws -> Context {
+    let macOSVersion = try readMacOSVersionInfo(runner: runner)
+    let env = ProcessInfo.processInfo.environment
+    let defaultOut = defaultOutDir(platform: .macos, version: macOSVersion.productVersion, fallbackRoot: rootDir)
+    let envOutDir = normalizedEnvValue(env["PH_OUT_DIR"])
+    let outDir = args.outDir
+        ?? envOutDir.map { URL(fileURLWithPath: $0) }
+        ?? defaultOut
+    let stageDir = FileOps.buildStageDir(outDir: outDir)
+    let skipExisting = resolveSkipExisting(args, env: env)
+
+    print("Using host macOS \(macOSVersion.productVersion) (\(macOSVersion.buildVersion))")
+    print("Output directory: \(outDir.path)")
+
+    return Context(
+        platform: .macos,
+        execMode: .host,
+        headerdumpBin: headerdumpBin.resolvingSymlinksInPath(),
+        osVersionLabel: macOSVersion.productVersion,
+        systemRoot: "/",
+        runtimeId: nil,
+        runtimeBuild: nil,
+        macOSBuildVersion: macOSVersion.buildVersion,
+        device: nil,
         outDir: outDir.resolvingSymlinksInPath(),
         stageDir: stageDir.resolvingSymlinksInPath(),
         skipExisting: skipExisting,
@@ -680,6 +829,9 @@ private func run() throws {
     let args = Array(CommandLine.arguments.dropFirst())
     let parsed = try parseArguments(args)
     try throwIfTerminationRequested()
+    let platform = try resolvePlatform(parsed, env: env)
+    let requestedExecMode = try resolveRequestedExecMode(parsed, env: env)
+    try validatePlatformArguments(args: parsed, platform: platform, requestedExecMode: requestedExecMode)
 
     if parsed.listRuntimes {
         try listRuntimesCommand(jsonOutput: parsed.json, runner: runner)
@@ -701,9 +853,14 @@ private func run() throws {
     let rootDir = repoRoot ?? cwdURL
 
     let binaries = resolveHeaderdumpBinaries(rootDir: repoRoot, env: env)
-    let requestedExecMode = parsed.execMode ?? ExecMode(rawValue: (env["PH_EXEC_MODE"] ?? "").lowercased())
     let autoExecMode = requestedExecMode == nil
-    var execMode = resolveExecMode(requestedExecMode, headerdumpHost: binaries.host, headerdumpSim: binaries.sim, runner: runner)
+    var execMode = resolveExecMode(
+        platform: platform,
+        requested: requestedExecMode,
+        headerdumpHost: binaries.host,
+        headerdumpSim: binaries.sim,
+        runner: runner
+    )
 
     let (categories, frameworkNames, frameworkFilters) = buildSelection(parsed)
     let layout = try resolveLayout(parsed.layout, env: env)
@@ -711,6 +868,24 @@ private func run() throws {
     let verbose = resolveVerbose(parsed, env: env)
 
     func setupContext(_ mode: ExecMode) throws -> Context {
+        if platform == .macos {
+            guard let host = binaries.host else {
+                throw ToolingError.message("headerdump not found (run `swift run -c release privateheaderkit-install` first)")
+            }
+            return try macOSSetup(
+                rootDir: rootDir,
+                headerdumpBin: host,
+                args: parsed,
+                categories: categories,
+                frameworkNames: frameworkNames,
+                frameworkFilters: frameworkFilters,
+                layout: layout,
+                useSharedCache: useSharedCache,
+                verbose: verbose,
+                runner: runner
+            )
+        }
+
         let headerdumpBin: URL
         switch mode {
         case .host:
@@ -759,7 +934,7 @@ private func run() throws {
     do {
         ctx = try setupContext(execMode)
     } catch {
-        if autoExecMode, execMode == .simulator, shouldFallbackToHost(error), binaries.host != nil {
+        if platform == .ios, autoExecMode, execMode == .simulator, shouldFallbackToHost(error), binaries.host != nil {
             fputs("Simulator unavailable; falling back to host: \(error)\n", stderr)
             execMode = .host
             ctx = try setupContext(execMode)
@@ -774,7 +949,7 @@ private func run() throws {
             try Simctl.ensureDeviceBooted(&device, runner: runner, force: false)
             ctx.device = device
         } catch {
-            if autoExecMode, execMode == .simulator, binaries.host != nil {
+            if platform == .ios, autoExecMode, execMode == .simulator, binaries.host != nil {
                 fputs("Simulator unavailable; falling back to host: \(error)\n", stderr)
                 execMode = .host
                 ctx = try setupContext(execMode)
@@ -800,11 +975,12 @@ private func run() throws {
     try writeMetadata(ctx: ctx, runner: runner)
     let elapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds &- runStart) / 1_000_000_000.0
     let elapsedText = String(format: "%.1f", elapsedSeconds)
-    print("Done: \(ctx.outDir.path) (elapsed: \(elapsedText)s)")
+    let platformLabel = ctx.platform == .ios ? "iOS" : "macOS"
+    print("Done (\(platformLabel)): \(ctx.outDir.path) (elapsed: \(elapsedText)s)")
 }
 
 private func listFrameworks(category: String, ctx: Context) throws -> [String] {
-    let dirURL = URL(fileURLWithPath: ctx.runtimeRoot, isDirectory: true)
+    let dirURL = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
         .appendingPathComponent("System/Library", isDirectory: true)
         .appendingPathComponent(category, isDirectory: true)
     guard FileOps.isDirectory(dirURL) else {
@@ -949,7 +1125,7 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
 private func relocateFrameworkOutput(ctx: Context, category: String, frameworkName: String) throws {
     let fileManager = FileManager.default
     var src: URL?
-    for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.runtimeRoot) {
+    for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
         let candidate = base.appendingPathComponent(category, isDirectory: true).appendingPathComponent(frameworkName, isDirectory: true)
         if fileManager.fileExists(atPath: candidate.path), !FileOps.isSymlink(candidate) {
             src = candidate
@@ -981,7 +1157,7 @@ private func relocateFrameworksInCategory(ctx: Context, category: String) throws
     try fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
     let overwrite = !ctx.skipExisting
 
-    for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.runtimeRoot) {
+    for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
         let srcDir = base.appendingPathComponent(category, isDirectory: true)
         if !FileOps.isDirectory(srcDir) || FileOps.isSymlink(srcDir) { continue }
         let entries = try fileManager.contentsOfDirectory(at: srcDir, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [])
@@ -1068,7 +1244,7 @@ private func runHeaderdumpHost(
     runner: CommandRunning,
     streamOutput: Bool
 ) throws -> StreamingCommandResult {
-    let sourcePath = URL(fileURLWithPath: ctx.runtimeRoot, isDirectory: true)
+    let sourcePath = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
         .appendingPathComponent("System/Library", isDirectory: true)
         .appendingPathComponent(category, isDirectory: false)
         .path
@@ -1083,11 +1259,14 @@ private func runHeaderdumpHost(
     cmd += ["-b", "-h"]
     if ctx.verbose { cmd.append("-D") }
     if ctx.skipExisting { cmd.append("-s") }
+    if ctx.platform == .macos { cmd.append("-R") }
 
     var env: [String: String]? = nil
     if ctx.useSharedCache {
         cmd.append("-c")
-        env = ["SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.runtimeRoot]
+        if ctx.platform == .ios {
+            env = ["SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.systemRoot]
+        }
     }
     let result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
@@ -1125,8 +1304,8 @@ private func runHeaderdumpSimulator(
     if ctx.useSharedCache { cmd.append("-c") }
 
     var env: [String: String] = [
-        "SIMCTL_CHILD_PH_RUNTIME_ROOT": ctx.runtimeRoot,
-        "SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.runtimeRoot,
+        "SIMCTL_CHILD_PH_RUNTIME_ROOT": ctx.systemRoot,
+        "SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.systemRoot,
     ]
     // `simctl spawn` only forwards environment variables to the child when they are prefixed with
     // `SIMCTL_CHILD_`. Map the unprefixed host env vars to the child-prefixed versions so users
@@ -1212,18 +1391,36 @@ private func writeMetadata(ctx: Context, runner: CommandRunning) throws {
     let generatedAt = formatter.string(from: Date())
     let skip = ctx.skipExisting ? "-s" : ""
 
-    let metadata = """
-    Generated: \(generatedAt)
-    RuntimeRoot: \(ctx.runtimeRoot)
-    RuntimeIdentifier: \(ctx.runtimeId)
-    RuntimeBuild: \(ctx.runtimeBuild)
-    iOS: \(ctx.version)
-    HeadersPath: \(ctx.outDir.path)
-    Layout: \(ctx.layout)
-    HeaderCount: \(headerCount)
-    Xcode: \(xcodeInfo)
-    Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
-    """
+    let metadata: String
+    switch ctx.platform {
+    case .ios:
+        metadata = """
+        Generated: \(generatedAt)
+        Platform: iOS
+        RuntimeRoot: \(ctx.systemRoot)
+        RuntimeIdentifier: \(ctx.runtimeId ?? "unknown")
+        RuntimeBuild: \(ctx.runtimeBuild ?? "unknown")
+        iOS: \(ctx.osVersionLabel)
+        HeadersPath: \(ctx.outDir.path)
+        Layout: \(ctx.layout)
+        HeaderCount: \(headerCount)
+        Xcode: \(xcodeInfo)
+        Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
+        """
+    case .macos:
+        metadata = """
+        Generated: \(generatedAt)
+        Platform: macOS
+        SourceRoot: \(ctx.systemRoot)
+        macOS: \(ctx.osVersionLabel)
+        BuildVersion: \(ctx.macOSBuildVersion ?? "unknown")
+        HeadersPath: \(ctx.outDir.path)
+        Layout: \(ctx.layout)
+        HeaderCount: \(headerCount)
+        Xcode: \(xcodeInfo)
+        Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
+        """
+    }
 
     let path = ctx.outDir.appendingPathComponent("_metadata.txt")
     try metadata.write(to: path, atomically: true, encoding: .utf8)
