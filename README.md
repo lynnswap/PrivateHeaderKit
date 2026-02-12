@@ -61,14 +61,13 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 
 ### 3) Dump specific targets (`--target`)
 
-By default, `privateheaderkit-dump` dumps `/System/Library/{Frameworks,PrivateFrameworks}`.
-
-If you pass one or more `--target` flags, it dumps only those targets (no implicit defaults).
+`--target` lets you select what to dump (repeatable, additive).  
+If you don't pass `--target`, it's the same as `--target @frameworks`.
 
 Examples:
 
 ```
-# A single framework (nested XPCServices/PlugIns are dumped by default)
+# A single framework
 privateheaderkit-dump 26.2 --target SafariShared
 
 # A single SystemLibrary bundle
@@ -77,10 +76,13 @@ privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
 # A single usr/lib dylib
 privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
 
-# Presets (large outputs)
+# Presets
 privateheaderkit-dump 26.2 --target @frameworks
 privateheaderkit-dump 26.2 --target @system
 privateheaderkit-dump 26.2 --target @all
+
+# "All frameworks" + "one SystemLibrary bundle"
+privateheaderkit-dump 26.2 --target @frameworks --target PreferenceBundles/Foo.bundle
 
 # Disable nested bundle dumping
 privateheaderkit-dump 26.2 --target SafariShared --no-nested
@@ -106,7 +108,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--force` | Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`) |
 | `--skip-existing` | Skip frameworks that already exist (useful to override `PH_FORCE=1`) |
 | `--exec-mode <host\|simulator>` | Force execution mode |
-| `--target <value>` | Dump target (repeatable). Presets: `@frameworks`, `@system`, `@all`. |
+| `--target <value>` | Select dump target (repeatable, additive). If omitted, it's the same as `@frameworks`. Presets: `@frameworks`, `@system`, `@all`. |
 | `--no-nested` | Disable nested `XPCServices` / `PlugIns` bundle dumping (default: enabled) |
 | `--layout <bundle\|headers>` | Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix) |
 | `--framework <name>` | (Legacy) Dump only the exact framework name (repeatable, `.framework` optional) |

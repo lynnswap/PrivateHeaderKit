@@ -76,7 +76,13 @@ private struct Context {
 
     var isSplit: Bool {
         // macOS host dumps are more reliable/observable per framework than a single recursive run.
-        platform == .macos || execMode == .simulator || !frameworkNames.isEmpty || !frameworkFilters.isEmpty || skipExisting
+        // Also: nested bundle dumping (XPCServices/PlugIns) is implemented via per-bundle invocations.
+        platform == .macos
+            || execMode == .simulator
+            || nestedEnabled
+            || !frameworkNames.isEmpty
+            || !frameworkFilters.isEmpty
+            || skipExisting
     }
 }
 
@@ -263,7 +269,9 @@ private func printUsage() {
       --force                    Always dump even if headers already exist
       --skip-existing             Skip frameworks that already exist (useful to override PH_FORCE=1)
       --exec-mode <host|simulator>
-      --target <value>           Dump target (repeatable)
+      --target <value>           Select dump target (repeatable, additive)
+                                - If omitted: dumps all frameworks (@frameworks)
+                                - If present: dumps ONLY the selected targets
                                 Presets: @frameworks | @system | @all
                                 Framework: SafariShared
                                 SystemLibrary item: PreferenceBundles/Foo.bundle

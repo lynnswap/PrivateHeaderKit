@@ -61,12 +61,11 @@ privateheaderkit-dump 26.2
 
 ### 3) 対象を指定してダンプする（`--target`）
 
-既定では `/System/Library/{Frameworks,PrivateFrameworks}` を対象にダンプします。
-
-`--target` を 1 つでも指定した場合は、指定したターゲットだけをダンプします（暗黙のデフォルトは無し）。
+`--target` を使うと、ダンプ対象を選べます（複数指定可・足し算）。  
+`--target` を付けない場合は `--target @frameworks` と同じです。
 
 ```
-# Framework 1つ（ネストバンドルもデフォルトで出力）
+# Framework 1つ
 privateheaderkit-dump 26.2 --target SafariShared
 
 # SystemLibrary の bundle 1つ
@@ -75,10 +74,13 @@ privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
 # /usr/lib の dylib 1つ
 privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
 
-# プリセット（大量出力）
+# プリセット
 privateheaderkit-dump 26.2 --target @frameworks
 privateheaderkit-dump 26.2 --target @system
 privateheaderkit-dump 26.2 --target @all
+
+# 「Frameworks 全部」+「SystemLibrary の bundle 1つ」
+privateheaderkit-dump 26.2 --target @frameworks --target PreferenceBundles/Foo.bundle
 
 # ネストバンドルのダンプを無効化
 privateheaderkit-dump 26.2 --target SafariShared --no-nested
@@ -104,7 +106,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--force` | 既存ヘッダがあっても常に再生成する（成功したフレームワークは出力を丸ごと置換。失敗分は既存出力を残し `_failures.txt` に記録） |
 | `--skip-existing` | 既に出力済みのフレームワークはスキップ（`PH_FORCE=1` を一時的に打ち消したい場合など） |
 | `--exec-mode <host\|simulator>` | 実行モードを強制 |
-| `--target <value>` | ダンプ対象を指定（複数指定可）。プリセット: `@frameworks`, `@system`, `@all` |
+| `--target <value>` | ダンプ対象を指定（複数指定可・足し算）。省略すると `@frameworks`（`/System/Library/{Frameworks,PrivateFrameworks}` 全部）。プリセット: `@frameworks`, `@system`, `@all` |
 | `--no-nested` | ネストバンドル（`XPCServices` / `PlugIns`）のダンプを無効化（デフォルト有効） |
 | `--layout <bundle\|headers>` | 出力レイアウト（`bundle` は `.framework` を保持、`headers` は `.framework` を外す） |
 | `--framework <name>` | (Legacy) 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可） |
