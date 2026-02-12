@@ -121,6 +121,63 @@ public enum FileOps {
         return unique
     }
 
+    public static func normalizeBundleDir(
+        _ entry: URL,
+        allowedExtensions: Set<String>,
+        overwrite: Bool,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard isDirectory(entry) else { return entry }
+        let ext = entry.pathExtension.lowercased()
+        guard allowedExtensions.contains(ext) else { return entry }
+
+        let dest = entry.deletingPathExtension()
+
+        if fileManager.fileExists(atPath: dest.path), isSymlink(dest, fileManager: fileManager) {
+            try? fileManager.removeItem(at: dest)
+        }
+
+        if fileManager.fileExists(atPath: dest.path) {
+            if overwrite {
+                try? fileManager.removeItem(at: dest)
+                try fileManager.moveItem(at: entry, to: dest)
+            } else {
+                try mergeDirectories(src: entry, dest: dest, fileManager: fileManager)
+                tryRemoveEmpty(entry, fileManager: fileManager)
+            }
+        } else {
+            try fileManager.moveItem(at: entry, to: dest)
+        }
+
+        return dest
+    }
+
+    public static func normalizeBundleDirs(
+        in parentDir: URL,
+        allowedExtensions: Set<String>,
+        overwrite: Bool,
+        fileManager: FileManager = .default
+    ) throws {
+        guard isDirectory(parentDir) else { return }
+
+        let entries = try fileManager.contentsOfDirectory(
+            at: parentDir,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: []
+        )
+
+        for entry in entries {
+            if allowedExtensions.contains(entry.pathExtension.lowercased()), isSymlink(entry, fileManager: fileManager) {
+                try? fileManager.removeItem(at: entry)
+            }
+        }
+
+        for entry in entries {
+            if isSymlink(entry, fileManager: fileManager) { continue }
+            _ = try normalizeBundleDir(entry, allowedExtensions: allowedExtensions, overwrite: overwrite, fileManager: fileManager)
+        }
+    }
+
     public static func normalizeFrameworkDirs(in categoryDir: URL, overwrite: Bool, fileManager: FileManager = .default) throws {
         guard isDirectory(categoryDir) else { return }
         let frameworkExt = ".framework"

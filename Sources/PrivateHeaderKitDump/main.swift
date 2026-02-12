@@ -1111,6 +1111,25 @@ private func fileManagerIsDirectory(_ url: URL, fileManager: FileManager = .defa
     return fileManager.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
 }
 
+private let normalizedBundleExtensions: Set<String> = ["app", "bundle", "xpc", "appex"]
+
+private func normalizedBundleDirURLIfNeeded(_ url: URL) -> URL {
+    let ext = url.pathExtension.lowercased()
+    if normalizedBundleExtensions.contains(ext) {
+        return url.deletingPathExtension()
+    }
+    return url
+}
+
+private func normalizeNestedXPCAndPlugIns(in bundleDir: URL, overwrite: Bool) throws {
+    let fm = FileManager.default
+    let xpcDir = bundleDir.appendingPathComponent("XPCServices", isDirectory: true)
+    try FileOps.normalizeBundleDirs(in: xpcDir, allowedExtensions: ["xpc"], overwrite: overwrite, fileManager: fm)
+
+    let plugInsDir = bundleDir.appendingPathComponent("PlugIns", isDirectory: true)
+    try FileOps.normalizeBundleDirs(in: plugInsDir, allowedExtensions: ["appex"], overwrite: overwrite, fileManager: fm)
+}
+
 private func directoryContainsHeaderArtifacts(_ dir: URL, fileManager: FileManager = .default) -> Bool {
     guard fileManagerIsDirectory(dir, fileManager: fileManager) else { return false }
     guard let entries = try? fileManager.contentsOfDirectory(
@@ -1361,6 +1380,11 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
             try relocateFrameworkOutput(ctx: ctx, category: category, frameworkName: item)
             if ctx.layout == "headers" {
                 try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: !ctx.skipExisting)
+                let baseName = item.hasSuffix(".framework") ? String(item.dropLast(".framework".count)) : item
+                let dest = ctx.outDir
+                    .appendingPathComponent(category, isDirectory: true)
+                    .appendingPathComponent(baseName, isDirectory: true)
+                try normalizeNestedXPCAndPlugIns(in: dest, overwrite: !ctx.skipExisting)
             }
             if inlineProgress {
                 renderInlineProgressEnd("\(progressText) (elapsed: \(frameworkElapsedText)s)")
@@ -1395,12 +1419,16 @@ private func dumpSystemLibraryExtras(ctx: Context, runner: CommandRunning) throw
     let fileManager = FileManager.default
 
     let outBase = ctx.outDir.appendingPathComponent("SystemLibrary", isDirectory: true)
+    let normalizeBundles = (ctx.layout == "headers")
 
     for (idx, relPath) in items.enumerated() {
         try throwIfTerminationRequested()
 
         let dest = appendingRelativePath(outBase, relPath, isDirectory: true)
-        if ctx.skipExisting, bundleOutputHasHeaderArtifacts(dest, fileManager: fileManager) {
+        let normalizedDest = normalizedBundleDirURLIfNeeded(dest)
+        if ctx.skipExisting,
+           (bundleOutputHasHeaderArtifacts(dest, fileManager: fileManager) || bundleOutputHasHeaderArtifacts(normalizedDest, fileManager: fileManager))
+        {
             print("Skipping existing: SystemLibrary (\(idx + 1)/\(total)) \(relPath)")
             continue
         }
@@ -1439,6 +1467,17 @@ private func dumpSystemLibraryExtras(ctx: Context, runner: CommandRunning) throw
         }
 
         try relocateSystemLibraryItemOutput(ctx: ctx, systemLibraryRelativePath: relPath, destBaseDir: outBase)
+
+        if normalizeBundles {
+            var bundleDir = dest
+            bundleDir = try FileOps.normalizeBundleDir(
+                bundleDir,
+                allowedExtensions: normalizedBundleExtensions,
+                overwrite: !ctx.skipExisting,
+                fileManager: fileManager
+            )
+            try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: !ctx.skipExisting)
+        }
 
         if inlineProgress {
             renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
