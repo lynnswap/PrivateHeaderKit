@@ -178,6 +178,74 @@ public enum FileOps {
         }
     }
 
+    public static func denormalizeBundleDir(
+        _ entry: URL,
+        bundleExtension: String,
+        overwrite: Bool,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard isDirectory(entry) else { return entry }
+        let desired = bundleExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !desired.isEmpty else { return entry }
+
+        let suffix = ".\(desired)"
+        if entry.lastPathComponent.lowercased().hasSuffix(suffix) {
+            return entry
+        }
+
+        let dest = entry.appendingPathExtension(desired)
+
+        if fileManager.fileExists(atPath: dest.path), isSymlink(dest, fileManager: fileManager) {
+            try? fileManager.removeItem(at: dest)
+        }
+
+        if fileManager.fileExists(atPath: dest.path) {
+            if overwrite {
+                try? fileManager.removeItem(at: dest)
+                try fileManager.moveItem(at: entry, to: dest)
+            } else {
+                try mergeDirectories(src: entry, dest: dest, fileManager: fileManager)
+                tryRemoveEmpty(entry, fileManager: fileManager)
+            }
+        } else {
+            try fileManager.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: entry, to: dest)
+        }
+
+        return dest
+    }
+
+    public static func denormalizeBundleDirs(
+        in parentDir: URL,
+        bundleExtension: String,
+        overwrite: Bool,
+        fileManager: FileManager = .default
+    ) throws {
+        guard isDirectory(parentDir) else { return }
+        let desired = bundleExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !desired.isEmpty else { return }
+        let suffix = ".\(desired)"
+
+        let entries = try fileManager.contentsOfDirectory(
+            at: parentDir,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: []
+        )
+
+        for entry in entries {
+            if entry.lastPathComponent.lowercased().hasSuffix(suffix), isSymlink(entry, fileManager: fileManager) {
+                try? fileManager.removeItem(at: entry)
+            }
+        }
+
+        for entry in entries {
+            if isSymlink(entry, fileManager: fileManager) { continue }
+            guard isDirectory(entry) else { continue }
+            if entry.lastPathComponent.lowercased().hasSuffix(suffix) { continue }
+            _ = try denormalizeBundleDir(entry, bundleExtension: desired, overwrite: overwrite, fileManager: fileManager)
+        }
+    }
+
     public static func normalizeFrameworkDirs(in categoryDir: URL, overwrite: Bool, fileManager: FileManager = .default) throws {
         guard isDirectory(categoryDir) else { return }
         let frameworkExt = ".framework"

@@ -1383,6 +1383,15 @@ private func normalizeNestedXPCAndPlugIns(in bundleDir: URL, overwrite: Bool) th
     try FileOps.normalizeBundleDirs(in: plugInsDir, allowedExtensions: ["appex"], overwrite: overwrite, fileManager: fm)
 }
 
+private func denormalizeNestedXPCAndPlugIns(in bundleDir: URL, overwrite: Bool) throws {
+    let fm = FileManager.default
+    let xpcDir = bundleDir.appendingPathComponent("XPCServices", isDirectory: true)
+    try FileOps.denormalizeBundleDirs(in: xpcDir, bundleExtension: "xpc", overwrite: overwrite, fileManager: fm)
+
+    let plugInsDir = bundleDir.appendingPathComponent("PlugIns", isDirectory: true)
+    try FileOps.denormalizeBundleDirs(in: plugInsDir, bundleExtension: "appex", overwrite: overwrite, fileManager: fm)
+}
+
 private func directoryContainsHeaderArtifacts(_ dir: URL, fileManager: FileManager = .default) -> Bool {
     guard fileManagerIsDirectory(dir, fileManager: fileManager) else { return false }
     guard let entries = try? fileManager.contentsOfDirectory(
@@ -1688,17 +1697,19 @@ private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comma
         if ctx.skipExisting,
            (bundleOutputHasHeaderArtifacts(dest, fileManager: fileManager) || bundleOutputHasHeaderArtifacts(normalizedDest, fileManager: fileManager))
         {
-            if normalizeBundles {
-                // Best-effort: normalize existing bundle dir naming (strip .app/.bundle/.xpc/.appex)
-                // and nested XPCServices/PlugIns even when skipping.
-                var existingDir: URL?
-                if fileManager.fileExists(atPath: dest.path) {
-                    existingDir = dest
-                } else if fileManager.fileExists(atPath: normalizedDest.path) {
-                    existingDir = normalizedDest
-                }
+            // Best-effort: keep existing outputs consistent with the requested layout even when skipping.
+            //
+            // In particular, switching from `--layout headers` to `--layout bundle` should not require a re-dump:
+            // rename `Foo` -> `Foo.bundle` (and similarly for nested XPC/appex bundles) when possible.
+            var existingDir: URL?
+            if fileManager.fileExists(atPath: dest.path) {
+                existingDir = dest
+            } else if fileManager.fileExists(atPath: normalizedDest.path) {
+                existingDir = normalizedDest
+            }
 
-                if var bundleDir = existingDir {
+            if var bundleDir = existingDir {
+                if normalizeBundles {
                     bundleDir = (try? FileOps.normalizeBundleDir(
                         bundleDir,
                         allowedExtensions: normalizedBundleExtensions,
@@ -1706,6 +1717,15 @@ private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comma
                         fileManager: fileManager
                     )) ?? bundleDir
                     try? normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: false)
+                } else {
+                    let ext = dest.pathExtension
+                    bundleDir = (try? FileOps.denormalizeBundleDir(
+                        bundleDir,
+                        bundleExtension: ext,
+                        overwrite: false,
+                        fileManager: fileManager
+                    )) ?? bundleDir
+                    try? denormalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: false)
                 }
             }
             print("Skipping existing: SystemLibrary (\(idx + 1)/\(total)) \(relPath)")
