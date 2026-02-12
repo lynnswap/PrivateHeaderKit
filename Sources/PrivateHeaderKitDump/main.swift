@@ -1337,6 +1337,13 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
     for (idx, item) in frameworks.enumerated() {
         try throwIfTerminationRequested()
         if ctx.skipExisting, existing.contains(item) {
+            if ctx.layout == "headers" {
+                let baseName = item.hasSuffix(".framework") ? String(item.dropLast(".framework".count)) : item
+                let dest = ctx.outDir
+                    .appendingPathComponent(category, isDirectory: true)
+                    .appendingPathComponent(baseName, isDirectory: true)
+                try? normalizeNestedXPCAndPlugIns(in: dest, overwrite: false)
+            }
             print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
             continue
         }
@@ -1429,6 +1436,26 @@ private func dumpSystemLibraryExtras(ctx: Context, runner: CommandRunning) throw
         if ctx.skipExisting,
            (bundleOutputHasHeaderArtifacts(dest, fileManager: fileManager) || bundleOutputHasHeaderArtifacts(normalizedDest, fileManager: fileManager))
         {
+            if normalizeBundles {
+                // Best-effort: normalize existing bundle dir naming (strip .app/.bundle/.xpc/.appex)
+                // and nested XPCServices/PlugIns even when skipping.
+                var existingDir: URL?
+                if fileManager.fileExists(atPath: dest.path) {
+                    existingDir = dest
+                } else if fileManager.fileExists(atPath: normalizedDest.path) {
+                    existingDir = normalizedDest
+                }
+
+                if var bundleDir = existingDir {
+                    bundleDir = (try? FileOps.normalizeBundleDir(
+                        bundleDir,
+                        allowedExtensions: normalizedBundleExtensions,
+                        overwrite: false,
+                        fileManager: fileManager
+                    )) ?? bundleDir
+                    try? normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: false)
+                }
+            }
             print("Skipping existing: SystemLibrary (\(idx + 1)/\(total)) \(relPath)")
             continue
         }
