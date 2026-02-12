@@ -72,14 +72,45 @@ public enum FileOps {
     }
 
     public static func stageSystemLibraryRoots(stageDir: URL, runtimeRoot: String) -> [URL] {
-        var roots: [URL] = [stageDir.appendingPathComponent("System/Library", isDirectory: true)]
+        var roots: [URL] = [
+            stageDir.appendingPathComponent("System/Library", isDirectory: true),
+            // Some simulator runtimes expose system frameworks via symlinks into Cryptex.
+            // When the bundle executable path resolves to `/System/Cryptexes/OS/...`, headerdump
+            // may emit output under this root; include it so the dump tool can relocate results.
+            stageDir.appendingPathComponent("System/Cryptexes/OS/System/Library", isDirectory: true),
+            // macOS also uses Cryptex in Preboot for some system components.
+            stageDir.appendingPathComponent("System/Volumes/Preboot/Cryptexes/OS/System/Library", isDirectory: true),
+        ]
 
         if runtimeRoot.hasPrefix("/") {
             let relative = String(runtimeRoot.dropFirst())
+            let base = stageDir.appendingPathComponent(relative, isDirectory: true)
+            roots.append(base.appendingPathComponent("System/Library", isDirectory: true))
+            roots.append(base.appendingPathComponent("System/Cryptexes/OS/System/Library", isDirectory: true))
+            roots.append(base.appendingPathComponent("System/Volumes/Preboot/Cryptexes/OS/System/Library", isDirectory: true))
+        }
+
+        var unique: [URL] = []
+        for root in roots where !unique.contains(root) {
+            unique.append(root)
+        }
+        return unique
+    }
+
+    public static func stageUsrLibRoots(stageDir: URL, runtimeRoot: String) -> [URL] {
+        var roots: [URL] = [
+            stageDir
+                .appendingPathComponent("usr", isDirectory: true)
+                .appendingPathComponent("lib", isDirectory: true),
+        ]
+
+        if runtimeRoot.hasPrefix("/") {
+            let relative = String(runtimeRoot.dropFirst())
+            let base = stageDir.appendingPathComponent(relative, isDirectory: true)
             roots.append(
-                stageDir
-                    .appendingPathComponent(relative, isDirectory: true)
-                    .appendingPathComponent("System/Library", isDirectory: true)
+                base
+                    .appendingPathComponent("usr", isDirectory: true)
+                    .appendingPathComponent("lib", isDirectory: true)
             )
         }
 

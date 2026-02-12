@@ -59,7 +59,30 @@ privateheaderkit-dump 26.2
 `Frameworks` と `PrivateFrameworks` をまとめて出力します。  
 （`--out` / `PH_OUT_DIR` に指定した相対パスはカレントディレクトリを基準に解釈されます。従来どおりリポジトリ配下に出したい場合は、リポジトリrootで実行して `--out generated-headers/iOS/<version>` を指定するか `PH_OUT_DIR` を指定してください）
 
-### 3) ランタイム/デバイス一覧（iOS）
+### 3) Framework 以外も出力したい場合
+
+既定では `/System/Library/{Frameworks,PrivateFrameworks}` のみを対象にダンプします。
+
+`/System/Library` 配下の `.app/.bundle/.xpc/.appex` なども追加でダンプして `<out>/SystemLibrary/...` に出したい場合:
+
+```
+privateheaderkit-dump 26.2 --scope system
+```
+
+さらに `/usr/lib/*.dylib` も追加でダンプして `<out>/usr/lib/...` に出したい場合:
+
+```
+privateheaderkit-dump 26.2 --scope all
+```
+
+ネストバンドル（`XPCServices/*.xpc`, `PlugIns/*.appex`）は `--scope system|all` のときはデフォルトで有効です。必要なら上書きできます:
+
+```
+privateheaderkit-dump 26.2 --scope all --no-nested
+privateheaderkit-dump 26.2 --scope frameworks --nested
+```
+
+### 4) ランタイム/デバイス一覧（iOS）
 
 ```
 privateheaderkit-dump --list-runtimes
@@ -78,6 +101,9 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--exec-mode <host\|simulator>` | 実行モードを強制 |
 | `--framework <name>` | 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可） |
 | `--filter <substring>` | フレームワーク名の部分一致フィルタ（複数指定可） |
+| `--scope <frameworks\|system\|all>` | ダンプ範囲（デフォルトは `frameworks`） |
+| `--nested` | ネストバンドル（`XPCServices` / `PlugIns`）もダンプ |
+| `--no-nested` | ネストバンドルのダンプを無効化（`--scope frameworks` のデフォルト） |
 | `--layout <bundle\|headers>` | 出力レイアウト（`bundle` は `.framework` を保持、`headers` は `.framework` を外す） |
 | `--list-runtimes` | 利用可能な iOS ランタイム一覧を表示して終了 |
 | `--list-devices` | ランタイム内のデバイス一覧を表示して終了（`--runtime` 併用） |

@@ -59,7 +59,31 @@ Default output directory is `~/PrivateHeaderKit/generated-headers/iOS/<version>`
 This dumps both `Frameworks` and `PrivateFrameworks`.
 (Relative paths passed to `--out` / `PH_OUT_DIR` are resolved from the current directory. If you want the old output under this repo, run from the repo root and pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
 
-### 3) List runtimes / devices (iOS only)
+### 3) Dump more than frameworks
+
+By default, `privateheaderkit-dump` only dumps `/System/Library/{Frameworks,PrivateFrameworks}`.
+
+To also dump other bundles under `/System/Library` (e.g. `.app`, `.bundle`, `.xpc`, `.appex`) into `<out>/SystemLibrary/...`:
+
+```
+privateheaderkit-dump 26.2 --scope system
+```
+
+To also dump `/usr/lib/*.dylib` into `<out>/usr/lib/...`:
+
+```
+privateheaderkit-dump 26.2 --scope all
+```
+
+Nested bundles (`XPCServices/*.xpc`, `PlugIns/*.appex`) are dumped by default for `--scope system|all`.
+You can override:
+
+```
+privateheaderkit-dump 26.2 --scope all --no-nested
+privateheaderkit-dump 26.2 --scope frameworks --nested
+```
+
+### 4) List runtimes / devices (iOS only)
 
 ```
 privateheaderkit-dump --list-runtimes
@@ -78,6 +102,9 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--exec-mode <host\|simulator>` | Force execution mode |
 | `--framework <name>` | Dump only the exact framework name (repeatable, `.framework` optional) |
 | `--filter <substring>` | Substring filter for framework names (repeatable) |
+| `--scope <frameworks\|system\|all>` | Dump scope (default: `frameworks`) |
+| `--nested` | Also dump nested `XPCServices` / `PlugIns` bundles |
+| `--no-nested` | Disable nested bundle dumping (default for `--scope frameworks`) |
 | `--layout <bundle\|headers>` | Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix) |
 | `--list-runtimes` | List available iOS runtimes and exit |
 | `--list-devices` | List devices for a runtime and exit (use `--runtime`) |

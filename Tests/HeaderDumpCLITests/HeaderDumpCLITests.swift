@@ -465,12 +465,105 @@ struct HeaderDumpCLITests {
         let frameworkURL = URL(fileURLWithPath: "/tmp/Foo.framework", isDirectory: true)
         let appURL = URL(fileURLWithPath: "/tmp/Foo.app", isDirectory: true)
         let bundleURL = URL(fileURLWithPath: "/tmp/Foo.bundle", isDirectory: true)
+        let xpcURL = URL(fileURLWithPath: "/tmp/Foo.xpc", isDirectory: true)
+        let appexURL = URL(fileURLWithPath: "/tmp/Foo.appex", isDirectory: true)
         let fileURL = URL(fileURLWithPath: "/tmp/Foo.framework", isDirectory: false)
 
         #expect(isBundleDirectory(frameworkURL) == true)
         #expect(isBundleDirectory(appURL) == true)
         #expect(isBundleDirectory(bundleURL) == true)
+        #expect(isBundleDirectory(xpcURL) == true)
+        #expect(isBundleDirectory(appexURL) == true)
         #expect(isBundleDirectory(fileURL) == false)
+    }
+
+    @Test func isBundleDirectoryTreatsSymlinkToDirectoryAsBundle() throws {
+        let tempDir = try makeTempDir()
+        let fm = FileManager.default
+
+        let realBundle = tempDir.appendingPathComponent("Foo.framework", isDirectory: true)
+        try fm.createDirectory(at: realBundle, withIntermediateDirectories: true)
+
+        let linkPath = tempDir.appendingPathComponent("Link.framework").path
+        try fm.createSymbolicLink(atPath: linkPath, withDestinationPath: realBundle.path)
+
+        // Intentionally omit `isDirectory: true` so `hasDirectoryPath` stays false.
+        let linkURL = URL(fileURLWithPath: linkPath)
+        #expect(linkURL.hasDirectoryPath == false)
+        #expect(isBundleDirectory(linkURL) == true)
+    }
+
+    @Test func isBundleDirectoryTreatsSymlinkToDirectoryAsBundleForXPCAndAppExtensions() throws {
+        let tempDir = try makeTempDir()
+        let fm = FileManager.default
+
+        let realDir = tempDir.appendingPathComponent("RealDir", isDirectory: true)
+        try fm.createDirectory(at: realDir, withIntermediateDirectories: true)
+
+        let xpcLinkPath = tempDir.appendingPathComponent("Link.xpc").path
+        try fm.createSymbolicLink(atPath: xpcLinkPath, withDestinationPath: realDir.path)
+
+        let appexLinkPath = tempDir.appendingPathComponent("Link.appex").path
+        try fm.createSymbolicLink(atPath: appexLinkPath, withDestinationPath: realDir.path)
+
+        let xpcLinkURL = URL(fileURLWithPath: xpcLinkPath)
+        #expect(xpcLinkURL.hasDirectoryPath == false)
+        #expect(isBundleDirectory(xpcLinkURL) == true)
+
+        let appexLinkURL = URL(fileURLWithPath: appexLinkPath)
+        #expect(appexLinkURL.hasDirectoryPath == false)
+        #expect(isBundleDirectory(appexLinkURL) == true)
+    }
+
+    @Test func resolveBundleExecutableURLRebasesBundleExecutableWhenPossible() {
+        let bundleURL = URL(fileURLWithPath: "/System/Library/Frameworks/SafariServices.framework", isDirectory: true)
+        let resolvedExec = URL(fileURLWithPath: "/System/Cryptexes/OS/System/Library/Frameworks/SafariServices.framework/SafariServices")
+
+        let expectedRebased = bundleURL.appendingPathComponent("SafariServices")
+        let fake = FakeFileManager(existing: [expectedRebased.path])
+
+        let result = resolveBundleExecutableURL(
+            bundleURL,
+            fileManager: fake,
+            bundleExecutableURL: { _ in resolvedExec }
+        )
+        #expect(result?.path == expectedRebased.path)
+    }
+
+    @Test func resolveBundleExecutableURLResolvesXPCAndAppExtensionCandidates() throws {
+        let tempDir = try makeTempDir()
+        let fm = FileManager.default
+
+        let xpcURL = tempDir.appendingPathComponent("Foo.xpc", isDirectory: true)
+        try fm.createDirectory(at: xpcURL, withIntermediateDirectories: true)
+        let xpcExec = xpcURL.appendingPathComponent("Foo", isDirectory: false)
+        fm.createFile(atPath: xpcExec.path, contents: Data())
+
+        let xpcResolved = resolveBundleExecutableURL(
+            xpcURL,
+            fileManager: fm,
+            bundleExecutableURL: { _ in nil }
+        )
+        #expect(xpcResolved?.path == xpcExec.path)
+
+        let appexURL = tempDir.appendingPathComponent("Bar.appex", isDirectory: true)
+        try fm.createDirectory(at: appexURL, withIntermediateDirectories: true)
+        let appexExec = appexURL.appendingPathComponent("Bar", isDirectory: false)
+        fm.createFile(atPath: appexExec.path, contents: Data())
+
+        let appexResolved = resolveBundleExecutableURL(
+            appexURL,
+            fileManager: fm,
+            bundleExecutableURL: { _ in nil }
+        )
+        #expect(appexResolved?.path == appexExec.path)
+    }
+
+    @Test func isSaneObjCTypeNameRejectsReplacementAndControl() {
+        #expect(isSaneObjCTypeName("ASAuthorization") == true)
+        #expect(isSaneObjCTypeName("") == false)
+        #expect(isSaneObjCTypeName("Bad\u{000C}") == false)
+        #expect(isSaneObjCTypeName("\u{FFFD}") == false)
     }
 
     @Test func sharedCachePathUsesInjectedFileManager() {
