@@ -526,6 +526,11 @@ private func normalizeSystemLibraryRelativeTarget(_ value: String) throws -> Str
         throw ToolingError.invalidArgument("SystemLibrary target must not be under Frameworks/PrivateFrameworks: \(value) (use --target <FrameworkName> instead)")
     }
 
+    let parts = normalized.split(separator: "/").map(String.init)
+    if parts.contains(".") || parts.contains("..") {
+        throw ToolingError.invalidArgument("SystemLibrary target must not contain '.' or '..' path components: \(value)")
+    }
+
     let ext = URL(fileURLWithPath: normalized).pathExtension.lowercased()
     guard systemBundleTargetExtensions.contains(ext) else {
         throw ToolingError.invalidArgument("SystemLibrary target must be .app/.bundle/.xpc/.appex: \(value)")

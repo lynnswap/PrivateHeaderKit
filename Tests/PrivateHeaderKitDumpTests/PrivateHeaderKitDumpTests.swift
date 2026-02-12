@@ -1,6 +1,7 @@
 import Testing
 
 @testable import PrivateHeaderKitDump
+import PrivateHeaderKitTooling
 
 @Suite struct PrivateHeaderKitDumpTests {
     @Test func targetFrameworkOnlySelectsFrameworks() throws {
@@ -67,5 +68,29 @@ import Testing
         #expect(selection.categories.isEmpty)
         #expect(selection.dumpAllUsrLibDylibs == false)
         #expect(selection.usrLibDylibs == ["libobjc.A.dylib"])
+    }
+
+    @Test func systemLibraryTargetRejectsDotDotComponents() {
+        let targets = [
+            "../Foo.bundle",
+            "PreferenceBundles/../Foo.bundle",
+            "./Foo.bundle",
+            "PreferenceBundles/./Foo.bundle",
+        ]
+        for target in targets {
+            var args = DumpArguments()
+            args.targets = [target]
+            do {
+                _ = try buildDumpSelection(args)
+                #expect(Bool(false))
+            } catch let error as ToolingError {
+                guard case .invalidArgument = error else {
+                    #expect(Bool(false))
+                    continue
+                }
+            } catch {
+                #expect(Bool(false))
+            }
+        }
     }
 }
