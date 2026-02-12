@@ -59,28 +59,31 @@ Default output directory is `~/PrivateHeaderKit/generated-headers/iOS/<version>`
 This dumps both `Frameworks` and `PrivateFrameworks`.
 (Relative paths passed to `--out` / `PH_OUT_DIR` are resolved from the current directory. If you want the old output under this repo, run from the repo root and pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
 
-### 3) Dump more than frameworks
+### 3) Dump specific targets (`--target`)
 
-By default, `privateheaderkit-dump` only dumps `/System/Library/{Frameworks,PrivateFrameworks}`.
+By default, `privateheaderkit-dump` dumps `/System/Library/{Frameworks,PrivateFrameworks}`.
 
-To also dump other bundles under `/System/Library` (e.g. `.app`, `.bundle`, `.xpc`, `.appex`) into `<out>/SystemLibrary/...`:
+If you pass one or more `--target` flags, it dumps only those targets (no implicit defaults).
 
-```
-privateheaderkit-dump 26.2 --scope system
-```
-
-To also dump `/usr/lib/*.dylib` into `<out>/usr/lib/...`:
+Examples:
 
 ```
-privateheaderkit-dump 26.2 --scope all
-```
+# A single framework (nested XPCServices/PlugIns are dumped by default)
+privateheaderkit-dump 26.2 --target SafariShared
 
-Nested bundles (`XPCServices/*.xpc`, `PlugIns/*.appex`) are dumped by default for `--scope system|all`.
-You can override:
+# A single SystemLibrary bundle
+privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
 
-```
-privateheaderkit-dump 26.2 --scope all --no-nested
-privateheaderkit-dump 26.2 --scope frameworks --nested
+# A single usr/lib dylib
+privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
+
+# Presets (large outputs)
+privateheaderkit-dump 26.2 --target @frameworks
+privateheaderkit-dump 26.2 --target @system
+privateheaderkit-dump 26.2 --target @all
+
+# Disable nested bundle dumping
+privateheaderkit-dump 26.2 --target SafariShared --no-nested
 ```
 
 When `--layout headers` (default), output bundle directory suffixes are stripped for easier searching:
@@ -103,12 +106,13 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--force` | Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`) |
 | `--skip-existing` | Skip frameworks that already exist (useful to override `PH_FORCE=1`) |
 | `--exec-mode <host\|simulator>` | Force execution mode |
-| `--framework <name>` | Dump only the exact framework name (repeatable, `.framework` optional) |
-| `--filter <substring>` | Substring filter for framework names (repeatable) |
-| `--scope <frameworks\|system\|all>` | Dump scope (default: `frameworks`) |
-| `--nested` | Also dump nested `XPCServices` / `PlugIns` bundles |
-| `--no-nested` | Disable nested bundle dumping (default for `--scope frameworks`) |
+| `--target <value>` | Dump target (repeatable). Presets: `@frameworks`, `@system`, `@all`. |
+| `--no-nested` | Disable nested `XPCServices` / `PlugIns` bundle dumping (default: enabled) |
 | `--layout <bundle\|headers>` | Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix) |
+| `--framework <name>` | (Legacy) Dump only the exact framework name (repeatable, `.framework` optional) |
+| `--filter <substring>` | (Legacy) Substring filter for framework names (repeatable) |
+| `--scope <frameworks\|system\|all>` | (Legacy) Dump scope (default: `frameworks`) |
+| `--nested` | (Legacy) Enable nested bundle dumping (now enabled by default) |
 | `--list-runtimes` | List available iOS runtimes and exit |
 | `--list-devices` | List devices for a runtime and exit (use `--runtime`) |
 | `--runtime <version>` | Runtime version for `--list-devices` |

@@ -59,27 +59,29 @@ privateheaderkit-dump 26.2
 `Frameworks` と `PrivateFrameworks` をまとめて出力します。  
 （`--out` / `PH_OUT_DIR` に指定した相対パスはカレントディレクトリを基準に解釈されます。従来どおりリポジトリ配下に出したい場合は、リポジトリrootで実行して `--out generated-headers/iOS/<version>` を指定するか `PH_OUT_DIR` を指定してください）
 
-### 3) Framework 以外も出力したい場合
+### 3) 対象を指定してダンプする（`--target`）
 
-既定では `/System/Library/{Frameworks,PrivateFrameworks}` のみを対象にダンプします。
+既定では `/System/Library/{Frameworks,PrivateFrameworks}` を対象にダンプします。
 
-`/System/Library` 配下の `.app/.bundle/.xpc/.appex` なども追加でダンプして `<out>/SystemLibrary/...` に出したい場合:
-
-```
-privateheaderkit-dump 26.2 --scope system
-```
-
-さらに `/usr/lib/*.dylib` も追加でダンプして `<out>/usr/lib/...` に出したい場合:
+`--target` を 1 つでも指定した場合は、指定したターゲットだけをダンプします（暗黙のデフォルトは無し）。
 
 ```
-privateheaderkit-dump 26.2 --scope all
-```
+# Framework 1つ（ネストバンドルもデフォルトで出力）
+privateheaderkit-dump 26.2 --target SafariShared
 
-ネストバンドル（`XPCServices/*.xpc`, `PlugIns/*.appex`）は `--scope system|all` のときはデフォルトで有効です。必要なら上書きできます:
+# SystemLibrary の bundle 1つ
+privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
 
-```
-privateheaderkit-dump 26.2 --scope all --no-nested
-privateheaderkit-dump 26.2 --scope frameworks --nested
+# /usr/lib の dylib 1つ
+privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
+
+# プリセット（大量出力）
+privateheaderkit-dump 26.2 --target @frameworks
+privateheaderkit-dump 26.2 --target @system
+privateheaderkit-dump 26.2 --target @all
+
+# ネストバンドルのダンプを無効化
+privateheaderkit-dump 26.2 --target SafariShared --no-nested
 ```
 
 `--layout headers`（デフォルト）の場合、検索しやすいように出力側のバンドル拡張子を外します:
@@ -102,12 +104,13 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--force` | 既存ヘッダがあっても常に再生成する（成功したフレームワークは出力を丸ごと置換。失敗分は既存出力を残し `_failures.txt` に記録） |
 | `--skip-existing` | 既に出力済みのフレームワークはスキップ（`PH_FORCE=1` を一時的に打ち消したい場合など） |
 | `--exec-mode <host\|simulator>` | 実行モードを強制 |
-| `--framework <name>` | 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可） |
-| `--filter <substring>` | フレームワーク名の部分一致フィルタ（複数指定可） |
-| `--scope <frameworks\|system\|all>` | ダンプ範囲（デフォルトは `frameworks`） |
-| `--nested` | ネストバンドル（`XPCServices` / `PlugIns`）もダンプ |
-| `--no-nested` | ネストバンドルのダンプを無効化（`--scope frameworks` のデフォルト） |
+| `--target <value>` | ダンプ対象を指定（複数指定可）。プリセット: `@frameworks`, `@system`, `@all` |
+| `--no-nested` | ネストバンドル（`XPCServices` / `PlugIns`）のダンプを無効化（デフォルト有効） |
 | `--layout <bundle\|headers>` | 出力レイアウト（`bundle` は `.framework` を保持、`headers` は `.framework` を外す） |
+| `--framework <name>` | (Legacy) 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可） |
+| `--filter <substring>` | (Legacy) フレームワーク名の部分一致フィルタ（複数指定可） |
+| `--scope <frameworks\|system\|all>` | (Legacy) ダンプ範囲（デフォルトは `frameworks`） |
+| `--nested` | (Legacy) ネストバンドルのダンプを有効化（現在はデフォルト有効） |
 | `--list-runtimes` | 利用可能な iOS ランタイム一覧を表示して終了 |
 | `--list-devices` | ランタイム内のデバイス一覧を表示して終了（`--runtime` 併用） |
 | `--runtime <version>` | `--list-devices` 用のランタイム指定 |

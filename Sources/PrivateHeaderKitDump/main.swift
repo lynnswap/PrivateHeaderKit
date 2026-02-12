@@ -10,23 +10,23 @@ import Glibc
 
 #if os(macOS)
 
-private enum ExecMode: String {
+enum ExecMode: String {
     case host
     case simulator
 }
 
-private enum TargetPlatform: String {
+enum TargetPlatform: String {
     case ios
     case macos
 }
 
-private enum DumpScope: String {
+enum DumpScope: String {
     case frameworks
     case system
     case all
 }
 
-private struct DumpArguments {
+struct DumpArguments {
     var version: String?
     var device: String?
     var outDir: URL?
@@ -39,6 +39,7 @@ private struct DumpArguments {
     var json: Bool = false
     var platform: TargetPlatform?
     var layout: String?
+    var targets: [String] = []
     var frameworks: [String] = []
     var filters: [String] = []
     var sharedCache: Bool = false
@@ -71,7 +72,6 @@ private struct Context {
     var categories: [String]
     var frameworkNames: Set<String>
     var frameworkFilters: [String]
-    var scope: DumpScope = .frameworks
     var nestedEnabled: Bool = false
 
     var isSplit: Bool {
@@ -249,7 +249,10 @@ private func printUsage() {
     Examples:
       privateheaderkit-dump
       privateheaderkit-dump 26.2
-      privateheaderkit-dump --platform macos --framework AppKit
+      privateheaderkit-dump 26.2 --target SafariShared
+      privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
+      privateheaderkit-dump 26.2 --target @all --no-nested
+      privateheaderkit-dump --platform macos --target AppKit
       privateheaderkit-dump --list-runtimes
       privateheaderkit-dump --list-devices --runtime 26.0.1
 
@@ -260,12 +263,12 @@ private func printUsage() {
       --force                    Always dump even if headers already exist
       --skip-existing             Skip frameworks that already exist (useful to override PH_FORCE=1)
       --exec-mode <host|simulator>
-      --framework <name>         Dump only the exact framework name (repeatable; .framework optional)
-      --filter <substring>       Substring filter for framework names (repeatable)
-      --scope <frameworks|system|all>
-                                Dump scope (default: frameworks)
-      --nested                  Also dump nested XPCServices/PlugIns bundles
-      --no-nested               Disable nested bundle dumping (default for --scope frameworks)
+      --target <value>           Dump target (repeatable)
+                                Presets: @frameworks | @system | @all
+                                Framework: SafariShared
+                                SystemLibrary item: PreferenceBundles/Foo.bundle
+                                usr/lib dylib: /usr/lib/libobjc.A.dylib
+      --no-nested               Disable nested bundle dumping (default: enabled)
       --layout <bundle|headers>  Output layout (default: headers)
       --list-runtimes            List available iOS runtimes and exit
       --list-devices             List devices for a runtime and exit (use --runtime)
@@ -274,6 +277,13 @@ private func printUsage() {
       --shared-cache             Use dyld shared cache when dumping (enabled by default; set PH_SHARED_CACHE=0 to disable)
       -D, --verbose              Enable verbose logging
       -h, --help                 Show this help
+
+    Legacy options:
+      --framework <name>         Dump only the exact framework name (repeatable; .framework optional)
+      --filter <substring>       Substring filter for framework names (repeatable)
+      --scope <frameworks|system|all>
+                                Dump scope (default: frameworks)
+      --nested                  Enable nested bundle dumping (default: enabled)
     """
     print(text)
 }
@@ -333,6 +343,10 @@ private func parseArguments(_ args: [String]) throws -> DumpArguments {
         case "--layout":
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--layout requires a value") }
             parsed.layout = args[idx + 1]
+            idx += 2
+        case "--target":
+            guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--target requires a value") }
+            parsed.targets.append(args[idx + 1])
             idx += 2
         case "--framework":
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--framework requires a value") }
@@ -462,17 +476,239 @@ private func resolveSkipExisting(_ args: DumpArguments, env: [String: String]) -
     return true
 }
 
-private func buildSelection(_ args: DumpArguments) -> (categories: [String], frameworkNames: Set<String>, frameworkFilters: [String]) {
-    let categories = ["Frameworks", "PrivateFrameworks"]
+internal struct DumpSelection {
+    var categories: [String]
+    var frameworkNames: Set<String>
+    var frameworkFilters: [String]
+    var dumpAllFrameworks: Bool
+    var dumpAllSystemLibraryExtras: Bool
+    var systemLibraryItems: [String]
+    var dumpAllUsrLibDylibs: Bool
+    var usrLibDylibs: [String]
+}
 
-    var frameworkNames: Set<String> = []
-    for name in args.frameworks {
-        let normalized = FileOps.normalizeFrameworkName(name).lowercased()
-        frameworkNames.insert(normalized)
+internal func resolveNestedEnabled(_ args: DumpArguments) -> Bool {
+    // Nested bundles are now enabled by default to make targeted dumps (e.g. a single framework)
+    // produce XPCServices/PlugIns outputs without requiring extra flags.
+    args.nested ?? true
+}
+
+private let systemBundleTargetExtensions: Set<String> = ["app", "bundle", "xpc", "appex"]
+
+private func normalizeFrameworkTargetName(_ name: String) -> String {
+    FileOps.normalizeFrameworkName(name).lowercased()
+}
+
+private func normalizeSystemLibraryRelativeTarget(_ value: String) throws -> String {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("/System/Library/") {
+        normalized = String(normalized.dropFirst("/System/Library/".count))
+    } else if normalized.hasPrefix("System/Library/") {
+        normalized = String(normalized.dropFirst("System/Library/".count))
+    } else if normalized.hasPrefix("/") {
+        throw ToolingError.invalidArgument("SystemLibrary target must be a /System/Library relative path: \(value)")
     }
 
-    let frameworkFilters = args.filters.map { $0.lowercased() }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    return (categories, frameworkNames, frameworkFilters)
+    normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    guard !normalized.isEmpty else {
+        throw ToolingError.invalidArgument("SystemLibrary target is empty: \(value)")
+    }
+
+    if normalized.hasPrefix("Frameworks/") || normalized.hasPrefix("PrivateFrameworks/") {
+        throw ToolingError.invalidArgument("SystemLibrary target must not be under Frameworks/PrivateFrameworks: \(value) (use --target <FrameworkName> instead)")
+    }
+
+    let ext = URL(fileURLWithPath: normalized).pathExtension.lowercased()
+    guard systemBundleTargetExtensions.contains(ext) else {
+        throw ToolingError.invalidArgument("SystemLibrary target must be .app/.bundle/.xpc/.appex: \(value)")
+    }
+
+    return normalized
+}
+
+private func normalizeUsrLibTargetName(_ value: String) throws -> String {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("/usr/lib/") {
+        normalized = String(normalized.dropFirst("/usr/lib/".count))
+    } else if normalized.hasPrefix("usr/lib/") {
+        normalized = String(normalized.dropFirst("usr/lib/".count))
+    } else if normalized.hasPrefix("/") {
+        throw ToolingError.invalidArgument("usr/lib target must be under /usr/lib: \(value)")
+    }
+
+    normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    guard !normalized.isEmpty else {
+        throw ToolingError.invalidArgument("usr/lib target is empty: \(value)")
+    }
+    guard !normalized.contains("/") else {
+        throw ToolingError.invalidArgument("usr/lib target must be /usr/lib/<name>.dylib (subdirectories are not supported): \(value)")
+    }
+    guard normalized.lowercased().hasSuffix(".dylib") else {
+        throw ToolingError.invalidArgument("usr/lib target must end with .dylib: \(value)")
+    }
+    return normalized
+}
+
+private func extractFrameworkNameFromTargetPath(_ value: String) -> String? {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("/System/Library/") {
+        normalized = String(normalized.dropFirst("/System/Library/".count))
+    } else if normalized.hasPrefix("System/Library/") {
+        normalized = String(normalized.dropFirst("System/Library/".count))
+    }
+
+    let parts = normalized.split(separator: "/").map(String.init)
+    for (idx, part) in parts.enumerated() {
+        if (part == "Frameworks" || part == "PrivateFrameworks"),
+           idx + 1 < parts.count,
+           parts[idx + 1].hasSuffix(".framework")
+        {
+            return parts[idx + 1]
+        }
+    }
+    return nil
+}
+
+private func appendUnique(_ items: inout [String], _ value: String, seen: inout Set<String>) {
+    if seen.contains(value) { return }
+    seen.insert(value)
+    items.append(value)
+}
+
+internal func buildDumpSelection(_ args: DumpArguments) throws -> DumpSelection {
+    var hadExplicitSelection = false
+    var wantsFrameworks = false
+    var dumpAllFrameworks = false
+
+    // Legacy framework selection still works, but `--target` is preferred.
+    var frameworkNames: Set<String> = []
+    if !args.frameworks.isEmpty {
+        hadExplicitSelection = true
+        wantsFrameworks = true
+        for name in args.frameworks {
+            frameworkNames.insert(normalizeFrameworkTargetName(name))
+        }
+    }
+
+    let frameworkFilters = args.filters
+        .map { $0.lowercased() }
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    if !frameworkFilters.isEmpty {
+        hadExplicitSelection = true
+        wantsFrameworks = true
+    }
+
+    var dumpAllSystemLibraryExtras = false
+    var systemLibraryItems: [String] = []
+    var systemLibrarySeen: Set<String> = []
+
+    var dumpAllUsrLibDylibs = false
+    var usrLibDylibs: [String] = []
+    var usrLibSeen: Set<String> = []
+
+    if let scope = args.scope {
+        hadExplicitSelection = true
+        switch scope {
+        case .frameworks:
+            wantsFrameworks = true
+        case .system:
+            wantsFrameworks = true
+            dumpAllSystemLibraryExtras = true
+        case .all:
+            wantsFrameworks = true
+            dumpAllSystemLibraryExtras = true
+            dumpAllUsrLibDylibs = true
+        }
+    }
+
+    if !args.targets.isEmpty {
+        hadExplicitSelection = true
+    }
+
+    for raw in args.targets {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { throw ToolingError.invalidArgument("--target requires a non-empty value") }
+
+        if value.hasPrefix("@") {
+            switch value.lowercased() {
+            case "@frameworks":
+                wantsFrameworks = true
+                dumpAllFrameworks = true
+            case "@system":
+                wantsFrameworks = true
+                dumpAllFrameworks = true
+                dumpAllSystemLibraryExtras = true
+            case "@all":
+                wantsFrameworks = true
+                dumpAllFrameworks = true
+                dumpAllSystemLibraryExtras = true
+                dumpAllUsrLibDylibs = true
+            default:
+                throw ToolingError.invalidArgument("invalid preset target: \(value) (use @frameworks, @system, or @all)")
+            }
+            continue
+        }
+
+        if let frameworkName = extractFrameworkNameFromTargetPath(value) {
+            wantsFrameworks = true
+            frameworkNames.insert(normalizeFrameworkTargetName(frameworkName))
+            continue
+        }
+
+        let ext = URL(fileURLWithPath: value).pathExtension.lowercased()
+        if ext == "dylib" || value.hasPrefix("/usr/lib/") || value.hasPrefix("usr/lib/") {
+            let name = try normalizeUsrLibTargetName(value)
+            appendUnique(&usrLibDylibs, name, seen: &usrLibSeen)
+            continue
+        }
+
+        if systemBundleTargetExtensions.contains(ext)
+            || value.contains("/")
+            || value.hasPrefix("/System/Library/")
+            || value.hasPrefix("System/Library/")
+        {
+            let rel = try normalizeSystemLibraryRelativeTarget(value)
+            appendUnique(&systemLibraryItems, rel, seen: &systemLibrarySeen)
+            continue
+        }
+
+        // Default: treat as a framework name.
+        wantsFrameworks = true
+        frameworkNames.insert(normalizeFrameworkTargetName(value))
+    }
+
+    if !hadExplicitSelection {
+        // Backward compatible default: dump all frameworks when nothing is explicitly selected.
+        wantsFrameworks = true
+        dumpAllFrameworks = true
+    }
+
+    if !wantsFrameworks,
+       !dumpAllSystemLibraryExtras,
+       systemLibraryItems.isEmpty,
+       !dumpAllUsrLibDylibs,
+       usrLibDylibs.isEmpty
+    {
+        throw ToolingError.invalidArgument("no dump targets specified")
+    }
+
+    // When a preset includes frameworks (e.g. @frameworks/@system/@all), treat it as "dump all"
+    // rather than narrowing to explicitly named frameworks.
+    if dumpAllFrameworks {
+        frameworkNames = []
+    }
+
+    let categories = wantsFrameworks ? ["Frameworks", "PrivateFrameworks"] : []
+    return DumpSelection(
+        categories: categories,
+        frameworkNames: frameworkNames,
+        frameworkFilters: frameworkFilters,
+        dumpAllFrameworks: dumpAllFrameworks,
+        dumpAllSystemLibraryExtras: dumpAllSystemLibraryExtras,
+        systemLibraryItems: systemLibraryItems,
+        dumpAllUsrLibDylibs: dumpAllUsrLibDylibs,
+        usrLibDylibs: usrLibDylibs
+    )
 }
 
 private func selfExecutableURL(env: [String: String]) -> URL? {
@@ -944,12 +1180,11 @@ private func run() throws {
         runner: runner
     )
 
-    let (categories, frameworkNames, frameworkFilters) = buildSelection(parsed)
+    let selection = try buildDumpSelection(parsed)
     let layout = try resolveLayout(parsed.layout, env: env)
     let useSharedCache = resolveSharedCache(parsed, env: env)
     let verbose = resolveVerbose(parsed, env: env)
-    let scope = parsed.scope ?? .frameworks
-    let nestedEnabled = parsed.nested ?? (scope != .frameworks)
+    let nestedEnabled = resolveNestedEnabled(parsed)
 
     func setupContext(_ mode: ExecMode) throws -> Context {
         if platform == .macos {
@@ -960,9 +1195,9 @@ private func run() throws {
                 rootDir: rootDir,
                 headerdumpBin: host,
                 args: parsed,
-                categories: categories,
-                frameworkNames: frameworkNames,
-                frameworkFilters: frameworkFilters,
+                categories: selection.categories,
+                frameworkNames: selection.frameworkNames,
+                frameworkFilters: selection.frameworkFilters,
                 layout: layout,
                 useSharedCache: useSharedCache,
                 verbose: verbose,
@@ -993,9 +1228,9 @@ private func run() throws {
                 requestedExecMode: requestedExecMode,
                 args: parsed,
                 allowMacOSSelection: !hasExplicitPlatform && requestedExecMode != .simulator,
-                categories: categories,
-                frameworkNames: frameworkNames,
-                frameworkFilters: frameworkFilters,
+                categories: selection.categories,
+                frameworkNames: selection.frameworkNames,
+                frameworkFilters: selection.frameworkFilters,
                 layout: layout,
                 useSharedCache: useSharedCache,
                 verbose: verbose,
@@ -1007,9 +1242,9 @@ private func run() throws {
             headerdumpBin: headerdumpBin,
             execMode: mode,
             args: parsed,
-            categories: categories,
-            frameworkNames: frameworkNames,
-            frameworkFilters: frameworkFilters,
+            categories: selection.categories,
+            frameworkNames: selection.frameworkNames,
+            frameworkFilters: selection.frameworkFilters,
             layout: layout,
             useSharedCache: useSharedCache,
             verbose: verbose,
@@ -1046,7 +1281,6 @@ private func run() throws {
         }
     }
 
-    ctx.scope = scope
     ctx.nestedEnabled = nestedEnabled
 
     try PathUtils.ensureDirectory(ctx.outDir)
@@ -1062,13 +1296,19 @@ private func run() throws {
         try finalizeCategoryOutput(category: category, ctx: ctx, hadFailures: hadFailures)
     }
 
-    if ctx.scope != .frameworks {
+    if selection.dumpAllSystemLibraryExtras || !selection.systemLibraryItems.isEmpty {
         try FileOps.resetStageDir(ctx.stageDir)
-        _ = try dumpSystemLibraryExtras(ctx: ctx, runner: runner)
+        let items = selection.dumpAllSystemLibraryExtras
+            ? (try listSystemLibraryExtras(ctx: ctx))
+            : selection.systemLibraryItems
+        _ = try dumpSystemLibraryItems(ctx: ctx, items: items, runner: runner)
     }
-    if ctx.scope == .all {
+    if selection.dumpAllUsrLibDylibs || !selection.usrLibDylibs.isEmpty {
         try FileOps.resetStageDir(ctx.stageDir)
-        _ = try dumpUsrLibDylibs(ctx: ctx, runner: runner)
+        let dylibs = selection.dumpAllUsrLibDylibs
+            ? (try listUsrLibDylibs(ctx: ctx))
+            : selection.usrLibDylibs
+        _ = try dumpUsrLibDylibItems(ctx: ctx, dylibs: dylibs, runner: runner)
     }
 
     try writeMetadata(ctx: ctx, runner: runner)
@@ -1410,13 +1650,12 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
     return false
 }
 
-private func dumpSystemLibraryExtras(ctx: Context, runner: CommandRunning) throws -> Bool {
+private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: CommandRunning) throws -> Bool {
     try throwIfTerminationRequested()
     print("Dumping: SystemLibrary")
 
-    let items = try listSystemLibraryExtras(ctx: ctx)
     if items.isEmpty {
-        print("Skipping SystemLibrary: no bundles found under /System/Library (excluding Frameworks/PrivateFrameworks)")
+        print("Skipping SystemLibrary: no items selected")
         return false
     }
 
@@ -1522,13 +1761,12 @@ private func dumpSystemLibraryExtras(ctx: Context, runner: CommandRunning) throw
     return false
 }
 
-private func dumpUsrLibDylibs(ctx: Context, runner: CommandRunning) throws -> Bool {
+private func dumpUsrLibDylibItems(ctx: Context, dylibs: [String], runner: CommandRunning) throws -> Bool {
     try throwIfTerminationRequested()
     print("Dumping: usr/lib")
 
-    let dylibs = try listUsrLibDylibs(ctx: ctx)
     if dylibs.isEmpty {
-        print("Skipping usr/lib: no .dylib files found")
+        print("Skipping usr/lib: no items selected")
         return false
     }
 
@@ -2024,7 +2262,7 @@ private func writeMetadata(ctx: Context, runner: CommandRunning) throws {
         Layout: \(ctx.layout)
         HeaderCount: \(headerCount)
         Xcode: \(xcodeInfo)
-        Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
+        Notes: headerdump output; targets under /System/Library and /usr/lib (optional); -b -h \(skip)
         """
     case .macos:
         metadata = """
@@ -2037,7 +2275,7 @@ private func writeMetadata(ctx: Context, runner: CommandRunning) throws {
         Layout: \(ctx.layout)
         HeaderCount: \(headerCount)
         Xcode: \(xcodeInfo)
-        Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
+        Notes: headerdump output; targets under /System/Library and /usr/lib (optional); -b -h \(skip)
         """
     }
 
