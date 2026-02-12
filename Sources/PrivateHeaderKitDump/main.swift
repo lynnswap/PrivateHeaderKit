@@ -1518,10 +1518,18 @@ private func listUsrLibDylibs(ctx: Context) throws -> [String] {
         throw ToolingError.message("failed to read \(usrLibURL.path)")
     }
 
-    let entries = try fileManager.contentsOfDirectory(at: usrLibURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+    // Many /usr/lib/*.dylib entries are symlink stubs. Include symlinks so presets like @all
+    // match the set of dylibs users can target explicitly.
+    let entries = try fileManager.contentsOfDirectory(
+        at: usrLibURL,
+        includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+        options: [.skipsHiddenFiles]
+    )
     var dylibs: [String] = []
     for entry in entries {
-        guard (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+        let values = try? entry.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        let isFileLike = (values?.isRegularFile == true) || (values?.isSymbolicLink == true)
+        guard isFileLike else { continue }
         guard entry.pathExtension.lowercased() == "dylib" else { continue }
         dylibs.append(entry.lastPathComponent)
     }
@@ -1599,12 +1607,19 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
     for (idx, item) in frameworks.enumerated() {
         try throwIfTerminationRequested()
         if ctx.skipExisting, existing.contains(item) {
+            // Best-effort: keep nested XPCServices/PlugIns outputs consistent with the requested layout
+            // even when skipping.
             if ctx.layout == "headers" {
                 let baseName = item.hasSuffix(".framework") ? String(item.dropLast(".framework".count)) : item
                 let dest = ctx.outDir
                     .appendingPathComponent(category, isDirectory: true)
                     .appendingPathComponent(baseName, isDirectory: true)
                 try? normalizeNestedXPCAndPlugIns(in: dest, overwrite: false)
+            } else {
+                let dest = ctx.outDir
+                    .appendingPathComponent(category, isDirectory: true)
+                    .appendingPathComponent(item, isDirectory: true)
+                try? denormalizeNestedXPCAndPlugIns(in: dest, overwrite: false)
             }
             print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
             continue
