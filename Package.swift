@@ -72,5 +72,11 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
             ]
         ),
+        .testTarget(
+            name: "PrivateHeaderKitDumpTests",
+            dependencies: [
+                "PrivateHeaderKitDump",
+            ]
+        ),
     ]
 )

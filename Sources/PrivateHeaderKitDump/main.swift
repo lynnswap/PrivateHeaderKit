@@ -10,17 +10,23 @@ import Glibc
 
 #if os(macOS)
 
-private enum ExecMode: String {
+enum ExecMode: String {
     case host
     case simulator
 }
 
-private enum TargetPlatform: String {
+enum TargetPlatform: String {
     case ios
     case macos
 }
 
-private struct DumpArguments {
+enum DumpScope: String {
+    case frameworks
+    case system
+    case all
+}
+
+struct DumpArguments {
     var version: String?
     var device: String?
     var outDir: URL?
@@ -33,10 +39,13 @@ private struct DumpArguments {
     var json: Bool = false
     var platform: TargetPlatform?
     var layout: String?
+    var targets: [String] = []
     var frameworks: [String] = []
     var filters: [String] = []
     var sharedCache: Bool = false
     var verbose: Bool = false
+    var scope: DumpScope?
+    var nested: Bool?
 }
 
 private struct MacOSVersionInfo {
@@ -63,10 +72,17 @@ private struct Context {
     var categories: [String]
     var frameworkNames: Set<String>
     var frameworkFilters: [String]
+    var nestedEnabled: Bool = false
 
     var isSplit: Bool {
         // macOS host dumps are more reliable/observable per framework than a single recursive run.
-        platform == .macos || execMode == .simulator || !frameworkNames.isEmpty || !frameworkFilters.isEmpty || skipExisting
+        // Also: nested bundle dumping (XPCServices/PlugIns) is implemented via per-bundle invocations.
+        platform == .macos
+            || execMode == .simulator
+            || nestedEnabled
+            || !frameworkNames.isEmpty
+            || !frameworkFilters.isEmpty
+            || skipExisting
     }
 }
 
@@ -239,7 +255,10 @@ private func printUsage() {
     Examples:
       privateheaderkit-dump
       privateheaderkit-dump 26.2
-      privateheaderkit-dump --platform macos --framework AppKit
+      privateheaderkit-dump 26.2 --target SafariShared
+      privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
+      privateheaderkit-dump 26.2 --target @all --no-nested
+      privateheaderkit-dump --platform macos --target AppKit
       privateheaderkit-dump --list-runtimes
       privateheaderkit-dump --list-devices --runtime 26.0.1
 
@@ -250,8 +269,14 @@ private func printUsage() {
       --force                    Always dump even if headers already exist
       --skip-existing             Skip frameworks that already exist (useful to override PH_FORCE=1)
       --exec-mode <host|simulator>
-      --framework <name>         Dump only the exact framework name (repeatable; .framework optional)
-      --filter <substring>       Substring filter for framework names (repeatable)
+      --target <value>           Select dump target (repeatable, additive)
+                                - If omitted: dumps all frameworks (@frameworks)
+                                - If present: dumps ONLY the selected targets
+                                Presets: @frameworks | @system | @all
+                                Framework: SafariShared
+                                SystemLibrary item: PreferenceBundles/Foo.bundle
+                                usr/lib dylib: /usr/lib/libobjc.A.dylib
+      --no-nested               Disable nested bundle dumping (default: enabled)
       --layout <bundle|headers>  Output layout (default: headers)
       --list-runtimes            List available iOS runtimes and exit
       --list-devices             List devices for a runtime and exit (use --runtime)
@@ -260,6 +285,13 @@ private func printUsage() {
       --shared-cache             Use dyld shared cache when dumping (enabled by default; set PH_SHARED_CACHE=0 to disable)
       -D, --verbose              Enable verbose logging
       -h, --help                 Show this help
+
+    Legacy options:
+      --framework <name>         Dump only the exact framework name (repeatable; .framework optional)
+      --filter <substring>       Substring filter for framework names (repeatable)
+      --scope <frameworks|system|all>
+                                Dump scope (default: frameworks)
+      --nested                  Enable nested bundle dumping (default: enabled)
     """
     print(text)
 }
@@ -320,6 +352,10 @@ private func parseArguments(_ args: [String]) throws -> DumpArguments {
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--layout requires a value") }
             parsed.layout = args[idx + 1]
             idx += 2
+        case "--target":
+            guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--target requires a value") }
+            parsed.targets.append(args[idx + 1])
+            idx += 2
         case "--framework":
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--framework requires a value") }
             parsed.frameworks.append(args[idx + 1])
@@ -328,6 +364,20 @@ private func parseArguments(_ args: [String]) throws -> DumpArguments {
             guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--filter requires a value") }
             parsed.filters.append(args[idx + 1])
             idx += 2
+        case "--scope":
+            guard idx + 1 < args.count else { throw ToolingError.invalidArgument("--scope requires a value") }
+            let value = args[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let scope = DumpScope(rawValue: value) else {
+                throw ToolingError.invalidArgument("invalid scope: \(args[idx + 1])")
+            }
+            parsed.scope = scope
+            idx += 2
+        case "--nested":
+            parsed.nested = true
+            idx += 1
+        case "--no-nested":
+            parsed.nested = false
+            idx += 1
         case "--shared-cache":
             parsed.sharedCache = true
             idx += 1
@@ -434,17 +484,244 @@ private func resolveSkipExisting(_ args: DumpArguments, env: [String: String]) -
     return true
 }
 
-private func buildSelection(_ args: DumpArguments) -> (categories: [String], frameworkNames: Set<String>, frameworkFilters: [String]) {
-    let categories = ["Frameworks", "PrivateFrameworks"]
+internal struct DumpSelection {
+    var categories: [String]
+    var frameworkNames: Set<String>
+    var frameworkFilters: [String]
+    var dumpAllFrameworks: Bool
+    var dumpAllSystemLibraryExtras: Bool
+    var systemLibraryItems: [String]
+    var dumpAllUsrLibDylibs: Bool
+    var usrLibDylibs: [String]
+}
 
-    var frameworkNames: Set<String> = []
-    for name in args.frameworks {
-        let normalized = FileOps.normalizeFrameworkName(name).lowercased()
-        frameworkNames.insert(normalized)
+internal func resolveNestedEnabled(_ args: DumpArguments) -> Bool {
+    // Nested bundles are now enabled by default to make targeted dumps (e.g. a single framework)
+    // produce XPCServices/PlugIns outputs without requiring extra flags.
+    args.nested ?? true
+}
+
+private let systemBundleTargetExtensions: Set<String> = ["app", "bundle", "xpc", "appex"]
+
+private func normalizeFrameworkTargetName(_ name: String) -> String {
+    FileOps.normalizeFrameworkName(name).lowercased()
+}
+
+private func normalizeSystemLibraryRelativeTarget(_ value: String) throws -> String {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("/System/Library/") {
+        normalized = String(normalized.dropFirst("/System/Library/".count))
+    } else if normalized.hasPrefix("System/Library/") {
+        normalized = String(normalized.dropFirst("System/Library/".count))
+    } else if normalized.hasPrefix("/") {
+        throw ToolingError.invalidArgument("SystemLibrary target must be a /System/Library relative path: \(value)")
     }
 
-    let frameworkFilters = args.filters.map { $0.lowercased() }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    return (categories, frameworkNames, frameworkFilters)
+    normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    guard !normalized.isEmpty else {
+        throw ToolingError.invalidArgument("SystemLibrary target is empty: \(value)")
+    }
+
+    if normalized.hasPrefix("Frameworks/") || normalized.hasPrefix("PrivateFrameworks/") {
+        throw ToolingError.invalidArgument("SystemLibrary target must not be under Frameworks/PrivateFrameworks: \(value) (use --target <FrameworkName> instead)")
+    }
+
+    let parts = normalized.split(separator: "/").map(String.init)
+    if parts.contains(".") || parts.contains("..") {
+        throw ToolingError.invalidArgument("SystemLibrary target must not contain '.' or '..' path components: \(value)")
+    }
+
+    let ext = URL(fileURLWithPath: normalized).pathExtension.lowercased()
+    guard systemBundleTargetExtensions.contains(ext) else {
+        throw ToolingError.invalidArgument("SystemLibrary target must be .app/.bundle/.xpc/.appex: \(value)")
+    }
+
+    return normalized
+}
+
+private func normalizeUsrLibTargetName(_ value: String) throws -> String {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("/usr/lib/") {
+        normalized = String(normalized.dropFirst("/usr/lib/".count))
+    } else if normalized.hasPrefix("usr/lib/") {
+        normalized = String(normalized.dropFirst("usr/lib/".count))
+    } else if normalized.hasPrefix("/") {
+        throw ToolingError.invalidArgument("usr/lib target must be under /usr/lib: \(value)")
+    }
+
+    normalized = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    guard !normalized.isEmpty else {
+        throw ToolingError.invalidArgument("usr/lib target is empty: \(value)")
+    }
+    guard !normalized.contains("/") else {
+        throw ToolingError.invalidArgument("usr/lib target must be /usr/lib/<name>.dylib (subdirectories are not supported): \(value)")
+    }
+    guard normalized.lowercased().hasSuffix(".dylib") else {
+        throw ToolingError.invalidArgument("usr/lib target must end with .dylib: \(value)")
+    }
+    return normalized
+}
+
+private func extractFrameworkNameFromTargetPath(_ value: String) -> String? {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("/System/Library/") {
+        normalized = String(normalized.dropFirst("/System/Library/".count))
+    } else if normalized.hasPrefix("System/Library/") {
+        normalized = String(normalized.dropFirst("System/Library/".count))
+    }
+
+    let parts = normalized.split(separator: "/").map(String.init)
+    for (idx, part) in parts.enumerated() {
+        if (part == "Frameworks" || part == "PrivateFrameworks"),
+           idx + 1 < parts.count,
+           parts[idx + 1].hasSuffix(".framework")
+        {
+            return parts[idx + 1]
+        }
+    }
+    return nil
+}
+
+private func appendUnique(_ items: inout [String], _ value: String, seen: inout Set<String>) {
+    if seen.contains(value) { return }
+    seen.insert(value)
+    items.append(value)
+}
+
+internal func buildDumpSelection(_ args: DumpArguments) throws -> DumpSelection {
+    var hadExplicitSelection = false
+    var wantsFrameworks = false
+    var dumpAllFrameworks = false
+
+    // Legacy framework selection still works, but `--target` is preferred.
+    var frameworkNames: Set<String> = []
+    if !args.frameworks.isEmpty {
+        hadExplicitSelection = true
+        wantsFrameworks = true
+        for name in args.frameworks {
+            frameworkNames.insert(normalizeFrameworkTargetName(name))
+        }
+    }
+
+    let frameworkFilters = args.filters
+        .map { $0.lowercased() }
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    if !frameworkFilters.isEmpty {
+        hadExplicitSelection = true
+        wantsFrameworks = true
+    }
+
+    var dumpAllSystemLibraryExtras = false
+    var systemLibraryItems: [String] = []
+    var systemLibrarySeen: Set<String> = []
+
+    var dumpAllUsrLibDylibs = false
+    var usrLibDylibs: [String] = []
+    var usrLibSeen: Set<String> = []
+
+    if let scope = args.scope {
+        hadExplicitSelection = true
+        switch scope {
+        case .frameworks:
+            wantsFrameworks = true
+        case .system:
+            wantsFrameworks = true
+            dumpAllSystemLibraryExtras = true
+        case .all:
+            wantsFrameworks = true
+            dumpAllSystemLibraryExtras = true
+            dumpAllUsrLibDylibs = true
+        }
+    }
+
+    if !args.targets.isEmpty {
+        hadExplicitSelection = true
+    }
+
+    for raw in args.targets {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { throw ToolingError.invalidArgument("--target requires a non-empty value") }
+
+        if value.hasPrefix("@") {
+            switch value.lowercased() {
+            case "@frameworks":
+                wantsFrameworks = true
+                dumpAllFrameworks = true
+            case "@system":
+                wantsFrameworks = true
+                dumpAllFrameworks = true
+                dumpAllSystemLibraryExtras = true
+            case "@all":
+                wantsFrameworks = true
+                dumpAllFrameworks = true
+                dumpAllSystemLibraryExtras = true
+                dumpAllUsrLibDylibs = true
+            default:
+                throw ToolingError.invalidArgument("invalid preset target: \(value) (use @frameworks, @system, or @all)")
+            }
+            continue
+        }
+
+        if let frameworkName = extractFrameworkNameFromTargetPath(value) {
+            wantsFrameworks = true
+            frameworkNames.insert(normalizeFrameworkTargetName(frameworkName))
+            continue
+        }
+
+        let ext = URL(fileURLWithPath: value).pathExtension.lowercased()
+        if ext == "dylib" || value.hasPrefix("/usr/lib/") || value.hasPrefix("usr/lib/") {
+            let name = try normalizeUsrLibTargetName(value)
+            appendUnique(&usrLibDylibs, name, seen: &usrLibSeen)
+            continue
+        }
+
+        if systemBundleTargetExtensions.contains(ext)
+            || value.contains("/")
+            || value.hasPrefix("/System/Library/")
+            || value.hasPrefix("System/Library/")
+        {
+            let rel = try normalizeSystemLibraryRelativeTarget(value)
+            appendUnique(&systemLibraryItems, rel, seen: &systemLibrarySeen)
+            continue
+        }
+
+        // Default: treat as a framework name.
+        wantsFrameworks = true
+        frameworkNames.insert(normalizeFrameworkTargetName(value))
+    }
+
+    if !hadExplicitSelection {
+        // Backward compatible default: dump all frameworks when nothing is explicitly selected.
+        wantsFrameworks = true
+        dumpAllFrameworks = true
+    }
+
+    if !wantsFrameworks,
+       !dumpAllSystemLibraryExtras,
+       systemLibraryItems.isEmpty,
+       !dumpAllUsrLibDylibs,
+       usrLibDylibs.isEmpty
+    {
+        throw ToolingError.invalidArgument("no dump targets specified")
+    }
+
+    // When a preset includes frameworks (e.g. @frameworks/@system/@all), treat it as "dump all"
+    // rather than narrowing to explicitly named frameworks.
+    if dumpAllFrameworks {
+        frameworkNames = []
+    }
+
+    let categories = wantsFrameworks ? ["Frameworks", "PrivateFrameworks"] : []
+    return DumpSelection(
+        categories: categories,
+        frameworkNames: frameworkNames,
+        frameworkFilters: frameworkFilters,
+        dumpAllFrameworks: dumpAllFrameworks,
+        dumpAllSystemLibraryExtras: dumpAllSystemLibraryExtras,
+        systemLibraryItems: systemLibraryItems,
+        dumpAllUsrLibDylibs: dumpAllUsrLibDylibs,
+        usrLibDylibs: usrLibDylibs
+    )
 }
 
 private func selfExecutableURL(env: [String: String]) -> URL? {
@@ -916,10 +1193,11 @@ private func run() throws {
         runner: runner
     )
 
-    let (categories, frameworkNames, frameworkFilters) = buildSelection(parsed)
+    let selection = try buildDumpSelection(parsed)
     let layout = try resolveLayout(parsed.layout, env: env)
     let useSharedCache = resolveSharedCache(parsed, env: env)
     let verbose = resolveVerbose(parsed, env: env)
+    let nestedEnabled = resolveNestedEnabled(parsed)
 
     func setupContext(_ mode: ExecMode) throws -> Context {
         if platform == .macos {
@@ -930,9 +1208,9 @@ private func run() throws {
                 rootDir: rootDir,
                 headerdumpBin: host,
                 args: parsed,
-                categories: categories,
-                frameworkNames: frameworkNames,
-                frameworkFilters: frameworkFilters,
+                categories: selection.categories,
+                frameworkNames: selection.frameworkNames,
+                frameworkFilters: selection.frameworkFilters,
                 layout: layout,
                 useSharedCache: useSharedCache,
                 verbose: verbose,
@@ -963,9 +1241,9 @@ private func run() throws {
                 requestedExecMode: requestedExecMode,
                 args: parsed,
                 allowMacOSSelection: !hasExplicitPlatform && requestedExecMode != .simulator,
-                categories: categories,
-                frameworkNames: frameworkNames,
-                frameworkFilters: frameworkFilters,
+                categories: selection.categories,
+                frameworkNames: selection.frameworkNames,
+                frameworkFilters: selection.frameworkFilters,
                 layout: layout,
                 useSharedCache: useSharedCache,
                 verbose: verbose,
@@ -977,9 +1255,9 @@ private func run() throws {
             headerdumpBin: headerdumpBin,
             execMode: mode,
             args: parsed,
-            categories: categories,
-            frameworkNames: frameworkNames,
-            frameworkFilters: frameworkFilters,
+            categories: selection.categories,
+            frameworkNames: selection.frameworkNames,
+            frameworkFilters: selection.frameworkFilters,
             layout: layout,
             useSharedCache: useSharedCache,
             verbose: verbose,
@@ -1016,6 +1294,8 @@ private func run() throws {
         }
     }
 
+    ctx.nestedEnabled = nestedEnabled
+
     try PathUtils.ensureDirectory(ctx.outDir)
     let lock = try OutputLock(outDir: ctx.outDir)
     defer { lock.unlock(removeFile: true) }
@@ -1027,6 +1307,21 @@ private func run() throws {
         try FileOps.resetStageDir(ctx.stageDir)
         let hadFailures = try dumpCategory(category: category, ctx: ctx, runner: runner)
         try finalizeCategoryOutput(category: category, ctx: ctx, hadFailures: hadFailures)
+    }
+
+    if selection.dumpAllSystemLibraryExtras || !selection.systemLibraryItems.isEmpty {
+        try FileOps.resetStageDir(ctx.stageDir)
+        let items = selection.dumpAllSystemLibraryExtras
+            ? (try listSystemLibraryExtras(ctx: ctx))
+            : selection.systemLibraryItems
+        _ = try dumpSystemLibraryItems(ctx: ctx, items: items, runner: runner)
+    }
+    if selection.dumpAllUsrLibDylibs || !selection.usrLibDylibs.isEmpty {
+        try FileOps.resetStageDir(ctx.stageDir)
+        let dylibs = selection.dumpAllUsrLibDylibs
+            ? (try listUsrLibDylibs(ctx: ctx))
+            : selection.usrLibDylibs
+        _ = try dumpUsrLibDylibItems(ctx: ctx, dylibs: dylibs, runner: runner)
     }
 
     try writeMetadata(ctx: ctx, runner: runner)
@@ -1064,6 +1359,184 @@ private func filterFrameworks(_ frameworks: [String], ctx: Context) -> [String] 
     return filtered
 }
 
+private func fileManagerIsDirectory(_ url: URL, fileManager: FileManager = .default) -> Bool {
+    var isDir = ObjCBool(false)
+    return fileManager.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+}
+
+private let normalizedBundleExtensions: Set<String> = ["app", "bundle", "xpc", "appex"]
+
+private func normalizedBundleDirURLIfNeeded(_ url: URL) -> URL {
+    let ext = url.pathExtension.lowercased()
+    if normalizedBundleExtensions.contains(ext) {
+        return url.deletingPathExtension()
+    }
+    return url
+}
+
+private func normalizeNestedXPCAndPlugIns(in bundleDir: URL, overwrite: Bool) throws {
+    let fm = FileManager.default
+    let xpcDir = bundleDir.appendingPathComponent("XPCServices", isDirectory: true)
+    try FileOps.normalizeBundleDirs(in: xpcDir, allowedExtensions: ["xpc"], overwrite: overwrite, fileManager: fm)
+
+    let plugInsDir = bundleDir.appendingPathComponent("PlugIns", isDirectory: true)
+    try FileOps.normalizeBundleDirs(in: plugInsDir, allowedExtensions: ["appex"], overwrite: overwrite, fileManager: fm)
+}
+
+private func denormalizeNestedXPCAndPlugIns(in bundleDir: URL, overwrite: Bool) throws {
+    let fm = FileManager.default
+    let xpcDir = bundleDir.appendingPathComponent("XPCServices", isDirectory: true)
+    try FileOps.denormalizeBundleDirs(in: xpcDir, bundleExtension: "xpc", overwrite: overwrite, fileManager: fm)
+
+    let plugInsDir = bundleDir.appendingPathComponent("PlugIns", isDirectory: true)
+    try FileOps.denormalizeBundleDirs(in: plugInsDir, bundleExtension: "appex", overwrite: overwrite, fileManager: fm)
+}
+
+private func directoryContainsHeaderArtifacts(_ dir: URL, fileManager: FileManager = .default) -> Bool {
+    guard fileManagerIsDirectory(dir, fileManager: fileManager) else { return false }
+    guard let entries = try? fileManager.contentsOfDirectory(
+        at: dir,
+        includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        return false
+    }
+
+    for entry in entries {
+        guard (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+        let ext = entry.pathExtension.lowercased()
+        if ext == "h" || ext == "swiftinterface" {
+            return true
+        }
+    }
+    return false
+}
+
+private func bundleOutputHasHeaderArtifacts(_ bundleDir: URL, fileManager: FileManager = .default) -> Bool {
+    directoryContainsHeaderArtifacts(bundleDir.appendingPathComponent("Headers", isDirectory: true), fileManager: fileManager)
+}
+
+private func dylibOutputHasHeaderArtifacts(_ dylibDir: URL, fileManager: FileManager = .default) -> Bool {
+    directoryContainsHeaderArtifacts(dylibDir, fileManager: fileManager)
+}
+
+private func appendingRelativePath(_ base: URL, _ relativePath: String, isDirectory: Bool = true) -> URL {
+    var url = base
+    let parts = relativePath.split(separator: "/").map(String.init)
+    for (idx, part) in parts.enumerated() {
+        let isLast = idx == parts.count - 1
+        url.appendPathComponent(part, isDirectory: isLast ? isDirectory : true)
+    }
+    return url
+}
+
+private func listNestedBundles(ctx: Context, systemLibraryRelativeBundlePath: String) throws -> [String] {
+    let fileManager = FileManager.default
+    let systemLibraryURL = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
+        .appendingPathComponent("System/Library", isDirectory: true)
+    let bundleURL = appendingRelativePath(systemLibraryURL, systemLibraryRelativeBundlePath, isDirectory: true)
+
+    guard fileManagerIsDirectory(bundleURL, fileManager: fileManager) else { return [] }
+
+    var results: [String] = []
+
+    let xpcDir = bundleURL.appendingPathComponent("XPCServices", isDirectory: true)
+    if fileManagerIsDirectory(xpcDir, fileManager: fileManager),
+       let entries = try? fileManager.contentsOfDirectory(at: xpcDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+    {
+        for entry in entries where entry.lastPathComponent.hasSuffix(".xpc") {
+            results.append(systemLibraryRelativeBundlePath + "/XPCServices/" + entry.lastPathComponent)
+        }
+    }
+
+    let plugInsDir = bundleURL.appendingPathComponent("PlugIns", isDirectory: true)
+    if fileManagerIsDirectory(plugInsDir, fileManager: fileManager),
+       let entries = try? fileManager.contentsOfDirectory(at: plugInsDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+    {
+        for entry in entries where entry.lastPathComponent.hasSuffix(".appex") {
+            results.append(systemLibraryRelativeBundlePath + "/PlugIns/" + entry.lastPathComponent)
+        }
+    }
+
+    results.sort()
+    return results
+}
+
+private func listSystemLibraryExtras(ctx: Context) throws -> [String] {
+    let fileManager = FileManager.default
+    let systemLibraryURL = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
+        .appendingPathComponent("System/Library", isDirectory: true)
+    guard fileManagerIsDirectory(systemLibraryURL, fileManager: fileManager) else {
+        throw ToolingError.message("failed to read \(systemLibraryURL.path)")
+    }
+
+    let frameworksDir = systemLibraryURL.appendingPathComponent("Frameworks", isDirectory: true)
+    let privateFrameworksDir = systemLibraryURL.appendingPathComponent("PrivateFrameworks", isDirectory: true)
+
+    guard let enumerator = fileManager.enumerator(
+        at: systemLibraryURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        throw ToolingError.message("failed to enumerate \(systemLibraryURL.path)")
+    }
+
+    var results: [String] = []
+    while let url = enumerator.nextObject() as? URL {
+        try throwIfTerminationRequested()
+        guard fileManagerIsDirectory(url, fileManager: fileManager) else { continue }
+
+        if url.path == frameworksDir.path || url.path == privateFrameworksDir.path {
+            enumerator.skipDescendants()
+            continue
+        }
+
+        let ext = url.pathExtension.lowercased()
+        guard ext == "app" || ext == "bundle" || ext == "xpc" || ext == "appex" else {
+            continue
+        }
+
+        let basePath = systemLibraryURL.path.hasSuffix("/") ? systemLibraryURL.path : (systemLibraryURL.path + "/")
+        guard url.path.hasPrefix(basePath) else { continue }
+        let relative = String(url.path.dropFirst(basePath.count))
+        if !relative.isEmpty {
+            results.append(relative)
+        }
+        enumerator.skipDescendants()
+    }
+
+    results.sort()
+    return results
+}
+
+private func listUsrLibDylibs(ctx: Context) throws -> [String] {
+    let fileManager = FileManager.default
+    let usrLibURL = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
+        .appendingPathComponent("usr", isDirectory: true)
+        .appendingPathComponent("lib", isDirectory: true)
+    guard fileManagerIsDirectory(usrLibURL, fileManager: fileManager) else {
+        throw ToolingError.message("failed to read \(usrLibURL.path)")
+    }
+
+    // Many /usr/lib/*.dylib entries are symlink stubs. Include symlinks so presets like @all
+    // match the set of dylibs users can target explicitly.
+    let entries = try fileManager.contentsOfDirectory(
+        at: usrLibURL,
+        includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+        options: [.skipsHiddenFiles]
+    )
+    var dylibs: [String] = []
+    for entry in entries {
+        let values = try? entry.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        let isFileLike = (values?.isRegularFile == true) || (values?.isSymbolicLink == true)
+        guard isFileLike else { continue }
+        guard entry.pathExtension.lowercased() == "dylib" else { continue }
+        dylibs.append(entry.lastPathComponent)
+    }
+    dylibs.sort()
+    return dylibs
+}
+
 private func existingFrameworksInCategory(ctx: Context, category: String, frameworks: Set<String>) -> Set<String> {
     let categoryDir = ctx.outDir.appendingPathComponent(category, isDirectory: true)
     guard FileOps.isDirectory(categoryDir) else { return [] }
@@ -1080,7 +1553,8 @@ private func existingFrameworksInCategory(ctx: Context, category: String, framew
             enumerator.skipDescendants()
             continue
         }
-        if url.pathExtension != "h" { continue }
+        let ext = url.pathExtension.lowercased()
+        if ext != "h" && ext != "swiftinterface" { continue }
         guard url.path.hasPrefix(basePath + "/") else { continue }
         let rel = url.path.dropFirst(basePath.count + 1)
         guard let top = rel.split(separator: "/").first else { continue }
@@ -1133,6 +1607,20 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
     for (idx, item) in frameworks.enumerated() {
         try throwIfTerminationRequested()
         if ctx.skipExisting, existing.contains(item) {
+            // Best-effort: keep nested XPCServices/PlugIns outputs consistent with the requested layout
+            // even when skipping.
+            if ctx.layout == "headers" {
+                let baseName = item.hasSuffix(".framework") ? String(item.dropLast(".framework".count)) : item
+                let dest = ctx.outDir
+                    .appendingPathComponent(category, isDirectory: true)
+                    .appendingPathComponent(baseName, isDirectory: true)
+                try? normalizeNestedXPCAndPlugIns(in: dest, overwrite: false)
+            } else {
+                let dest = ctx.outDir
+                    .appendingPathComponent(category, isDirectory: true)
+                    .appendingPathComponent(item, isDirectory: true)
+                try? denormalizeNestedXPCAndPlugIns(in: dest, overwrite: false)
+            }
             print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
             continue
         }
@@ -1158,9 +1646,29 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
                 print("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
             }
         } else {
+            if ctx.nestedEnabled {
+                let parentBundle = path
+                let nestedBundles = try listNestedBundles(
+                    ctx: ctx,
+                    systemLibraryRelativeBundlePath: parentBundle
+                )
+                for nested in nestedBundles {
+                    let nestedResult = try runHeaderdump(category: nested, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+                    if nestedResult.wasKilled || nestedResult.status != 0 {
+                        reportLastLines(nestedResult.lastLines)
+                        failures.append(nested)
+                    }
+                }
+            }
+
             try relocateFrameworkOutput(ctx: ctx, category: category, frameworkName: item)
             if ctx.layout == "headers" {
                 try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: !ctx.skipExisting)
+                let baseName = item.hasSuffix(".framework") ? String(item.dropLast(".framework".count)) : item
+                let dest = ctx.outDir
+                    .appendingPathComponent(category, isDirectory: true)
+                    .appendingPathComponent(baseName, isDirectory: true)
+                try normalizeNestedXPCAndPlugIns(in: dest, overwrite: !ctx.skipExisting)
             }
             if inlineProgress {
                 renderInlineProgressEnd("\(progressText) (elapsed: \(frameworkElapsedText)s)")
@@ -1177,6 +1685,272 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
         return true
     }
     return false
+}
+
+private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: CommandRunning) throws -> Bool {
+    try throwIfTerminationRequested()
+    print("Dumping: SystemLibrary")
+
+    if items.isEmpty {
+        print("Skipping SystemLibrary: no items selected")
+        return false
+    }
+
+    let total = items.count
+    var failures: [String] = []
+    let inlineProgress = canInlineFrameworkProgress(ctx: ctx)
+    let fileManager = FileManager.default
+
+    let outBase = ctx.outDir.appendingPathComponent("SystemLibrary", isDirectory: true)
+    let normalizeBundles = (ctx.layout == "headers")
+
+    for (idx, relPath) in items.enumerated() {
+        try throwIfTerminationRequested()
+
+        let dest = appendingRelativePath(outBase, relPath, isDirectory: true)
+        let normalizedDest = normalizedBundleDirURLIfNeeded(dest)
+        if ctx.skipExisting,
+           (bundleOutputHasHeaderArtifacts(dest, fileManager: fileManager) || bundleOutputHasHeaderArtifacts(normalizedDest, fileManager: fileManager))
+        {
+            // Best-effort: keep existing outputs consistent with the requested layout even when skipping.
+            //
+            // In particular, switching from `--layout headers` to `--layout bundle` should not require a re-dump:
+            // rename `Foo` -> `Foo.bundle` (and similarly for nested XPC/appex bundles) when possible.
+            var existingDir: URL?
+            if fileManager.fileExists(atPath: dest.path) {
+                existingDir = dest
+            } else if fileManager.fileExists(atPath: normalizedDest.path) {
+                existingDir = normalizedDest
+            }
+
+            if var bundleDir = existingDir {
+                if normalizeBundles {
+                    bundleDir = (try? FileOps.normalizeBundleDir(
+                        bundleDir,
+                        allowedExtensions: normalizedBundleExtensions,
+                        overwrite: false,
+                        fileManager: fileManager
+                    )) ?? bundleDir
+                    try? normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: false)
+                } else {
+                    let ext = dest.pathExtension
+                    bundleDir = (try? FileOps.denormalizeBundleDir(
+                        bundleDir,
+                        bundleExtension: ext,
+                        overwrite: false,
+                        fileManager: fileManager
+                    )) ?? bundleDir
+                    try? denormalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: false)
+                }
+            }
+            print("Skipping existing: SystemLibrary (\(idx + 1)/\(total)) \(relPath)")
+            continue
+        }
+
+        let progressText = "Dumping: SystemLibrary (\(idx + 1)/\(total)) \(relPath)"
+        if inlineProgress {
+            renderInlineProgressStart(progressText)
+        } else {
+            print(progressText)
+        }
+
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = try runHeaderdump(category: relPath, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+        let elapsedText = formatElapsedSeconds(since: start)
+        if result.wasKilled || result.status != 0 {
+            if inlineProgress {
+                renderInlineProgressEnd("Failed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+            }
+            reportLastLines(result.lastLines)
+            failures.append("SystemLibrary/\(relPath)")
+            if !inlineProgress {
+                print("Failed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+            }
+            continue
+        }
+
+        if ctx.nestedEnabled {
+            let nestedBundles = try listNestedBundles(ctx: ctx, systemLibraryRelativeBundlePath: relPath)
+            for nested in nestedBundles {
+                let nestedResult = try runHeaderdump(category: nested, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+                if nestedResult.wasKilled || nestedResult.status != 0 {
+                    reportLastLines(nestedResult.lastLines)
+                    failures.append("SystemLibrary/\(nested)")
+                }
+            }
+        }
+
+        try relocateSystemLibraryItemOutput(ctx: ctx, systemLibraryRelativePath: relPath, destBaseDir: outBase)
+
+        if normalizeBundles {
+            var bundleDir = dest
+            bundleDir = try FileOps.normalizeBundleDir(
+                bundleDir,
+                allowedExtensions: normalizedBundleExtensions,
+                overwrite: !ctx.skipExisting,
+                fileManager: fileManager
+            )
+            try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: !ctx.skipExisting)
+        } else if dest.path != normalizedDest.path {
+            // When switching layouts with `--force`, remove stale "headers" layout output (e.g. `Foo`)
+            // next to the fresh bundle output (e.g. `Foo.bundle`) so one run produces a consistent layout.
+            if fileManager.fileExists(atPath: normalizedDest.path) {
+                try? fileManager.removeItem(at: normalizedDest)
+            }
+        }
+
+        if inlineProgress {
+            renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
+        } else {
+            print("Completed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+        }
+    }
+
+    if !failures.isEmpty {
+        let summary = "headerdump failed for \(failures.count) items under SystemLibrary"
+        fputs(summary + "\n", stderr)
+        try writeFailures(ctx: ctx, summary: summary, failures: failures)
+        return true
+    }
+    return false
+}
+
+private func dumpUsrLibDylibItems(ctx: Context, dylibs: [String], runner: CommandRunning) throws -> Bool {
+    try throwIfTerminationRequested()
+    print("Dumping: usr/lib")
+
+    if dylibs.isEmpty {
+        print("Skipping usr/lib: no items selected")
+        return false
+    }
+
+    let total = dylibs.count
+    var failures: [String] = []
+    let inlineProgress = canInlineFrameworkProgress(ctx: ctx)
+    let fileManager = FileManager.default
+
+    let outBase = ctx.outDir
+        .appendingPathComponent("usr", isDirectory: true)
+        .appendingPathComponent("lib", isDirectory: true)
+
+    for (idx, name) in dylibs.enumerated() {
+        try throwIfTerminationRequested()
+
+        let dest = outBase.appendingPathComponent(name, isDirectory: true)
+        if ctx.skipExisting, dylibOutputHasHeaderArtifacts(dest, fileManager: fileManager) {
+            print("Skipping existing: usr/lib (\(idx + 1)/\(total)) \(name)")
+            continue
+        }
+
+        let progressText = "Dumping: usr/lib (\(idx + 1)/\(total)) \(name)"
+        if inlineProgress {
+            renderInlineProgressStart(progressText)
+        } else {
+            print(progressText)
+        }
+
+        let start = DispatchTime.now().uptimeNanoseconds
+        let inputPath: String
+        switch ctx.execMode {
+        case .simulator:
+            inputPath = "/usr/lib/\(name)"
+        case .host:
+            inputPath = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
+                .appendingPathComponent("usr", isDirectory: true)
+                .appendingPathComponent("lib", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: false)
+                .path
+        }
+
+        let result = try runHeaderdumpPath(path: inputPath, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+        let elapsedText = formatElapsedSeconds(since: start)
+        if result.wasKilled || result.status != 0 {
+            if inlineProgress {
+                renderInlineProgressEnd("Failed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+            }
+            reportLastLines(result.lastLines)
+            failures.append("usr/lib/\(name)")
+            if !inlineProgress {
+                print("Failed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+            }
+            continue
+        }
+
+        try relocateUsrLibOutput(ctx: ctx, dylibName: name)
+
+        if inlineProgress {
+            renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
+        } else {
+            print("Completed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+        }
+    }
+
+    if !failures.isEmpty {
+        let summary = "headerdump failed for \(failures.count) items under usr/lib"
+        fputs(summary + "\n", stderr)
+        try writeFailures(ctx: ctx, summary: summary, failures: failures)
+        return true
+    }
+    return false
+}
+
+private func relocateSystemLibraryItemOutput(ctx: Context, systemLibraryRelativePath: String, destBaseDir: URL) throws {
+    let fileManager = FileManager.default
+    var src: URL?
+    for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
+        let candidate = appendingRelativePath(base, systemLibraryRelativePath, isDirectory: true)
+        if fileManager.fileExists(atPath: candidate.path), !FileOps.isSymlink(candidate) {
+            src = candidate
+            break
+        }
+    }
+    guard let src else { return }
+
+    let dest = appendingRelativePath(destBaseDir, systemLibraryRelativePath, isDirectory: true)
+    try fileManager.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+    if fileManager.fileExists(atPath: dest.path) {
+        let overwrite = !ctx.skipExisting
+        if overwrite {
+            try FileOps.moveReplace(src: src, dest: dest, fileManager: fileManager)
+        } else {
+            try FileOps.mergeDirectories(src: src, dest: dest, fileManager: fileManager)
+            FileOps.tryRemoveEmpty(src, fileManager: fileManager)
+        }
+    } else {
+        try fileManager.moveItem(at: src, to: dest)
+    }
+}
+
+private func relocateUsrLibOutput(ctx: Context, dylibName: String) throws {
+    let fileManager = FileManager.default
+    var src: URL?
+    for base in FileOps.stageUsrLibRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
+        let candidate = base.appendingPathComponent(dylibName, isDirectory: true)
+        if fileManager.fileExists(atPath: candidate.path), !FileOps.isSymlink(candidate) {
+            src = candidate
+            break
+        }
+    }
+    guard let src else { return }
+
+    let destDir = ctx.outDir
+        .appendingPathComponent("usr", isDirectory: true)
+        .appendingPathComponent("lib", isDirectory: true)
+    try fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
+    let dest = destDir.appendingPathComponent(dylibName, isDirectory: true)
+
+    if fileManager.fileExists(atPath: dest.path) {
+        let overwrite = !ctx.skipExisting
+        if overwrite {
+            try FileOps.moveReplace(src: src, dest: dest, fileManager: fileManager)
+        } else {
+            try FileOps.mergeDirectories(src: src, dest: dest, fileManager: fileManager)
+            FileOps.tryRemoveEmpty(src, fileManager: fileManager)
+        }
+    } else {
+        try fileManager.moveItem(at: src, to: dest)
+    }
 }
 
 private func relocateFrameworkOutput(ctx: Context, category: String, frameworkName: String) throws {
@@ -1305,7 +2079,8 @@ private func runHeaderdumpHost(
         .appendingPathComponent("System/Library", isDirectory: true)
         .appendingPathComponent(category, isDirectory: false)
         .path
-    let isRecursive = !category.contains("/")
+    let ext = URL(fileURLWithPath: category).pathExtension
+    let isRecursive = !category.contains("/") && ext.isEmpty
 
     var cmd = [ctx.headerdumpBin.path, "-o", ctx.stageDir.path]
     if isRecursive {
@@ -1347,7 +2122,8 @@ private func runHeaderdumpSimulator(
 ) throws -> StreamingCommandResult {
     guard var device = ctx.device else { throw ToolingError.message("no simulator device available") }
     let sourcePath = "/System/Library/\(category)"
-    let isRecursive = !category.contains("/")
+    let ext = URL(fileURLWithPath: category).pathExtension
+    let isRecursive = !category.contains("/") && ext.isEmpty
 
     var cmd = ["xcrun", "simctl", "spawn", device.udid, ctx.headerdumpBin.path, "-o", ctx.stageDir.path]
     if isRecursive {
@@ -1367,6 +2143,84 @@ private func runHeaderdumpSimulator(
     // `simctl spawn` only forwards environment variables to the child when they are prefixed with
     // `SIMCTL_CHILD_`. Map the unprefixed host env vars to the child-prefixed versions so users
     // can just set `PH_PROFILE=1` / `PH_SWIFT_EVENTS=1` when running `privateheaderkit-dump`.
+    let parentEnv = ProcessInfo.processInfo.environment
+    if parentEnv["SIMCTL_CHILD_PH_PROFILE"] == nil, parentEnv["PH_PROFILE"] == "1" {
+        env["SIMCTL_CHILD_PH_PROFILE"] = "1"
+    }
+    if parentEnv["SIMCTL_CHILD_PH_SWIFT_EVENTS"] == nil, parentEnv["PH_SWIFT_EVENTS"] == "1" {
+        env["SIMCTL_CHILD_PH_SWIFT_EVENTS"] = "1"
+    }
+    if parentEnv["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] == nil, parentEnv["PH_SYMBOL_PROFILE"] == "1" {
+        env["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] = "1"
+    }
+
+    var result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+    try throwIfTerminationRequested()
+    if result.status != 0, shouldRetrySimulatorBoot(result.lastLines) {
+        try Simctl.ensureDeviceBooted(&device, runner: runner, force: true)
+        result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+        try throwIfTerminationRequested()
+    }
+    return result
+}
+
+private func runHeaderdumpPath(
+    path: String,
+    ctx: Context,
+    runner: CommandRunning,
+    streamOutput: Bool
+) throws -> StreamingCommandResult {
+    switch ctx.execMode {
+    case .host:
+        return try runHeaderdumpPathHost(path: path, ctx: ctx, runner: runner, streamOutput: streamOutput)
+    case .simulator:
+        return try runHeaderdumpPathSimulator(path: path, ctx: ctx, runner: runner, streamOutput: streamOutput)
+    }
+}
+
+private func runHeaderdumpPathHost(
+    path: String,
+    ctx: Context,
+    runner: CommandRunning,
+    streamOutput: Bool
+) throws -> StreamingCommandResult {
+    var cmd = [ctx.headerdumpBin.path, "-o", ctx.stageDir.path, path]
+    cmd += ["-b", "-h"]
+    if ctx.verbose { cmd.append("-D") }
+    if ctx.skipExisting { cmd.append("-s") }
+    if ctx.platform == .macos { cmd.append("-R") }
+
+    var env: [String: String]? = nil
+    if ctx.useSharedCache {
+        cmd.append("-c")
+        if ctx.platform == .ios {
+            env = ["SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.systemRoot]
+        }
+    }
+
+    let result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+    try throwIfTerminationRequested()
+    return result
+}
+
+private func runHeaderdumpPathSimulator(
+    path: String,
+    ctx: Context,
+    runner: CommandRunning,
+    streamOutput: Bool
+) throws -> StreamingCommandResult {
+    guard var device = ctx.device else { throw ToolingError.message("no simulator device available") }
+
+    var cmd = ["xcrun", "simctl", "spawn", device.udid, ctx.headerdumpBin.path, "-o", ctx.stageDir.path, path]
+    cmd += ["-b", "-h"]
+    if ctx.verbose { cmd.append("-D") }
+    if ctx.skipExisting { cmd.append("-s") }
+    if ctx.useSharedCache { cmd.append("-c") }
+
+    var env: [String: String] = [
+        "SIMCTL_CHILD_PH_RUNTIME_ROOT": ctx.systemRoot,
+        "SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.systemRoot,
+    ]
     let parentEnv = ProcessInfo.processInfo.environment
     if parentEnv["SIMCTL_CHILD_PH_PROFILE"] == nil, parentEnv["PH_PROFILE"] == "1" {
         env["SIMCTL_CHILD_PH_PROFILE"] = "1"
@@ -1462,7 +2316,7 @@ private func writeMetadata(ctx: Context, runner: CommandRunning) throws {
         Layout: \(ctx.layout)
         HeaderCount: \(headerCount)
         Xcode: \(xcodeInfo)
-        Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
+        Notes: headerdump output; targets under /System/Library and /usr/lib (optional); -b -h \(skip)
         """
     case .macos:
         metadata = """
@@ -1475,7 +2329,7 @@ private func writeMetadata(ctx: Context, runner: CommandRunning) throws {
         Layout: \(ctx.layout)
         HeaderCount: \(headerCount)
         Xcode: \(xcodeInfo)
-        Notes: headerdump output; /System/Library/{Frameworks,PrivateFrameworks}; -b -h \(skip)
+        Notes: headerdump output; targets under /System/Library and /usr/lib (optional); -b -h \(skip)
         """
     }
 

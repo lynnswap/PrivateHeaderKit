@@ -288,9 +288,21 @@ private func dumpSingle(inputPath: String, options: DumpOptions, fileManager: Fi
 }
 
 func isBundleDirectory(_ url: URL) -> Bool {
-    guard url.hasDirectoryPath else { return false }
     let ext = url.pathExtension.lowercased()
-    return ext == "framework" || ext == "app" || ext == "bundle"
+    guard ext == "framework" || ext == "app" || ext == "bundle" || ext == "xpc" || ext == "appex" else { return false }
+
+    // `URL.hasDirectoryPath` is unreliable for symlink-to-directory bundles (e.g. Cryptex-backed
+    // system frameworks inside simulator runtimes). Fall back to a filesystem check so we can
+    // still treat them as bundles and resolve the executable.
+    if url.hasDirectoryPath {
+        return true
+    }
+
+    var isDir = ObjCBool(false)
+    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) {
+        return isDir.boolValue
+    }
+    return false
 }
 
 func resolveBundleExecutableURL(
@@ -299,6 +311,21 @@ func resolveBundleExecutableURL(
     bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
 ) -> URL? {
     if let executableURL = bundleExecutableURL(bundleURL) {
+        // `Bundle(url:)` may resolve symlinks, returning an executable inside the real path
+        // (e.g. `/System/Cryptexes/OS/...`). Prefer rebasing back onto the original bundle URL
+        // so output paths remain stable under `/System/Library/...` when possible.
+        let bundleName = bundleURL.lastPathComponent
+        let components = executableURL.pathComponents
+        if let bundleIndex = components.lastIndex(of: bundleName), bundleIndex + 1 < components.count {
+            let suffixComponents = components[(bundleIndex + 1)...]
+            var rebased = bundleURL
+            for component in suffixComponents {
+                rebased.appendPathComponent(component)
+            }
+            if fileManager.fileExists(atPath: rebased.path) {
+                return rebased
+            }
+        }
         return executableURL
     }
 
@@ -541,6 +568,17 @@ func normalizePath(_ path: String) -> String {
 
 private let maxPathComponentBytes = 255
 private let truncatedNameHashLength = 16
+
+func isSaneObjCTypeName(_ name: String) -> Bool {
+    if name.isEmpty { return false }
+    for scalar in name.unicodeScalars {
+        // U+FFFD is a strong signal we decoded invalid UTF-8 from runtime metadata.
+        if scalar.value == 0xFFFD { return false }
+        // Control characters (including \t, \n, form feed, etc) make both filenames and headers unreadable.
+        if scalar.properties.generalCategory == .control { return false }
+    }
+    return true
+}
 
 private func safeFileName(baseName: String, extension ext: String) -> String {
     let normalizedExt = ext.isEmpty ? "" : (ext.hasPrefix(".") ? ext : ".\(ext)")
@@ -895,6 +933,12 @@ private func dumpObjC(
 
     for info in classInfos.values {
         if let only = options.onlyOneClass, only != info.name { continue }
+        if !isSaneObjCTypeName(info.name) {
+            if options.verbose {
+                fputs("headerdump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
+            }
+            continue
+        }
         let fileName = safeFileName(baseName: info.name, extension: ".h")
         let fileURL = outputDir.appendingPathComponent(fileName)
         try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
@@ -902,6 +946,12 @@ private func dumpObjC(
 
     for info in protocolInfos.values {
         if let only = options.onlyOneClass, only != info.name { continue }
+        if !isSaneObjCTypeName(info.name) {
+            if options.verbose {
+                fputs("headerdump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
+            }
+            continue
+        }
         let fileName = safeFileName(baseName: info.name, extension: ".h")
         let fileURL = outputDir.appendingPathComponent(fileName)
         try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
@@ -909,6 +959,15 @@ private func dumpObjC(
 
     for info in categoryInfos.values {
         if let only = options.onlyOneClass, only != info.className && only != info.name { continue }
+        if !isSaneObjCTypeName(info.className) || !isSaneObjCTypeName(info.name) {
+            if options.verbose {
+                fputs(
+                    "headerdump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
+                    stderr
+                )
+            }
+            continue
+        }
         let baseName = "\(info.className)+\(info.name)"
         let fileName = safeFileName(baseName: baseName, extension: ".h")
         let fileURL = outputDir.appendingPathComponent(fileName)
