@@ -1791,6 +1791,12 @@ private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comma
                 fileManager: fileManager
             )
             try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: !ctx.skipExisting)
+        } else if dest.path != normalizedDest.path {
+            // When switching layouts with `--force`, remove stale "headers" layout output (e.g. `Foo`)
+            // next to the fresh bundle output (e.g. `Foo.bundle`) so one run produces a consistent layout.
+            if fileManager.fileExists(atPath: normalizedDest.path) {
+                try? fileManager.removeItem(at: normalizedDest)
+            }
         }
 
         if inlineProgress {
