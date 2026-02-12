@@ -61,8 +61,7 @@ This dumps both `Frameworks` and `PrivateFrameworks`.
 
 ### 3) Dump specific targets (`--target`)
 
-`--target` lets you select what to dump (repeatable, additive).  
-If you don't pass `--target`, it's the same as `--target @frameworks`.
+Use `--target` to specify what to dump. You can use it multiple times to include multiple targets.
 
 Examples:
 
@@ -77,12 +76,12 @@ privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
 privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
 
 # Presets
-privateheaderkit-dump 26.2 --target @frameworks
-privateheaderkit-dump 26.2 --target @system
-privateheaderkit-dump 26.2 --target @all
+privateheaderkit-dump 26.2 --target @frameworks  # Frameworks / PrivateFrameworks
+privateheaderkit-dump 26.2 --target @system      # @frameworks + SystemLibrary bundles
+privateheaderkit-dump 26.2 --target @all         # @system + /usr/lib dylibs
 
-# "All frameworks" + "one SystemLibrary bundle"
-privateheaderkit-dump 26.2 --target @frameworks --target PreferenceBundles/Foo.bundle
+# Multiple targets example
+privateheaderkit-dump 26.2 --target SafariShared --target UIKitCore
 
 # Disable nested bundle dumping
 privateheaderkit-dump 26.2 --target SafariShared --no-nested
@@ -108,7 +107,7 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 | `--force` | Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`) |
 | `--skip-existing` | Skip frameworks that already exist (useful to override `PH_FORCE=1`) |
 | `--exec-mode <host\|simulator>` | Force execution mode |
-| `--target <value>` | Select dump target (repeatable, additive). If omitted, it's the same as `@frameworks`. Presets: `@frameworks`, `@system`, `@all`. |
+| `--target <value>` | Select dump target (repeatable). Presets: `@frameworks`, `@system`, `@all`. |
 | `--no-nested` | Disable nested `XPCServices` / `PlugIns` bundle dumping (default: enabled) |
 | `--layout <bundle\|headers>` | Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix) |
 | `--framework <name>` | (Legacy) Dump only the exact framework name (repeatable, `.framework` optional) |
