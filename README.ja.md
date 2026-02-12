@@ -82,6 +82,9 @@ privateheaderkit-dump 26.2 --scope all --no-nested
 privateheaderkit-dump 26.2 --scope frameworks --nested
 ```
 
+`--layout headers`（デフォルト）の場合、検索しやすいように出力側のバンドル拡張子を外します:
+`.framework`, `.app`, `.bundle`, `.xpc`, `.appex`
+
 ### 4) ランタイム/デバイス一覧（iOS）
 
 ```
