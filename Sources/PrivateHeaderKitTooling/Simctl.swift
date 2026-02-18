@@ -14,6 +14,10 @@ public struct DeviceInfo: Codable, Equatable {
 }
 
 public enum Simctl {
+    private static func stateEquals(_ state: String, _ expected: String) -> Bool {
+        state.caseInsensitiveCompare(expected) == .orderedSame
+    }
+
     private struct RuntimeList: Decodable {
         struct RuntimeEntry: Decodable {
             let name: String?
@@ -105,7 +109,10 @@ public enum Simctl {
         guard let first = devices.first else {
             throw ToolingError.message("no devices available")
         }
-        if let booted = devices.first(where: { $0.state == "Booted" }) {
+        if let shutdown = devices.first(where: { stateEquals($0.state, "Shutdown") }) {
+            return shutdown
+        }
+        if let booted = devices.first(where: { stateEquals($0.state, "Booted") }) {
             return booted
         }
         return first
@@ -138,6 +145,9 @@ public enum Simctl {
         }
         let base = try pickDefaultDevice(devices: devices)
         if base.name == cloneName {
+            return base
+        }
+        if !stateEquals(base.state, "Shutdown") {
             return base
         }
         return try cloneDevice(base: base, runtimeId: runtime.identifier, cloneName: cloneName, runner: runner)
@@ -189,4 +199,3 @@ public enum Simctl {
         try runner.runSimple(["xcrun", "simctl", "create", createdName, deviceType, runtimeId], env: nil, cwd: nil)
     }
 }
-
