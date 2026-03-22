@@ -19,7 +19,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",
-            from: "0.6.2"
+            revision: "3dbf6a856cbdc856d4d7c1fe6bbf81161e0fbe9c"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",

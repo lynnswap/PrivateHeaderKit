@@ -1,5 +1,5 @@
 {
-  "originHash" : "a07ece0f53f3d60d4df679ed943455a73384492a9d2f0f3d6d38485e6dee77d0",
+  "originHash" : "9199b78a08916c736ab18adf746345ceaba2e57e8172162f2aea606c090e4d94",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -60,8 +60,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
-        "revision" : "d0faa24df401c13b822f5bc785098ee927ec7533",
-        "version" : "0.6.2"
+        "revision" : "3dbf6a856cbdc856d4d7c1fe6bbf81161e0fbe9c"
       }
     },
     {
