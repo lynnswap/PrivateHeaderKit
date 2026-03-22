@@ -569,6 +569,42 @@ func normalizePath(_ path: String) -> String {
 
 private let maxPathComponentBytes = 255
 private let truncatedNameHashLength = 16
+private let caseInsensitiveFileNameLocale = Locale(identifier: "en_US_POSIX")
+
+enum ObjCHeaderSymbolKind: String, Comparable {
+    case `class` = "class"
+    case `protocol` = "protocol"
+    case category = "category"
+
+    private var sortOrder: Int {
+        switch self {
+        case .class:
+            return 0
+        case .protocol:
+            return 1
+        case .category:
+            return 2
+        }
+    }
+
+    static func < (lhs: ObjCHeaderSymbolKind, rhs: ObjCHeaderSymbolKind) -> Bool {
+        lhs.sortOrder < rhs.sortOrder
+    }
+}
+
+struct ObjCHeaderEntry: Equatable {
+    let symbolKind: ObjCHeaderSymbolKind
+    let baseName: String
+    let headerString: String
+}
+
+struct ResolvedObjCHeaderEntry: Equatable {
+    let symbolKind: ObjCHeaderSymbolKind
+    let baseName: String
+    let headerString: String
+    let fileName: String
+    let hadNameCollision: Bool
+}
 
 func isSaneObjCTypeName(_ name: String) -> Bool {
     if name.isEmpty { return false }
@@ -581,17 +617,20 @@ func isSaneObjCTypeName(_ name: String) -> Bool {
     return true
 }
 
-private func safeFileName(baseName: String, extension ext: String) -> String {
+private func safeFileName(baseName: String, suffix: String = "", extension ext: String) -> String {
     let normalizedExt = ext.isEmpty ? "" : (ext.hasPrefix(".") ? ext : ".\(ext)")
-    let maxBaseBytes = maxPathComponentBytes - normalizedExt.utf8.count
+    let maxBaseBytes = max(0, maxPathComponentBytes - suffix.utf8.count - normalizedExt.utf8.count)
+    let normalizedBase: String
     if baseName.utf8.count <= maxBaseBytes {
-        return baseName + normalizedExt
+        normalizedBase = baseName
+    } else {
+        let hash = stableHashHex(baseName)
+        let truncationSuffix = "~\(hash)"
+        let maxPrefixBytes = max(0, maxBaseBytes - truncationSuffix.utf8.count)
+        let prefix = truncateToByteCount(baseName, maxBytes: maxPrefixBytes)
+        normalizedBase = prefix + truncationSuffix
     }
-    let hash = stableHashHex(baseName)
-    let suffix = "~\(hash)"
-    let maxPrefixBytes = max(0, maxBaseBytes - suffix.utf8.count)
-    let prefix = truncateToByteCount(baseName, maxBytes: maxPrefixBytes)
-    return prefix + suffix + normalizedExt
+    return normalizedBase + suffix + normalizedExt
 }
 
 private func truncateToByteCount(_ value: String, maxBytes: Int) -> String {
@@ -863,6 +902,70 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
     }
 }
 
+private struct PendingObjCHeaderFileName {
+    let entry: ObjCHeaderEntry
+    let fileName: String
+    let collisionKey: String
+}
+
+private func caseInsensitiveFileNameKey(_ fileName: String) -> String {
+    fileName.folding(options: [.caseInsensitive], locale: caseInsensitiveFileNameLocale)
+}
+
+private func collisionSuffix(for entry: ObjCHeaderEntry) -> String {
+    "~\(stableHashHex("\(entry.symbolKind.rawValue):\(entry.baseName)"))"
+}
+
+func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions) -> [ResolvedObjCHeaderEntry] {
+    let sortedEntries = entries.sorted { lhs, rhs in
+        if lhs.symbolKind != rhs.symbolKind {
+            return lhs.symbolKind < rhs.symbolKind
+        }
+        if lhs.baseName != rhs.baseName {
+            return lhs.baseName < rhs.baseName
+        }
+        return lhs.headerString < rhs.headerString
+    }
+
+    let pending = sortedEntries.map { entry in
+        let fileName = safeFileName(baseName: entry.baseName, extension: ".h")
+        return PendingObjCHeaderFileName(
+            entry: entry,
+            fileName: fileName,
+            collisionKey: caseInsensitiveFileNameKey(fileName)
+        )
+    }
+    let grouped = Dictionary(grouping: pending, by: \.collisionKey)
+
+    return pending.map { item in
+        let hadCollision = (grouped[item.collisionKey]?.count ?? 0) > 1
+        let resolvedFileName: String
+        if hadCollision {
+            resolvedFileName = safeFileName(
+                baseName: item.entry.baseName,
+                suffix: collisionSuffix(for: item.entry),
+                extension: ".h"
+            )
+            if options.verbose {
+                fputs(
+                    "headerdump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
+                    stderr
+                )
+            }
+        } else {
+            resolvedFileName = item.fileName
+        }
+
+        return ResolvedObjCHeaderEntry(
+            symbolKind: item.entry.symbolKind,
+            baseName: item.entry.baseName,
+            headerString: item.entry.headerString,
+            fileName: resolvedFileName,
+            hadNameCollision: hadCollision
+        )
+    }
+}
+
 private func dumpObjC(
     machO: MachOFile,
     imagePath: String,
@@ -932,6 +1035,9 @@ private func dumpObjC(
 
     try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
+    var entries: [ObjCHeaderEntry] = []
+    entries.reserveCapacity(classInfos.count + protocolInfos.count + categoryInfos.count)
+
     for info in classInfos.values {
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
@@ -940,9 +1046,13 @@ private func dumpObjC(
             }
             continue
         }
-        let fileName = safeFileName(baseName: info.name, extension: ".h")
-        let fileURL = outputDir.appendingPathComponent(fileName)
-        try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
+        entries.append(
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: info.name,
+                headerString: info.headerString
+            )
+        )
     }
 
     for info in protocolInfos.values {
@@ -953,9 +1063,13 @@ private func dumpObjC(
             }
             continue
         }
-        let fileName = safeFileName(baseName: info.name, extension: ".h")
-        let fileURL = outputDir.appendingPathComponent(fileName)
-        try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
+        entries.append(
+            ObjCHeaderEntry(
+                symbolKind: .protocol,
+                baseName: info.name,
+                headerString: info.headerString
+            )
+        )
     }
 
     for info in categoryInfos.values {
@@ -970,9 +1084,18 @@ private func dumpObjC(
             continue
         }
         let baseName = "\(info.className)+\(info.name)"
-        let fileName = safeFileName(baseName: baseName, extension: ".h")
-        let fileURL = outputDir.appendingPathComponent(fileName)
-        try writeIfNeeded(text: info.headerString, to: fileURL, options: options, fileManager: fileManager)
+        entries.append(
+            ObjCHeaderEntry(
+                symbolKind: .category,
+                baseName: baseName,
+                headerString: info.headerString
+            )
+        )
+    }
+
+    for entry in resolveObjCHeaderEntries(entries, options: options) {
+        let fileURL = outputDir.appendingPathComponent(entry.fileName)
+        try writeIfNeeded(text: entry.headerString, to: fileURL, options: options, fileManager: fileManager)
     }
 }
 
