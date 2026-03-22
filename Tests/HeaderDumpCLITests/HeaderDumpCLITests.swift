@@ -629,6 +629,120 @@ struct HeaderDumpCLITests {
         #expect(resolved?.path == "/tmp/Foo.framework/Foo")
     }
 
+    @Test func resolveObjCHeaderEntriesLeavesNonCollidingNamesUnchanged() {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let entries = [
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: "FooHeader",
+                headerString: "@interface FooHeader\n@end\n"
+            )
+        ]
+
+        let resolved = resolveObjCHeaderEntries(entries, options: options)
+
+        #expect(resolved.count == 1)
+        #expect(resolved.first?.fileName == "FooHeader.h")
+        #expect(resolved.first?.hadNameCollision == false)
+    }
+
+    @Test func resolveObjCHeaderEntriesDisambiguatesCaseOnlyCollisions() {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let entries = [
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: "MTRBaseClusterWakeOnLAN",
+                headerString: "@interface MTRBaseClusterWakeOnLAN\n@end\n"
+            ),
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: "MTRBaseClusterWakeOnLan",
+                headerString: "@interface MTRBaseClusterWakeOnLan\n@end\n"
+            )
+        ]
+
+        let resolved = resolveObjCHeaderEntries(entries, options: options)
+        let fileNames = Set(resolved.map(\.fileName))
+
+        #expect(fileNames.count == 2)
+        #expect(resolved.allSatisfy { $0.hadNameCollision })
+        #expect(resolved.contains { $0.baseName == "MTRBaseClusterWakeOnLAN" && $0.fileName.hasPrefix("MTRBaseClusterWakeOnLAN~") })
+        #expect(resolved.contains { $0.baseName == "MTRBaseClusterWakeOnLan" && $0.fileName.hasPrefix("MTRBaseClusterWakeOnLan~") })
+    }
+
+    @Test func resolveObjCHeaderEntriesDisambiguatesAcrossSymbolKinds() {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let entries = [
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: "SharedHeaderName",
+                headerString: "@interface SharedHeaderName\n@end\n"
+            ),
+            ObjCHeaderEntry(
+                symbolKind: .protocol,
+                baseName: "SharedHeaderName",
+                headerString: "@protocol SharedHeaderName\n@end\n"
+            )
+        ]
+
+        let resolved = resolveObjCHeaderEntries(entries, options: options)
+        let fileNames = Set(resolved.map(\.fileName))
+
+        #expect(fileNames.count == 2)
+        #expect(resolved.allSatisfy { $0.hadNameCollision })
+        #expect(resolved.contains { $0.symbolKind == .class && $0.fileName.hasPrefix("SharedHeaderName~") })
+        #expect(resolved.contains { $0.symbolKind == .protocol && $0.fileName.hasPrefix("SharedHeaderName~") })
+    }
+
+    @Test func resolveObjCHeaderEntriesKeepsCollisionSuffixWithinPathLimit() {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let longBaseName = String(repeating: "VeryLongHeaderName", count: 20)
+        let entries = [
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: longBaseName,
+                headerString: "@interface LongHeader\n@end\n"
+            ),
+            ObjCHeaderEntry(
+                symbolKind: .protocol,
+                baseName: longBaseName,
+                headerString: "@protocol LongHeader\n@end\n"
+            )
+        ]
+
+        let resolved = resolveObjCHeaderEntries(entries, options: options)
+
+        #expect(Set(resolved.map(\.fileName)).count == 2)
+        #expect(resolved.allSatisfy { $0.fileName.utf8.count <= 255 })
+        #expect(resolved.allSatisfy { $0.fileName.hasSuffix(".h") })
+    }
+
+    @Test func resolveObjCHeaderEntriesIsStableAcrossRuns() {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let entries = [
+            ObjCHeaderEntry(
+                symbolKind: .protocol,
+                baseName: "SharedHeaderName",
+                headerString: "@protocol SharedHeaderName\n@end\n"
+            ),
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: "MTRBaseClusterWakeOnLan",
+                headerString: "@interface MTRBaseClusterWakeOnLan\n@end\n"
+            ),
+            ObjCHeaderEntry(
+                symbolKind: .class,
+                baseName: "MTRBaseClusterWakeOnLAN",
+                headerString: "@interface MTRBaseClusterWakeOnLAN\n@end\n"
+            )
+        ]
+
+        let first = resolveObjCHeaderEntries(entries, options: options)
+        let second = resolveObjCHeaderEntries(Array(entries.reversed()), options: options)
+
+        #expect(first == second)
+    }
+
 #if os(macOS)
     @Test func dumpSwiftSkipsExistingFile() async throws {
         let tempDir = try makeTempDir()
