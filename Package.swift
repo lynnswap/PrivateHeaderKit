@@ -15,19 +15,19 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/lynnswap/MachOKit.git",
-            from: "0.45.1"
+            from: "0.47.0"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",
-            from: "0.5.2"
+            from: "0.6.2"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "5d032fd36443dd060d149c79e1beb945b0f4f2f8"
+            revision: "2fbb1a78e316a2beaf2911488ecda6455e205f84"
         ),
         .package(
-            url: "https://github.com/lynnswap/swift-objc-dump.git",
-            from: "0.8.2"
+            url: "https://github.com/p-x9/swift-objc-dump.git",
+            from: "0.8.0"
         ),
     ],
     targets: [

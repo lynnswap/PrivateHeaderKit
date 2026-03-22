@@ -1,5 +1,5 @@
 {
-  "originHash" : "a76ec9cad0a8cdadac34a4a7d9bba58472fd46ba3d7f4a94143c29783018540e",
+  "originHash" : "a07ece0f53f3d60d4df679ed943455a73384492a9d2f0f3d6d38485e6dee77d0",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOKit.git",
       "state" : {
-        "revision" : "a177cf8a55a40c70b0e20a987023e47c58e7e582",
-        "version" : "0.45.1"
+        "revision" : "25e56cbb2865ef4d00ea4f15501f29f65c4ca189",
+        "version" : "0.47.0"
       }
     },
     {
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
-        "revision" : "010657becfacdd79e4abb65c5dd86db82c8a7be3",
-        "version" : "0.5.2"
+        "revision" : "d0faa24df401c13b822f5bc785098ee927ec7533",
+        "version" : "0.6.2"
       }
     },
     {
@@ -69,7 +69,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "5d032fd36443dd060d149c79e1beb945b0f4f2f8"
+        "revision" : "2fbb1a78e316a2beaf2911488ecda6455e205f84"
       }
     },
     {
@@ -79,6 +79,15 @@
       "state" : {
         "revision" : "c2a6cc907e2f95463ba8f2b55432bd2aee8a4bfd",
         "version" : "1.6.0"
+      }
+    },
+    {
+      "identity" : "objectarchivekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/p-x9/ObjectArchiveKit.git",
+      "state" : {
+        "revision" : "c47d1b2df06168bacb396a1765ae5bf7fa2868fb",
+        "version" : "0.3.0"
       }
     },
     {
@@ -124,6 +133,15 @@
       "state" : {
         "revision" : "6c050d5ef8e1aa6342528460db614e9770d7f804",
         "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-binary-parse-support",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/p-x9/swift-binary-parse-support.git",
+      "state" : {
+        "revision" : "5fb96b503672ea4752eded6b4e301fd87214b03b",
+        "version" : "0.2.1"
       }
     },
     {
@@ -181,6 +199,15 @@
       }
     },
     {
+      "identity" : "swift-fileio-extra",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/p-x9/swift-fileio-extra.git",
+      "state" : {
+        "revision" : "8d83506dd4dff737807d90dbf2264096ed98c7a7",
+        "version" : "0.2.2"
+      }
+    },
+    {
       "identity" : "swift-literal-type-inference",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/p-x9/swift-literal-type-inference.git",
@@ -210,10 +237,10 @@
     {
       "identity" : "swift-objc-dump",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lynnswap/swift-objc-dump.git",
+      "location" : "https://github.com/p-x9/swift-objc-dump.git",
       "state" : {
-        "revision" : "e8e2cb57aadd5cca91ff3527b01ca785d8936e6f",
-        "version" : "0.8.2"
+        "revision" : "089b0dd03825c47c86abd80ea98c290309379911",
+        "version" : "0.8.0"
       }
     },
     {
