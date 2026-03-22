@@ -491,4 +491,109 @@ private func invocationLines(at url: URL) throws -> [String] {
         #expect(hasCompletionMarker(in: bundleOutputDir))
         #expect(try invocationLines(at: invocationLog).count == 1)
     }
+
+    @Test func splitFrameworkSkipsCompletedAlternateLayoutWithoutRedump() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
+        let frameworkDir = runtimeRoot
+            .appendingPathComponent("System/Library/Frameworks/Foo.framework", isDirectory: true)
+        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
+        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
+
+        try FileManager.default.createDirectory(at: frameworkDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        try makeFakeHeaderdumpScript(at: scriptURL, invocationLog: invocationLog)
+
+        var ctx = makeContext(outDir: outDir, layout: "headers")
+        ctx.platform = .macos
+        ctx.systemRoot = runtimeRoot.path
+        ctx.headerdumpBin = scriptURL
+        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
+        ctx.categories = ["Frameworks"]
+        ctx.skipExisting = true
+
+        let alternateLayoutDir = outDir
+            .appendingPathComponent("Frameworks/Foo.framework", isDirectory: true)
+        let normalizedDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
+        try FileManager.default.createDirectory(
+            at: alternateLayoutDir.appendingPathComponent("Headers", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: normalizedDir.appendingPathComponent("Headers", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("ok".utf8).write(to: alternateLayoutDir.appendingPathComponent("Headers/Generated.h"))
+        try Data("stale".utf8).write(to: normalizedDir.appendingPathComponent("Headers/Stale.h"))
+        try writeCompletionMarker(
+            in: alternateLayoutDir,
+            imagePath: "Frameworks/Foo.framework",
+            layout: "bundle"
+        )
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: StubCommandRunner())
+
+        #expect(hadFailures == false)
+        #expect(FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(!FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Stale.h").path))
+        #expect(hasCompletionMarker(in: normalizedDir))
+        #expect(try invocationLines(at: invocationLog).isEmpty)
+    }
+
+    @Test func systemLibrarySkipsCompletedAlternateLayoutWithoutRedump() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
+        let bundleDir = runtimeRoot
+            .appendingPathComponent("System/Library/PreferenceBundles/Foo.bundle", isDirectory: true)
+        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
+        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
+
+        try FileManager.default.createDirectory(at: bundleDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        try makeFakeHeaderdumpScript(at: scriptURL, invocationLog: invocationLog)
+
+        var ctx = makeContext(outDir: outDir, layout: "headers")
+        ctx.platform = .macos
+        ctx.systemRoot = runtimeRoot.path
+        ctx.headerdumpBin = scriptURL
+        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
+        ctx.skipExisting = true
+
+        let alternateLayoutDir = outDir
+            .appendingPathComponent("SystemLibrary/PreferenceBundles/Foo.bundle", isDirectory: true)
+        let normalizedDir = systemLibraryOutputDir(ctx: ctx, relativePath: "PreferenceBundles/Foo.bundle")
+        try FileManager.default.createDirectory(
+            at: alternateLayoutDir.appendingPathComponent("Headers", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: normalizedDir.appendingPathComponent("Headers", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("ok".utf8).write(to: alternateLayoutDir.appendingPathComponent("Headers/Generated.h"))
+        try Data("stale".utf8).write(to: normalizedDir.appendingPathComponent("Headers/Stale.h"))
+        try writeCompletionMarker(
+            in: alternateLayoutDir,
+            imagePath: "SystemLibrary/PreferenceBundles/Foo.bundle",
+            layout: "bundle"
+        )
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpSystemLibraryItems(
+            ctx: ctx,
+            items: ["PreferenceBundles/Foo.bundle"],
+            runner: StubCommandRunner()
+        )
+
+        #expect(hadFailures == false)
+        #expect(FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(!FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Stale.h").path))
+        #expect(hasCompletionMarker(in: normalizedDir))
+        #expect(try invocationLines(at: invocationLog).isEmpty)
+    }
 }
