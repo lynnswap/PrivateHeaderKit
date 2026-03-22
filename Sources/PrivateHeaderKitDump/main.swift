@@ -53,7 +53,7 @@ private struct MacOSVersionInfo {
     let buildVersion: String
 }
 
-private struct Context {
+struct Context {
     var platform: TargetPlatform
     var execMode: ExecMode
     var headerdumpBin: URL
@@ -1365,6 +1365,14 @@ private func fileManagerIsDirectory(_ url: URL, fileManager: FileManager = .defa
 }
 
 private let normalizedBundleExtensions: Set<String> = ["app", "bundle", "xpc", "appex"]
+private let completionMarkerFileName = ".privateheaderkit-complete.json"
+
+internal struct CompletionMarker: Codable {
+    let tool: String
+    let imagePath: String
+    let layout: String
+    let completedAt: String
+}
 
 private func normalizedBundleDirURLIfNeeded(_ url: URL) -> URL {
     let ext = url.pathExtension.lowercased()
@@ -1392,19 +1400,26 @@ private func denormalizeNestedXPCAndPlugIns(in bundleDir: URL, overwrite: Bool) 
     try FileOps.denormalizeBundleDirs(in: plugInsDir, bundleExtension: "appex", overwrite: overwrite, fileManager: fm)
 }
 
-private func directoryContainsHeaderArtifacts(_ dir: URL, fileManager: FileManager = .default) -> Bool {
-    guard fileManagerIsDirectory(dir, fileManager: fileManager) else { return false }
-    guard let entries = try? fileManager.contentsOfDirectory(
-        at: dir,
-        includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+internal func completionMarkerURL(for outputDir: URL) -> URL {
+    outputDir.appendingPathComponent(completionMarkerFileName, isDirectory: false)
+}
+
+internal func hasCompletionMarker(in outputDir: URL, fileManager: FileManager = .default) -> Bool {
+    fileManager.fileExists(atPath: completionMarkerURL(for: outputDir).path)
+}
+
+private func directoryContainsHeaderArtifacts(in outputDir: URL, fileManager: FileManager = .default) -> Bool {
+    guard fileManagerIsDirectory(outputDir, fileManager: fileManager) else { return false }
+    guard let enumerator = fileManager.enumerator(
+        at: outputDir,
+        includingPropertiesForKeys: [.isRegularFileKey],
         options: [.skipsHiddenFiles]
     ) else {
         return false
     }
 
-    for entry in entries {
-        guard (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-        let ext = entry.pathExtension.lowercased()
+    for case let fileURL as URL in enumerator {
+        let ext = fileURL.pathExtension.lowercased()
         if ext == "h" || ext == "swiftinterface" {
             return true
         }
@@ -1412,12 +1427,54 @@ private func directoryContainsHeaderArtifacts(_ dir: URL, fileManager: FileManag
     return false
 }
 
-private func bundleOutputHasHeaderArtifacts(_ bundleDir: URL, fileManager: FileManager = .default) -> Bool {
-    directoryContainsHeaderArtifacts(bundleDir.appendingPathComponent("Headers", isDirectory: true), fileManager: fileManager)
+private func hasCompletedOutput(in outputDir: URL, fileManager: FileManager = .default) -> Bool {
+    hasCompletionMarker(in: outputDir, fileManager: fileManager)
+        && directoryContainsHeaderArtifacts(in: outputDir, fileManager: fileManager)
 }
 
-private func dylibOutputHasHeaderArtifacts(_ dylibDir: URL, fileManager: FileManager = .default) -> Bool {
-    directoryContainsHeaderArtifacts(dylibDir, fileManager: fileManager)
+internal func writeCompletionMarker(
+    in outputDir: URL,
+    imagePath: String,
+    layout: String,
+    fileManager: FileManager = .default
+) throws {
+    try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
+    let formatter = ISO8601DateFormatter()
+    let marker = CompletionMarker(
+        tool: "privateheaderkit-dump",
+        imagePath: imagePath,
+        layout: layout,
+        completedAt: formatter.string(from: Date())
+    )
+    let data = try JSONEncoder().encode(marker)
+    try data.write(to: completionMarkerURL(for: outputDir))
+}
+
+internal func frameworkOutputDir(ctx: Context, category: String, frameworkName: String) -> URL {
+    let base = ctx.outDir.appendingPathComponent(category, isDirectory: true)
+    if ctx.layout == "headers" {
+        let normalizedName = frameworkName.hasSuffix(".framework")
+            ? String(frameworkName.dropLast(".framework".count))
+            : frameworkName
+        return base.appendingPathComponent(normalizedName, isDirectory: true)
+    }
+    return base.appendingPathComponent(frameworkName, isDirectory: true)
+}
+
+internal func systemLibraryOutputDir(ctx: Context, relativePath: String) -> URL {
+    let base = ctx.outDir.appendingPathComponent("SystemLibrary", isDirectory: true)
+    let dest = appendingRelativePath(base, relativePath, isDirectory: true)
+    if ctx.layout == "headers" {
+        return normalizedBundleDirURLIfNeeded(dest)
+    }
+    return dest
+}
+
+internal func dylibOutputDir(ctx: Context, dylibName: String) -> URL {
+    ctx.outDir
+        .appendingPathComponent("usr", isDirectory: true)
+        .appendingPathComponent("lib", isDirectory: true)
+        .appendingPathComponent(dylibName, isDirectory: true)
 }
 
 private func appendingRelativePath(_ base: URL, _ relativePath: String, isDirectory: Bool = true) -> URL {
@@ -1537,31 +1594,11 @@ private func listUsrLibDylibs(ctx: Context) throws -> [String] {
     return dylibs
 }
 
-private func existingFrameworksInCategory(ctx: Context, category: String, frameworks: Set<String>) -> Set<String> {
-    let categoryDir = ctx.outDir.appendingPathComponent(category, isDirectory: true)
-    guard FileOps.isDirectory(categoryDir) else { return [] }
-
-    let basePath = categoryDir.path
+internal func existingFrameworksInCategory(ctx: Context, category: String, frameworks: Set<String>) -> Set<String> {
     var existing: Set<String> = []
-    let fileManager = FileManager.default
-    guard let enumerator = fileManager.enumerator(at: categoryDir, includingPropertiesForKeys: [.isDirectoryKey], options: []) else {
-        return []
-    }
-
-    for case let url as URL in enumerator {
-        if FileOps.isDirectory(url), url.lastPathComponent.hasPrefix(".tmp") {
-            enumerator.skipDescendants()
-            continue
-        }
-        let ext = url.pathExtension.lowercased()
-        if ext != "h" && ext != "swiftinterface" { continue }
-        guard url.path.hasPrefix(basePath + "/") else { continue }
-        let rel = url.path.dropFirst(basePath.count + 1)
-        guard let top = rel.split(separator: "/").first else { continue }
-        let topName = String(top)
-        let frameworkName = (ctx.layout == "headers") ? FileOps.normalizeFrameworkName(topName) : topName
-        if frameworks.contains(frameworkName) {
-            existing.insert(frameworkName)
+    for framework in frameworks {
+        if hasCompletedOutput(in: frameworkOutputDir(ctx: ctx, category: category, frameworkName: framework)) {
+            existing.insert(framework)
         }
     }
     return existing
@@ -1587,7 +1624,7 @@ private func dumpCategory(category: String, ctx: Context, runner: CommandRunning
     return false
 }
 
-private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRunning) throws -> Bool {
+internal func dumpCategorySplit(category: String, ctx: Context, runner: CommandRunning) throws -> Bool {
     try throwIfTerminationRequested()
     let frameworks = try listFrameworks(category: category, ctx: ctx)
     if frameworks.isEmpty {
@@ -1662,13 +1699,18 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
             }
 
             try relocateFrameworkOutput(ctx: ctx, category: category, frameworkName: item)
+            let outputDir = frameworkOutputDir(ctx: ctx, category: category, frameworkName: item)
+            let nestedFailed = failures.contains { $0.hasPrefix(path + "/") }
             if ctx.layout == "headers" {
-                try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: !ctx.skipExisting)
-                let baseName = item.hasSuffix(".framework") ? String(item.dropLast(".framework".count)) : item
-                let dest = ctx.outDir
-                    .appendingPathComponent(category, isDirectory: true)
-                    .appendingPathComponent(baseName, isDirectory: true)
-                try normalizeNestedXPCAndPlugIns(in: dest, overwrite: !ctx.skipExisting)
+                try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: true)
+                try normalizeNestedXPCAndPlugIns(in: outputDir, overwrite: true)
+            }
+            if !nestedFailed {
+                try writeCompletionMarker(
+                    in: outputDir,
+                    imagePath: path,
+                    layout: ctx.layout
+                )
             }
             if inlineProgress {
                 renderInlineProgressEnd("\(progressText) (elapsed: \(frameworkElapsedText)s)")
@@ -1687,7 +1729,7 @@ private func dumpCategorySplit(category: String, ctx: Context, runner: CommandRu
     return false
 }
 
-private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: CommandRunning) throws -> Bool {
+internal func dumpSystemLibraryItems(ctx: Context, items: [String], runner: CommandRunning) throws -> Bool {
     try throwIfTerminationRequested()
     print("Dumping: SystemLibrary")
 
@@ -1707,20 +1749,18 @@ private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comma
     for (idx, relPath) in items.enumerated() {
         try throwIfTerminationRequested()
 
-        let dest = appendingRelativePath(outBase, relPath, isDirectory: true)
-        let normalizedDest = normalizedBundleDirURLIfNeeded(dest)
-        if ctx.skipExisting,
-           (bundleOutputHasHeaderArtifacts(dest, fileManager: fileManager) || bundleOutputHasHeaderArtifacts(normalizedDest, fileManager: fileManager))
-        {
+        let denormalizedDest = appendingRelativePath(outBase, relPath, isDirectory: true)
+        let outputDir = systemLibraryOutputDir(ctx: ctx, relativePath: relPath)
+        if ctx.skipExisting, hasCompletedOutput(in: outputDir) {
             // Best-effort: keep existing outputs consistent with the requested layout even when skipping.
             //
             // In particular, switching from `--layout headers` to `--layout bundle` should not require a re-dump:
             // rename `Foo` -> `Foo.bundle` (and similarly for nested XPC/appex bundles) when possible.
             var existingDir: URL?
-            if fileManager.fileExists(atPath: dest.path) {
-                existingDir = dest
-            } else if fileManager.fileExists(atPath: normalizedDest.path) {
-                existingDir = normalizedDest
+            if fileManager.fileExists(atPath: denormalizedDest.path) {
+                existingDir = denormalizedDest
+            } else if fileManager.fileExists(atPath: outputDir.path) {
+                existingDir = outputDir
             }
 
             if var bundleDir = existingDir {
@@ -1733,7 +1773,7 @@ private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comma
                     )) ?? bundleDir
                     try? normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: false)
                 } else {
-                    let ext = dest.pathExtension
+                    let ext = denormalizedDest.pathExtension
                     bundleDir = (try? FileOps.denormalizeBundleDir(
                         bundleDir,
                         bundleExtension: ext,
@@ -1781,22 +1821,33 @@ private func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comma
         }
 
         try relocateSystemLibraryItemOutput(ctx: ctx, systemLibraryRelativePath: relPath, destBaseDir: outBase)
+        let nestedFailed = failures.contains { $0.hasPrefix("SystemLibrary/\(relPath)/") }
 
         if normalizeBundles {
-            var bundleDir = dest
+            var bundleDir = denormalizedDest
             bundleDir = try FileOps.normalizeBundleDir(
                 bundleDir,
                 allowedExtensions: normalizedBundleExtensions,
-                overwrite: !ctx.skipExisting,
+                overwrite: true,
                 fileManager: fileManager
             )
-            try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: !ctx.skipExisting)
-        } else if dest.path != normalizedDest.path {
+            try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: true)
+        } else {
             // When switching layouts with `--force`, remove stale "headers" layout output (e.g. `Foo`)
             // next to the fresh bundle output (e.g. `Foo.bundle`) so one run produces a consistent layout.
-            if fileManager.fileExists(atPath: normalizedDest.path) {
+            let normalizedDest = normalizedBundleDirURLIfNeeded(denormalizedDest)
+            if normalizedDest.path != denormalizedDest.path,
+               fileManager.fileExists(atPath: normalizedDest.path)
+            {
                 try? fileManager.removeItem(at: normalizedDest)
             }
+        }
+        if !nestedFailed {
+            try writeCompletionMarker(
+                in: outputDir,
+                imagePath: "SystemLibrary/\(relPath)",
+                layout: ctx.layout
+            )
         }
 
         if inlineProgress {
@@ -1829,15 +1880,11 @@ private func dumpUsrLibDylibItems(ctx: Context, dylibs: [String], runner: Comman
     let inlineProgress = canInlineFrameworkProgress(ctx: ctx)
     let fileManager = FileManager.default
 
-    let outBase = ctx.outDir
-        .appendingPathComponent("usr", isDirectory: true)
-        .appendingPathComponent("lib", isDirectory: true)
-
     for (idx, name) in dylibs.enumerated() {
         try throwIfTerminationRequested()
 
-        let dest = outBase.appendingPathComponent(name, isDirectory: true)
-        if ctx.skipExisting, dylibOutputHasHeaderArtifacts(dest, fileManager: fileManager) {
+        let outputDir = dylibOutputDir(ctx: ctx, dylibName: name)
+        if ctx.skipExisting, hasCompletedOutput(in: outputDir, fileManager: fileManager) {
             print("Skipping existing: usr/lib (\(idx + 1)/\(total)) \(name)")
             continue
         }
@@ -1877,6 +1924,12 @@ private func dumpUsrLibDylibItems(ctx: Context, dylibs: [String], runner: Comman
         }
 
         try relocateUsrLibOutput(ctx: ctx, dylibName: name)
+        try writeCompletionMarker(
+            in: outputDir,
+            imagePath: "usr/lib/\(name)",
+            layout: ctx.layout,
+            fileManager: fileManager
+        )
 
         if inlineProgress {
             renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
@@ -1894,7 +1947,12 @@ private func dumpUsrLibDylibItems(ctx: Context, dylibs: [String], runner: Comman
     return false
 }
 
-private func relocateSystemLibraryItemOutput(ctx: Context, systemLibraryRelativePath: String, destBaseDir: URL) throws {
+private func relocateSystemLibraryItemOutput(
+    ctx: Context,
+    systemLibraryRelativePath: String,
+    destBaseDir: URL,
+    overwrite: Bool = true
+) throws {
     let fileManager = FileManager.default
     var src: URL?
     for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
@@ -1910,7 +1968,6 @@ private func relocateSystemLibraryItemOutput(ctx: Context, systemLibraryRelative
     try fileManager.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
 
     if fileManager.fileExists(atPath: dest.path) {
-        let overwrite = !ctx.skipExisting
         if overwrite {
             try FileOps.moveReplace(src: src, dest: dest, fileManager: fileManager)
         } else {
@@ -1922,7 +1979,11 @@ private func relocateSystemLibraryItemOutput(ctx: Context, systemLibraryRelative
     }
 }
 
-private func relocateUsrLibOutput(ctx: Context, dylibName: String) throws {
+private func relocateUsrLibOutput(
+    ctx: Context,
+    dylibName: String,
+    overwrite: Bool = true
+) throws {
     let fileManager = FileManager.default
     var src: URL?
     for base in FileOps.stageUsrLibRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
@@ -1941,7 +2002,6 @@ private func relocateUsrLibOutput(ctx: Context, dylibName: String) throws {
     let dest = destDir.appendingPathComponent(dylibName, isDirectory: true)
 
     if fileManager.fileExists(atPath: dest.path) {
-        let overwrite = !ctx.skipExisting
         if overwrite {
             try FileOps.moveReplace(src: src, dest: dest, fileManager: fileManager)
         } else {
@@ -1953,7 +2013,12 @@ private func relocateUsrLibOutput(ctx: Context, dylibName: String) throws {
     }
 }
 
-private func relocateFrameworkOutput(ctx: Context, category: String, frameworkName: String) throws {
+private func relocateFrameworkOutput(
+    ctx: Context,
+    category: String,
+    frameworkName: String,
+    overwrite: Bool = true
+) throws {
     let fileManager = FileManager.default
     var src: URL?
     for base in FileOps.stageSystemLibraryRoots(stageDir: ctx.stageDir, runtimeRoot: ctx.systemRoot) {
@@ -1970,7 +2035,6 @@ private func relocateFrameworkOutput(ctx: Context, category: String, frameworkNa
     let dest = destDir.appendingPathComponent(frameworkName, isDirectory: true)
 
     if fileManager.fileExists(atPath: dest.path) {
-        let overwrite = !ctx.skipExisting
         if overwrite {
             try FileOps.moveReplace(src: src, dest: dest, fileManager: fileManager)
         } else {
