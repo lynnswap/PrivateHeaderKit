@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 import MachOKit
+#if canImport(HeaderDumpRuntimeObjC)
+import HeaderDumpRuntimeObjC
+#endif
 @testable import HeaderDumpCore
 
 #if canImport(Darwin)
@@ -206,6 +209,16 @@ private func loadMachO(at url: URL) throws -> MachOFile {
 
 @Suite(.serialized)
 struct HeaderDumpCLITests {
+#if canImport(ObjectiveC) && canImport(HeaderDumpRuntimeObjC)
+    @Test func runtimeInspectorBuildsNSObjectSnapshot() {
+        var failedStage: NSString?
+        let snapshot = PHRuntimeObjCInspector.snapshot(for: NSObject.self, failedStage: &failedStage)
+        #expect(snapshot != nil)
+        #expect(failedStage == nil)
+        #expect(snapshot?.name == "NSObject")
+    }
+#endif
+
     @Test func parseArgumentsPopulatesOptions() {
         let args = [
             "-o", "/tmp/out",

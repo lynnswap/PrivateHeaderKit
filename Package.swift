@@ -32,8 +32,18 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "HeaderDumpRuntimeObjC",
+            dependencies: [],
+            path: "Sources/HeaderDumpRuntimeObjC",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "HeaderDumpCore",
             dependencies: [
+                .target(
+                    name: "HeaderDumpRuntimeObjC",
+                    condition: .when(platforms: [.macOS, .iOS])
+                ),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
@@ -69,6 +79,10 @@ let package = Package(
             name: "HeaderDumpCLITests",
             dependencies: [
                 "HeaderDumpCore",
+                .target(
+                    name: "HeaderDumpRuntimeObjC",
+                    condition: .when(platforms: [.macOS, .iOS])
+                ),
                 .product(name: "MachOKit", package: "MachOKit"),
             ]
         ),

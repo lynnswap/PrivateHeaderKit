@@ -12,6 +12,7 @@ import Glibc
 #endif
 #if canImport(ObjectiveC)
 import ObjectiveC
+import HeaderDumpRuntimeObjC
 #endif
 
 protocol FileExistenceChecking {
@@ -976,6 +977,86 @@ private func dumpObjC(
 }
 
 #if canImport(ObjectiveC)
+private func runtimePropertyInfo(
+    from snapshot: PHRuntimeObjCPropertySnapshot
+) -> ObjCPropertyInfo {
+    ObjCPropertyInfo(
+        name: snapshot.name,
+        attributes: snapshot.attributesString,
+        isClassProperty: snapshot.isClassProperty
+    )
+}
+
+private func runtimeMethodInfo(
+    from snapshot: PHRuntimeObjCMethodSnapshot
+) -> ObjCMethodInfo {
+    ObjCMethodInfo(
+        name: snapshot.name,
+        typeEncoding: snapshot.typeEncoding,
+        isClassMethod: snapshot.isClassMethod
+    )
+}
+
+private func runtimeIvarInfo(
+    from snapshot: PHRuntimeObjCIvarSnapshot
+) -> ObjCIvarInfo {
+    ObjCIvarInfo(
+        name: snapshot.name,
+        typeEncoding: snapshot.typeEncoding,
+        offset: Int(snapshot.offset)
+    )
+}
+
+private func runtimeProtocolInfo(
+    from snapshot: PHRuntimeObjCProtocolSnapshot
+) -> ObjCProtocolInfo {
+    ObjCProtocolInfo(
+        name: snapshot.name,
+        protocols: snapshot.protocols.map(runtimeProtocolInfo(from:)),
+        classProperties: snapshot.classProperties.map(runtimePropertyInfo(from:)),
+        properties: snapshot.properties.map(runtimePropertyInfo(from:)),
+        classMethods: snapshot.classMethods.map(runtimeMethodInfo(from:)),
+        methods: snapshot.methods.map(runtimeMethodInfo(from:)),
+        optionalClassProperties: snapshot.optionalClassProperties.map(runtimePropertyInfo(from:)),
+        optionalProperties: snapshot.optionalProperties.map(runtimePropertyInfo(from:)),
+        optionalClassMethods: snapshot.optionalClassMethods.map(runtimeMethodInfo(from:)),
+        optionalMethods: snapshot.optionalMethods.map(runtimeMethodInfo(from:))
+    )
+}
+
+private func runtimeClassInfo(
+    for cls: AnyClass,
+    fallbackName: String,
+    imagePath: String,
+    options: DumpOptions
+) -> ObjCClassInfo? {
+    var failedStage: NSString?
+    guard let snapshot = PHRuntimeObjCInspector.snapshot(for: cls, failedStage: &failedStage) else {
+        if options.verbose {
+            let stage = (failedStage as String?) ?? "unknown"
+            fputs(
+                "headerdump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
+                stderr
+            )
+        }
+        return nil
+    }
+
+    return ObjCClassInfo(
+        name: snapshot.name,
+        version: snapshot.version,
+        imageName: snapshot.imageName,
+        instanceSize: Int(snapshot.instanceSize),
+        superClassName: snapshot.superClassName,
+        protocols: snapshot.protocols.map(runtimeProtocolInfo(from:)),
+        ivars: snapshot.ivars.map(runtimeIvarInfo(from:)),
+        classProperties: snapshot.classProperties.map(runtimePropertyInfo(from:)),
+        properties: snapshot.properties.map(runtimePropertyInfo(from:)),
+        classMethods: snapshot.classMethods.map(runtimeMethodInfo(from:)),
+        methods: snapshot.methods.map(runtimeMethodInfo(from:))
+    )
+}
+
 private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [ObjCClassInfo] {
     guard options.useRuntimeFallback else { return [] }
     let targetPaths = runtimeFallbackTargetImagePaths(for: imagePath)
@@ -1018,7 +1099,14 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
         let name = String(cString: namePtr)
         if let only = options.onlyOneClass, only != name { continue }
         if let cls = NSClassFromString(name) ?? (objc_getClass(name) as? AnyClass) {
-            infos.append(ObjCClassInfo(cls))
+            if let info = runtimeClassInfo(
+                for: cls,
+                fallbackName: name,
+                imagePath: imagePath,
+                options: options
+            ) {
+                infos.append(info)
+            }
         }
     }
     if infos.isEmpty {
@@ -1054,7 +1142,14 @@ private func runtimeClassInfosByImageName(
 
         let name = String(cString: class_getName(cls))
         if let only = options.onlyOneClass, only != name { continue }
-        infos.append(ObjCClassInfo(cls))
+        if let info = runtimeClassInfo(
+            for: cls,
+            fallbackName: name,
+            imagePath: imagePath,
+            options: options
+        ) {
+            infos.append(info)
+        }
     }
 
     if options.verbose, !infos.isEmpty {
