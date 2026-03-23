@@ -220,6 +220,24 @@ private func invocationLines(at url: URL) throws -> [String] {
         #expect(selection.usrLibDylibs == ["libobjc.A.dylib"])
     }
 
+    @Test func launchFailureFromSimctlFallsBackToHost() {
+        let error = ToolingError.processLaunchFailed(
+            command: ["xcrun", "simctl", "spawn", "UDID", "/tmp/headerdump-sim"],
+            underlying: "No such file or directory"
+        )
+
+        #expect(shouldFallbackToHost(error) == true)
+    }
+
+    @Test func launchFailureDoesNotFallbackWhenRuntimeIsMissing() {
+        let error = ToolingError.processLaunchFailed(
+            command: ["xcrun", "simctl", "spawn", "UDID", "/tmp/headerdump-sim"],
+            underlying: "iOS runtime not found or unavailable"
+        )
+
+        #expect(shouldFallbackToHost(error) == false)
+    }
+
     @Test func systemLibraryTargetRejectsDotDotComponents() {
         let targets = [
             "../Foo.bundle",

@@ -92,5 +92,11 @@ let package = Package(
                 "PrivateHeaderKitDump",
             ]
         ),
+        .testTarget(
+            name: "PrivateHeaderKitToolingTests",
+            dependencies: [
+                "PrivateHeaderKitTooling",
+            ]
+        ),
     ]
 )
