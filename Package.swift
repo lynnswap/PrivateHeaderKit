@@ -75,6 +75,13 @@ let package = Package(
                 "PrivateHeaderKitTooling",
             ]
         ),
+        .executableTarget(
+            name: "PrivateHeaderKitToolingTestHelper",
+            dependencies: [
+                "PrivateHeaderKitTooling",
+            ],
+            path: "Tests/PrivateHeaderKitToolingTestHelper"
+        ),
         .testTarget(
             name: "HeaderDumpCLITests",
             dependencies: [
@@ -96,6 +103,10 @@ let package = Package(
             name: "PrivateHeaderKitToolingTests",
             dependencies: [
                 "PrivateHeaderKitTooling",
+                .target(
+                    name: "PrivateHeaderKitToolingTestHelper",
+                    condition: .when(platforms: [.macOS])
+                ),
             ]
         ),
     ]

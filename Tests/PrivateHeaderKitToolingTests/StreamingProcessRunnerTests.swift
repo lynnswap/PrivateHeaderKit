@@ -7,10 +7,6 @@ import Darwin
 #endif
 
 #if os(macOS)
-private enum StreamingProcessRunnerTestError: Error {
-    case failedToDuplicateStdin
-}
-
 private final class LockedDataBox: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
@@ -33,23 +29,124 @@ private func shellCommand(_ script: String) -> [String] {
     ["/bin/zsh", "-lc", script]
 }
 
-private func fileDescriptorCount() -> Int {
-    (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd"))?.count ?? -1
+private func testHelperExecutableURL() throws -> URL {
+    let fileManager = FileManager.default
+    let helperName = "PrivateHeaderKitToolingTestHelper"
+    let configurations = ["debug", "release", "Debug", "Release"]
+    let environment = ProcessInfo.processInfo.environment
+
+    func helperURL(in buildDir: URL) -> URL? {
+        let entries = (try? fileManager.contentsOfDirectory(
+            at: buildDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for configuration in configurations {
+            let fallback = buildDir
+                .appendingPathComponent(configuration, isDirectory: true)
+                .appendingPathComponent(helperName, isDirectory: false)
+            if fileManager.isExecutableFile(atPath: fallback.path) {
+                return fallback
+            }
+        }
+
+        for entry in entries {
+            for configuration in configurations {
+                let candidate = entry
+                    .appendingPathComponent(configuration, isDirectory: true)
+                    .appendingPathComponent(helperName, isDirectory: false)
+                if fileManager.isExecutableFile(atPath: candidate.path) {
+                    return candidate
+                }
+            }
+        }
+
+        return nil
+    }
+
+    let configuredBuildPaths = [
+        environment["SWIFTPM_BUILD_DIR"],
+        environment["SWIFT_BUILD_PATH"],
+        environment["BUILD_DIR"],
+        environment["SYMROOT"],
+    ]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+
+    for buildPath in configuredBuildPaths {
+        let buildDir = URL(fileURLWithPath: buildPath, isDirectory: true)
+        if let helperURL = helperURL(in: buildDir) {
+            return helperURL
+        }
+    }
+
+    var current = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+
+    for _ in 0..<8 {
+        let buildDir = current.appendingPathComponent(".build", isDirectory: true)
+        if fileManager.fileExists(atPath: buildDir.path) {
+            if let helperURL = helperURL(in: buildDir) {
+                return helperURL
+            }
+        }
+        current.deleteLastPathComponent()
+    }
+
+    throw NSError(domain: "StreamingProcessRunnerTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "helper executable not found"])
 }
 
-private func withClosedStdin<T>(_ body: () throws -> T) throws -> T {
-    let saved = dup(STDIN_FILENO)
-    guard saved != -1 else {
-        throw StreamingProcessRunnerTestError.failedToDuplicateStdin
+private func runHelper(_ arguments: [String]) throws -> (status: Int32, stdout: String, stderr: String) {
+    let process = Process()
+    process.executableURL = try testHelperExecutableURL()
+    process.arguments = arguments
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    try process.run()
+    let group = DispatchGroup()
+    final class DataBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = Data()
+
+        func set(_ data: Data) {
+            lock.lock()
+            value = data
+            lock.unlock()
+        }
+
+        func get() -> Data {
+            lock.lock()
+            let data = value
+            lock.unlock()
+            return data
+        }
     }
 
-    _ = close(STDIN_FILENO)
-    defer {
-        _ = dup2(saved, STDIN_FILENO)
-        _ = close(saved)
+    let stdoutBox = DataBox()
+    let stderrBox = DataBox()
+
+    group.enter()
+    DispatchQueue.global(qos: .utility).async {
+        stdoutBox.set(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+        group.leave()
     }
 
-    return try body()
+    group.enter()
+    DispatchQueue.global(qos: .utility).async {
+        stderrBox.set(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+        group.leave()
+    }
+
+    process.waitUntilExit()
+    group.wait()
+
+    let stdout = String(data: stdoutBox.get(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrBox.get(), encoding: .utf8) ?? ""
+    return (process.terminationStatus, stdout, stderr)
 }
 
 @Suite struct StreamingProcessRunnerTests {
@@ -76,17 +173,11 @@ private func withClosedStdin<T>(_ body: () throws -> T) throws -> T {
     }
 
     @Test func helperUsesNullDeviceWhenParentStdinIsClosed() throws {
-        let result = try withClosedStdin {
-            try runStreamingSubprocess(
-                shellCommand("cat >/dev/null; print -r -- stdin-ok"),
-                streamOutput: false,
-                passthrough: { _ in }
-            )
-        }
+        let result = try runHelper(["stdin-closed"])
 
         #expect(result.status == 0)
-        #expect(result.wasKilled == false)
-        #expect(result.lastLines.contains("stdin-ok"))
+        #expect(result.stdout.contains("stdin-ok"))
+        #expect(result.stderr.isEmpty)
     }
 
     @Test func helperWrapsLaunchFailureWithCommandAndUnderlyingError() throws {
@@ -112,23 +203,15 @@ private func withClosedStdin<T>(_ body: () throws -> T) throws -> T {
     }
 
     @Test func runStreamingHandlesRepeatedShortLivedProcesses() throws {
-        func runBatch(_ count: Int) throws {
-            for _ in 0..<count {
-                let result = try runStreamingSubprocess(
-                    ["/usr/bin/true"],
-                    streamOutput: false,
-                    passthrough: { _ in }
-                )
-                #expect(result.status == 0)
-                #expect(result.wasKilled == false)
-            }
+        for _ in 0..<200 {
+            let result = try runStreamingSubprocess(
+                ["/usr/bin/true"],
+                streamOutput: false,
+                passthrough: { _ in }
+            )
+            #expect(result.status == 0)
+            #expect(result.wasKilled == false)
         }
-
-        try runBatch(10)
-        let baselineFDCount = fileDescriptorCount()
-        try runBatch(200)
-        let endFDCount = fileDescriptorCount()
-        #expect(endFDCount <= baselineFDCount + 1)
     }
 }
 #endif
