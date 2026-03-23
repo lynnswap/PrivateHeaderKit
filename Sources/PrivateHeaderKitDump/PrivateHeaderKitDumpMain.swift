@@ -153,81 +153,20 @@ private func runDumpStreaming(
     cwd: URL? = nil,
     streamOutput: Bool = true
 ) throws -> StreamingCommandResult {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = command
-    if let cwd { process.currentDirectoryURL = cwd }
-
-    var environment = ProcessInfo.processInfo.environment
-    if let env {
-        for (k, v) in env { environment[k] = v }
-    }
-    process.environment = environment
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = pipe
-    let handle = pipe.fileHandleForReading
-
-    var lastLines: [String] = []
-    lastLines.reserveCapacity(8)
-    var wasKilled = false
-
-    try process.run()
-    // Close the parent-side write handle so the reader reliably receives EOF.
-    // (The child process still has its own write end inherited by exec.)
-    try? pipe.fileHandleForWriting.close()
-
-    let pid = process.processIdentifier
-    gActiveDumpSubprocessPid = pid
-    defer {
-        if gActiveDumpSubprocessPid == pid {
-            gActiveDumpSubprocessPid = 0
-        }
-    }
-
-    var buffer = ""
-    while true {
-        let data = handle.availableData
-        if data.isEmpty { break }
-        if streamOutput {
-            FileHandle.standardOutput.write(data)
-        }
-
-        let chunk = String(decoding: data, as: UTF8.self)
-        buffer += chunk
-        while let range = buffer.range(of: "\n") {
-            let line = String(buffer[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            buffer.removeSubrange(..<range.upperBound)
-            if line.isEmpty { continue }
-            lastLines.append(line)
-            if lastLines.count > 8 {
-                lastLines.removeFirst(lastLines.count - 8)
-            }
-            if line.lowercased().contains("killed: 9") {
-                wasKilled = true
+    try runStreamingSubprocess(
+        command,
+        env: env,
+        cwd: cwd,
+        streamOutput: streamOutput,
+        onLaunch: { pid in
+            gActiveDumpSubprocessPid = pid
+        },
+        onCleanup: { pid in
+            if gActiveDumpSubprocessPid == pid {
+                gActiveDumpSubprocessPid = 0
             }
         }
-    }
-
-    process.waitUntilExit()
-    if !buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        lastLines.append(buffer.trimmingCharacters(in: .whitespacesAndNewlines))
-        if lastLines.count > 8 {
-            lastLines.removeFirst(lastLines.count - 8)
-        }
-    }
-    if process.terminationReason == .uncaughtSignal {
-        wasKilled = true
-        lastLines.append("Terminated by signal \(process.terminationStatus)")
-        if lastLines.count > 8 {
-            lastLines.removeFirst(lastLines.count - 8)
-        }
-    } else if process.terminationStatus != 0, lastLines.isEmpty {
-        lastLines.append("Exited with status \(process.terminationStatus)")
-    }
-
-    return StreamingCommandResult(status: process.terminationStatus, wasKilled: wasKilled, lastLines: lastLines)
+    )
 }
 
 @main
@@ -780,7 +719,7 @@ private func resolveExecMode(
     return .host
 }
 
-private func shouldFallbackToHost(_ error: Error) -> Bool {
+func shouldFallbackToHost(_ error: Error) -> Bool {
     // Prefer structured detection for ToolingError to avoid brittle string matching.
     if let toolingError = error as? ToolingError {
         switch toolingError {
@@ -793,6 +732,13 @@ private func shouldFallbackToHost(_ error: Error) -> Bool {
                 if message.contains("ios runtime not found or unavailable") { return false }
                 return true
             }
+        case .processLaunchFailed(let command, let underlying):
+            let cmd = command.joined(separator: " ").lowercased()
+            let message = (cmd + "\n" + underlying).lowercased()
+            if message.contains("no available ios runtimes found") { return false }
+            if message.contains("ios runtime not found or unavailable") { return false }
+            if cmd.contains("simctl") { return true }
+            if message.contains("headerdump-sim not found") { return true }
         default:
             break
         }
@@ -1410,18 +1356,25 @@ internal func hasCompletionMarker(in outputDir: URL, fileManager: FileManager = 
 
 private func directoryContainsHeaderArtifacts(in outputDir: URL, fileManager: FileManager = .default) -> Bool {
     guard fileManagerIsDirectory(outputDir, fileManager: fileManager) else { return false }
-    guard let enumerator = fileManager.enumerator(
-        at: outputDir,
-        includingPropertiesForKeys: [.isRegularFileKey],
-        options: [.skipsHiddenFiles]
-    ) else {
-        return false
-    }
+    var stack: [URL] = [outputDir]
 
-    for case let fileURL as URL in enumerator {
-        let ext = fileURL.pathExtension.lowercased()
-        if ext == "h" || ext == "swiftinterface" {
-            return true
+    while let dir = stack.popLast() {
+        let entries = (try? fileManager.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for entry in entries {
+            let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            if values?.isDirectory == true {
+                stack.append(entry)
+                continue
+            }
+            let ext = entry.pathExtension.lowercased()
+            if ext == "h" || ext == "swiftinterface" {
+                return true
+            }
         }
     }
     return false
@@ -1624,12 +1577,14 @@ private func listUsrLibDylibs(ctx: Context) throws -> [String] {
 internal func existingFrameworksInCategory(ctx: Context, category: String, frameworks: Set<String>) -> Set<String> {
     var existing: Set<String> = []
     for framework in frameworks {
-        let paths = frameworkOutputDirs(ctx: ctx, category: category, frameworkName: framework)
-        let candidates = ctx.layout == "headers"
-            ? [paths.headers, paths.bundle]
-            : [paths.bundle, paths.headers]
-        if firstCompletedOutput(in: candidates) != nil {
-            existing.insert(framework)
+        autoreleasepool {
+            let paths = frameworkOutputDirs(ctx: ctx, category: category, frameworkName: framework)
+            let candidates = ctx.layout == "headers"
+                ? [paths.headers, paths.bundle]
+                : [paths.bundle, paths.headers]
+            if firstCompletedOutput(in: candidates) != nil {
+                existing.insert(framework)
+            }
         }
     }
     return existing
@@ -1674,96 +1629,98 @@ internal func dumpCategorySplit(category: String, ctx: Context, runner: CommandR
 
     for (idx, item) in frameworks.enumerated() {
         try throwIfTerminationRequested()
-        if ctx.skipExisting, existing.contains(item) {
-            // Best-effort: keep nested XPCServices/PlugIns outputs consistent with the requested layout
-            // even when skipping.
-            let paths = frameworkOutputDirs(ctx: ctx, category: category, frameworkName: item)
-            let targetDir = ctx.layout == "headers" ? paths.headers : paths.bundle
-            let completedDir = firstCompletedOutput(
-                in: ctx.layout == "headers" ? [paths.headers, paths.bundle] : [paths.bundle, paths.headers]
-            )
-            let overwrite = completedDir?.path != targetDir.path
-                && FileManager.default.fileExists(atPath: targetDir.path)
-                && !hasCompletedOutput(in: targetDir)
-            if ctx.layout == "headers" {
-                if completedDir?.path == paths.bundle.path {
-                    _ = try? FileOps.normalizeBundleDir(
-                        paths.bundle,
-                        allowedExtensions: ["framework"],
-                        overwrite: overwrite,
-                        fileManager: .default
-                    )
-                }
-                try? normalizeNestedXPCAndPlugIns(in: paths.headers, overwrite: overwrite)
-            } else {
-                if completedDir?.path == paths.headers.path {
-                    _ = try? FileOps.denormalizeBundleDir(
-                        paths.headers,
-                        bundleExtension: "framework",
-                        overwrite: overwrite,
-                        fileManager: .default
-                    )
-                }
-                try? denormalizeNestedXPCAndPlugIns(in: paths.bundle, overwrite: overwrite)
-            }
-            print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
-            continue
-        }
-
-        let progressText = "Dumping: \(category) (\(idx + 1)/\(total)) \(item)"
-        if inlineProgress {
-            renderInlineProgressStart(progressText)
-        } else {
-            print(progressText)
-        }
-
-        let frameworkStart = DispatchTime.now().uptimeNanoseconds
-        let path = "\(category)/\(item)"
-        let result = try runHeaderdump(category: path, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
-        let frameworkElapsedText = formatElapsedSeconds(since: frameworkStart)
-        if result.wasKilled || result.status != 0 {
-            if inlineProgress {
-                renderInlineProgressEnd("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
-            }
-            reportLastLines(result.lastLines)
-            failures.append(path)
-            if !inlineProgress {
-                print("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
-            }
-        } else {
-            if ctx.nestedEnabled {
-                let parentBundle = path
-                let nestedBundles = try listNestedBundles(
-                    ctx: ctx,
-                    systemLibraryRelativeBundlePath: parentBundle
+        try autoreleasepool {
+            if ctx.skipExisting, existing.contains(item) {
+                // Best-effort: keep nested XPCServices/PlugIns outputs consistent with the requested layout
+                // even when skipping.
+                let paths = frameworkOutputDirs(ctx: ctx, category: category, frameworkName: item)
+                let targetDir = ctx.layout == "headers" ? paths.headers : paths.bundle
+                let completedDir = firstCompletedOutput(
+                    in: ctx.layout == "headers" ? [paths.headers, paths.bundle] : [paths.bundle, paths.headers]
                 )
-                for nested in nestedBundles {
-                    let nestedResult = try runHeaderdump(category: nested, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
-                    if nestedResult.wasKilled || nestedResult.status != 0 {
-                        reportLastLines(nestedResult.lastLines)
-                        failures.append(nested)
+                let overwrite = completedDir?.path != targetDir.path
+                    && FileManager.default.fileExists(atPath: targetDir.path)
+                    && !hasCompletedOutput(in: targetDir)
+                if ctx.layout == "headers" {
+                    if completedDir?.path == paths.bundle.path {
+                        _ = try? FileOps.normalizeBundleDir(
+                            paths.bundle,
+                            allowedExtensions: ["framework"],
+                            overwrite: overwrite,
+                            fileManager: .default
+                        )
+                    }
+                    try? normalizeNestedXPCAndPlugIns(in: paths.headers, overwrite: overwrite)
+                } else {
+                    if completedDir?.path == paths.headers.path {
+                        _ = try? FileOps.denormalizeBundleDir(
+                            paths.headers,
+                            bundleExtension: "framework",
+                            overwrite: overwrite,
+                            fileManager: .default
+                        )
+                    }
+                    try? denormalizeNestedXPCAndPlugIns(in: paths.bundle, overwrite: overwrite)
+                }
+                print("Skipping existing: \(category) (\(idx + 1)/\(total)) \(item)")
+                return
+            }
+
+            let progressText = "Dumping: \(category) (\(idx + 1)/\(total)) \(item)"
+            if inlineProgress {
+                renderInlineProgressStart(progressText)
+            } else {
+                print(progressText)
+            }
+
+            let frameworkStart = DispatchTime.now().uptimeNanoseconds
+            let path = "\(category)/\(item)"
+            let result = try runHeaderdump(category: path, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+            let frameworkElapsedText = formatElapsedSeconds(since: frameworkStart)
+            if result.wasKilled || result.status != 0 {
+                if inlineProgress {
+                    renderInlineProgressEnd("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
+                }
+                reportLastLines(result.lastLines)
+                failures.append(path)
+                if !inlineProgress {
+                    print("Failed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
+                }
+            } else {
+                if ctx.nestedEnabled {
+                    let parentBundle = path
+                    let nestedBundles = try listNestedBundles(
+                        ctx: ctx,
+                        systemLibraryRelativeBundlePath: parentBundle
+                    )
+                    for nested in nestedBundles {
+                        let nestedResult = try runHeaderdump(category: nested, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+                        if nestedResult.wasKilled || nestedResult.status != 0 {
+                            reportLastLines(nestedResult.lastLines)
+                            failures.append(nested)
+                        }
                     }
                 }
-            }
 
-            try relocateFrameworkOutput(ctx: ctx, category: category, frameworkName: item)
-            let outputDir = frameworkOutputDir(ctx: ctx, category: category, frameworkName: item)
-            let nestedFailed = failures.contains { $0.hasPrefix(path + "/") }
-            if ctx.layout == "headers" {
-                try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: true)
-                try normalizeNestedXPCAndPlugIns(in: outputDir, overwrite: true)
-            }
-            if !nestedFailed {
-                try writeCompletionMarker(
-                    in: outputDir,
-                    imagePath: path,
-                    layout: ctx.layout
-                )
-            }
-            if inlineProgress {
-                renderInlineProgressEnd("\(progressText) (elapsed: \(frameworkElapsedText)s)")
-            } else {
-                print("Completed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
+                try relocateFrameworkOutput(ctx: ctx, category: category, frameworkName: item)
+                let outputDir = frameworkOutputDir(ctx: ctx, category: category, frameworkName: item)
+                let nestedFailed = failures.contains { $0.hasPrefix(path + "/") }
+                if ctx.layout == "headers" {
+                    try normalizeFrameworkDir(ctx: ctx, category: category, frameworkName: item, overwrite: true)
+                    try normalizeNestedXPCAndPlugIns(in: outputDir, overwrite: true)
+                }
+                if !nestedFailed {
+                    try writeCompletionMarker(
+                        in: outputDir,
+                        imagePath: path,
+                        layout: ctx.layout
+                    )
+                }
+                if inlineProgress {
+                    renderInlineProgressEnd("\(progressText) (elapsed: \(frameworkElapsedText)s)")
+                } else {
+                    print("Completed: \(category) (\(idx + 1)/\(total)) \(item) (elapsed: \(frameworkElapsedText)s)")
+                }
             }
         }
     }
@@ -1796,118 +1753,113 @@ internal func dumpSystemLibraryItems(ctx: Context, items: [String], runner: Comm
 
     for (idx, relPath) in items.enumerated() {
         try throwIfTerminationRequested()
+        try autoreleasepool {
+            let paths = systemLibraryOutputDirs(ctx: ctx, relativePath: relPath)
+            let denormalizedDest = paths.bundle
+            let outputDir = ctx.layout == "headers" ? paths.headers : paths.bundle
+            let skipCandidates = ctx.layout == "headers"
+                ? [paths.headers, paths.bundle]
+                : [paths.bundle, paths.headers]
+            if ctx.skipExisting, let completedDir = firstCompletedOutput(in: skipCandidates) {
+                let overwrite = completedDir.path != outputDir.path
+                    && fileManager.fileExists(atPath: outputDir.path)
+                    && !hasCompletedOutput(in: outputDir)
 
-        let paths = systemLibraryOutputDirs(ctx: ctx, relativePath: relPath)
-        let denormalizedDest = paths.bundle
-        let outputDir = ctx.layout == "headers" ? paths.headers : paths.bundle
-        let skipCandidates = ctx.layout == "headers"
-            ? [paths.headers, paths.bundle]
-            : [paths.bundle, paths.headers]
-        if ctx.skipExisting, let completedDir = firstCompletedOutput(in: skipCandidates) {
-            // Best-effort: keep existing outputs consistent with the requested layout even when skipping.
-            //
-            // In particular, switching from `--layout headers` to `--layout bundle` should not require a re-dump:
-            // rename `Foo` -> `Foo.bundle` (and similarly for nested XPC/appex bundles) when possible.
-            let overwrite = completedDir.path != outputDir.path
-                && fileManager.fileExists(atPath: outputDir.path)
-                && !hasCompletedOutput(in: outputDir)
-
-            var bundleDir = completedDir
-            if fileManager.fileExists(atPath: completedDir.path) {
-                if normalizeBundles {
-                    if completedDir.path != paths.headers.path {
-                        bundleDir = (try? FileOps.normalizeBundleDir(
-                            bundleDir,
-                            allowedExtensions: normalizedBundleExtensions,
-                            overwrite: overwrite,
-                            fileManager: fileManager
-                        )) ?? bundleDir
+                var bundleDir = completedDir
+                if fileManager.fileExists(atPath: completedDir.path) {
+                    if normalizeBundles {
+                        if completedDir.path != paths.headers.path {
+                            bundleDir = (try? FileOps.normalizeBundleDir(
+                                bundleDir,
+                                allowedExtensions: normalizedBundleExtensions,
+                                overwrite: overwrite,
+                                fileManager: fileManager
+                            )) ?? bundleDir
+                        }
+                        try? normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: overwrite)
+                    } else {
+                        let ext = denormalizedDest.pathExtension
+                        if completedDir.path != paths.bundle.path {
+                            bundleDir = (try? FileOps.denormalizeBundleDir(
+                                bundleDir,
+                                bundleExtension: ext,
+                                overwrite: overwrite,
+                                fileManager: fileManager
+                            )) ?? bundleDir
+                        }
+                        try? denormalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: overwrite)
                     }
-                    try? normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: overwrite)
-                } else {
-                    let ext = denormalizedDest.pathExtension
-                    if completedDir.path != paths.bundle.path {
-                        bundleDir = (try? FileOps.denormalizeBundleDir(
-                            bundleDir,
-                            bundleExtension: ext,
-                            overwrite: overwrite,
-                            fileManager: fileManager
-                        )) ?? bundleDir
-                    }
-                    try? denormalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: overwrite)
                 }
+                print("Skipping existing: SystemLibrary (\(idx + 1)/\(total)) \(relPath)")
+                return
             }
-            print("Skipping existing: SystemLibrary (\(idx + 1)/\(total)) \(relPath)")
-            continue
-        }
 
-        let progressText = "Dumping: SystemLibrary (\(idx + 1)/\(total)) \(relPath)"
-        if inlineProgress {
-            renderInlineProgressStart(progressText)
-        } else {
-            print(progressText)
-        }
-
-        let start = DispatchTime.now().uptimeNanoseconds
-        let result = try runHeaderdump(category: relPath, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
-        let elapsedText = formatElapsedSeconds(since: start)
-        if result.wasKilled || result.status != 0 {
+            let progressText = "Dumping: SystemLibrary (\(idx + 1)/\(total)) \(relPath)"
             if inlineProgress {
-                renderInlineProgressEnd("Failed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+                renderInlineProgressStart(progressText)
+            } else {
+                print(progressText)
             }
-            reportLastLines(result.lastLines)
-            failures.append("SystemLibrary/\(relPath)")
-            if !inlineProgress {
-                print("Failed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
-            }
-            continue
-        }
 
-        if ctx.nestedEnabled {
-            let nestedBundles = try listNestedBundles(ctx: ctx, systemLibraryRelativeBundlePath: relPath)
-            for nested in nestedBundles {
-                let nestedResult = try runHeaderdump(category: nested, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
-                if nestedResult.wasKilled || nestedResult.status != 0 {
-                    reportLastLines(nestedResult.lastLines)
-                    failures.append("SystemLibrary/\(nested)")
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = try runHeaderdump(category: relPath, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+            let elapsedText = formatElapsedSeconds(since: start)
+            if result.wasKilled || result.status != 0 {
+                if inlineProgress {
+                    renderInlineProgressEnd("Failed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+                }
+                reportLastLines(result.lastLines)
+                failures.append("SystemLibrary/\(relPath)")
+                if !inlineProgress {
+                    print("Failed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+                }
+                return
+            }
+
+            if ctx.nestedEnabled {
+                let nestedBundles = try listNestedBundles(ctx: ctx, systemLibraryRelativeBundlePath: relPath)
+                for nested in nestedBundles {
+                    let nestedResult = try runHeaderdump(category: nested, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+                    if nestedResult.wasKilled || nestedResult.status != 0 {
+                        reportLastLines(nestedResult.lastLines)
+                        failures.append("SystemLibrary/\(nested)")
+                    }
                 }
             }
-        }
 
-        try relocateSystemLibraryItemOutput(ctx: ctx, systemLibraryRelativePath: relPath, destBaseDir: outBase)
-        let nestedFailed = failures.contains { $0.hasPrefix("SystemLibrary/\(relPath)/") }
+            try relocateSystemLibraryItemOutput(ctx: ctx, systemLibraryRelativePath: relPath, destBaseDir: outBase)
+            let nestedFailed = failures.contains { $0.hasPrefix("SystemLibrary/\(relPath)/") }
 
-        if normalizeBundles {
-            var bundleDir = denormalizedDest
-            bundleDir = try FileOps.normalizeBundleDir(
-                bundleDir,
-                allowedExtensions: normalizedBundleExtensions,
-                overwrite: true,
-                fileManager: fileManager
-            )
-            try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: true)
-        } else {
-            // When switching layouts with `--force`, remove stale "headers" layout output (e.g. `Foo`)
-            // next to the fresh bundle output (e.g. `Foo.bundle`) so one run produces a consistent layout.
-            let normalizedDest = normalizedBundleDirURLIfNeeded(denormalizedDest)
-            if normalizedDest.path != denormalizedDest.path,
-               fileManager.fileExists(atPath: normalizedDest.path)
-            {
-                try? fileManager.removeItem(at: normalizedDest)
+            if normalizeBundles {
+                var bundleDir = denormalizedDest
+                bundleDir = try FileOps.normalizeBundleDir(
+                    bundleDir,
+                    allowedExtensions: normalizedBundleExtensions,
+                    overwrite: true,
+                    fileManager: fileManager
+                )
+                try normalizeNestedXPCAndPlugIns(in: bundleDir, overwrite: true)
+            } else {
+                let normalizedDest = normalizedBundleDirURLIfNeeded(denormalizedDest)
+                if normalizedDest.path != denormalizedDest.path,
+                   fileManager.fileExists(atPath: normalizedDest.path)
+                {
+                    try? fileManager.removeItem(at: normalizedDest)
+                }
             }
-        }
-        if !nestedFailed {
-            try writeCompletionMarker(
-                in: outputDir,
-                imagePath: "SystemLibrary/\(relPath)",
-                layout: ctx.layout
-            )
-        }
+            if !nestedFailed {
+                try writeCompletionMarker(
+                    in: outputDir,
+                    imagePath: "SystemLibrary/\(relPath)",
+                    layout: ctx.layout
+                )
+            }
 
-        if inlineProgress {
-            renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
-        } else {
-            print("Completed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+            if inlineProgress {
+                renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
+            } else {
+                print("Completed: SystemLibrary (\(idx + 1)/\(total)) \(relPath) (elapsed: \(elapsedText)s)")
+            }
         }
     }
 
@@ -1936,59 +1888,60 @@ private func dumpUsrLibDylibItems(ctx: Context, dylibs: [String], runner: Comman
 
     for (idx, name) in dylibs.enumerated() {
         try throwIfTerminationRequested()
+        try autoreleasepool {
+            let outputDir = dylibOutputDir(ctx: ctx, dylibName: name)
+            if ctx.skipExisting, hasCompletedOutput(in: outputDir, fileManager: fileManager) {
+                print("Skipping existing: usr/lib (\(idx + 1)/\(total)) \(name)")
+                return
+            }
 
-        let outputDir = dylibOutputDir(ctx: ctx, dylibName: name)
-        if ctx.skipExisting, hasCompletedOutput(in: outputDir, fileManager: fileManager) {
-            print("Skipping existing: usr/lib (\(idx + 1)/\(total)) \(name)")
-            continue
-        }
-
-        let progressText = "Dumping: usr/lib (\(idx + 1)/\(total)) \(name)"
-        if inlineProgress {
-            renderInlineProgressStart(progressText)
-        } else {
-            print(progressText)
-        }
-
-        let start = DispatchTime.now().uptimeNanoseconds
-        let inputPath: String
-        switch ctx.execMode {
-        case .simulator:
-            inputPath = "/usr/lib/\(name)"
-        case .host:
-            inputPath = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
-                .appendingPathComponent("usr", isDirectory: true)
-                .appendingPathComponent("lib", isDirectory: true)
-                .appendingPathComponent(name, isDirectory: false)
-                .path
-        }
-
-        let result = try runHeaderdumpPath(path: inputPath, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
-        let elapsedText = formatElapsedSeconds(since: start)
-        if result.wasKilled || result.status != 0 {
+            let progressText = "Dumping: usr/lib (\(idx + 1)/\(total)) \(name)"
             if inlineProgress {
-                renderInlineProgressEnd("Failed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+                renderInlineProgressStart(progressText)
+            } else {
+                print(progressText)
             }
-            reportLastLines(result.lastLines)
-            failures.append("usr/lib/\(name)")
-            if !inlineProgress {
-                print("Failed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+
+            let start = DispatchTime.now().uptimeNanoseconds
+            let inputPath: String
+            switch ctx.execMode {
+            case .simulator:
+                inputPath = "/usr/lib/\(name)"
+            case .host:
+                inputPath = URL(fileURLWithPath: ctx.systemRoot, isDirectory: true)
+                    .appendingPathComponent("usr", isDirectory: true)
+                    .appendingPathComponent("lib", isDirectory: true)
+                    .appendingPathComponent(name, isDirectory: false)
+                    .path
             }
-            continue
-        }
 
-        try relocateUsrLibOutput(ctx: ctx, dylibName: name)
-        try writeCompletionMarker(
-            in: outputDir,
-            imagePath: "usr/lib/\(name)",
-            layout: ctx.layout,
-            fileManager: fileManager
-        )
+            let result = try runHeaderdumpPath(path: inputPath, ctx: ctx, runner: runner, streamOutput: !inlineProgress)
+            let elapsedText = formatElapsedSeconds(since: start)
+            if result.wasKilled || result.status != 0 {
+                if inlineProgress {
+                    renderInlineProgressEnd("Failed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+                }
+                reportLastLines(result.lastLines)
+                failures.append("usr/lib/\(name)")
+                if !inlineProgress {
+                    print("Failed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+                }
+                return
+            }
 
-        if inlineProgress {
-            renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
-        } else {
-            print("Completed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+            try relocateUsrLibOutput(ctx: ctx, dylibName: name)
+            try writeCompletionMarker(
+                in: outputDir,
+                imagePath: "usr/lib/\(name)",
+                layout: ctx.layout,
+                fileManager: fileManager
+            )
+
+            if inlineProgress {
+                renderInlineProgressEnd("\(progressText) (elapsed: \(elapsedText)s)")
+            } else {
+                print("Completed: usr/lib (\(idx + 1)/\(total)) \(name) (elapsed: \(elapsedText)s)")
+            }
         }
     }
 

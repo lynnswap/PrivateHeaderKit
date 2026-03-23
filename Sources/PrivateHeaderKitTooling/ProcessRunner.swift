@@ -38,78 +38,20 @@ public final class ProcessRunner: CommandRunning {
     }
 
     public func runStreaming(_ command: [String], env: [String: String]? = nil, cwd: URL? = nil) throws -> StreamingCommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = command
-        if let cwd { process.currentDirectoryURL = cwd }
-
-        var environment = ProcessInfo.processInfo.environment
-        if let env {
-            for (k, v) in env { environment[k] = v }
-        }
-        process.environment = environment
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        let handle = pipe.fileHandleForReading
-
-        var lastLines: [String] = []
-        lastLines.reserveCapacity(8)
-        var wasKilled = false
-
-        try process.run()
-        let pid = process.processIdentifier
-        gActiveToolingSubprocessPid = pid
-        defer {
-            if gActiveToolingSubprocessPid == pid {
-                gActiveToolingSubprocessPid = 0
-            }
-        }
-        // Close the parent-side write handle so the reader reliably receives EOF.
-        // (The child process still has its own write end inherited by exec.)
-        try? pipe.fileHandleForWriting.close()
-
-        var buffer = ""
-        while true {
-            let data = handle.availableData
-            if data.isEmpty { break }
-            FileHandle.standardOutput.write(data)
-
-            let chunk = String(decoding: data, as: UTF8.self)
-            buffer += chunk
-            while let range = buffer.range(of: "\n") {
-                let line = String(buffer[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                buffer.removeSubrange(..<range.upperBound)
-                if line.isEmpty { continue }
-                lastLines.append(line)
-                if lastLines.count > 8 {
-                    lastLines.removeFirst(lastLines.count - 8)
-                }
-                if line.lowercased().contains("killed: 9") {
-                    wasKilled = true
+        try runStreamingSubprocess(
+            command,
+            env: env,
+            cwd: cwd,
+            streamOutput: true,
+            onLaunch: { pid in
+                gActiveToolingSubprocessPid = pid
+            },
+            onCleanup: { pid in
+                if gActiveToolingSubprocessPid == pid {
+                    gActiveToolingSubprocessPid = 0
                 }
             }
-        }
-
-        process.waitUntilExit()
-        if !buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lastLines.append(buffer.trimmingCharacters(in: .whitespacesAndNewlines))
-            if lastLines.count > 8 {
-                lastLines.removeFirst(lastLines.count - 8)
-            }
-        }
-        if process.terminationReason == .uncaughtSignal {
-            wasKilled = true
-            lastLines.append("Terminated by signal \(process.terminationStatus)")
-            if lastLines.count > 8 {
-                lastLines.removeFirst(lastLines.count - 8)
-            }
-        } else if process.terminationStatus != 0, lastLines.isEmpty {
-            lastLines.append("Exited with status \(process.terminationStatus)")
-        }
-
-        return StreamingCommandResult(status: process.terminationStatus, wasKilled: wasKilled, lastLines: lastLines)
+        )
     }
 
     private func runProcessCapture(
@@ -117,23 +59,17 @@ public final class ProcessRunner: CommandRunning {
         env: [String: String]?,
         cwd: URL?
     ) throws -> (Int32, String, String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = command
-        if let cwd { process.currentDirectoryURL = cwd }
-
-        var environment = ProcessInfo.processInfo.environment
-        if let env {
-            for (k, v) in env { environment[k] = v }
-        }
-        process.environment = environment
+        let (process, stdinHandle) = try makeConfiguredProcess(command, env: env, cwd: cwd)
+        defer { try? stdinHandle.close() }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        let stdoutReadHandle = stdoutPipe.fileHandleForReading
+        let stderrReadHandle = stderrPipe.fileHandleForReading
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        try process.run()
+        try launchConfiguredProcess(process, command: command)
         let pid = process.processIdentifier
         gActiveToolingSubprocessPid = pid
         defer {
@@ -144,6 +80,10 @@ public final class ProcessRunner: CommandRunning {
         // Close the parent-side write handles so reads complete at EOF.
         try? stdoutPipe.fileHandleForWriting.close()
         try? stderrPipe.fileHandleForWriting.close()
+        defer {
+            try? stdoutReadHandle.close()
+            try? stderrReadHandle.close()
+        }
 
         // Drain both pipes concurrently before (and while) waiting for exit, otherwise a large amount
         // of output can fill the pipe buffers and deadlock the child process.
@@ -171,13 +111,13 @@ public final class ProcessRunner: CommandRunning {
 
         group.enter()
         DispatchQueue.global(qos: .utility).async {
-            stdoutBox.set(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+            stdoutBox.set(stdoutReadHandle.readDataToEndOfFile())
             group.leave()
         }
 
         group.enter()
         DispatchQueue.global(qos: .utility).async {
-            stderrBox.set(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+            stderrBox.set(stderrReadHandle.readDataToEndOfFile())
             group.leave()
         }
 
