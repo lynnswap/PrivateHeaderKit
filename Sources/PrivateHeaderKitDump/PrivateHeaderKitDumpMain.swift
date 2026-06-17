@@ -149,11 +149,12 @@ private func normalizedEnvValue(_ value: String?) -> String? {
 
 private func runDumpStreaming(
     _ command: [String],
+    runner: CommandRunning,
     env: [String: String]? = nil,
     cwd: URL? = nil,
     streamOutput: Bool = true
 ) throws -> StreamingCommandResult {
-    try runStreamingSubprocess(
+    try runner.runStreaming(
         command,
         env: env,
         cwd: cwd,
@@ -1396,7 +1397,8 @@ internal func writeCompletionMarker(
     in outputDir: URL,
     imagePath: String,
     layout: String,
-    fileManager: FileManager = .default
+    fileManager: FileManager = .default,
+    date: Date = Date()
 ) throws {
     try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
     let formatter = ISO8601DateFormatter()
@@ -1404,7 +1406,7 @@ internal func writeCompletionMarker(
         tool: "privateheaderkit-dump",
         imagePath: imagePath,
         layout: layout,
-        completedAt: formatter.string(from: Date())
+        completedAt: formatter.string(from: date)
     )
     let data = try JSONEncoder().encode(marker)
     try data.write(to: completionMarkerURL(for: outputDir))
@@ -2171,7 +2173,7 @@ private func runHeaderdumpHost(
             env = ["SIMCTL_CHILD_DYLD_ROOT_PATH": ctx.systemRoot]
         }
     }
-    let result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+    let result = try runDumpStreaming(cmd, runner: runner, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
     return result
 }
@@ -2225,11 +2227,11 @@ private func runHeaderdumpSimulator(
         env["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] = "1"
     }
 
-    var result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+    var result = try runDumpStreaming(cmd, runner: runner, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
     if result.status != 0, shouldRetrySimulatorBoot(result.lastLines) {
         try Simctl.ensureDeviceBooted(&device, runner: runner, force: true)
-        result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+        result = try runDumpStreaming(cmd, runner: runner, env: env, cwd: nil, streamOutput: streamOutput)
         try throwIfTerminationRequested()
     }
     return result
@@ -2269,7 +2271,7 @@ private func runHeaderdumpPathHost(
         }
     }
 
-    let result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+    let result = try runDumpStreaming(cmd, runner: runner, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
     return result
 }
@@ -2303,11 +2305,11 @@ private func runHeaderdumpPathSimulator(
         env["SIMCTL_CHILD_PH_SYMBOL_PROFILE"] = "1"
     }
 
-    var result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+    var result = try runDumpStreaming(cmd, runner: runner, env: env, cwd: nil, streamOutput: streamOutput)
     try throwIfTerminationRequested()
     if result.status != 0, shouldRetrySimulatorBoot(result.lastLines) {
         try Simctl.ensureDeviceBooted(&device, runner: runner, force: true)
-        result = try runDumpStreaming(cmd, env: env, cwd: nil, streamOutput: streamOutput)
+        result = try runDumpStreaming(cmd, runner: runner, env: env, cwd: nil, streamOutput: streamOutput)
         try throwIfTerminationRequested()
     }
     return result

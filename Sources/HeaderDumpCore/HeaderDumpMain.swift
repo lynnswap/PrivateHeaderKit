@@ -110,6 +110,7 @@ struct ParsedArguments {
 
 func parseArguments(
     _ args: [String],
+    environment: [String: String] = ProcessInfo.processInfo.environment,
     exitHandler: (Int32) -> Void = { exit($0) },
     printUsageHandler: () -> Void = printUsage
 ) -> ParsedArguments? {
@@ -159,11 +160,11 @@ func parseArguments(
 
     guard let inputPath else { return nil }
     if !options.useRuntimeFallback {
-        options.useRuntimeFallback = shouldUseRuntimeFallback()
+        options.useRuntimeFallback = shouldUseRuntimeFallback(environment: environment)
     }
-    options.logSkippedClasses = shouldLogSkippedClasses()
-    options.profile = shouldProfile()
-    options.logSwiftEvents = shouldLogSwiftEvents()
+    options.logSkippedClasses = shouldLogSkippedClasses(environment: environment)
+    options.profile = shouldProfile(environment: environment)
+    options.logSwiftEvents = shouldLogSwiftEvents(environment: environment)
     return ParsedArguments(options: options, inputPath: inputPath)
 }
 
@@ -186,43 +187,46 @@ private func printUsage() {
     print(text)
 }
 
-func shouldUseRuntimeFallback() -> Bool {
-    let env = ProcessInfo.processInfo.environment
-    return env["PH_RUNTIME_ROOT"] != nil || env["SIMCTL_CHILD_PH_RUNTIME_ROOT"] != nil
+func shouldUseRuntimeFallback(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    environment["PH_RUNTIME_ROOT"] != nil || environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] != nil
 }
 
-func shouldLogSkippedClasses() -> Bool {
-    ProcessInfo.processInfo.environment["PH_VERBOSE_SKIP"] == "1"
+func shouldLogSkippedClasses(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    environment["PH_VERBOSE_SKIP"] == "1"
 }
 
-func shouldProfile() -> Bool {
-    let env = ProcessInfo.processInfo.environment
-    return env["PH_PROFILE"] == "1" || env["SIMCTL_CHILD_PH_PROFILE"] == "1"
+func shouldProfile(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    environment["PH_PROFILE"] == "1" || environment["SIMCTL_CHILD_PH_PROFILE"] == "1"
 }
 
-func shouldLogSwiftEvents() -> Bool {
-    let env = ProcessInfo.processInfo.environment
-    return env["PH_SWIFT_EVENTS"] == "1" || env["SIMCTL_CHILD_PH_SWIFT_EVENTS"] == "1"
+func shouldLogSwiftEvents(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    environment["PH_SWIFT_EVENTS"] == "1" || environment["SIMCTL_CHILD_PH_SWIFT_EVENTS"] == "1"
 }
 
-private func runtimeRootPath() -> String? {
-    let env = ProcessInfo.processInfo.environment
-    return env["PH_RUNTIME_ROOT"] ?? env["SIMCTL_CHILD_PH_RUNTIME_ROOT"]
+private func runtimeRootPath(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+    environment["PH_RUNTIME_ROOT"] ?? environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"]
 }
 
-func resolveRuntimeURL(_ url: URL) -> URL {
-    guard let runtimeRoot = runtimeRootPath() else { return url }
+func resolveRuntimeURL(
+    _ url: URL,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    fileManager: FileExistenceChecking = FileManager.default
+) -> URL {
+    guard let runtimeRoot = runtimeRootPath(environment: environment) else { return url }
     let path = url.standardizedFileURL.path
     guard path.hasPrefix("/") else { return url }
     let candidate = URL(fileURLWithPath: runtimeRoot).appendingPathComponent(String(path.dropFirst()))
-    if FileManager.default.fileExists(atPath: candidate.path) {
+    if fileManager.fileExists(atPath: candidate.path) {
         return candidate
     }
     return url
 }
 
-func stripRuntimeRoot(from path: String) -> String {
-    guard let runtimeRoot = runtimeRootPath() else { return path }
+func stripRuntimeRoot(
+    from path: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String {
+    guard let runtimeRoot = runtimeRootPath(environment: environment) else { return path }
     if path.hasPrefix(runtimeRoot) {
         var trimmed = path.dropFirst(runtimeRoot.count)
         if trimmed.first == "/" {
@@ -441,7 +445,10 @@ private func loadFromSharedCache(imagePath: String) -> MachOFile? {
     return nil
 }
 
-func normalizedCacheImagePaths(for path: String) -> [String] {
+func normalizedCacheImagePaths(
+    for path: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> [String] {
     var results: [String] = [path]
 
     // On macOS, cache entries for frameworks frequently use versioned image paths
@@ -459,11 +466,10 @@ func normalizedCacheImagePaths(for path: String) -> [String] {
         }
     }
 
-    let env = ProcessInfo.processInfo.environment
     let rootCandidates = [
-        env["PH_RUNTIME_ROOT"],
-        env["DYLD_ROOT_PATH"],
-        env["SIMCTL_CHILD_DYLD_ROOT_PATH"]
+        environment["PH_RUNTIME_ROOT"],
+        environment["DYLD_ROOT_PATH"],
+        environment["SIMCTL_CHILD_DYLD_ROOT_PATH"]
     ].compactMap { $0 }
 
     for runtimeRoot in rootCandidates {
@@ -490,12 +496,14 @@ func normalizedCacheImagePaths(for path: String) -> [String] {
     return unique
 }
 
-func sharedCachePath(fileManager: FileExistenceChecking = FileManager.default) -> String {
-    let env = ProcessInfo.processInfo.environment
+func sharedCachePath(
+    fileManager: FileExistenceChecking = FileManager.default,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String {
     let rootCandidates = [
-        env["PH_RUNTIME_ROOT"],
-        env["DYLD_ROOT_PATH"],
-        env["SIMCTL_CHILD_DYLD_ROOT_PATH"]
+        environment["PH_RUNTIME_ROOT"],
+        environment["DYLD_ROOT_PATH"],
+        environment["SIMCTL_CHILD_DYLD_ROOT_PATH"]
     ].compactMap { $0 }
 
     for runtimeRoot in rootCandidates {
@@ -1284,10 +1292,13 @@ private func runtimeClassInfosByImageName(
     return infos
 }
 
-func runtimeFallbackTargetImagePaths(for imagePath: String) -> Set<String> {
+func runtimeFallbackTargetImagePaths(
+    for imagePath: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Set<String> {
     Set(
-        normalizedCacheImagePaths(for: imagePath).map {
-            normalizedImagePath(stripRuntimeRoot(from: $0))
+        normalizedCacheImagePaths(for: imagePath, environment: environment).map {
+            normalizedImagePath(stripRuntimeRoot(from: $0, environment: environment))
         }
     )
 }
@@ -1342,16 +1353,13 @@ func dumpSwift(
     interfaceBuilderFactory: SwiftInterfaceBuildingFactory = DefaultSwiftInterfaceBuilderFactory(),
     fileManager: FileManager
 ) async throws {
-    let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
-    let outputURL = outputDir.appendingPathComponent("\(moduleName).swiftinterface")
-
-    if options.skipExisting && fileManager.fileExists(atPath: outputURL.path) {
-        return
-    }
-
-    let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
-    do {
-        let text = try await withSilencedStdout(!options.verbose) {
+    try await dumpSwiftInterface(
+        imagePath: imagePath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager,
+        buildInterface: {
+            let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
             let prepareStart = profileNowNanoseconds(enabled: options.profile)
             try await builder.prepare()
             profileLogDuration(enabled: options.profile, imagePath: imagePath, name: "dumpSwift.prepare", since: prepareStart)
@@ -1360,6 +1368,27 @@ func dumpSwift(
             let text = try await builder.printRoot()
             profileLogDuration(enabled: options.profile, imagePath: imagePath, name: "dumpSwift.printRoot", since: printStart)
             return text
+        }
+    )
+}
+
+func dumpSwiftInterface(
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    fileManager: FileManager,
+    buildInterface: () async throws -> String
+) async throws {
+    let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
+    let outputURL = outputDir.appendingPathComponent("\(moduleName).swiftinterface")
+
+    if options.skipExisting && fileManager.fileExists(atPath: outputURL.path) {
+        return
+    }
+
+    do {
+        let text = try await withSilencedStdout(!options.verbose) {
+            try await buildInterface()
         }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return

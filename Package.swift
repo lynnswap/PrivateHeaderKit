@@ -82,10 +82,18 @@ let package = Package(
             ],
             path: "Tests/PrivateHeaderKitToolingTestHelper"
         ),
+        .target(
+            name: "PrivateHeaderKitTestSupport",
+            dependencies: [
+                "PrivateHeaderKitTooling",
+            ],
+            path: "Tests/PrivateHeaderKitTestSupport"
+        ),
         .testTarget(
             name: "HeaderDumpCLITests",
             dependencies: [
                 "HeaderDumpCore",
+                "PrivateHeaderKitTestSupport",
                 .target(
                     name: "HeaderDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
@@ -97,16 +105,25 @@ let package = Package(
             name: "PrivateHeaderKitDumpTests",
             dependencies: [
                 "PrivateHeaderKitDump",
+                "PrivateHeaderKitTestSupport",
             ]
         ),
         .testTarget(
             name: "PrivateHeaderKitToolingTests",
             dependencies: [
                 "PrivateHeaderKitTooling",
+                "PrivateHeaderKitTestSupport",
                 .target(
                     name: "PrivateHeaderKitToolingTestHelper",
                     condition: .when(platforms: [.macOS])
                 ),
+            ]
+        ),
+        .testTarget(
+            name: "PrivateHeaderKitInstallTests",
+            dependencies: [
+                "PrivateHeaderKitInstall",
+                "PrivateHeaderKitTestSupport",
             ]
         ),
     ]
