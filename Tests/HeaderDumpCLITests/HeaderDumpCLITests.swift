@@ -393,6 +393,30 @@ struct HeaderDumpObjCHeaderNameTests {
 
 @Suite
 struct HeaderDumpSwiftInterfaceTests {
+    @Test func shouldSkipSwiftInterfaceUsesInjectedFileExistence() {
+        let outputDir = URL(fileURLWithPath: "/tmp/out", isDirectory: true)
+        let outputPath = outputDir.appendingPathComponent("FixtureSkip.swiftinterface").path
+        let fake = FakeFileManager(existing: [outputPath])
+
+        var options = DumpOptions(outputDir: outputDir)
+        options.skipExisting = true
+
+        #expect(shouldSkipSwiftInterface(
+            imagePath: "/tmp/FixtureSkip",
+            outputDir: outputDir,
+            options: options,
+            fileManager: fake
+        ) == true)
+
+        options.skipExisting = false
+        #expect(shouldSkipSwiftInterface(
+            imagePath: "/tmp/FixtureSkip",
+            outputDir: outputDir,
+            options: options,
+            fileManager: fake
+        ) == false)
+    }
+
     @Test func dumpSwiftInterfaceSkipsExistingFileWithoutBuilding() async throws {
         let dirs = try makeTemporaryTestDirectories()
         let outputDir = dirs.root.appendingPathComponent("out", isDirectory: true)

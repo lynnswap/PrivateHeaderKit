@@ -1353,6 +1353,9 @@ func dumpSwift(
     interfaceBuilderFactory: SwiftInterfaceBuildingFactory = DefaultSwiftInterfaceBuilderFactory(),
     fileManager: FileManager
 ) async throws {
+    if shouldSkipSwiftInterface(imagePath: imagePath, outputDir: outputDir, options: options, fileManager: fileManager) {
+        return
+    }
     let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
     try await dumpSwiftInterface(
         imagePath: imagePath,
@@ -1372,6 +1375,20 @@ func dumpSwift(
     )
 }
 
+func swiftInterfaceOutputURL(imagePath: String, outputDir: URL) -> URL {
+    let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
+    return outputDir.appendingPathComponent("\(moduleName).swiftinterface")
+}
+
+func shouldSkipSwiftInterface(
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    fileManager: FileExistenceChecking
+) -> Bool {
+    options.skipExisting && fileManager.fileExists(atPath: swiftInterfaceOutputURL(imagePath: imagePath, outputDir: outputDir).path)
+}
+
 func dumpSwiftInterface(
     imagePath: String,
     outputDir: URL,
@@ -1379,10 +1396,9 @@ func dumpSwiftInterface(
     fileManager: FileManager,
     buildInterface: () async throws -> String
 ) async throws {
-    let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
-    let outputURL = outputDir.appendingPathComponent("\(moduleName).swiftinterface")
+    let outputURL = swiftInterfaceOutputURL(imagePath: imagePath, outputDir: outputDir)
 
-    if options.skipExisting && fileManager.fileExists(atPath: outputURL.path) {
+    if shouldSkipSwiftInterface(imagePath: imagePath, outputDir: outputDir, options: options, fileManager: fileManager) {
         return
     }
 
