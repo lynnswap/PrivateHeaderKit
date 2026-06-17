@@ -1353,13 +1353,13 @@ func dumpSwift(
     interfaceBuilderFactory: SwiftInterfaceBuildingFactory = DefaultSwiftInterfaceBuilderFactory(),
     fileManager: FileManager
 ) async throws {
+    let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
     try await dumpSwiftInterface(
         imagePath: imagePath,
         outputDir: outputDir,
         options: options,
         fileManager: fileManager,
         buildInterface: {
-            let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
             let prepareStart = profileNowNanoseconds(enabled: options.profile)
             try await builder.prepare()
             profileLogDuration(enabled: options.profile, imagePath: imagePath, name: "dumpSwift.prepare", since: prepareStart)
