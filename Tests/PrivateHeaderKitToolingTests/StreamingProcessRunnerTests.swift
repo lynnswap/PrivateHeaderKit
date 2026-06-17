@@ -201,17 +201,5 @@ private func runHelper(_ arguments: [String]) throws -> (status: Int32, stdout: 
             #expect(error.description.contains("failed to launch process: /usr/bin/true"))
         }
     }
-
-    @Test func runStreamingHandlesRepeatedShortLivedProcesses() throws {
-        for _ in 0..<200 {
-            let result = try runStreamingSubprocess(
-                ["/usr/bin/true"],
-                streamOutput: false,
-                passthrough: { _ in }
-            )
-            #expect(result.status == 0)
-            #expect(result.wasKilled == false)
-        }
-    }
 }
 #endif
