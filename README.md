@@ -133,6 +133,12 @@ privateheaderkit-dump --list-devices --runtime 26.0.1
 - You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
 - Environment overrides: `PH_PLATFORM`, `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
 
+## Testing
+
+`swift test` is expected to be deterministic. Regular tests should use fixed fixture trees, injected environments, and stub command runners only.
+
+Do not add regular tests that depend on the host dyld shared cache, installed system apps, simulator availability, runtime boot state, wall-clock time, generated `swiftc` binaries, network access, or stress loops. If an integration smoke test needs one of those dependencies, guard it behind an explicit opt-in such as `PHK_RUN_INTEGRATION_TESTS=1` and keep it out of the default acceptance path.
+
 ## License
 
 - MIT for this workspace: see `LICENSE`.
