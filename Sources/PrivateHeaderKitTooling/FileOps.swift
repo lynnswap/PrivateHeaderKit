@@ -6,10 +6,15 @@ import Glibc
 #endif
 
 public enum FileOps {
-    public static func buildStageDir(outDir: URL, pid: Int32 = getpid(), date: Date = Date()) -> URL {
+    public static func buildStageDir(
+        outDir: URL,
+        pid: Int32 = getpid(),
+        date: Date = Date(),
+        timeZone: TimeZone = .current
+    ) -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
+        formatter.timeZone = timeZone
         formatter.dateFormat = "yyyyMMddHHmmss"
         let token = "\(pid)-\(formatter.string(from: date))"
         return outDir.appendingPathComponent(".tmp-\(token)", isDirectory: true)

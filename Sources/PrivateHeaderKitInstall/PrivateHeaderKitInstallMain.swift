@@ -9,13 +9,13 @@ import Glibc
 
 #if os(macOS)
 
-private struct InstallOptions {
+struct InstallOptions {
     var prefix: String?
     var bindir: String?
     var dryRun: Bool
 }
 
-private enum InstallError: Error, CustomStringConvertible {
+enum InstallError: Error, CustomStringConvertible {
     case message(String)
 
     var description: String {
@@ -62,7 +62,7 @@ private func printUsage() {
     print(text)
 }
 
-private func parseOptions(_ args: [String], environment: [String: String]) throws -> InstallOptions {
+func parseOptions(_ args: [String], environment: [String: String]) throws -> InstallOptions {
     var options = InstallOptions(prefix: nil, bindir: nil, dryRun: false)
     if let envPrefix = environment["PREFIX"]?.trimmingCharacters(in: .whitespacesAndNewlines),
        !envPrefix.isEmpty {
@@ -120,7 +120,7 @@ private func parseOptions(_ args: [String], environment: [String: String]) throw
     return options
 }
 
-private func resolveBinDir(prefix: String?, bindir: String?) -> URL {
+func resolveBinDir(prefix: String?, bindir: String?) -> URL {
     if let bindir {
         return URL(fileURLWithPath: PathUtils.expandTilde(bindir), isDirectory: true)
     }
@@ -135,7 +135,7 @@ private func logError(_ message: String) {
     FileHandle.standardError.write(data)
 }
 
-private func repositoryRoot(from executableURL: URL) -> URL? {
+func repositoryRoot(from executableURL: URL) -> URL? {
     var current = executableURL
     while current.path != "/" {
         if current.lastPathComponent == ".build" {
@@ -146,7 +146,7 @@ private func repositoryRoot(from executableURL: URL) -> URL? {
     return nil
 }
 
-private func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileManager) -> Bool {
+func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileManager) -> Bool {
     // Avoid accidentally treating some other Swift package as this repository.
     let markers = [
         repoRoot.appendingPathComponent("Sources/HeaderDumpCore/HeaderDumpMain.swift"),
@@ -155,13 +155,13 @@ private func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileMan
     return markers.allSatisfy { fileManager.fileExists(atPath: $0.path) }
 }
 
-private func buildProducts(_ products: [String], in directory: URL, runner: CommandRunning) throws {
+func buildProducts(_ products: [String], in directory: URL, runner: CommandRunning) throws {
     for product in products {
         try runner.runSimple(["swift", "build", "-c", "release", "--product", product], env: nil, cwd: directory)
     }
 }
 
-private func resolveSwiftBinDir(repoRoot: URL, runner: CommandRunning) -> URL? {
+func resolveSwiftBinDir(repoRoot: URL, runner: CommandRunning) -> URL? {
     // `swift build --show-bin-path` prints a single path line, but be defensive and pick the last non-empty line.
     guard let output = try? runner.runCapture(["swift", "build", "-c", "release", "--show-bin-path"], env: nil, cwd: repoRoot) else {
         return nil
@@ -175,7 +175,11 @@ private func resolveSwiftBinDir(repoRoot: URL, runner: CommandRunning) -> URL? {
     return URL(fileURLWithPath: path, isDirectory: true)
 }
 
-private func resolveXcodeScheme(repoRoot: URL, runner: CommandRunning) throws -> String {
+func resolveXcodeScheme(
+    repoRoot: URL,
+    runner: CommandRunning,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> String {
     struct ListOutput: Decodable {
         struct Container: Decodable {
             let schemes: [String]?
@@ -205,7 +209,7 @@ private func resolveXcodeScheme(repoRoot: URL, runner: CommandRunning) throws ->
         }
     }
 
-    let configuredRaw = ProcessInfo.processInfo.environment["PH_XCODE_SCHEME"]
+    let configuredRaw = environment["PH_XCODE_SCHEME"]
     let configured = configuredRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
     if let configured, !configured.isEmpty {
         if schemes.isEmpty || schemes.contains(configured) {

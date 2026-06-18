@@ -3,39 +3,7 @@ import Testing
 
 @testable import PrivateHeaderKitDump
 import PrivateHeaderKitTooling
-
-private final class StubCommandRunner: CommandRunning {
-    private var captureOutputs: [String: String] = [:]
-
-    var capturedRunCaptureCommands: [[String]] = []
-    var capturedRunSimpleCommands: [[String]] = []
-    var capturedRunStreamingCommands: [[String]] = []
-
-    func setCaptureOutput(_ output: String, for command: [String]) {
-        captureOutputs[key(for: command)] = output
-    }
-
-    func runCapture(_ command: [String], env _: [String: String]?, cwd _: URL?) throws -> String {
-        capturedRunCaptureCommands.append(command)
-        guard let output = captureOutputs[key(for: command)] else {
-            throw ToolingError.message("unexpected runCapture command: \(command.joined(separator: " "))")
-        }
-        return output
-    }
-
-    func runSimple(_ command: [String], env _: [String: String]?, cwd _: URL?) throws {
-        capturedRunSimpleCommands.append(command)
-    }
-
-    func runStreaming(_ command: [String], env _: [String: String]?, cwd _: URL?) throws -> StreamingCommandResult {
-        capturedRunStreamingCommands.append(command)
-        return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
-    }
-
-    private func key(for command: [String]) -> String {
-        command.joined(separator: "\u{1f}")
-    }
-}
+import PrivateHeaderKitTestSupport
 
 private func makeRuntimeInfo(
     version: String = "26.2",
@@ -65,19 +33,24 @@ private func makeDeviceInfo(name: String, udid: String, state: String) throws ->
     return try JSONDecoder().decode(DeviceInfo.self, from: Data(payload.utf8))
 }
 
-private func makeContext(outDir: URL, layout: String = "headers") -> Context {
+private func makeContext(
+    dirs: TestDirectories,
+    layout: String = "headers",
+    platform: TargetPlatform = .macos,
+    execMode: ExecMode = .host
+) throws -> Context {
     Context(
-        platform: .ios,
-        execMode: .host,
-        headerdumpBin: URL(fileURLWithPath: "/usr/bin/true"),
+        platform: platform,
+        execMode: execMode,
+        headerdumpBin: URL(fileURLWithPath: "/test/headerdump"),
         osVersionLabel: "26.3.1",
-        systemRoot: "/tmp/runtime",
-        runtimeId: nil,
+        systemRoot: dirs.runtimeRoot.path,
+        runtimeId: platform == .ios ? "com.apple.CoreSimulator.SimRuntime.iOS-26-2" : nil,
         runtimeBuild: nil,
-        macOSBuildVersion: nil,
-        device: nil,
-        outDir: outDir,
-        stageDir: outDir.appendingPathComponent(".tmp-stage", isDirectory: true),
+        macOSBuildVersion: platform == .macos ? "23C54" : nil,
+        device: execMode == .simulator ? try makeDeviceInfo(name: "iPhone 17", udid: "SIM-UDID", state: "Booted") : nil,
+        outDir: dirs.outDir,
+        stageDir: dirs.stageDir,
         skipExisting: true,
         useSharedCache: true,
         verbose: false,
@@ -88,72 +61,8 @@ private func makeContext(outDir: URL, layout: String = "headers") -> Context {
     )
 }
 
-private func makeFakeHeaderdumpScript(
-    at url: URL,
-    invocationLog: URL,
-    nestedFailureToggle: URL? = nil,
-    failingNestedSuffix: String? = nil
-) throws {
-    let toggleCheck: String
-    if let nestedFailureToggle, let failingNestedSuffix {
-        toggleCheck = """
-        if [[ -f "\(nestedFailureToggle.path)" && "$source_path" == *"\(failingNestedSuffix)" ]]; then
-          print -u2 -- "simulated failure for $source_path"
-          exit 1
-        fi
-        """
-    } else {
-        toggleCheck = ""
-    }
-
-    let script = """
-    #!/bin/zsh
-    set -euo pipefail
-
-    stage_dir=""
-    source_path=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        -o)
-          stage_dir="$2"
-          shift 2
-          ;;
-        -r)
-          source_path="$2"
-          shift 2
-          ;;
-        -b|-h|-s|-R|-c|-D)
-          shift
-          ;;
-        *)
-          if [[ -z "$source_path" ]]; then
-            source_path="$1"
-          fi
-          shift
-          ;;
-      esac
-    done
-
-    print -r -- "$source_path" >> "\(invocationLog.path)"
-    \(toggleCheck)
-    relative_path="${source_path#*/System/Library/}"
-    output_dir="$stage_dir/System/Library/$relative_path/Headers"
-    mkdir -p "$output_dir"
-    print -r -- "// generated: $relative_path" > "$output_dir/Generated.h"
-    """
-
-    try script.write(to: url, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-}
-
-private func invocationLines(at url: URL) throws -> [String] {
-    guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-    return try String(contentsOf: url, encoding: .utf8)
-        .split(separator: "\n")
-        .map(String.init)
-}
-
-@Suite struct PrivateHeaderKitDumpTests {
+@Suite
+struct DumpSelectionTests {
     @Test func targetFrameworkOnlySelectsFrameworks() throws {
         var args = DumpArguments()
         args.targets = ["SafariShared"]
@@ -220,6 +129,33 @@ private func invocationLines(at url: URL) throws -> [String] {
         #expect(selection.usrLibDylibs == ["libobjc.A.dylib"])
     }
 
+    @Test func systemLibraryTargetRejectsDotDotComponents() {
+        let targets = [
+            "../Foo.bundle",
+            "PreferenceBundles/../Foo.bundle",
+            "./Foo.bundle",
+            "PreferenceBundles/./Foo.bundle",
+        ]
+        for target in targets {
+            var args = DumpArguments()
+            args.targets = [target]
+            do {
+                _ = try buildDumpSelection(args)
+                Issue.record("expected invalidArgument for \(target)")
+            } catch let error as ToolingError {
+                guard case .invalidArgument = error else {
+                    Issue.record("unexpected error: \(error)")
+                    continue
+                }
+            } catch {
+                Issue.record("unexpected error: \(error)")
+            }
+        }
+    }
+}
+
+@Suite
+struct DumpFallbackTests {
     @Test func launchFailureFromSimctlFallsBackToHost() {
         let error = ToolingError.processLaunchFailed(
             command: ["xcrun", "simctl", "spawn", "UDID", "/tmp/headerdump-sim"],
@@ -237,31 +173,249 @@ private func invocationLines(at url: URL) throws -> [String] {
 
         #expect(shouldFallbackToHost(error) == false)
     }
+}
 
-    @Test func systemLibraryTargetRejectsDotDotComponents() {
-        let targets = [
-            "../Foo.bundle",
-            "PreferenceBundles/../Foo.bundle",
-            "./Foo.bundle",
-            "PreferenceBundles/./Foo.bundle",
-        ]
-        for target in targets {
-            var args = DumpArguments()
-            args.targets = [target]
-            do {
-                _ = try buildDumpSelection(args)
-                #expect(Bool(false))
-            } catch let error as ToolingError {
-                guard case .invalidArgument = error else {
-                    #expect(Bool(false))
-                    continue
-                }
-            } catch {
-                #expect(Bool(false))
-            }
-        }
+@Suite
+struct DumpCompletionMarkerTests {
+    @Test func existingFrameworksRequireCompletionMarkerAndHeaderArtifact() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let ctx = try makeContext(dirs: dirs)
+
+        let completeDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Complete.framework")
+        let partialDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Partial.framework")
+        let markerOnlyDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "MarkerOnly.framework")
+        try FileManager.default.createDirectory(at: completeDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: partialDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try Data("ok".utf8).write(to: completeDir.appendingPathComponent("Headers/Complete.h"))
+        try Data("ok".utf8).write(to: partialDir.appendingPathComponent("Headers/Partial.h"))
+        try FileManager.default.createDirectory(at: markerOnlyDir, withIntermediateDirectories: true)
+        try writeCompletionMarker(in: completeDir, imagePath: "Frameworks/Complete.framework", layout: ctx.layout)
+        try writeCompletionMarker(in: markerOnlyDir, imagePath: "Frameworks/MarkerOnly.framework", layout: ctx.layout)
+
+        let existing = existingFrameworksInCategory(
+            ctx: ctx,
+            category: "Frameworks",
+            frameworks: Set(["complete.framework", "partial.framework", "markeronly.framework"])
+        )
+        #expect(existing == Set(["complete.framework"]))
     }
 
+    @Test func writeCompletionMarkerCreatesExpectedMetadataWithInjectedDate() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try writeCompletionMarker(
+            in: dirs.outDir,
+            imagePath: "usr/lib/libobjc.A.dylib",
+            layout: "headers",
+            date: fixedDate
+        )
+
+        let data = try Data(contentsOf: completionMarkerURL(for: dirs.outDir))
+        let marker = try JSONDecoder().decode(CompletionMarker.self, from: data)
+        #expect(marker.tool == "privateheaderkit-dump")
+        #expect(marker.imagePath == "usr/lib/libobjc.A.dylib")
+        #expect(marker.layout == "headers")
+        #expect(marker.completedAt == "2023-11-14T22:13:20Z")
+        #expect(hasCompletionMarker(in: dirs.outDir))
+    }
+}
+
+@Suite
+struct DumpFrameworkOrchestrationTests {
+    @Test func splitFrameworkRerunsMarkerlessPartialAndSkipsCompletedFramework() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        _ = try dirs.createFramework("Foo.framework")
+
+        let headerdump = HeaderdumpFixtureRunner()
+        let runner = RecordingCommandRunner()
+        runner.streamingHandler = headerdump.handle(command:env:cwd:)
+
+        var ctx = try makeContext(dirs: dirs, layout: "headers")
+        ctx.skipExisting = true
+
+        let outputDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
+        let staleHeader = outputDir.appendingPathComponent("Headers/PartialOnly.h", isDirectory: false)
+        try FileManager.default.createDirectory(at: staleHeader.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("stale".utf8).write(to: staleHeader)
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: runner)
+        #expect(hadFailures == false)
+        #expect(FileManager.default.fileExists(atPath: outputDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(!FileManager.default.fileExists(atPath: staleHeader.path))
+        #expect(hasCompletionMarker(in: outputDir))
+        #expect(headerdump.sourcePaths.count == 1)
+
+        let firstCommand = try #require(runner.streamingCommands.first)
+        #expect(firstCommand.command.contains("-R"))
+        #expect(firstCommand.command.contains("-c"))
+        #expect(firstCommand.env == nil)
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailuresOnSecondRun = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: runner)
+        #expect(hadFailuresOnSecondRun == false)
+        #expect(headerdump.sourcePaths.count == 1)
+    }
+
+    @Test func splitFrameworkSkipsMarkerUntilNestedFailureIsRecovered() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        _ = try dirs.createFramework("Foo.framework")
+            .appendingPathComponent("XPCServices/Bad.xpc", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dirs.runtimeRoot.appendingPathComponent("System/Library/Frameworks/Foo.framework/XPCServices/Bad.xpc", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let headerdump = HeaderdumpFixtureRunner(failingSourceSuffixes: ["XPCServices/Bad.xpc"])
+        let runner = RecordingCommandRunner()
+        runner.streamingHandler = headerdump.handle(command:env:cwd:)
+
+        var ctx = try makeContext(dirs: dirs, layout: "headers")
+        ctx.nestedEnabled = true
+
+        let outputDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let firstHadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: runner)
+        #expect(firstHadFailures == true)
+        #expect(!hasCompletionMarker(in: outputDir))
+        let failuresText = try String(contentsOf: dirs.outDir.appendingPathComponent("_failures.txt"), encoding: .utf8)
+        #expect(failuresText.contains("Frameworks/Foo.framework/XPCServices/Bad.xpc"))
+        #expect(headerdump.sourcePaths.count == 2)
+
+        headerdump.failingSourceSuffixes = []
+        try FileOps.resetStageDir(ctx.stageDir)
+        let secondHadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: runner)
+        #expect(secondHadFailures == false)
+        #expect(hasCompletionMarker(in: outputDir))
+        #expect(FileManager.default.fileExists(atPath: outputDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(headerdump.sourcePaths.count == 4)
+    }
+
+    @Test func splitFrameworkSkipsCompletedAlternateLayoutWithoutRedump() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        _ = try dirs.createFramework("Foo.framework")
+
+        let headerdump = HeaderdumpFixtureRunner()
+        let runner = RecordingCommandRunner()
+        runner.streamingHandler = headerdump.handle(command:env:cwd:)
+
+        var ctx = try makeContext(dirs: dirs, layout: "headers")
+        ctx.skipExisting = true
+
+        let alternateLayoutDir = dirs.outDir.appendingPathComponent("Frameworks/Foo.framework", isDirectory: true)
+        let normalizedDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
+        try FileManager.default.createDirectory(at: alternateLayoutDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: normalizedDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try Data("ok".utf8).write(to: alternateLayoutDir.appendingPathComponent("Headers/Generated.h"))
+        try Data("stale".utf8).write(to: normalizedDir.appendingPathComponent("Headers/Stale.h"))
+        try writeCompletionMarker(in: alternateLayoutDir, imagePath: "Frameworks/Foo.framework", layout: "bundle")
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: runner)
+
+        #expect(hadFailures == false)
+        #expect(FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(!FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Stale.h").path))
+        #expect(hasCompletionMarker(in: normalizedDir))
+        #expect(headerdump.sourcePaths.isEmpty)
+    }
+}
+
+@Suite
+struct DumpSystemLibraryOrchestrationTests {
+    @Test func systemLibraryBundleLayoutRemovesStaleHeadersLayoutDirectory() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        _ = try dirs.createSystemLibraryBundle("PreferenceBundles/Foo.bundle")
+
+        let headerdump = HeaderdumpFixtureRunner()
+        let runner = RecordingCommandRunner()
+        runner.streamingHandler = headerdump.handle(command:env:cwd:)
+
+        var ctx = try makeContext(dirs: dirs, layout: "bundle")
+        ctx.skipExisting = false
+
+        let staleHeadersLayoutDir = dirs.outDir.appendingPathComponent("SystemLibrary/PreferenceBundles/Foo", isDirectory: true)
+        try FileManager.default.createDirectory(at: staleHeadersLayoutDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try Data("stale".utf8).write(to: staleHeadersLayoutDir.appendingPathComponent("Headers/Old.h"))
+        try writeCompletionMarker(in: staleHeadersLayoutDir, imagePath: "SystemLibrary/PreferenceBundles/Foo.bundle", layout: "headers")
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpSystemLibraryItems(
+            ctx: ctx,
+            items: ["PreferenceBundles/Foo.bundle"],
+            runner: runner
+        )
+
+        let bundleOutputDir = systemLibraryOutputDir(ctx: ctx, relativePath: "PreferenceBundles/Foo.bundle")
+        #expect(hadFailures == false)
+        #expect(!FileManager.default.fileExists(atPath: staleHeadersLayoutDir.path))
+        #expect(FileManager.default.fileExists(atPath: bundleOutputDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(hasCompletionMarker(in: bundleOutputDir))
+        #expect(headerdump.sourcePaths.count == 1)
+    }
+
+    @Test func systemLibrarySkipsCompletedAlternateLayoutWithoutRedump() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        _ = try dirs.createSystemLibraryBundle("PreferenceBundles/Foo.bundle")
+
+        let headerdump = HeaderdumpFixtureRunner()
+        let runner = RecordingCommandRunner()
+        runner.streamingHandler = headerdump.handle(command:env:cwd:)
+
+        var ctx = try makeContext(dirs: dirs, layout: "headers")
+        ctx.skipExisting = true
+
+        let alternateLayoutDir = dirs.outDir.appendingPathComponent("SystemLibrary/PreferenceBundles/Foo.bundle", isDirectory: true)
+        let normalizedDir = systemLibraryOutputDir(ctx: ctx, relativePath: "PreferenceBundles/Foo.bundle")
+        try FileManager.default.createDirectory(at: alternateLayoutDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: normalizedDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
+        try Data("ok".utf8).write(to: alternateLayoutDir.appendingPathComponent("Headers/Generated.h"))
+        try Data("stale".utf8).write(to: normalizedDir.appendingPathComponent("Headers/Stale.h"))
+        try writeCompletionMarker(in: alternateLayoutDir, imagePath: "SystemLibrary/PreferenceBundles/Foo.bundle", layout: "bundle")
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpSystemLibraryItems(
+            ctx: ctx,
+            items: ["PreferenceBundles/Foo.bundle"],
+            runner: runner
+        )
+
+        #expect(hadFailures == false)
+        #expect(FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Generated.h").path))
+        #expect(!FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Stale.h").path))
+        #expect(hasCompletionMarker(in: normalizedDir))
+        #expect(headerdump.sourcePaths.isEmpty)
+    }
+
+    @Test func simulatorCommandUsesSimctlAndChildEnvironment() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let headerdump = HeaderdumpFixtureRunner()
+        let runner = RecordingCommandRunner()
+        runner.streamingHandler = headerdump.handle(command:env:cwd:)
+
+        var ctx = try makeContext(dirs: dirs, layout: "headers", platform: .ios, execMode: .simulator)
+        ctx.skipExisting = false
+
+        try FileOps.resetStageDir(ctx.stageDir)
+        let hadFailures = try dumpSystemLibraryItems(
+            ctx: ctx,
+            items: ["PreferenceBundles/Foo.bundle"],
+            runner: runner
+        )
+
+        let command = try #require(runner.streamingCommands.first)
+        #expect(hadFailures == false)
+        #expect(Array(command.command.prefix(4)) == ["xcrun", "simctl", "spawn", "SIM-UDID"])
+        #expect(command.command.contains("/System/Library/PreferenceBundles/Foo.bundle"))
+        #expect(command.env?["SIMCTL_CHILD_PH_RUNTIME_ROOT"] == dirs.runtimeRoot.path)
+        #expect(command.env?["SIMCTL_CHILD_DYLD_ROOT_PATH"] == dirs.runtimeRoot.path)
+    }
+}
+
+@Suite
+struct DumpSimctlDeviceSelectionTests {
     @Test func pickDefaultDevicePrefersShutdownDevice() throws {
         let devices = [
             try makeDeviceInfo(name: "iPhone 17", udid: "BOOTED", state: "Booted"),
@@ -289,11 +443,11 @@ private func invocationLines(at url: URL) throws -> [String] {
             try makeDeviceInfo(name: "iPhone 17", udid: "BOOTED", state: "Booted"),
             try makeDeviceInfo(name: cloneName, udid: "CLONE", state: "Shutdown"),
         ]
-        let runner = StubCommandRunner()
+        let runner = RecordingCommandRunner()
 
         let picked = try Simctl.resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
         #expect(picked.udid == "CLONE")
-        #expect(runner.capturedRunCaptureCommands.isEmpty)
+        #expect(runner.captureCommands.isEmpty)
     }
 
     @Test func resolveDefaultDeviceSkipsCloneForBootedBaseDevice() throws {
@@ -301,11 +455,11 @@ private func invocationLines(at url: URL) throws -> [String] {
         let devices = [
             try makeDeviceInfo(name: "iPhone 17", udid: "BOOTED", state: "Booted")
         ]
-        let runner = StubCommandRunner()
+        let runner = RecordingCommandRunner()
 
         let picked = try Simctl.resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
         #expect(picked.udid == "BOOTED")
-        #expect(runner.capturedRunCaptureCommands.isEmpty)
+        #expect(runner.captureCommands.isEmpty)
     }
 
     @Test func resolveDefaultDeviceClonesFromShutdownBaseDevice() throws {
@@ -314,304 +468,12 @@ private func invocationLines(at url: URL) throws -> [String] {
             try makeDeviceInfo(name: "iPhone 17", udid: "SHUTDOWN", state: "Shutdown")
         ]
         let cloneName = Simctl.defaultCloneName(version: runtime.version)
-        let runner = StubCommandRunner()
+        let runner = RecordingCommandRunner()
         runner.setCaptureOutput("CLONED-UDID\n", for: ["xcrun", "simctl", "clone", "SHUTDOWN", cloneName])
 
         let picked = try Simctl.resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
         #expect(picked.name == cloneName)
         #expect(picked.udid == "CLONED-UDID")
-        #expect(runner.capturedRunCaptureCommands.count == 1)
-    }
-
-    @Test func existingFrameworksRequireCompletionMarker() throws {
-        let outDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        let ctx = makeContext(outDir: outDir)
-
-        let completeDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Complete.framework")
-        let partialDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Partial.framework")
-        let markerOnlyDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "MarkerOnly.framework")
-        try FileManager.default.createDirectory(at: completeDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: partialDir.appendingPathComponent("Headers", isDirectory: true), withIntermediateDirectories: true)
-        try Data("ok".utf8).write(to: completeDir.appendingPathComponent("Headers/Complete.h"))
-        try Data("ok".utf8).write(to: partialDir.appendingPathComponent("Headers/Partial.h"))
-        try FileManager.default.createDirectory(at: markerOnlyDir, withIntermediateDirectories: true)
-        try writeCompletionMarker(in: completeDir, imagePath: "Frameworks/Complete.framework", layout: ctx.layout)
-        try writeCompletionMarker(in: markerOnlyDir, imagePath: "Frameworks/MarkerOnly.framework", layout: ctx.layout)
-
-        let existing = existingFrameworksInCategory(
-            ctx: ctx,
-            category: "Frameworks",
-            frameworks: Set(["complete.framework", "partial.framework", "markeronly.framework"])
-        )
-        #expect(existing == Set(["complete.framework"]))
-    }
-
-    @Test func writeCompletionMarkerCreatesExpectedMetadata() throws {
-        let outDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-
-        try writeCompletionMarker(
-            in: outDir,
-            imagePath: "usr/lib/libobjc.A.dylib",
-            layout: "headers"
-        )
-
-        let data = try Data(contentsOf: completionMarkerURL(for: outDir))
-        let marker = try JSONDecoder().decode(CompletionMarker.self, from: data)
-        #expect(marker.tool == "privateheaderkit-dump")
-        #expect(marker.imagePath == "usr/lib/libobjc.A.dylib")
-        #expect(marker.layout == "headers")
-        #expect(!marker.completedAt.isEmpty)
-        #expect(hasCompletionMarker(in: outDir))
-    }
-
-    @Test func splitFrameworkRerunsMarkerlessPartialAndSkipsCompletedFramework() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
-        let frameworkDir = runtimeRoot
-            .appendingPathComponent("System/Library/Frameworks/Foo.framework", isDirectory: true)
-        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
-        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
-
-        try FileManager.default.createDirectory(at: frameworkDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        try makeFakeHeaderdumpScript(at: scriptURL, invocationLog: invocationLog)
-
-        var ctx = makeContext(outDir: outDir)
-        ctx.platform = .macos
-        ctx.systemRoot = runtimeRoot.path
-        ctx.headerdumpBin = scriptURL
-        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
-        ctx.categories = ["Frameworks"]
-        ctx.skipExisting = true
-        ctx.layout = "headers"
-
-        let outputDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
-        let staleHeader = outputDir.appendingPathComponent("Headers/PartialOnly.h", isDirectory: false)
-        try FileManager.default.createDirectory(at: staleHeader.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("stale".utf8).write(to: staleHeader)
-
-        try FileOps.resetStageDir(ctx.stageDir)
-        let hadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: StubCommandRunner())
-        #expect(hadFailures == false)
-        #expect(FileManager.default.fileExists(atPath: outputDir.appendingPathComponent("Headers/Generated.h").path))
-        #expect(!FileManager.default.fileExists(atPath: staleHeader.path))
-        #expect(hasCompletionMarker(in: outputDir))
-        #expect(try invocationLines(at: invocationLog).count == 1)
-
-        try FileOps.resetStageDir(ctx.stageDir)
-        let hadFailuresOnSecondRun = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: StubCommandRunner())
-        #expect(hadFailuresOnSecondRun == false)
-        #expect(try invocationLines(at: invocationLog).count == 1)
-    }
-
-    @Test func splitFrameworkSkipsMarkerUntilNestedFailureIsRecovered() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
-        let frameworkDir = runtimeRoot
-            .appendingPathComponent("System/Library/Frameworks/Foo.framework/XPCServices/Bad.xpc", isDirectory: true)
-        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
-        let failureToggle = tempDir.appendingPathComponent("fail-nested", isDirectory: false)
-        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
-
-        try FileManager.default.createDirectory(at: frameworkDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        try Data().write(to: failureToggle)
-        try makeFakeHeaderdumpScript(
-            at: scriptURL,
-            invocationLog: invocationLog,
-            nestedFailureToggle: failureToggle,
-            failingNestedSuffix: "XPCServices/Bad.xpc"
-        )
-
-        var ctx = makeContext(outDir: outDir)
-        ctx.platform = .macos
-        ctx.systemRoot = runtimeRoot.path
-        ctx.headerdumpBin = scriptURL
-        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
-        ctx.categories = ["Frameworks"]
-        ctx.skipExisting = true
-        ctx.layout = "headers"
-        ctx.nestedEnabled = true
-
-        let outputDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
-
-        try FileOps.resetStageDir(ctx.stageDir)
-        let firstHadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: StubCommandRunner())
-        #expect(firstHadFailures == true)
-        #expect(!hasCompletionMarker(in: outputDir))
-        let failuresPath = outDir.appendingPathComponent("_failures.txt", isDirectory: false)
-        let failuresText = try String(contentsOf: failuresPath, encoding: .utf8)
-        #expect(failuresText.contains("Frameworks/Foo.framework/XPCServices/Bad.xpc"))
-        #expect(try invocationLines(at: invocationLog).count == 2)
-
-        try FileManager.default.removeItem(at: failureToggle)
-        try FileOps.resetStageDir(ctx.stageDir)
-        let secondHadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: StubCommandRunner())
-        #expect(secondHadFailures == false)
-        #expect(hasCompletionMarker(in: outputDir))
-        #expect(FileManager.default.fileExists(atPath: outputDir.appendingPathComponent("Headers/Generated.h").path))
-        #expect(try invocationLines(at: invocationLog).count == 4)
-    }
-
-    @Test func systemLibraryBundleLayoutRemovesStaleHeadersLayoutDirectory() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
-        let bundleDir = runtimeRoot
-            .appendingPathComponent("System/Library/PreferenceBundles/Foo.bundle", isDirectory: true)
-        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
-        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
-
-        try FileManager.default.createDirectory(at: bundleDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        try makeFakeHeaderdumpScript(at: scriptURL, invocationLog: invocationLog)
-
-        var ctx = makeContext(outDir: outDir, layout: "bundle")
-        ctx.platform = .macos
-        ctx.systemRoot = runtimeRoot.path
-        ctx.headerdumpBin = scriptURL
-        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
-        ctx.skipExisting = false
-
-        let staleHeadersLayoutDir = outDir
-            .appendingPathComponent("SystemLibrary/PreferenceBundles/Foo", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: staleHeadersLayoutDir.appendingPathComponent("Headers", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try Data("stale".utf8).write(to: staleHeadersLayoutDir.appendingPathComponent("Headers/Old.h"))
-        try writeCompletionMarker(
-            in: staleHeadersLayoutDir,
-            imagePath: "SystemLibrary/PreferenceBundles/Foo.bundle",
-            layout: "headers"
-        )
-
-        try FileOps.resetStageDir(ctx.stageDir)
-        let hadFailures = try dumpSystemLibraryItems(
-            ctx: ctx,
-            items: ["PreferenceBundles/Foo.bundle"],
-            runner: StubCommandRunner()
-        )
-
-        let bundleOutputDir = systemLibraryOutputDir(ctx: ctx, relativePath: "PreferenceBundles/Foo.bundle")
-        #expect(hadFailures == false)
-        #expect(!FileManager.default.fileExists(atPath: staleHeadersLayoutDir.path))
-        #expect(FileManager.default.fileExists(atPath: bundleOutputDir.appendingPathComponent("Headers/Generated.h").path))
-        #expect(hasCompletionMarker(in: bundleOutputDir))
-        #expect(try invocationLines(at: invocationLog).count == 1)
-    }
-
-    @Test func splitFrameworkSkipsCompletedAlternateLayoutWithoutRedump() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
-        let frameworkDir = runtimeRoot
-            .appendingPathComponent("System/Library/Frameworks/Foo.framework", isDirectory: true)
-        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
-        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
-
-        try FileManager.default.createDirectory(at: frameworkDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        try makeFakeHeaderdumpScript(at: scriptURL, invocationLog: invocationLog)
-
-        var ctx = makeContext(outDir: outDir, layout: "headers")
-        ctx.platform = .macos
-        ctx.systemRoot = runtimeRoot.path
-        ctx.headerdumpBin = scriptURL
-        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
-        ctx.categories = ["Frameworks"]
-        ctx.skipExisting = true
-
-        let alternateLayoutDir = outDir
-            .appendingPathComponent("Frameworks/Foo.framework", isDirectory: true)
-        let normalizedDir = frameworkOutputDir(ctx: ctx, category: "Frameworks", frameworkName: "Foo.framework")
-        try FileManager.default.createDirectory(
-            at: alternateLayoutDir.appendingPathComponent("Headers", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: normalizedDir.appendingPathComponent("Headers", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try Data("ok".utf8).write(to: alternateLayoutDir.appendingPathComponent("Headers/Generated.h"))
-        try Data("stale".utf8).write(to: normalizedDir.appendingPathComponent("Headers/Stale.h"))
-        try writeCompletionMarker(
-            in: alternateLayoutDir,
-            imagePath: "Frameworks/Foo.framework",
-            layout: "bundle"
-        )
-
-        try FileOps.resetStageDir(ctx.stageDir)
-        let hadFailures = try dumpCategorySplit(category: "Frameworks", ctx: ctx, runner: StubCommandRunner())
-
-        #expect(hadFailures == false)
-        #expect(FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Generated.h").path))
-        #expect(!FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Stale.h").path))
-        #expect(hasCompletionMarker(in: normalizedDir))
-        #expect(try invocationLines(at: invocationLog).isEmpty)
-    }
-
-    @Test func systemLibrarySkipsCompletedAlternateLayoutWithoutRedump() throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let runtimeRoot = tempDir.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        let outDir = tempDir.appendingPathComponent("Out", isDirectory: true)
-        let bundleDir = runtimeRoot
-            .appendingPathComponent("System/Library/PreferenceBundles/Foo.bundle", isDirectory: true)
-        let invocationLog = tempDir.appendingPathComponent("invocations.log", isDirectory: false)
-        let scriptURL = tempDir.appendingPathComponent("fake-headerdump.zsh", isDirectory: false)
-
-        try FileManager.default.createDirectory(at: bundleDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        try makeFakeHeaderdumpScript(at: scriptURL, invocationLog: invocationLog)
-
-        var ctx = makeContext(outDir: outDir, layout: "headers")
-        ctx.platform = .macos
-        ctx.systemRoot = runtimeRoot.path
-        ctx.headerdumpBin = scriptURL
-        ctx.stageDir = tempDir.appendingPathComponent(".tmp-stage", isDirectory: true)
-        ctx.skipExisting = true
-
-        let alternateLayoutDir = outDir
-            .appendingPathComponent("SystemLibrary/PreferenceBundles/Foo.bundle", isDirectory: true)
-        let normalizedDir = systemLibraryOutputDir(ctx: ctx, relativePath: "PreferenceBundles/Foo.bundle")
-        try FileManager.default.createDirectory(
-            at: alternateLayoutDir.appendingPathComponent("Headers", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: normalizedDir.appendingPathComponent("Headers", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try Data("ok".utf8).write(to: alternateLayoutDir.appendingPathComponent("Headers/Generated.h"))
-        try Data("stale".utf8).write(to: normalizedDir.appendingPathComponent("Headers/Stale.h"))
-        try writeCompletionMarker(
-            in: alternateLayoutDir,
-            imagePath: "SystemLibrary/PreferenceBundles/Foo.bundle",
-            layout: "bundle"
-        )
-
-        try FileOps.resetStageDir(ctx.stageDir)
-        let hadFailures = try dumpSystemLibraryItems(
-            ctx: ctx,
-            items: ["PreferenceBundles/Foo.bundle"],
-            runner: StubCommandRunner()
-        )
-
-        #expect(hadFailures == false)
-        #expect(FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Generated.h").path))
-        #expect(!FileManager.default.fileExists(atPath: normalizedDir.appendingPathComponent("Headers/Stale.h").path))
-        #expect(hasCompletionMarker(in: normalizedDir))
-        #expect(try invocationLines(at: invocationLog).isEmpty)
+        #expect(runner.captureCommands.count == 1)
     }
 }

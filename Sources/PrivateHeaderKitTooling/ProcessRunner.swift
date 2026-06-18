@@ -16,6 +16,27 @@ public protocol CommandRunning {
     func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) throws -> String
     func runSimple(_ command: [String], env: [String: String]?, cwd: URL?) throws
     func runStreaming(_ command: [String], env: [String: String]?, cwd: URL?) throws -> StreamingCommandResult
+    func runStreaming(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        streamOutput: Bool,
+        onLaunch: ((Int32) -> Void)?,
+        onCleanup: ((Int32) -> Void)?
+    ) throws -> StreamingCommandResult
+}
+
+public extension CommandRunning {
+    func runStreaming(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        streamOutput _: Bool,
+        onLaunch _: ((Int32) -> Void)?,
+        onCleanup _: ((Int32) -> Void)?
+    ) throws -> StreamingCommandResult {
+        try runStreaming(command, env: env, cwd: cwd)
+    }
 }
 
 #if os(macOS)
@@ -38,18 +59,38 @@ public final class ProcessRunner: CommandRunning {
     }
 
     public func runStreaming(_ command: [String], env: [String: String]? = nil, cwd: URL? = nil) throws -> StreamingCommandResult {
-        try runStreamingSubprocess(
+        try runStreaming(
             command,
             env: env,
             cwd: cwd,
             streamOutput: true,
+            onLaunch: nil,
+            onCleanup: nil
+        )
+    }
+
+    public func runStreaming(
+        _ command: [String],
+        env: [String: String]? = nil,
+        cwd: URL? = nil,
+        streamOutput: Bool,
+        onLaunch: ((Int32) -> Void)?,
+        onCleanup: ((Int32) -> Void)?
+    ) throws -> StreamingCommandResult {
+        try runStreamingSubprocess(
+            command,
+            env: env,
+            cwd: cwd,
+            streamOutput: streamOutput,
             onLaunch: { pid in
                 gActiveToolingSubprocessPid = pid
+                onLaunch?(pid)
             },
             onCleanup: { pid in
                 if gActiveToolingSubprocessPid == pid {
                     gActiveToolingSubprocessPid = 0
                 }
+                onCleanup?(pid)
             }
         )
     }
@@ -142,6 +183,17 @@ public final class ProcessRunner: CommandRunning {
     }
 
     public func runStreaming(_ command: [String], env: [String: String]?, cwd: URL?) throws -> StreamingCommandResult {
+        throw ToolingError.unsupported("process execution is not available on this platform")
+    }
+
+    public func runStreaming(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        streamOutput _: Bool,
+        onLaunch _: ((Int32) -> Void)?,
+        onCleanup _: ((Int32) -> Void)?
+    ) throws -> StreamingCommandResult {
         throw ToolingError.unsupported("process execution is not available on this platform")
     }
 }
