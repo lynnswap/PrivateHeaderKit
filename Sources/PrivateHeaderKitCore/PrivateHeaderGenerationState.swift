@@ -416,17 +416,77 @@ public extension PrivateHeaderGeneration {
         public let output: OutputRecord
         public let layout: Layout
         public let targetIDs: [String]
+        public let execution: ExecutionRecord
 
         public init(
             source: SourceRecord,
             output: OutputRecord,
             layout: Layout,
-            targetIDs: [String]
+            targetIDs: [String],
+            execution: ExecutionRecord
         ) {
             self.source = source
             self.output = output
             self.layout = layout
             self.targetIDs = targetIDs
+            self.execution = execution
+        }
+    }
+
+    struct ExecutionRecord: Codable, Equatable, Sendable {
+        public let mode: String
+        public let runtimeIdentifier: String?
+        public let deviceName: String?
+        public let deviceUDID: String?
+        public let clonePolicy: String?
+        public let helperEnvironment: [String: String]
+
+        public init(
+            mode: String,
+            runtimeIdentifier: String?,
+            deviceName: String?,
+            deviceUDID: String?,
+            clonePolicy: String?,
+            helperEnvironment: [String: String]
+        ) {
+            self.mode = mode
+            self.runtimeIdentifier = runtimeIdentifier
+            self.deviceName = deviceName
+            self.deviceUDID = deviceUDID
+            self.clonePolicy = clonePolicy
+            self.helperEnvironment = helperEnvironment
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.mode = try container.decode(String.self, forKey: .mode)
+            self.runtimeIdentifier = try container.decodeRequiredNullable(
+                String.self,
+                forKey: .runtimeIdentifier
+            )
+            self.deviceName = try container.decodeRequiredNullable(String.self, forKey: .deviceName)
+            self.deviceUDID = try container.decodeRequiredNullable(String.self, forKey: .deviceUDID)
+            self.clonePolicy = try container.decodeRequiredNullable(String.self, forKey: .clonePolicy)
+            self.helperEnvironment = try container.decode([String: String].self, forKey: .helperEnvironment)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(mode, forKey: .mode)
+            try container.encodeRequired(runtimeIdentifier, forKey: .runtimeIdentifier)
+            try container.encodeRequired(deviceName, forKey: .deviceName)
+            try container.encodeRequired(deviceUDID, forKey: .deviceUDID)
+            try container.encodeRequired(clonePolicy, forKey: .clonePolicy)
+            try container.encode(helperEnvironment, forKey: .helperEnvironment)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case mode
+            case runtimeIdentifier
+            case deviceName
+            case deviceUDID
+            case clonePolicy
+            case helperEnvironment
         }
     }
 

@@ -160,6 +160,39 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(decoded.status == .partial)
         #expect(decoded.targetResults.first?.status == .commitFailed)
         #expect(decoded.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Foo.h"])
+        #expect(decoded.plan.execution.runtimeIdentifier == "com.apple.CoreSimulator.SimRuntime.iOS-27-0")
+    }
+
+    @Test func runPlanRecordsExecutionMetadata() throws {
+        let manifest = try makeManifest()
+        let first = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"],
+            execution: makeExecutionRecord(deviceUDID: "SIM-001")
+        )
+        let second = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"],
+            execution: makeExecutionRecord(deviceUDID: "SIM-002")
+        )
+
+        let data = try PrivateHeaderGeneration.StateJSON.encode(first)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.RunPlanRecord.self,
+            from: data
+        )
+
+        #expect(first != second)
+        #expect(decoded == first)
+        #expect(json.contains("\"runtimeIdentifier\" : \"com.apple.CoreSimulator.SimRuntime.iOS-27-0\""))
+        #expect(json.contains("\"deviceUDID\" : \"SIM-001\""))
+        #expect(json.contains("\"clonePolicy\" : \"reuseOrCreate\""))
+        #expect(json.contains("\"execution\" : {"))
     }
 
     @Test func runRecordEncodingKeepsRequiredNullFields() throws {
@@ -172,7 +205,8 @@ struct PrivateHeaderGenerationRunRecordTests {
                 source: manifest.source,
                 output: manifest.output,
                 layout: manifest.layout,
-                targetIDs: ["framework:Foo"]
+                targetIDs: ["framework:Foo"],
+                execution: makeExecutionRecord()
             ),
             startedAt: Date(timeIntervalSinceReferenceDate: 42),
             endedAt: nil,
@@ -314,7 +348,8 @@ private func makeRunRecord() throws -> PrivateHeaderGeneration.RunRecord {
         source: manifest.source,
         output: manifest.output,
         layout: manifest.layout,
-        targetIDs: ["framework:Foo"]
+        targetIDs: ["framework:Foo"],
+        execution: makeExecutionRecord()
     )
 
     return PrivateHeaderGeneration.RunRecord(
@@ -343,6 +378,21 @@ private func makeRunRecord() throws -> PrivateHeaderGeneration.RunRecord {
                 kind: "stderr",
                 relativePath: try PrivateHeaderGeneration.ArtifactPath("runs/run-001/logs/stderr.log")
             ),
+        ]
+    )
+}
+
+private func makeExecutionRecord(
+    deviceUDID: String = "SIM-001"
+) -> PrivateHeaderGeneration.ExecutionRecord {
+    PrivateHeaderGeneration.ExecutionRecord(
+        mode: "simulator",
+        runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+        deviceName: "iPhone 17",
+        deviceUDID: deviceUDID,
+        clonePolicy: "reuseOrCreate",
+        helperEnvironment: [
+            "PRIVATEHEADERKIT_DUMP_QUALITY": "max",
         ]
     )
 }
