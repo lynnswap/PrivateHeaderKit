@@ -8,6 +8,7 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
+        .library(name: "PrivateHeaderKitCore", targets: ["PrivateHeaderKitCore"]),
         .executable(name: "headerdump", targets: ["HeaderDumpCLI"]),
         .executable(name: "privateheaderkit-dump", targets: ["PrivateHeaderKitDump"]),
         .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstall"]),
@@ -56,6 +57,10 @@ let package = Package(
             name: "PrivateHeaderKitTooling",
             dependencies: []
         ),
+        .target(
+            name: "PrivateHeaderKitCore",
+            dependencies: []
+        ),
         .executableTarget(
             name: "HeaderDumpCLI",
             dependencies: [
@@ -99,6 +104,12 @@ let package = Package(
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
+            ]
+        ),
+        .testTarget(
+            name: "PrivateHeaderKitCoreTests",
+            dependencies: [
+                "PrivateHeaderKitCore",
             ]
         ),
         .testTarget(
