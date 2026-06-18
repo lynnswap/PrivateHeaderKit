@@ -1,7 +1,7 @@
 import Foundation
-import HeaderDumpCore
 import PrivateHeaderKitCore
 import PrivateHeaderKitInstall
+import PrivateHeaderKitRawDumpCore
 
 #if canImport(Darwin)
 import Darwin
@@ -274,7 +274,7 @@ func runPrivateHeaderKitCommand(
                 errorLogger: errorLogger
             )
         case .rawDump(let rawDumpArgs):
-            await HeaderDumpCore.HeaderDumpCLI.main(arguments: rawDumpArgs)
+            await PrivateHeaderKitRawDumpCLI.main(arguments: rawDumpArgs)
             return 0
         }
     } catch let error as PrivateHeaderKitCLIError {

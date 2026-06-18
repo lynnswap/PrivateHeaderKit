@@ -1,9 +1,9 @@
 import Foundation
 import Testing
-#if canImport(HeaderDumpRuntimeObjC)
-import HeaderDumpRuntimeObjC
+#if canImport(PrivateHeaderKitRawDumpRuntimeObjC)
+import PrivateHeaderKitRawDumpRuntimeObjC
 #endif
-@testable import HeaderDumpCore
+@testable import PrivateHeaderKitRawDumpCore
 import PrivateHeaderKitTestSupport
 
 #if canImport(Darwin)
@@ -19,7 +19,7 @@ private struct FakeFileManager: FileExistenceChecking {
 }
 
 @Suite
-struct HeaderDumpArgumentTests {
+struct PrivateHeaderKitRawDumpArgumentTests {
     @Test func parseArgumentsPopulatesOptions() {
         let args = [
             "-o", "/tmp/out",
@@ -76,7 +76,7 @@ struct HeaderDumpArgumentTests {
 }
 
 @Suite
-struct HeaderDumpEnvironmentTests {
+struct PrivateHeaderKitRawDumpEnvironmentTests {
     @Test func resolvesRuntimeFallbackFromInjectedEnvironment() {
         #expect(shouldUseRuntimeFallback(environment: ["PH_RUNTIME_ROOT": "/tmp/runtime"]) == true)
         #expect(shouldUseRuntimeFallback(environment: ["SIMCTL_CHILD_PH_RUNTIME_ROOT": "/tmp/runtime"]) == true)
@@ -96,7 +96,7 @@ struct HeaderDumpEnvironmentTests {
 }
 
 @Suite
-struct HeaderDumpPathTests {
+struct PrivateHeaderKitRawDumpPathTests {
     @Test func resolveRuntimeURLUsesInjectedRuntimeRootAndFileManager() {
         let runtimeRoot = "/Runtime"
         let inputPath = "/System/Library/Frameworks/Foo.framework/Foo"
@@ -175,7 +175,7 @@ struct HeaderDumpPathTests {
 }
 
 @Suite
-struct HeaderDumpBundlePathTests {
+struct PrivateHeaderKitRawDumpBundlePathTests {
     @Test func writeDirectoryBuildsBundlePaths() {
         let outputRoot = URL(fileURLWithPath: "/tmp/out")
         var options = DumpOptions(outputDir: outputRoot)
@@ -308,7 +308,7 @@ struct HeaderDumpBundlePathTests {
 }
 
 @Suite
-struct HeaderDumpObjCHeaderNameTests {
+struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
     @Test func isSaneObjCTypeNameRejectsReplacementAndControl() {
         #expect(isSaneObjCTypeName("ASAuthorization") == true)
         #expect(isSaneObjCTypeName("") == false)
@@ -392,7 +392,7 @@ struct HeaderDumpObjCHeaderNameTests {
 }
 
 @Suite
-struct HeaderDumpSwiftInterfaceTests {
+struct PrivateHeaderKitRawDumpSwiftInterfaceTests {
     @Test func shouldSkipSwiftInterfaceUsesInjectedFileExistence() {
         let outputDir = URL(fileURLWithPath: "/tmp/out", isDirectory: true)
         let outputPath = outputDir.appendingPathComponent("FixtureSkip.swiftinterface").path
@@ -481,8 +481,8 @@ struct HeaderDumpSwiftInterfaceTests {
 }
 
 @Suite
-struct HeaderDumpRuntimeInspectorTests {
-    #if canImport(ObjectiveC) && canImport(HeaderDumpRuntimeObjC)
+struct PrivateHeaderKitRawDumpRuntimeInspectorTests {
+    #if canImport(ObjectiveC) && canImport(PrivateHeaderKitRawDumpRuntimeObjC)
     @Test func runtimeInspectorBuildsNSObjectSnapshot() {
         var failedStage: NSString?
         let snapshot = PHRuntimeObjCInspector.snapshot(for: NSObject.self, failedStage: &failedStage)
