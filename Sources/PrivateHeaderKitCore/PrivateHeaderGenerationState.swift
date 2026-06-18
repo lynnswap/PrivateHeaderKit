@@ -125,6 +125,18 @@ public extension PrivateHeaderGeneration {
             self.updatedAt = updatedAt
         }
 
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+            self.toolVersion = try container.decode(String.self, forKey: .toolVersion)
+            self.source = try container.decode(SourceRecord.self, forKey: .source)
+            self.output = try container.decode(OutputRecord.self, forKey: .output)
+            self.layout = try container.decode(Layout.self, forKey: .layout)
+            self.latestRunID = try container.decodeRequiredNullable(String.self, forKey: .latestRunID)
+            self.targets = try container.decode([TargetRecord].self, forKey: .targets)
+            self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        }
+
         public func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(schemaVersion, forKey: .schemaVersion)
@@ -162,6 +174,15 @@ public extension PrivateHeaderGeneration {
             self.build = source.build
             self.displayName = source.label.displayName
             self.directoryName = source.label.directoryName
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.platform = try container.decode(Source.Platform.self, forKey: .platform)
+            self.version = try container.decode(String.self, forKey: .version)
+            self.build = try container.decodeRequiredNullable(String.self, forKey: .build)
+            self.displayName = try container.decode(String.self, forKey: .displayName)
+            self.directoryName = try container.decode(String.self, forKey: .directoryName)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -239,6 +260,19 @@ public extension PrivateHeaderGeneration {
             self.failureSummary = failureSummary
         }
 
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.displayName = try container.decode(String.self, forKey: .displayName)
+            self.kind = try container.decode(String.self, forKey: .kind)
+            self.status = try container.decode(TargetStatus.self, forKey: .status)
+            self.phases = try container.decode([PhaseRecord].self, forKey: .phases)
+            self.artifacts = try container.decode([ArtifactPath].self, forKey: .artifacts)
+            self.lastRunID = try container.decodeRequiredNullable(String.self, forKey: .lastRunID)
+            self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+            self.failureSummary = try container.decodeRequiredNullable(String.self, forKey: .failureSummary)
+        }
+
         public func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(id, forKey: .id)
@@ -274,6 +308,13 @@ public extension PrivateHeaderGeneration {
             self.name = name
             self.status = status
             self.failureSummary = failureSummary
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.name = try container.decode(String.self, forKey: .name)
+            self.status = try container.decode(PhaseStatus.self, forKey: .status)
+            self.failureSummary = try container.decodeRequiredNullable(String.self, forKey: .failureSummary)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -328,6 +369,20 @@ public extension PrivateHeaderGeneration {
             self.logs = logs
         }
 
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.runID = try container.decode(String.self, forKey: .runID)
+            self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+            self.toolVersion = try container.decode(String.self, forKey: .toolVersion)
+            self.plan = try container.decode(RunPlanRecord.self, forKey: .plan)
+            self.startedAt = try container.decode(Date.self, forKey: .startedAt)
+            self.endedAt = try container.decodeRequiredNullable(Date.self, forKey: .endedAt)
+            self.status = try container.decode(RunTargetStatus.self, forKey: .status)
+            self.targetResults = try container.decode([RunTargetRecord].self, forKey: .targetResults)
+            self.attemptedArtifacts = try container.decode([ArtifactPath].self, forKey: .attemptedArtifacts)
+            self.logs = try container.decode([RunLogRecord].self, forKey: .logs)
+        }
+
         public func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(runID, forKey: .runID)
@@ -361,6 +416,21 @@ public extension PrivateHeaderGeneration {
         public let output: OutputRecord
         public let layout: Layout
         public let targetIDs: [String]
+        public let execution: ExecutionRecord
+
+        public init(
+            source: SourceRecord,
+            output: OutputRecord,
+            layout: Layout,
+            targetIDs: [String],
+            execution: ExecutionRecord
+        ) {
+            self.source = source
+            self.output = output
+            self.layout = layout
+            self.targetIDs = targetIDs
+            self.execution = execution
+        }
 
         public init(
             source: SourceRecord,
@@ -368,10 +438,109 @@ public extension PrivateHeaderGeneration {
             layout: Layout,
             targetIDs: [String]
         ) {
-            self.source = source
-            self.output = output
-            self.layout = layout
-            self.targetIDs = targetIDs
+            self.init(
+                source: source,
+                output: output,
+                layout: layout,
+                targetIDs: targetIDs,
+                execution: .unspecified
+            )
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.source = try container.decode(SourceRecord.self, forKey: .source)
+            self.output = try container.decode(OutputRecord.self, forKey: .output)
+            self.layout = try container.decode(Layout.self, forKey: .layout)
+            self.targetIDs = try container.decode([String].self, forKey: .targetIDs)
+            self.execution = if container.contains(.execution) {
+                try container.decode(ExecutionRecord.self, forKey: .execution)
+            } else {
+                .unspecified
+            }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(source, forKey: .source)
+            try container.encode(output, forKey: .output)
+            try container.encode(layout, forKey: .layout)
+            try container.encode(targetIDs, forKey: .targetIDs)
+            try container.encode(execution, forKey: .execution)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case source
+            case output
+            case layout
+            case targetIDs
+            case execution
+        }
+    }
+
+    struct ExecutionRecord: Codable, Equatable, Sendable {
+        public static let unspecified = ExecutionRecord(
+            mode: "unspecified",
+            runtimeIdentifier: nil,
+            deviceName: nil,
+            deviceUDID: nil,
+            clonePolicy: nil,
+            helperEnvironment: [:]
+        )
+
+        public let mode: String
+        public let runtimeIdentifier: String?
+        public let deviceName: String?
+        public let deviceUDID: String?
+        public let clonePolicy: String?
+        public let helperEnvironment: [String: String]
+
+        public init(
+            mode: String,
+            runtimeIdentifier: String?,
+            deviceName: String?,
+            deviceUDID: String?,
+            clonePolicy: String?,
+            helperEnvironment: [String: String]
+        ) {
+            self.mode = mode
+            self.runtimeIdentifier = runtimeIdentifier
+            self.deviceName = deviceName
+            self.deviceUDID = deviceUDID
+            self.clonePolicy = clonePolicy
+            self.helperEnvironment = helperEnvironment
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.mode = try container.decode(String.self, forKey: .mode)
+            self.runtimeIdentifier = try container.decodeRequiredNullable(
+                String.self,
+                forKey: .runtimeIdentifier
+            )
+            self.deviceName = try container.decodeRequiredNullable(String.self, forKey: .deviceName)
+            self.deviceUDID = try container.decodeRequiredNullable(String.self, forKey: .deviceUDID)
+            self.clonePolicy = try container.decodeRequiredNullable(String.self, forKey: .clonePolicy)
+            self.helperEnvironment = try container.decode([String: String].self, forKey: .helperEnvironment)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(mode, forKey: .mode)
+            try container.encodeRequired(runtimeIdentifier, forKey: .runtimeIdentifier)
+            try container.encodeRequired(deviceName, forKey: .deviceName)
+            try container.encodeRequired(deviceUDID, forKey: .deviceUDID)
+            try container.encodeRequired(clonePolicy, forKey: .clonePolicy)
+            try container.encode(helperEnvironment, forKey: .helperEnvironment)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case mode
+            case runtimeIdentifier
+            case deviceName
+            case deviceUDID
+            case clonePolicy
+            case helperEnvironment
         }
     }
 
@@ -397,6 +566,16 @@ public extension PrivateHeaderGeneration {
             self.artifacts = artifacts
             self.attemptedArtifacts = attemptedArtifacts
             self.failureSummary = failureSummary
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.targetID = try container.decode(String.self, forKey: .targetID)
+            self.status = try container.decode(RunTargetStatus.self, forKey: .status)
+            self.phases = try container.decode([PhaseRecord].self, forKey: .phases)
+            self.artifacts = try container.decode([ArtifactPath].self, forKey: .artifacts)
+            self.attemptedArtifacts = try container.decode([ArtifactPath].self, forKey: .attemptedArtifacts)
+            self.failureSummary = try container.decodeRequiredNullable(String.self, forKey: .failureSummary)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -534,5 +713,18 @@ private extension KeyedEncodingContainer {
         } else {
             try encodeNil(forKey: key)
         }
+    }
+}
+
+private extension KeyedDecodingContainer {
+    func decodeRequiredNullable<Value: Decodable>(_ type: Value.Type, forKey key: Key) throws -> Value? {
+        guard contains(key) else {
+            let context = DecodingError.Context(
+                codingPath: codingPath + [key],
+                debugDescription: "Missing required nullable key: \(key.stringValue)"
+            )
+            throw DecodingError.keyNotFound(key, context)
+        }
+        return try decodeIfPresent(type, forKey: key)
     }
 }

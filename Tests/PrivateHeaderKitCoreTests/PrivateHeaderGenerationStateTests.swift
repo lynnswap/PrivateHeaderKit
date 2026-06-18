@@ -107,6 +107,21 @@ struct PrivateHeaderGenerationManifestTests {
         #expect(json.contains("\"failureSummary\" : null"))
     }
 
+    @Test func manifestDecodingRejectsMissingRequiredNullableFields() throws {
+        let manifest = try makeManifest()
+        let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "latestRunID")
+        let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        #expect(throws: DecodingError.self) {
+            _ = try PrivateHeaderGeneration.StateJSON.decode(
+                PrivateHeaderGeneration.Manifest.self,
+                from: missingKeyData
+            )
+        }
+    }
+
     @Test func artifactPathRejectsAbsoluteTraversalAndEmptyPaths() {
         #expect(throws: PrivateHeaderGeneration.StateValidationError.self) {
             _ = try PrivateHeaderGeneration.ArtifactPath("/System/Library/Foo.h")
@@ -145,6 +160,102 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(decoded.status == .partial)
         #expect(decoded.targetResults.first?.status == .commitFailed)
         #expect(decoded.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Foo.h"])
+        #expect(decoded.plan.execution.runtimeIdentifier == "com.apple.CoreSimulator.SimRuntime.iOS-27-0")
+    }
+
+    @Test func runRecordReadDefaultsMissingPlanExecutionForOldHistory() throws {
+        let run = try makeRunRecord()
+        let data = try PrivateHeaderGeneration.StateJSON.encode(run)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var plan = try #require(object["plan"] as? [String: Any])
+        plan.removeValue(forKey: "execution")
+        object["plan"] = plan
+        let oldHistoryData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PrivateHeaderKitRunRecordTests-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("run-001.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try oldHistoryData.write(to: url, options: [.atomic])
+
+        let decoded = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: url
+        )
+
+        #expect(decoded.schemaVersion == 1)
+        #expect(decoded.plan.execution == .unspecified)
+    }
+
+    @Test func runPlanRecordsExecutionMetadata() throws {
+        let manifest = try makeManifest()
+        let first = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"],
+            execution: makeExecutionRecord(deviceUDID: "SIM-001")
+        )
+        let second = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"],
+            execution: makeExecutionRecord(deviceUDID: "SIM-002")
+        )
+
+        let data = try PrivateHeaderGeneration.StateJSON.encode(first)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.RunPlanRecord.self,
+            from: data
+        )
+
+        #expect(first != second)
+        #expect(decoded == first)
+        #expect(json.contains("\"runtimeIdentifier\" : \"com.apple.CoreSimulator.SimRuntime.iOS-27-0\""))
+        #expect(json.contains("\"deviceUDID\" : \"SIM-001\""))
+        #expect(json.contains("\"clonePolicy\" : \"reuseOrCreate\""))
+        #expect(json.contains("\"execution\" : {"))
+    }
+
+    @Test func runPlanFourArgumentInitializerDefaultsExecutionMetadata() throws {
+        let manifest = try makeManifest()
+        let plan = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"]
+        )
+
+        #expect(plan.execution == .unspecified)
+    }
+
+    @Test func runPlanDecodingRejectsMissingExecutionRequiredNullableFields() throws {
+        let manifest = try makeManifest()
+        let plan = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"],
+            execution: makeExecutionRecord()
+        )
+        let data = try PrivateHeaderGeneration.StateJSON.encode(plan)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var execution = try #require(object["execution"] as? [String: Any])
+        execution.removeValue(forKey: "runtimeIdentifier")
+        object["execution"] = execution
+        let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        #expect(throws: DecodingError.self) {
+            _ = try PrivateHeaderGeneration.StateJSON.decode(
+                PrivateHeaderGeneration.RunPlanRecord.self,
+                from: missingKeyData
+            )
+        }
     }
 
     @Test func runRecordEncodingKeepsRequiredNullFields() throws {
@@ -157,7 +268,8 @@ struct PrivateHeaderGenerationRunRecordTests {
                 source: manifest.source,
                 output: manifest.output,
                 layout: manifest.layout,
-                targetIDs: ["framework:Foo"]
+                targetIDs: ["framework:Foo"],
+                execution: makeExecutionRecord()
             ),
             startedAt: Date(timeIntervalSinceReferenceDate: 42),
             endedAt: nil,
@@ -188,6 +300,21 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(decoded == run)
         #expect(json.contains("\"endedAt\" : null"))
         #expect(json.contains("\"failureSummary\" : null"))
+    }
+
+    @Test func runRecordDecodingRejectsMissingRequiredNullableFields() throws {
+        let run = try makeRunRecord()
+        let data = try PrivateHeaderGeneration.StateJSON.encode(run)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "endedAt")
+        let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        #expect(throws: DecodingError.self) {
+            _ = try PrivateHeaderGeneration.StateJSON.decode(
+                PrivateHeaderGeneration.RunRecord.self,
+                from: missingKeyData
+            )
+        }
     }
 
     @Test func runHistoryRetentionKeepsLatestTenRuns() {
@@ -284,7 +411,8 @@ private func makeRunRecord() throws -> PrivateHeaderGeneration.RunRecord {
         source: manifest.source,
         output: manifest.output,
         layout: manifest.layout,
-        targetIDs: ["framework:Foo"]
+        targetIDs: ["framework:Foo"],
+        execution: makeExecutionRecord()
     )
 
     return PrivateHeaderGeneration.RunRecord(
@@ -313,6 +441,21 @@ private func makeRunRecord() throws -> PrivateHeaderGeneration.RunRecord {
                 kind: "stderr",
                 relativePath: try PrivateHeaderGeneration.ArtifactPath("runs/run-001/logs/stderr.log")
             ),
+        ]
+    )
+}
+
+private func makeExecutionRecord(
+    deviceUDID: String = "SIM-001"
+) -> PrivateHeaderGeneration.ExecutionRecord {
+    PrivateHeaderGeneration.ExecutionRecord(
+        mode: "simulator",
+        runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+        deviceName: "iPhone 17",
+        deviceUDID: deviceUDID,
+        clonePolicy: "reuseOrCreate",
+        helperEnvironment: [
+            "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "max",
         ]
     )
 }

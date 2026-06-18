@@ -175,6 +175,53 @@ struct PrivateHeaderGenerationResumeTests {
         )
     }
 
+    @Test func executionMetadataMismatchReturnsStructuredReason() throws {
+        let expectedExecution = makeExecutionRecord()
+        let plan = try makeRunPlan(
+            targetIDs: ["framework:Foo"],
+            execution: expectedExecution
+        )
+        let manifest = try makeManifest(
+            targets: [
+                makeTarget("framework:Foo", status: .partial),
+            ]
+        )
+        let mismatchedExecutions = [
+            makeExecutionRecord(runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-0"),
+            makeExecutionRecord(deviceName: "iPhone 16"),
+            makeExecutionRecord(deviceUDID: "SIM-002"),
+            makeExecutionRecord(clonePolicy: "alwaysClone"),
+            makeExecutionRecord(helperEnvironment: [
+                "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "min",
+            ]),
+        ]
+
+        for actualExecution in mismatchedExecutions {
+            let latestRun = try makeRunRecord(
+                plan: makeRunPlan(
+                    targetIDs: ["framework:Foo"],
+                    execution: actualExecution
+                )
+            )
+
+            #expect(
+                PrivateHeaderGeneration.evaluateResumeCompatibility(
+                    plan: plan,
+                    manifest: manifest,
+                    latestRun: latestRun
+                ) == .incompatible(
+                    [
+                        .executionMismatch(
+                            expected: expectedExecution,
+                            actual: actualExecution,
+                            record: .run
+                        ),
+                    ]
+                )
+            )
+        }
+    }
+
     @Test func sourceBuildMismatchReturnsStructuredReason() throws {
         let plan = try makeRunPlan(targetIDs: ["framework:Foo"])
         let expectedSource = try makeSource()
@@ -376,13 +423,15 @@ private func makeRunPlan(
     targetIDs: [String],
     source: PrivateHeaderGeneration.SourceRecord? = nil,
     output: PrivateHeaderGeneration.OutputRecord? = nil,
-    layout: PrivateHeaderGeneration.Layout = .headers
+    layout: PrivateHeaderGeneration.Layout = .headers,
+    execution: PrivateHeaderGeneration.ExecutionRecord? = nil
 ) throws -> PrivateHeaderGeneration.RunPlanRecord {
     try PrivateHeaderGeneration.RunPlanRecord(
         source: source ?? makeSource(),
         output: output ?? makeOutput(),
         layout: layout,
-        targetIDs: targetIDs
+        targetIDs: targetIDs,
+        execution: execution ?? makeExecutionRecord()
     )
 }
 
@@ -455,4 +504,24 @@ private func existingArtifacts(
     _ paths: [String]
 ) -> PrivateHeaderGeneration.ArtifactExistence {
     existingArtifacts(Set(paths))
+}
+
+private func makeExecutionRecord(
+    mode: String = "simulator",
+    runtimeIdentifier: String? = "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+    deviceName: String? = "iPhone 17",
+    deviceUDID: String? = "SIM-001",
+    clonePolicy: String? = "reuseOrCreate",
+    helperEnvironment: [String: String] = [
+        "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "max",
+    ]
+) -> PrivateHeaderGeneration.ExecutionRecord {
+    PrivateHeaderGeneration.ExecutionRecord(
+        mode: mode,
+        runtimeIdentifier: runtimeIdentifier,
+        deviceName: deviceName,
+        deviceUDID: deviceUDID,
+        clonePolicy: clonePolicy,
+        helperEnvironment: helperEnvironment
+    )
 }

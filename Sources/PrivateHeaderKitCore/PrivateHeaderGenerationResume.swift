@@ -31,6 +31,11 @@ public extension PrivateHeaderGeneration {
             actual: [String],
             record: ResumeCompatibilityRecord
         )
+        case executionMismatch(
+            expected: ExecutionRecord,
+            actual: ExecutionRecord,
+            record: ResumeCompatibilityRecord
+        )
         case missingLatestRun(runID: String)
     }
 
@@ -219,7 +224,8 @@ public extension PrivateHeaderGeneration {
             expected: plan,
             actual: manifestPlan,
             record: .manifest,
-            compareTargetSet: false
+            compareTargetSet: false,
+            compareExecution: false
         )
 
         if let latestRun {
@@ -237,7 +243,8 @@ public extension PrivateHeaderGeneration {
                 expected: plan,
                 actual: latestRun.plan,
                 record: .run,
-                compareTargetSet: true
+                compareTargetSet: true,
+                compareExecution: true
             )
         } else if reasons.isEmpty, let latestRunID = manifest.latestRunID {
             reasons.append(.missingLatestRun(runID: latestRunID))
@@ -344,7 +351,8 @@ private extension PrivateHeaderGeneration {
         expected: RunPlanRecord,
         actual: RunPlanRecord,
         record: ResumeCompatibilityRecord,
-        compareTargetSet: Bool
+        compareTargetSet: Bool,
+        compareExecution: Bool
     ) {
         if expected.source != actual.source {
             reasons.append(
@@ -388,6 +396,16 @@ private extension PrivateHeaderGeneration {
                     )
                 )
             }
+        }
+
+        if compareExecution, expected.execution != actual.execution {
+            reasons.append(
+                .executionMismatch(
+                    expected: expected.execution,
+                    actual: actual.execution,
+                    record: record
+                )
+            )
         }
     }
 

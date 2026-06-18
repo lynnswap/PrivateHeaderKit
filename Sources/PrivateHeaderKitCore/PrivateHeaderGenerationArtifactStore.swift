@@ -59,20 +59,30 @@ public extension PrivateHeaderGeneration {
             let root = try artifactRootURLs(for: artifactRoot)
             let candidates = cleanupCandidates(manifestArtifacts: artifacts)
             let candidateSet = Set(candidates)
+            let artifactURLs = try artifactFileURLs(
+                for: candidates,
+                root: root
+            )
             var deletedArtifacts: [ArtifactPath] = []
             var missingArtifacts: [ArtifactPath] = []
             var prunedDirectories: [ArtifactPath] = []
             var prunedDirectorySet = Set<ArtifactPath>()
 
             for artifact in cleanupOperationOrder(candidates) {
-                let artifactURL = try artifactFileURL(
-                    for: artifact,
-                    root: root
-                )
+                let artifactURL = artifactURLs[artifact]!
 
-                guard fileManager.fileExists(atPath: artifactURL.path) else {
+                guard let itemKind = try artifactItemKind(
+                    at: artifactURL,
+                    fileManager: fileManager
+                ) else {
                     missingArtifacts.append(artifact)
                     continue
+                }
+
+                if itemKind == .directory {
+                    guard try fileManager.contentsOfDirectory(atPath: artifactURL.path).isEmpty else {
+                        continue
+                    }
                 }
 
                 try fileManager.removeItem(at: artifactURL)
@@ -109,6 +119,12 @@ public extension PrivateHeaderGeneration {
             let resolved: URL
         }
 
+        private enum ArtifactItemKind {
+            case directory
+            case symbolicLink
+            case other
+        }
+
         private static func artifactRootURLs(for artifactRoot: URL) throws -> ArtifactRootURLs {
             guard artifactRoot.isFileURL else {
                 throw ArtifactStoreError.nonFileArtifactRoot(artifactRoot.absoluteString)
@@ -117,8 +133,19 @@ public extension PrivateHeaderGeneration {
             let unresolved = artifactRoot.standardizedFileURL
             return ArtifactRootURLs(
                 unresolved: unresolved,
-                resolved: unresolved.resolvingSymlinksInPath()
+                resolved: unresolved.resolvingSymlinksInPath().standardizedFileURL
             )
+        }
+
+        private static func artifactFileURLs(
+            for artifacts: [ArtifactPath],
+            root: ArtifactRootURLs
+        ) throws -> [ArtifactPath: URL] {
+            var urls: [ArtifactPath: URL] = [:]
+            for artifact in artifacts {
+                urls[artifact] = try artifactFileURL(for: artifact, root: root)
+            }
+            return urls
         }
 
         private static func artifactFileURL(
@@ -130,16 +157,45 @@ public extension PrivateHeaderGeneration {
                 url.appendPathComponent(String(component))
             }
 
-            let resolvedURL = url.standardizedFileURL.resolvingSymlinksInPath()
-            guard isSameOrDescendant(resolvedURL, of: root.resolved) else {
-                throw ArtifactStoreError.artifactPathEscapesRoot(
-                    artifactPath: artifact,
-                    artifactRoot: root.resolved.path,
-                    resolvedPath: resolvedURL.path
-                )
+            var resolvedURL = root.resolved
+            for component in artifact.rawValue.split(separator: "/", omittingEmptySubsequences: false) {
+                resolvedURL.appendPathComponent(String(component))
+                resolvedURL = resolvedURL.standardizedFileURL.resolvingSymlinksInPath()
+                guard isSameOrDescendant(resolvedURL, of: root.resolved) else {
+                    throw ArtifactStoreError.artifactPathEscapesRoot(
+                        artifactPath: artifact,
+                        artifactRoot: root.resolved.path,
+                        resolvedPath: resolvedURL.path
+                    )
+                }
             }
 
             return url
+        }
+
+        private static func artifactItemKind(
+            at url: URL,
+            fileManager: FileManager
+        ) throws -> ArtifactItemKind? {
+            do {
+                let attributes = try fileManager.attributesOfItem(atPath: url.path)
+                let fileType = attributes[.type] as? FileAttributeType
+                if fileType == .typeDirectory {
+                    return .directory
+                }
+                if fileType == .typeSymbolicLink {
+                    return .symbolicLink
+                }
+                return .other
+            } catch {
+                let nsError = error as NSError
+                if nsError.domain == NSCocoaErrorDomain,
+                   nsError.code == CocoaError.Code.fileReadNoSuchFile.rawValue
+                {
+                    return nil
+                }
+                throw error
+            }
         }
 
         private static func cleanupOperationOrder(_ artifacts: [ArtifactPath]) -> [ArtifactPath] {
@@ -171,9 +227,7 @@ public extension PrivateHeaderGeneration {
                 }
 
                 let parentURL = try artifactFileURL(for: parent, root: root)
-                var isDirectory = ObjCBool(false)
-                guard fileManager.fileExists(atPath: parentURL.path, isDirectory: &isDirectory),
-                      isDirectory.boolValue
+                guard try artifactItemKind(at: parentURL, fileManager: fileManager) == .directory
                 else {
                     continue
                 }
