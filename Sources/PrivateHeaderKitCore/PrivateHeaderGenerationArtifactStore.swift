@@ -38,6 +38,15 @@ public extension PrivateHeaderGeneration {
             self.artifactRoot = artifactRoot
         }
 
+        public func contains(
+            _ artifact: ArtifactPath,
+            fileManager: FileManager = .default
+        ) throws -> Bool {
+            let root = try Self.artifactRootURLs(for: artifactRoot)
+            let url = try Self.artifactFileURL(for: artifact, root: root)
+            return fileManager.fileExists(atPath: url.path)
+        }
+
         @discardableResult
         public func cleanupManagedArtifacts(
             _ artifacts: [ArtifactPath],

@@ -96,6 +96,34 @@ public extension PrivateHeaderGeneration {
             return try readRun(id: latestRunID)
         }
 
+        public func listRunSummaries() throws -> [RunSummary] {
+            guard FileManager.default.fileExists(atPath: runsDirectory.path) else {
+                return []
+            }
+
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: runsDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: []
+            )
+
+            var summaries: [RunSummary] = []
+            for url in contents {
+                let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+                guard values.isDirectory == true else {
+                    continue
+                }
+
+                let runID = url.lastPathComponent
+                try Self.validateRunID(runID)
+                if let run = try readRun(id: runID) {
+                    summaries.append(RunSummary(runID: runID, startedAt: run.startedAt))
+                }
+            }
+
+            return summaries
+        }
+
         @discardableResult
         public func pruneRunHistory(
             from runs: [RunSummary],
