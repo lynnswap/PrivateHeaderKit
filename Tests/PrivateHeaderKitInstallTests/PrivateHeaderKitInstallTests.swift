@@ -7,7 +7,7 @@ import PrivateHeaderKitTestSupport
 @Suite
 struct InstallOptionTests {
     @Test func parseOptionsUsesEnvironmentDefaultsAndCliOverrides() throws {
-        let envOptions = try parseOptions(["privateheaderkit-install"], environment: [
+        let envOptions = try parseOptions(["privateheaderkit install"], environment: [
             "PREFIX": "/env/prefix",
             "BINDIR": "/env/bin",
         ])
@@ -16,7 +16,7 @@ struct InstallOptionTests {
         #expect(envOptions.dryRun == false)
 
         let cliOptions = try parseOptions(
-            ["privateheaderkit-install", "--prefix", "/cli/prefix", "--dry-run"],
+            ["privateheaderkit install", "--prefix", "/cli/prefix", "--dry-run"],
             environment: ["BINDIR": "/env/bin"]
         )
         #expect(cliOptions.prefix == "/cli/prefix")
@@ -24,7 +24,7 @@ struct InstallOptionTests {
         #expect(cliOptions.dryRun == true)
 
         let bindirOptions = try parseOptions(
-            ["privateheaderkit-install", "--prefix", "/cli/prefix", "--bindir", "/cli/bin"],
+            ["privateheaderkit install", "--prefix", "/cli/prefix", "--bindir", "/cli/bin"],
             environment: [:]
         )
         #expect(bindirOptions.prefix == "/cli/prefix")
@@ -33,7 +33,7 @@ struct InstallOptionTests {
 
     @Test func parseOptionsRejectsUnknownOptions() {
         do {
-            _ = try parseOptions(["privateheaderkit-install", "--wat"], environment: [:])
+            _ = try parseOptions(["privateheaderkit install", "--wat"], environment: [:])
             Issue.record("expected parse failure")
         } catch let error as InstallError {
             #expect(error.description == "unknown option: --wat")
@@ -51,7 +51,7 @@ struct InstallOptionTests {
 @Suite
 struct InstallCommandResolutionTests {
     @Test func repositoryRootFindsBuildAncestor() {
-        let executable = URL(fileURLWithPath: "/repo/.build/arm64-apple-macosx/release/privateheaderkit-install")
+        let executable = URL(fileURLWithPath: "/repo/.build/arm64-apple-macosx/release/privateheaderkit")
         #expect(repositoryRoot(from: executable)?.path == "/repo")
     }
 
@@ -59,17 +59,17 @@ struct InstallCommandResolutionTests {
         let dirs = try makeTemporaryTestDirectories()
         let repoRoot = dirs.root.appendingPathComponent("Repo", isDirectory: true)
         try FileManager.default.createDirectory(
-            at: repoRoot.appendingPathComponent("Sources/HeaderDumpCore", isDirectory: true),
+            at: repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCore", isDirectory: true),
             withIntermediateDirectories: true
         )
-        try Data().write(to: repoRoot.appendingPathComponent("Sources/HeaderDumpCore/HeaderDumpMain.swift"))
+        try Data().write(to: repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCore/PrivateHeaderGeneration.swift"))
         #expect(looksLikePrivateHeaderKitRepo(repoRoot, fileManager: .default) == false)
 
         try FileManager.default.createDirectory(
-            at: repoRoot.appendingPathComponent("Sources/HeaderDumpCLI", isDirectory: true),
+            at: repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCLI", isDirectory: true),
             withIntermediateDirectories: true
         )
-        try Data().write(to: repoRoot.appendingPathComponent("Sources/HeaderDumpCLI/HeaderDumpMain.swift"))
+        try Data().write(to: repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCLI/PrivateHeaderKitMain.swift"))
         #expect(looksLikePrivateHeaderKitRepo(repoRoot, fileManager: .default) == true)
     }
 
@@ -77,11 +77,10 @@ struct InstallCommandResolutionTests {
         let dirs = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
 
-        try buildProducts(["privateheaderkit-dump", "headerdump"], in: dirs.root, runner: runner)
+        try buildProducts(["privateheaderkit"], in: dirs.root, runner: runner)
 
         #expect(runner.simpleCommands.map(\.command) == [
-            ["swift", "build", "-c", "release", "--product", "privateheaderkit-dump"],
-            ["swift", "build", "-c", "release", "--product", "headerdump"],
+            ["swift", "build", "-c", "release", "--product", "privateheaderkit"],
         ])
         #expect(runner.simpleCommands.allSatisfy { $0.cwd == dirs.root })
     }
@@ -97,41 +96,5 @@ struct InstallCommandResolutionTests {
         let binDir = resolveSwiftBinDir(repoRoot: dirs.root, runner: runner)
 
         #expect(binDir?.path == dirs.root.appendingPathComponent(".build/release").path)
-    }
-
-    @Test func resolveXcodeSchemePrefersConfiguredSchemeWhenPresent() throws {
-        let dirs = try makeTemporaryTestDirectories()
-        let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
-            """
-            preface
-            {"project":{"schemes":["PrivateHeaderKit","CustomScheme"]}}
-            tail
-            """,
-            for: ["xcodebuild", "-list", "-json"]
-        )
-
-        let scheme = try resolveXcodeScheme(
-            repoRoot: dirs.root,
-            runner: runner,
-            environment: ["PH_XCODE_SCHEME": "CustomScheme"]
-        )
-
-        #expect(scheme == "CustomScheme")
-    }
-
-    @Test func resolveXcodeSchemePrefersHeaderdumpScheme() throws {
-        let dirs = try makeTemporaryTestDirectories()
-        let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
-            """
-            {"workspace":{"schemes":["Other","headerdump"]}}
-            """,
-            for: ["xcodebuild", "-list", "-json"]
-        )
-
-        let scheme = try resolveXcodeScheme(repoRoot: dirs.root, runner: runner, environment: [:])
-
-        #expect(scheme == "headerdump")
     }
 }
