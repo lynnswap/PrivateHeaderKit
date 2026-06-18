@@ -42,24 +42,46 @@ struct PrivateHeaderGenerationLabelTests {
 
 @Suite
 struct PrivateHeaderGenerationPlanTests {
-    @Test func planKeepsStateOutsideArtifactDirectoryAndUsesSourceLabelAsResumeKey() {
+    @Test func customOutputBaseKeepsStateOutsideArtifactDirectoryAndUsesSourceLabelAsResumeKey() {
         let source = PrivateHeaderGeneration.Source(
             platform: .iOS,
             version: "27.0",
             build: "24A5355q"
         )
         let root = URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+        let output = PrivateHeaderGeneration.Output(baseDirectory: root)
 
         let plan = PrivateHeaderGeneration.makePlan(
             source: source,
-            artifactRootDirectory: root
+            output: output
         )
 
         #expect(plan.source == source)
-        #expect(plan.artifactRootDirectory == root)
+        #expect(plan.output == output)
         #expect(plan.artifactDirectory.path == "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)")
         #expect(plan.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)")
         #expect(plan.target == .allAvailable)
+    }
+
+    @Test func defaultOutputCanSeparateArtifactAndStateBases() {
+        let source = PrivateHeaderGeneration.Source(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q"
+        )
+        let root = URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+        let output = PrivateHeaderGeneration.Output(
+            artifactBaseDirectory: root.appendingPathComponent("generated-headers", isDirectory: true),
+            stateBaseDirectory: root.appendingPathComponent(".state", isDirectory: true)
+        )
+
+        let plan = PrivateHeaderGeneration.makePlan(
+            source: source,
+            output: output
+        )
+
+        #expect(plan.artifactDirectory.path == "/tmp/PrivateHeaderKit/generated-headers/iOS27.0(24A5355q)")
+        #expect(plan.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)")
     }
 
     @Test func generatePrivateHeadersThrowsExplicitUnimplementedError() async throws {
@@ -68,12 +90,14 @@ struct PrivateHeaderGenerationPlanTests {
             version: "16.0",
             build: "25A5279m"
         )
-        let root = URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+        let output = PrivateHeaderGeneration.Output(
+            baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+        )
 
         do {
             _ = try await PrivateHeaderGeneration.generatePrivateHeaders(
                 source: source,
-                artifactRootDirectory: root
+                output: output
             )
             Issue.record("generatePrivateHeaders unexpectedly returned a result")
         } catch let error as PrivateHeaderGeneration.GenerationError {
@@ -81,7 +105,7 @@ struct PrivateHeaderGenerationPlanTests {
                 error == .notImplemented(
                     plan: PrivateHeaderGeneration.makePlan(
                         source: source,
-                        artifactRootDirectory: root
+                        output: output
                     )
                 )
             )

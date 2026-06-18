@@ -3,25 +3,25 @@ import Foundation
 public enum PrivateHeaderGeneration {
     public static func makePlan(
         source: Source,
-        artifactRootDirectory: URL,
+        output: Output,
         options: Options = Options()
     ) -> Plan {
         Plan(
             source: source,
-            artifactRootDirectory: artifactRootDirectory,
+            output: output,
             options: options
         )
     }
 
     public static func generatePrivateHeaders(
         source: Source,
-        artifactRootDirectory: URL,
+        output: Output,
         options: Options = Options()
     ) async throws -> Result {
         throw GenerationError.notImplemented(
             plan: makePlan(
                 source: source,
-                artifactRootDirectory: artifactRootDirectory,
+                output: output,
                 options: options
             )
         )
@@ -99,9 +99,29 @@ public extension PrivateHeaderGeneration {
         public init() {}
     }
 
+    struct Output: Hashable, Sendable {
+        public let artifactBaseDirectory: URL
+        public let stateBaseDirectory: URL
+
+        public init(
+            artifactBaseDirectory: URL,
+            stateBaseDirectory: URL
+        ) {
+            self.artifactBaseDirectory = artifactBaseDirectory
+            self.stateBaseDirectory = stateBaseDirectory
+        }
+
+        public init(baseDirectory: URL) {
+            self.init(
+                artifactBaseDirectory: baseDirectory,
+                stateBaseDirectory: baseDirectory.appendingPathComponent(".state", isDirectory: true)
+            )
+        }
+    }
+
     struct Plan: Hashable, Sendable {
         public let source: Source
-        public let artifactRootDirectory: URL
+        public let output: Output
         public let artifactDirectory: URL
         public let stateDirectory: URL
         public let target: Target
@@ -109,19 +129,20 @@ public extension PrivateHeaderGeneration {
 
         public init(
             source: Source,
-            artifactRootDirectory: URL,
+            output: Output,
             options: Options = Options()
         ) {
             let label = source.label
             self.source = source
-            self.artifactRootDirectory = artifactRootDirectory
-            self.artifactDirectory = artifactRootDirectory.appendingPathComponent(
+            self.output = output
+            self.artifactDirectory = output.artifactBaseDirectory.appendingPathComponent(
                 label.directoryName,
                 isDirectory: true
             )
-            self.stateDirectory = artifactRootDirectory
-                .appendingPathComponent(".state", isDirectory: true)
-                .appendingPathComponent(label.directoryName, isDirectory: true)
+            self.stateDirectory = output.stateBaseDirectory.appendingPathComponent(
+                label.directoryName,
+                isDirectory: true
+            )
             self.target = .allAvailable
             self.options = options
         }
