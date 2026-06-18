@@ -55,6 +55,58 @@ struct PrivateHeaderGenerationManifestTests {
         #expect(json.contains("\"updatedAt\" : 3.141592653589793"))
     }
 
+    @Test func manifestEncodingKeepsRequiredNullFields() throws {
+        let source = try PrivateHeaderGeneration.Source(
+            platform: .iOS,
+            version: "27.0",
+            build: nil
+        )
+        let updatedAt = Date(timeIntervalSinceReferenceDate: 42)
+        let manifest = PrivateHeaderGeneration.Manifest(
+            schemaVersion: 1,
+            toolVersion: "0.1.0",
+            source: PrivateHeaderGeneration.SourceRecord(source: source),
+            output: PrivateHeaderGeneration.OutputRecord(
+                baseDirectory: "/tmp/PrivateHeaderKit",
+                artifactDirectory: "/tmp/PrivateHeaderKit/generated-headers",
+                stateDirectory: "/tmp/PrivateHeaderKit/.state"
+            ),
+            layout: .headers,
+            latestRunID: nil,
+            targets: [
+                PrivateHeaderGeneration.TargetRecord(
+                    id: "framework:Foo",
+                    displayName: "Foo.framework",
+                    kind: "framework",
+                    status: .completed,
+                    phases: [
+                        PrivateHeaderGeneration.PhaseRecord(name: "static ObjC", status: .completed),
+                    ],
+                    artifacts: [
+                        try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h"),
+                    ],
+                    lastRunID: nil,
+                    updatedAt: updatedAt,
+                    failureSummary: nil
+                ),
+            ],
+            updatedAt: updatedAt
+        )
+
+        let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.Manifest.self,
+            from: data
+        )
+
+        #expect(decoded == manifest)
+        #expect(json.contains("\"build\" : null"))
+        #expect(json.contains("\"latestRunID\" : null"))
+        #expect(json.contains("\"lastRunID\" : null"))
+        #expect(json.contains("\"failureSummary\" : null"))
+    }
+
     @Test func artifactPathRejectsAbsoluteTraversalAndEmptyPaths() {
         #expect(throws: PrivateHeaderGeneration.StateValidationError.self) {
             _ = try PrivateHeaderGeneration.ArtifactPath("/System/Library/Foo.h")
@@ -93,6 +145,49 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(decoded.status == .partial)
         #expect(decoded.targetResults.first?.status == .commitFailed)
         #expect(decoded.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Foo.h"])
+    }
+
+    @Test func runRecordEncodingKeepsRequiredNullFields() throws {
+        let manifest = try makeManifest()
+        let run = PrivateHeaderGeneration.RunRecord(
+            runID: "run-002",
+            schemaVersion: 1,
+            toolVersion: "0.1.0",
+            plan: PrivateHeaderGeneration.RunPlanRecord(
+                source: manifest.source,
+                output: manifest.output,
+                layout: manifest.layout,
+                targetIDs: ["framework:Foo"]
+            ),
+            startedAt: Date(timeIntervalSinceReferenceDate: 42),
+            endedAt: nil,
+            status: .running,
+            targetResults: [
+                PrivateHeaderGeneration.RunTargetRecord(
+                    targetID: "framework:Foo",
+                    status: .running,
+                    phases: [
+                        PrivateHeaderGeneration.PhaseRecord(name: "static ObjC", status: .running),
+                    ],
+                    artifacts: [],
+                    attemptedArtifacts: [],
+                    failureSummary: nil
+                ),
+            ],
+            attemptedArtifacts: [],
+            logs: []
+        )
+
+        let data = try PrivateHeaderGeneration.StateJSON.encode(run)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: data
+        )
+
+        #expect(decoded == run)
+        #expect(json.contains("\"endedAt\" : null"))
+        #expect(json.contains("\"failureSummary\" : null"))
     }
 
     @Test func runHistoryRetentionKeepsLatestTenRuns() {

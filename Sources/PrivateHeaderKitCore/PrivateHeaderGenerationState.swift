@@ -124,6 +124,29 @@ public extension PrivateHeaderGeneration {
             self.targets = targets
             self.updatedAt = updatedAt
         }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(schemaVersion, forKey: .schemaVersion)
+            try container.encode(toolVersion, forKey: .toolVersion)
+            try container.encode(source, forKey: .source)
+            try container.encode(output, forKey: .output)
+            try container.encode(layout, forKey: .layout)
+            try container.encodeRequired(latestRunID, forKey: .latestRunID)
+            try container.encode(targets, forKey: .targets)
+            try container.encode(updatedAt, forKey: .updatedAt)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion
+            case toolVersion
+            case source
+            case output
+            case layout
+            case latestRunID
+            case targets
+            case updatedAt
+        }
     }
 
     struct SourceRecord: Codable, Equatable, Sendable {
@@ -139,6 +162,23 @@ public extension PrivateHeaderGeneration {
             self.build = source.build
             self.displayName = source.label.displayName
             self.directoryName = source.label.directoryName
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(platform, forKey: .platform)
+            try container.encode(version, forKey: .version)
+            try container.encodeRequired(build, forKey: .build)
+            try container.encode(displayName, forKey: .displayName)
+            try container.encode(directoryName, forKey: .directoryName)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case platform
+            case version
+            case build
+            case displayName
+            case directoryName
         }
     }
 
@@ -198,6 +238,31 @@ public extension PrivateHeaderGeneration {
             self.updatedAt = updatedAt
             self.failureSummary = failureSummary
         }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(displayName, forKey: .displayName)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(status, forKey: .status)
+            try container.encode(phases, forKey: .phases)
+            try container.encode(artifacts, forKey: .artifacts)
+            try container.encodeRequired(lastRunID, forKey: .lastRunID)
+            try container.encode(updatedAt, forKey: .updatedAt)
+            try container.encodeRequired(failureSummary, forKey: .failureSummary)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case displayName
+            case kind
+            case status
+            case phases
+            case artifacts
+            case lastRunID
+            case updatedAt
+            case failureSummary
+        }
     }
 
     struct PhaseRecord: Codable, Equatable, Sendable {
@@ -209,6 +274,19 @@ public extension PrivateHeaderGeneration {
             self.name = name
             self.status = status
             self.failureSummary = failureSummary
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(name, forKey: .name)
+            try container.encode(status, forKey: .status)
+            try container.encodeRequired(failureSummary, forKey: .failureSummary)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case name
+            case status
+            case failureSummary
         }
     }
 }
@@ -248,6 +326,33 @@ public extension PrivateHeaderGeneration {
             self.targetResults = targetResults
             self.attemptedArtifacts = attemptedArtifacts
             self.logs = logs
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(runID, forKey: .runID)
+            try container.encode(schemaVersion, forKey: .schemaVersion)
+            try container.encode(toolVersion, forKey: .toolVersion)
+            try container.encode(plan, forKey: .plan)
+            try container.encode(startedAt, forKey: .startedAt)
+            try container.encodeRequired(endedAt, forKey: .endedAt)
+            try container.encode(status, forKey: .status)
+            try container.encode(targetResults, forKey: .targetResults)
+            try container.encode(attemptedArtifacts, forKey: .attemptedArtifacts)
+            try container.encode(logs, forKey: .logs)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case runID
+            case schemaVersion
+            case toolVersion
+            case plan
+            case startedAt
+            case endedAt
+            case status
+            case targetResults
+            case attemptedArtifacts
+            case logs
         }
     }
 
@@ -292,6 +397,25 @@ public extension PrivateHeaderGeneration {
             self.artifacts = artifacts
             self.attemptedArtifacts = attemptedArtifacts
             self.failureSummary = failureSummary
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(targetID, forKey: .targetID)
+            try container.encode(status, forKey: .status)
+            try container.encode(phases, forKey: .phases)
+            try container.encode(artifacts, forKey: .artifacts)
+            try container.encode(attemptedArtifacts, forKey: .attemptedArtifacts)
+            try container.encodeRequired(failureSummary, forKey: .failureSummary)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case targetID
+            case status
+            case phases
+            case artifacts
+            case attemptedArtifacts
+            case failureSummary
         }
     }
 
@@ -402,3 +526,13 @@ public extension PrivateHeaderGeneration {
 }
 
 extension PrivateHeaderGeneration.Source.Platform: Codable {}
+
+private extension KeyedEncodingContainer {
+    mutating func encodeRequired<Value: Encodable>(_ value: Value?, forKey key: Key) throws {
+        if let value {
+            try encode(value, forKey: key)
+        } else {
+            try encodeNil(forKey: key)
+        }
+    }
+}
