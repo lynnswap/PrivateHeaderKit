@@ -1,5 +1,6 @@
 import Foundation
 import HeaderDumpCore
+import PrivateHeaderKitCore
 import PrivateHeaderKitInstall
 
 #if canImport(Darwin)
@@ -22,6 +23,131 @@ enum PrivateHeaderKitCommand: Equatable {
     case generate(PrivateHeaderKitGenerateCommand)
     case rawDump([String])
 }
+
+struct PrivateHeaderKitGenerationRequest: Sendable {
+    let source: PrivateHeaderGeneration.Source
+    let output: PrivateHeaderGeneration.Output
+    let options: PrivateHeaderGeneration.Options
+
+    var sourceDisplayName: String {
+        source.label.displayName
+    }
+
+    var sourceDirectoryName: String {
+        source.label.directoryName
+    }
+
+    var artifactBaseDirectory: URL {
+        output.artifactBaseDirectory
+    }
+
+    var stateBaseDirectory: URL {
+        output.stateBaseDirectory
+    }
+
+    var systemRoot: URL? {
+        options.systemRoot
+    }
+
+    var targetQuery: String? {
+        guard case .query(let query) = options.targetRequest else {
+            return nil
+        }
+        return query
+    }
+
+    var resumeRequested: Bool? {
+        guard case .requireExplicitResume(let resumeRequested) = options.resumeBehavior else {
+            return nil
+        }
+        return resumeRequested
+    }
+
+    var hostHelperURL: URL? {
+        options.helperURLs?.host
+    }
+
+    var simulatorHelperURL: URL? {
+        options.helperURLs?.simulator
+    }
+
+    var usesHostExecution: Bool {
+        guard case .host = options.executionMode else {
+            return false
+        }
+        return true
+    }
+
+    var usesSharedCache: Bool {
+        options.rawDumpingOptions.useSharedCache
+    }
+
+    var prefersRuntimeMetadata: Bool {
+        options.rawDumpingOptions.preferRuntimeMetadata
+    }
+}
+
+struct PrivateHeaderKitGenerationSummary: Equatable, Sendable {
+    let sourceDisplayName: String
+    let artifactDirectory: URL
+    let manifestURL: URL
+    let runRecordURL: URL
+    let runID: String
+    let generatedTargetCount: Int
+    let skippedTargetCount: Int?
+
+    init(
+        sourceDisplayName: String,
+        artifactDirectory: URL,
+        manifestURL: URL,
+        runRecordURL: URL,
+        runID: String,
+        generatedTargetCount: Int,
+        skippedTargetCount: Int? = nil
+    ) {
+        self.sourceDisplayName = sourceDisplayName
+        self.artifactDirectory = artifactDirectory
+        self.manifestURL = manifestURL
+        self.runRecordURL = runRecordURL
+        self.runID = runID
+        self.generatedTargetCount = generatedTargetCount
+        self.skippedTargetCount = skippedTargetCount
+    }
+
+    init(result: PrivateHeaderGeneration.Result) {
+        self.init(
+            sourceDisplayName: result.plan.source.label.displayName,
+            artifactDirectory: result.artifactDirectory,
+            manifestURL: result.manifestURL,
+            runRecordURL: result.runRecordURL,
+            runID: result.runID,
+            generatedTargetCount: result.generatedTargets.count,
+            skippedTargetCount: Self.skippedTargetCount(from: result.runRecordURL)
+        )
+    }
+
+    private static func skippedTargetCount(from runRecordURL: URL) -> Int? {
+        guard
+            let data = try? Data(contentsOf: runRecordURL),
+            let runRecord = try? JSONDecoder().decode(TargetResultsRecord.self, from: data)
+        else {
+            return nil
+        }
+        return runRecord.targetResults.filter { $0.status == "skipped" }.count
+    }
+
+    private struct TargetResultsRecord: Decodable {
+        let targetResults: [TargetRecord]
+    }
+
+    private struct TargetRecord: Decodable {
+        let status: String
+    }
+}
+
+typealias PrivateHeaderKitGenerationRunner = (
+    PrivateHeaderKitGenerationRequest
+) async throws -> PrivateHeaderKitGenerationSummary
 
 struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     enum Platform: String, Sendable {
@@ -119,6 +245,9 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
 func runPrivateHeaderKitCommand(
     _ args: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment,
+    currentExecutableURL: URL? = Bundle.main.executableURL,
+    generationRunner: @escaping PrivateHeaderKitGenerationRunner = runPrivateHeaderGeneration,
+    outputLogger: (String) -> Void = logCLIOutput,
     errorLogger: (String) -> Void = logCLIError
 ) async -> Int32 {
     do {
@@ -132,15 +261,14 @@ func runPrivateHeaderKitCommand(
         case .install(let installArgs):
             return runInstallCommand(installArgs, environment: environment)
         case .generate(let command):
-            errorLogger("private header generation is parsed but not wired to the Core executor yet")
-            errorLogger("source: \(command.sourceDisplayName)")
-            errorLogger("artifact directory: \(command.artifactDirectory.path)")
-            errorLogger("state directory: \(command.stateDirectory.path)")
-            errorLogger("target query: \(command.targetQuery)")
-            if command.resume {
-                errorLogger("resume: requested")
-            }
-            return 2
+            return await runPrivateHeaderKitGenerateCommand(
+                command,
+                invokedProgramName: args.first ?? "privateheaderkit",
+                currentExecutableURL: currentExecutableURL,
+                generationRunner: generationRunner,
+                outputLogger: outputLogger,
+                errorLogger: errorLogger
+            )
         case .rawDump(let rawDumpArgs):
             await HeaderDumpCore.HeaderDumpCLI.main(arguments: rawDumpArgs)
             return 0
@@ -153,6 +281,113 @@ func runPrivateHeaderKitCommand(
         errorLogger("error: \(error)")
         errorLogger("run `privateheaderkit --help` for usage")
         return 1
+    }
+}
+
+private func runPrivateHeaderKitGenerateCommand(
+    _ command: PrivateHeaderKitGenerateCommand,
+    invokedProgramName: String,
+    currentExecutableURL: URL?,
+    generationRunner: PrivateHeaderKitGenerationRunner,
+    outputLogger: (String) -> Void,
+    errorLogger: (String) -> Void
+) async -> Int32 {
+    do {
+        let request = try makePrivateHeaderGenerationRequest(
+            from: command,
+            helperExecutableURL: privateHeaderKitExecutableURL(
+                currentExecutableURL: currentExecutableURL,
+                fallbackProgramName: invokedProgramName
+            )
+        )
+        let summary = try await generationRunner(request)
+        logPrivateHeaderGenerationSuccess(summary, outputLogger: outputLogger)
+        return 0
+    } catch let error as PrivateHeaderGeneration.GenerationError {
+        errorLogger("error: \(error.description)")
+        if case .resumeRequired = error {
+            errorLogger("rerun with `--resume` to continue the unfinished generation state")
+        }
+        return 2
+    } catch {
+        errorLogger("error: \(error)")
+        return 2
+    }
+}
+
+private func runPrivateHeaderGeneration(
+    request: PrivateHeaderKitGenerationRequest
+) async throws -> PrivateHeaderKitGenerationSummary {
+    let result = try await PrivateHeaderGeneration.generatePrivateHeaders(
+        source: request.source,
+        output: request.output,
+        options: request.options
+    )
+    return PrivateHeaderKitGenerationSummary(result: result)
+}
+
+private func makePrivateHeaderGenerationRequest(
+    from command: PrivateHeaderKitGenerateCommand,
+    helperExecutableURL: URL
+) throws -> PrivateHeaderKitGenerationRequest {
+    let source = try PrivateHeaderGeneration.Source(
+        platform: command.platform.corePlatform,
+        version: command.version,
+        build: command.build
+    )
+    let outputBaseDirectory = URL(
+        fileURLWithPath: command.outputBaseDirectory,
+        isDirectory: true
+    )
+    let output = PrivateHeaderGeneration.Output(baseDirectory: outputBaseDirectory)
+    let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
+        host: helperExecutableURL,
+        simulator: helperExecutableURL
+    )
+    let options = PrivateHeaderGeneration.Options(
+        targetRequest: .query(command.targetQuery),
+        systemRoot: URL(fileURLWithPath: command.systemRoot, isDirectory: true),
+        helperURLs: helperURLs,
+        executionMode: .host,
+        rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
+            useSharedCache: true,
+            preferRuntimeMetadata: true
+        ),
+        resumeBehavior: .requireExplicitResume(resumeRequested: command.resume),
+        outputBaseDirectory: outputBaseDirectory
+    )
+
+    return PrivateHeaderKitGenerationRequest(
+        source: source,
+        output: output,
+        options: options
+    )
+}
+
+private func privateHeaderKitExecutableURL(
+    currentExecutableURL: URL?,
+    fallbackProgramName: String
+) -> URL {
+    if let currentExecutableURL {
+        return currentExecutableURL
+    }
+    return URL(fileURLWithPath: fallbackProgramName, isDirectory: false)
+}
+
+private func logPrivateHeaderGenerationSuccess(
+    _ summary: PrivateHeaderKitGenerationSummary,
+    outputLogger: (String) -> Void
+) {
+    outputLogger("private header generation completed")
+    outputLogger("source: \(summary.sourceDisplayName)")
+    outputLogger("artifact directory: \(summary.artifactDirectory.path)")
+    outputLogger("manifest path: \(summary.manifestURL.path)")
+    outputLogger("run record path: \(summary.runRecordURL.path)")
+    outputLogger("run ID: \(summary.runID)")
+    if let skippedTargetCount = summary.skippedTargetCount {
+        outputLogger("targets: generated \(summary.generatedTargetCount), skipped \(skippedTargetCount)")
+    } else {
+        outputLogger("targets: generated \(summary.generatedTargetCount)")
     }
 }
 
@@ -366,6 +601,17 @@ private func validateTargetQuery(_ value: String) throws {
     }
 }
 
+private extension PrivateHeaderKitGenerateCommand.Platform {
+    var corePlatform: PrivateHeaderGeneration.Source.Platform {
+        switch self {
+        case .iOS:
+            return .iOS
+        case .macOS:
+            return .macOS
+        }
+    }
+}
+
 func printPrivateHeaderKitUsage() {
     print(privateHeaderKitUsageText())
 }
@@ -422,4 +668,8 @@ func privateHeaderKitGenerateUsageText() -> String {
 private func logCLIError(_ message: String) {
     let data = Data((message + "\n").utf8)
     FileHandle.standardError.write(data)
+}
+
+private func logCLIOutput(_ message: String) {
+    print(message)
 }

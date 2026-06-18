@@ -1,5 +1,7 @@
+import Foundation
 import Testing
 
+import PrivateHeaderKitCore
 @testable import PrivateHeaderKitCLI
 
 @Suite
@@ -253,7 +255,10 @@ struct PrivateHeaderKitCLIParsingTests {
         }
     }
 
-    @Test func validGenerateRunReturnsTemporaryIntegrationError() async {
+    @Test func validGenerateRunInvokesGenerationRunnerWithCoreRequestAndPrintsSuccessOutput() async throws {
+        let helperURL = URL(fileURLWithPath: "/tmp/privateheaderkit-test-helper", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        var outputMessages: [String] = []
         var loggedMessages: [String] = []
         let exitCode = await runPrivateHeaderKitCommand([
             "privateheaderkit",
@@ -270,12 +275,76 @@ struct PrivateHeaderKitCLIParsingTests {
             "/tmp/PrivateHeaderKit",
             "--target",
             "SwiftUI,UIKit",
-        ], errorLogger: { loggedMessages.append($0) })
+            "--resume",
+        ], currentExecutableURL: helperURL, generationRunner: { request in
+            recorder.request = request
+            return PrivateHeaderKitGenerationSummary(
+                sourceDisplayName: request.sourceDisplayName,
+                artifactDirectory: URL(
+                    fileURLWithPath: "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
+                    isDirectory: true
+                ),
+                manifestURL: URL(
+                    fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
+                    isDirectory: false
+                ),
+                runRecordURL: URL(
+                    fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
+                    isDirectory: false
+                ),
+                runID: "run-test",
+                generatedTargetCount: 2,
+                skippedTargetCount: 1
+            )
+        }, outputLogger: { outputMessages.append($0) }, errorLogger: { loggedMessages.append($0) })
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(loggedMessages.isEmpty)
+        #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
+        #expect(request.sourceDirectoryName == "iOS27.0(24A5355q)")
+        #expect(request.artifactBaseDirectory.path == "/tmp/PrivateHeaderKit")
+        #expect(request.stateBaseDirectory.path == "/tmp/PrivateHeaderKit/.state")
+        #expect(request.systemRoot?.path == "/tmp/RuntimeRoot")
+        #expect(request.targetQuery == "SwiftUI,UIKit")
+        #expect(request.resumeRequested == true)
+        #expect(request.hostHelperURL == helperURL)
+        #expect(request.simulatorHelperURL == helperURL)
+        #expect(request.usesHostExecution)
+        #expect(request.usesSharedCache)
+        #expect(request.prefersRuntimeMetadata)
+        #expect(outputMessages == [
+            "private header generation completed",
+            "source: iOS 27.0 (24A5355q)",
+            "artifact directory: /tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
+            "manifest path: /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
+            "run record path: /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
+            "run ID: run-test",
+            "targets: generated 2, skipped 1",
+        ])
+    }
+
+    @Test func generateResumeRequiredErrorReturnsGuidance() async throws {
+        var outputMessages: [String] = []
+        var loggedMessages: [String] = []
+        let exitCode = await runPrivateHeaderKitCommand(
+            validGenerateArguments(),
+            currentExecutableURL: URL(fileURLWithPath: "/tmp/privateheaderkit-test-helper", isDirectory: false),
+            generationRunner: { _ in
+                throw PrivateHeaderGeneration.GenerationError.resumeRequired(
+                    try resumeSummaryFixture(latestRunID: "run-previous")
+                )
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { loggedMessages.append($0) }
+        )
 
         #expect(exitCode == 2)
-        #expect(loggedMessages.first == "private header generation is parsed but not wired to the Core executor yet")
-        #expect(loggedMessages.contains("source: iOS 27.0 (24A5355q)"))
-        #expect(loggedMessages.contains("target query: SwiftUI,UIKit"))
+        #expect(outputMessages.isEmpty)
+        #expect(loggedMessages == [
+            "error: existing generation state is unfinished; explicit resume is required for run-previous",
+            "rerun with `--resume` to continue the unfinished generation state",
+        ])
     }
 
     @Test func legacyExecutableNamesAreRejectedAsPublicSubcommands() {
@@ -303,4 +372,76 @@ struct PrivateHeaderKitCLIParsingTests {
             }
         }
     }
+}
+
+private final class GenerationRequestRecorder {
+    var request: PrivateHeaderKitGenerationRequest?
+}
+
+private func validGenerateArguments() -> [String] {
+    [
+        "privateheaderkit",
+        "generate",
+        "--platform",
+        "iOS",
+        "--version",
+        "27.0",
+        "--build",
+        "24A5355q",
+        "--system-root",
+        "/tmp/RuntimeRoot",
+        "--out",
+        "/tmp/PrivateHeaderKit",
+        "--target",
+        "SwiftUI,UIKit",
+    ]
+}
+
+private func resumeSummaryFixture(
+    latestRunID: String
+) throws -> PrivateHeaderGeneration.ResumeSummary {
+    let source = try PrivateHeaderGeneration.Source(
+        platform: .iOS,
+        version: "27.0",
+        build: "24A5355q"
+    )
+    let outputBaseDirectory = URL(
+        fileURLWithPath: "/tmp/PrivateHeaderKit",
+        isDirectory: true
+    )
+    let directoryName = source.label.directoryName
+    return PrivateHeaderGeneration.ResumeSummary(
+        source: PrivateHeaderGeneration.SourceRecord(source: source),
+        output: PrivateHeaderGeneration.OutputRecord(
+            baseDirectory: outputBaseDirectory.path,
+            artifactDirectory: outputBaseDirectory.appendingPathComponent(
+                directoryName,
+                isDirectory: true
+            ).path,
+            stateDirectory: outputBaseDirectory.appendingPathComponent(
+                ".state/\(directoryName)",
+                isDirectory: true
+            ).path
+        ),
+        layout: .headers,
+        latestRunID: latestRunID,
+        startedAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 200),
+        counts: PrivateHeaderGeneration.ResumeTargetCounts(
+            total: 1,
+            completed: 0,
+            partial: 1,
+            failed: 0,
+            interrupted: 0,
+            commitFailed: 0,
+            stale: 0,
+            pending: 0
+        ),
+        targets: [
+            PrivateHeaderGeneration.ResumeTargetDecision(
+                targetID: "SwiftUI.framework",
+                status: .partial
+            ),
+        ]
+    )
 }
