@@ -41,7 +41,8 @@ struct PrivateHeaderGenerationManifestTests {
     }
 
     @Test func stateJSONPreservesFractionalSecondDates() throws {
-        let manifest = try makeManifest(updatedAt: Date(timeIntervalSince1970: 1_000.123))
+        let updatedAt = Date(timeIntervalSinceReferenceDate: .pi)
+        let manifest = try makeManifest(updatedAt: updatedAt)
 
         let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
         let json = try #require(String(data: data, encoding: .utf8))
@@ -51,7 +52,7 @@ struct PrivateHeaderGenerationManifestTests {
         )
 
         #expect(decoded.updatedAt == manifest.updatedAt)
-        #expect(json.contains("\"updatedAt\" : \"1970-01-01T00:16:40.123Z\""))
+        #expect(json.contains("\"updatedAt\" : 3.141592653589793"))
     }
 
     @Test func artifactPathRejectsAbsoluteTraversalAndEmptyPaths() {

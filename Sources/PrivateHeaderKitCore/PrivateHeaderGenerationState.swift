@@ -331,7 +331,7 @@ public extension PrivateHeaderGeneration {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .custom { date, encoder in
                 var container = encoder.singleValueContainer()
-                try container.encode(fractionalSecondsFormatter().string(from: date))
+                try container.encode(date.timeIntervalSinceReferenceDate)
             }
             return encoder
         }
@@ -340,6 +340,9 @@ public extension PrivateHeaderGeneration {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .custom { decoder in
                 let container = try decoder.singleValueContainer()
+                if let value = try? container.decode(Double.self) {
+                    return Date(timeIntervalSinceReferenceDate: value)
+                }
                 let value = try container.decode(String.self)
                 if let date = fractionalSecondsFormatter().date(from: value) ?? wholeSecondsFormatter().date(from: value) {
                     return date
