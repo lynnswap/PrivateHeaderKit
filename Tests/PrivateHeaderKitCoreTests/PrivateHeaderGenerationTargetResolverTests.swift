@@ -1,6 +1,6 @@
 import Testing
 
-import PrivateHeaderKitCore
+@testable import PrivateHeaderKitCore
 
 @Suite
 struct PrivateHeaderGenerationTargetResolverTests {

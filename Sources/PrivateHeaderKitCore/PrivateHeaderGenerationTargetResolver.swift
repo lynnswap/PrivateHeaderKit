@@ -1,6 +1,6 @@
 import Foundation
 
-public extension PrivateHeaderGeneration {
+extension PrivateHeaderGeneration {
     enum TargetKind: String, CaseIterable, Hashable, Sendable {
         case framework
         case privateFramework
@@ -11,12 +11,12 @@ public extension PrivateHeaderGeneration {
     }
 
     struct TargetCandidate: Hashable, Sendable {
-        public let identifier: String
-        public let displayName: String
-        public let kind: TargetKind
-        public let aliases: [String]
+        let identifier: String
+        let displayName: String
+        let kind: TargetKind
+        let aliases: [String]
 
-        public init(
+        init(
             identifier: String,
             displayName: String,
             kind: TargetKind,
@@ -56,10 +56,10 @@ public extension PrivateHeaderGeneration {
     }
 
     struct TargetQuery: Hashable, Sendable {
-        public let rawValue: String
-        public let terms: [String]
+        let rawValue: String
+        let terms: [String]
 
-        public init(commaSeparated rawValue: String) throws {
+        init(commaSeparated rawValue: String) throws {
             let terms = rawValue
                 .split(separator: ",", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -68,7 +68,7 @@ public extension PrivateHeaderGeneration {
             self.terms = terms
         }
 
-        public var requestsAllAvailableTargets: Bool {
+        var requestsAllAvailableTargets: Bool {
             terms.count == 1 && Self.allAvailableTerms.contains(Self.normalize(terms[0]))
         }
 
@@ -146,13 +146,13 @@ public extension PrivateHeaderGeneration {
     }
 
     struct TargetResolver: Hashable, Sendable {
-        public let candidates: [TargetCandidate]
+        let candidates: [TargetCandidate]
 
-        public init(candidates: [TargetCandidate]) {
+        init(candidates: [TargetCandidate]) {
             self.candidates = candidates
         }
 
-        public func resolve(_ query: TargetQuery) -> TargetResolution {
+        func resolve(_ query: TargetQuery) -> TargetResolution {
             if query.requestsAllAvailableTargets {
                 return .selected(.allAvailable)
             }
@@ -224,27 +224,27 @@ public extension PrivateHeaderGeneration {
         case failed([Failure])
         case unresolved(ambiguities: [Ambiguity], failures: [Failure])
 
-        public struct Ambiguity: Hashable, Sendable {
-            public let query: String
-            public let candidates: [TargetCandidate]
+        struct Ambiguity: Hashable, Sendable {
+            let query: String
+            let candidates: [TargetCandidate]
 
-            public init(query: String, candidates: [TargetCandidate]) {
+            init(query: String, candidates: [TargetCandidate]) {
                 self.query = query
                 self.candidates = candidates
             }
         }
 
-        public struct Failure: Hashable, Sendable {
-            public let query: String
-            public let reason: FailureReason
+        struct Failure: Hashable, Sendable {
+            let query: String
+            let reason: FailureReason
 
-            public init(query: String, reason: FailureReason) {
+            init(query: String, reason: FailureReason) {
                 self.query = query
                 self.reason = reason
             }
         }
 
-        public enum FailureReason: String, Hashable, Sendable {
+        enum FailureReason: String, Hashable, Sendable {
             case noMatch
         }
     }
@@ -254,7 +254,7 @@ public extension PrivateHeaderGeneration {
         case invalidPathComponent(field: String, value: String)
         case invalidAllTargetsCombination
 
-        public var description: String {
+        var description: String {
             switch self {
             case .emptyComponent(let field):
                 "\(field) must not be empty"
