@@ -34,10 +34,18 @@ extension PrivateHeaderGeneration {
             [displayName] + inferredAliases + aliases
         }
 
+        var partialSearchableNames: [String] {
+            ([displayName] + aliases).filter(Self.isPartialSearchableName)
+        }
+
         private static func validateNonEmpty(_ value: String, field: String) throws {
             guard !value.isEmpty else {
                 throw ValidationError.emptyComponent(field: field)
             }
+        }
+
+        private static func isPartialSearchableName(_ value: String) -> Bool {
+            !value.contains("/")
         }
 
         private var inferredAliases: [String] {
@@ -209,7 +217,7 @@ extension PrivateHeaderGeneration {
             }
 
             return candidates.filter { candidate in
-                candidate.searchableNames.contains { Self.normalize($0).contains(normalizedTerm) }
+                candidate.partialSearchableNames.contains { Self.normalize($0).contains(normalizedTerm) }
             }
         }
 

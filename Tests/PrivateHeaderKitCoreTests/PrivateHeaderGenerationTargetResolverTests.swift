@@ -54,6 +54,59 @@ struct PrivateHeaderGenerationTargetResolverTests {
         #expect(resolver.resolve(query) == .selected(.targets([candidate])))
     }
 
+    @Test func partialMatchSearchesOnlyNamesWithoutPathSeparators() throws {
+        let framework = try candidate("UIKit", kind: .framework)
+        let systemBundle = try candidate(
+            "PreferenceBundles/Foo.bundle",
+            kind: .systemBundle,
+            aliases: ["/System/Library/PreferenceBundles/Foo.bundle"]
+        )
+        let dylib = try candidate(
+            "libobjc.A.dylib",
+            kind: .usrLibDylib,
+            aliases: ["usr/lib/libobjc.A.dylib"]
+        )
+        let resolver = PrivateHeaderGeneration.TargetResolver(
+            candidates: [
+                framework,
+                systemBundle,
+                dylib,
+            ]
+        )
+
+        #expect(
+            resolver.resolve(try PrivateHeaderGeneration.TargetQuery(commaSeparated: "Kit"))
+                == .selected(.targets([framework]))
+        )
+        #expect(
+            resolver.resolve(try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles/Foo.bundle"))
+                == .selected(.targets([systemBundle]))
+        )
+        #expect(
+            resolver.resolve(
+                try PrivateHeaderGeneration.TargetQuery(commaSeparated: "/System/Library/PreferenceBundles/Foo.bundle")
+            ) == .selected(.targets([systemBundle]))
+        )
+        #expect(
+            resolver.resolve(try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles"))
+                == .failed([
+                    PrivateHeaderGeneration.TargetResolution.Failure(
+                        query: "PreferenceBundles",
+                        reason: .noMatch
+                    ),
+                ])
+        )
+        #expect(
+            resolver.resolve(try PrivateHeaderGeneration.TargetQuery(commaSeparated: "usr/lib"))
+                == .failed([
+                    PrivateHeaderGeneration.TargetResolution.Failure(
+                        query: "usr/lib",
+                        reason: .noMatch
+                    ),
+                ])
+        )
+    }
+
     @Test func ambiguousPartialMatchReturnsCandidatesForUISelection() throws {
         let candidates = try [
             candidate("UIKitCore", kind: .framework),
