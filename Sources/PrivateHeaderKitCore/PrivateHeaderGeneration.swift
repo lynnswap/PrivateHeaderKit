@@ -34,19 +34,47 @@ public extension PrivateHeaderGeneration {
         public let version: String
         public let build: String?
 
-        public init(platform: Platform, version: String, build: String? = nil) {
+        public init(platform: Platform, version: String, build: String? = nil) throws {
+            try Self.validatePathComponent(version, field: "version")
+            let build = build.flatMap { $0.isEmpty ? nil : $0 }
+            if let build {
+                try Self.validatePathComponent(build, field: "build")
+            }
             self.platform = platform
             self.version = version
-            self.build = build.flatMap { $0.isEmpty ? nil : $0 }
+            self.build = build
         }
 
         public var label: Label {
             Label(platform: platform, version: version, build: build)
         }
+
+        private static func validatePathComponent(_ value: String, field: String) throws {
+            guard !value.isEmpty else {
+                throw ValidationError.emptyComponent(field: field)
+            }
+            guard value != ".", value != "..", !value.contains("/"), !value.contains("\0") else {
+                throw ValidationError.invalidPathComponent(field: field, value: value)
+            }
+        }
     }
 }
 
 public extension PrivateHeaderGeneration.Source {
+    enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
+        case emptyComponent(field: String)
+        case invalidPathComponent(field: String, value: String)
+
+        public var description: String {
+            switch self {
+            case .emptyComponent(let field):
+                "\(field) must not be empty"
+            case .invalidPathComponent(let field, let value):
+                "\(field) is not safe as a path component: \(value)"
+            }
+        }
+    }
+
     enum Platform: String, CaseIterable, Hashable, Sendable {
         case iOS = "iOS"
         case macOS = "macOS"

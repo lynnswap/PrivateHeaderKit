@@ -5,8 +5,8 @@ import PrivateHeaderKitCore
 
 @Suite
 struct PrivateHeaderGenerationLabelTests {
-    @Test func iOSSourceLabelUsesUserFacingDisplayAndCompactDirectoryNames() {
-        let source = PrivateHeaderGeneration.Source(
+    @Test func iOSSourceLabelUsesUserFacingDisplayAndCompactDirectoryNames() throws {
+        let source = try PrivateHeaderGeneration.Source(
             platform: .iOS,
             version: "27.0",
             build: "24A5355q"
@@ -17,8 +17,8 @@ struct PrivateHeaderGenerationLabelTests {
         #expect(source.label.description == "iOS 27.0 (24A5355q)")
     }
 
-    @Test func macOSSourceLabelUsesUserFacingDisplayAndCompactDirectoryNames() {
-        let source = PrivateHeaderGeneration.Source(
+    @Test func macOSSourceLabelUsesUserFacingDisplayAndCompactDirectoryNames() throws {
+        let source = try PrivateHeaderGeneration.Source(
             platform: .macOS,
             version: "16.0",
             build: "25A5279m"
@@ -28,8 +28,8 @@ struct PrivateHeaderGenerationLabelTests {
         #expect(source.label.directoryName == "macOS16.0(25A5279m)")
     }
 
-    @Test func sourceLabelOmitsEmptyBuild() {
-        let source = PrivateHeaderGeneration.Source(
+    @Test func sourceLabelOmitsEmptyBuild() throws {
+        let source = try PrivateHeaderGeneration.Source(
             platform: .iOS,
             version: "27.0",
             build: ""
@@ -38,12 +38,30 @@ struct PrivateHeaderGenerationLabelTests {
         #expect(source.label.displayName == "iOS 27.0")
         #expect(source.label.directoryName == "iOS27.0")
     }
+
+    @Test func sourceRejectsPathUnsafeVersionAndBuildComponents() throws {
+        #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.Source(
+                platform: .iOS,
+                version: "../27.0",
+                build: "24A5355q"
+            )
+        }
+
+        #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.Source(
+                platform: .iOS,
+                version: "27.0",
+                build: "24A/5355q"
+            )
+        }
+    }
 }
 
 @Suite
 struct PrivateHeaderGenerationPlanTests {
-    @Test func customOutputBaseKeepsStateOutsideArtifactDirectoryAndUsesSourceLabelAsResumeKey() {
-        let source = PrivateHeaderGeneration.Source(
+    @Test func customOutputBaseKeepsStateOutsideArtifactDirectoryAndUsesSourceLabelAsResumeKey() throws {
+        let source = try PrivateHeaderGeneration.Source(
             platform: .iOS,
             version: "27.0",
             build: "24A5355q"
@@ -63,8 +81,8 @@ struct PrivateHeaderGenerationPlanTests {
         #expect(plan.target == .allAvailable)
     }
 
-    @Test func defaultOutputCanSeparateArtifactAndStateBases() {
-        let source = PrivateHeaderGeneration.Source(
+    @Test func defaultOutputCanSeparateArtifactAndStateBases() throws {
+        let source = try PrivateHeaderGeneration.Source(
             platform: .iOS,
             version: "27.0",
             build: "24A5355q"
@@ -85,7 +103,7 @@ struct PrivateHeaderGenerationPlanTests {
     }
 
     @Test func generatePrivateHeadersThrowsExplicitUnimplementedError() async throws {
-        let source = PrivateHeaderGeneration.Source(
+        let source = try PrivateHeaderGeneration.Source(
             platform: .macOS,
             version: "16.0",
             build: "25A5279m"
