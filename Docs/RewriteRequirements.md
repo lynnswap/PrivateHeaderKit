@@ -89,9 +89,9 @@ custom output base:
 Rules:
 
 - `--out` and `PH_OUT_DIR` は artifact root ではなく output base directory として扱う。
-- artifact は常に `<output-base>/<source-label>/` に置く。
-- state は常に `<output-base>/.state/<source-label>/` に置く。
-- default output の場合だけ、output base は `~/PrivateHeaderKit/generated-headers`、state base は `~/PrivateHeaderKit/.state` とする。
+- artifact は常に `<artifact-base>/<source-label>/` に置く。
+- default の artifact base は `~/PrivateHeaderKit/generated-headers`、state base は `~/PrivateHeaderKit/.state` とする。
+- custom output の場合は、artifact base と state base を同じ指定 directory の下に置く。artifact は `<output-base>/<source-label>/`、state は `<output-base>/.state/<source-label>/`。
 - state/log/staging は artifact tree の中に置かない。
 
 ## Interactive Flow
