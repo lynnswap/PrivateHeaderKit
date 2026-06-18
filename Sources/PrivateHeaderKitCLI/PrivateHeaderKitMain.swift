@@ -1,4 +1,5 @@
 import Foundation
+import HeaderDumpCore
 import PrivateHeaderKitInstall
 
 #if canImport(Darwin)
@@ -9,8 +10,8 @@ import Glibc
 
 @main
 struct PrivateHeaderKitMain {
-    static func main() {
-        exit(runPrivateHeaderKitCommand(CommandLine.arguments))
+    static func main() async {
+        exit(await runPrivateHeaderKitCommand(CommandLine.arguments))
     }
 }
 
@@ -18,6 +19,7 @@ enum PrivateHeaderKitCommand: Equatable {
     case help
     case install([String])
     case generationUnavailable([String])
+    case rawDump([String])
 }
 
 enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
@@ -37,7 +39,7 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
 func runPrivateHeaderKitCommand(
     _ args: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment
-) -> Int32 {
+) async -> Int32 {
     do {
         switch try parsePrivateHeaderKitCommand(args) {
         case .help:
@@ -49,6 +51,9 @@ func runPrivateHeaderKitCommand(
             logCLIError("private header generation is being wired into the rewrite command surface")
             logCLIError("run `privateheaderkit --help` for available commands")
             return 2
+        case .rawDump(let rawDumpArgs):
+            await HeaderDumpCore.HeaderDumpCLI.main(arguments: rawDumpArgs)
+            return 0
         }
     } catch let error as PrivateHeaderKitCLIError {
         logCLIError("error: \(error.description)")
@@ -77,6 +82,8 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
         return .install(installArgs)
     case "generate":
         return .generationUnavailable(Array(remaining.dropFirst()))
+    case "__raw-dump":
+        return .rawDump(Array(remaining.dropFirst()))
     case "privateheaderkit-dump", "headerdump", "headerdump-sim":
         throw PrivateHeaderKitCLIError.legacyCommand(command)
     default:
@@ -85,7 +92,11 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
 }
 
 func printPrivateHeaderKitUsage() {
-    let text = """
+    print(privateHeaderKitUsageText())
+}
+
+func privateHeaderKitUsageText() -> String {
+    """
     Usage:
       privateheaderkit [command] [options]
 
@@ -99,7 +110,6 @@ func printPrivateHeaderKitUsage() {
     Examples:
       privateheaderkit install --bindir "$HOME/bin"
     """
-    print(text)
 }
 
 private func logCLIError(_ message: String) {

@@ -41,6 +41,28 @@ struct PrivateHeaderKitCLIParsingTests {
         )
     }
 
+    @Test func hiddenRawDumpCommandForwardsRawDumpArguments() throws {
+        #expect(
+            try parsePrivateHeaderKitCommand([
+                "privateheaderkit",
+                "__raw-dump",
+                "-o",
+                "/tmp/out",
+                "/tmp/input",
+            ])
+            == .rawDump([
+                "-o",
+                "/tmp/out",
+                "/tmp/input",
+            ])
+        )
+    }
+
+    @Test func publicHelpDoesNotListHiddenRawDumpCommand() {
+        let usage = privateHeaderKitUsageText()
+        #expect(!usage.contains("__raw-dump"))
+    }
+
     @Test func legacyExecutableNamesAreRejectedAsPublicSubcommands() {
         for legacyCommand in ["privateheaderkit-dump", "headerdump", "headerdump-sim"] {
             do {

@@ -88,7 +88,10 @@ struct DumpOptions {
 
 public struct HeaderDumpCLI {
     public static func main() async {
-        let args = Array(CommandLine.arguments.dropFirst())
+        await main(arguments: Array(CommandLine.arguments.dropFirst()))
+    }
+
+    public static func main(arguments args: [String]) async {
         guard let parsed = parseArguments(args) else {
             printUsage()
             exit(EXIT_FAILURE)

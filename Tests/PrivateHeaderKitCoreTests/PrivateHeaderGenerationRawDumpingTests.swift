@@ -5,7 +5,7 @@ import Testing
 
 @Suite
 struct PrivateHeaderGenerationRawDumpingTests {
-    @Test func hostInvocationUsesHostHelperAndStableHeaderdumpFlags() {
+    @Test func hostInvocationUsesPrivateHeaderKitHiddenRawDumpModeAndStableFlags() {
         let inputPath = "/System/Library/PrivateFrameworks/Foo.framework"
         let stageDirectory = URL(
             fileURLWithPath: "/tmp/PrivateHeaderKit/.tmp-run",
@@ -30,11 +30,12 @@ struct PrivateHeaderGenerationRawDumpingTests {
 
         #expect(invocation.phaseLabel == "raw-header-dump")
         #expect(invocation.executionMode == .host)
-        #expect(invocation.helperURL.path == "/opt/privateheaderkit/bin/headerdump")
+        #expect(invocation.helperURL.path == "/opt/privateheaderkit/bin/privateheaderkit")
         #expect(invocation.inputPath == inputPath)
         #expect(invocation.stagingOutputDirectory == stageDirectory)
         #expect(invocation.command == [
-            "/opt/privateheaderkit/bin/headerdump",
+            "/opt/privateheaderkit/bin/privateheaderkit",
+            "__raw-dump",
             "-o",
             "/tmp/PrivateHeaderKit/.tmp-run",
             "-b",
@@ -62,7 +63,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
         )
 
         #expect(invocation.command == [
-            "/opt/privateheaderkit/bin/headerdump",
+            "/opt/privateheaderkit/bin/privateheaderkit",
+            "__raw-dump",
             "-o",
             "/tmp/PrivateHeaderKit/.tmp-run",
             "-b",
@@ -102,14 +104,15 @@ struct PrivateHeaderGenerationRawDumpingTests {
             )
         )
 
-        #expect(invocation.helperURL.path == "/opt/privateheaderkit/bin/headerdump-sim")
+        #expect(invocation.helperURL.path == "/opt/privateheaderkit/bin/privateheaderkit-sim")
         #expect(invocation.inputPath == inputPath)
         #expect(invocation.command == [
             "xcrun",
             "simctl",
             "spawn",
             "A1B2C3D4-E5F6-7890-ABCD-111111111111",
-            "/opt/privateheaderkit/bin/headerdump-sim",
+            "/opt/privateheaderkit/bin/privateheaderkit-sim",
+            "__raw-dump",
             "-o",
             "/tmp/PrivateHeaderKit/.tmp-run",
             "-b",
@@ -128,8 +131,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
 
     private func helperURLs() -> PrivateHeaderGeneration.RawDumping.HelperURLs {
         PrivateHeaderGeneration.RawDumping.HelperURLs(
-            host: URL(fileURLWithPath: "/opt/privateheaderkit/bin/headerdump"),
-            simulator: URL(fileURLWithPath: "/opt/privateheaderkit/bin/headerdump-sim")
+            host: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit"),
+            simulator: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit-sim")
         )
     }
 }

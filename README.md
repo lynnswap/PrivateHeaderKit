@@ -15,7 +15,7 @@ PrivateHeaderKit is being rewritten around a single user-facing command:
 privateheaderkit
 ```
 
-The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no longer installed or documented as user-facing commands. Low-level dumping helpers can still exist internally while the rewrite execution path is wired into `privateheaderkit`.
+The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no longer installed or documented as user-facing commands. Low-level raw dumping is kept as a hidden internal mode of `privateheaderkit`.
 
 ## Installation
 
