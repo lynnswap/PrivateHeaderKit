@@ -102,7 +102,7 @@ struct PrivateHeaderGenerationPlanTests {
         #expect(plan.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)")
     }
 
-    @Test func generatePrivateHeadersThrowsExplicitUnimplementedError() async throws {
+    @Test func generatePrivateHeadersRequiresExecutionConfiguration() async throws {
         let source = try PrivateHeaderGeneration.Source(
             platform: .macOS,
             version: "16.0",
@@ -119,18 +119,11 @@ struct PrivateHeaderGenerationPlanTests {
             )
             Issue.record("generatePrivateHeaders unexpectedly returned a result")
         } catch let error as PrivateHeaderGeneration.GenerationError {
-            #expect(
-                error == .notImplemented(
-                    plan: PrivateHeaderGeneration.makePlan(
-                        source: source,
-                        output: output
-                    )
-                )
-            )
+            #expect(error == .missingExecutionConfiguration("systemRoot"))
         }
     }
 
-    @Test func topLevelGeneratePrivateHeadersThrowsExplicitUnimplementedError() async throws {
+    @Test func topLevelGeneratePrivateHeadersRequiresExecutionConfiguration() async throws {
         let source = try PrivateHeaderGeneration.Source(
             platform: .macOS,
             version: "16.0",
@@ -147,14 +140,7 @@ struct PrivateHeaderGenerationPlanTests {
             )
             Issue.record("generatePrivateHeaders unexpectedly returned a result")
         } catch let error as PrivateHeaderGeneration.GenerationError {
-            #expect(
-                error == .notImplemented(
-                    plan: PrivateHeaderGeneration.makePlan(
-                        source: source,
-                        output: output
-                    )
-                )
-            )
+            #expect(error == .missingExecutionConfiguration("systemRoot"))
         }
     }
 }

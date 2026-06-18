@@ -1,10 +1,10 @@
 import Foundation
 
-extension PrivateHeaderGeneration {
+public extension PrivateHeaderGeneration {
     enum RawDumping {
         static let helperSubcommand = "__raw-dump"
 
-        static func makeInvocation(_ request: Request) -> Invocation {
+        public static func makeInvocation(_ request: Request) -> Invocation {
             let helperURL = request.executionMode.helperURL(from: request.helperURLs)
             let command = makeCommand(
                 helperURL: helperURL,
@@ -79,12 +79,12 @@ extension PrivateHeaderGeneration {
     }
 }
 
-extension PrivateHeaderGeneration.RawDumping {
+public extension PrivateHeaderGeneration.RawDumping {
     struct HelperURLs: Hashable, Sendable {
-        let host: URL
-        let simulator: URL
+        public let host: URL
+        public let simulator: URL
 
-        init(host: URL, simulator: URL) {
+        public init(host: URL, simulator: URL) {
             self.host = host
             self.simulator = simulator
         }
@@ -112,13 +112,13 @@ extension PrivateHeaderGeneration.RawDumping {
     }
 
     struct Options: Hashable, Sendable {
-        var skipExisting: Bool
-        var useSharedCache: Bool
-        var verbose: Bool
-        var preferRuntimeMetadata: Bool
-        var helperEnvironment: [String: String]
+        public var skipExisting: Bool
+        public var useSharedCache: Bool
+        public var verbose: Bool
+        public var preferRuntimeMetadata: Bool
+        public var helperEnvironment: [String: String]
 
-        init(
+        public init(
             skipExisting: Bool = false,
             useSharedCache: Bool = false,
             verbose: Bool = false,
@@ -134,13 +134,13 @@ extension PrivateHeaderGeneration.RawDumping {
     }
 
     struct Request: Hashable, Sendable {
-        let helperURLs: HelperURLs
-        let executionMode: ExecutionMode
-        let inputPath: String
-        let stagingOutputDirectory: URL
-        let options: Options
+        public let helperURLs: HelperURLs
+        public let executionMode: ExecutionMode
+        public let inputPath: String
+        public let stagingOutputDirectory: URL
+        public let options: Options
 
-        init(
+        public init(
             helperURLs: HelperURLs,
             executionMode: ExecutionMode,
             inputPath: String,
@@ -156,12 +156,32 @@ extension PrivateHeaderGeneration.RawDumping {
     }
 
     struct Invocation: Hashable, Sendable {
-        let phaseLabel: String
-        let executionMode: ExecutionMode
-        let helperURL: URL
-        let inputPath: String
-        let stagingOutputDirectory: URL
-        let command: [String]
-        let environment: [String: String]
+        public let phaseLabel: String
+        public let executionMode: ExecutionMode
+        public let helperURL: URL
+        public let inputPath: String
+        public let stagingOutputDirectory: URL
+        public let command: [String]
+        public let environment: [String: String]
+    }
+
+    struct Result: Hashable, Sendable {
+        public let terminationStatus: Int32
+        public let wasKilled: Bool
+        public let failureSummary: String?
+
+        public init(
+            terminationStatus: Int32,
+            wasKilled: Bool = false,
+            failureSummary: String? = nil
+        ) {
+            self.terminationStatus = terminationStatus
+            self.wasKilled = wasKilled
+            self.failureSummary = failureSummary
+        }
+
+        public var succeeded: Bool {
+            terminationStatus == 0 && !wasKilled
+        }
     }
 }

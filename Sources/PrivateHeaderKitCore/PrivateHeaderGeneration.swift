@@ -18,12 +18,13 @@ public enum PrivateHeaderGeneration {
         output: Output,
         options: Options = Options()
     ) async throws -> Result {
-        throw GenerationError.notImplemented(
-            plan: makePlan(
-                source: source,
-                output: output,
-                options: options
-            )
+        let plan = makePlan(
+            source: source,
+            output: output,
+            options: options
+        )
+        return try await GenerationExecutor().run(
+            GenerationExecutor.Configuration(plan: plan)
         )
     }
 }
@@ -128,6 +129,10 @@ public extension PrivateHeaderGeneration {
             self.identifier = identifier
         }
 
+        static func generated(identifier: String) -> Target {
+            Target(identifier: identifier)
+        }
+
         public var description: String {
             identifier
         }
@@ -135,8 +140,55 @@ public extension PrivateHeaderGeneration {
 }
 
 public extension PrivateHeaderGeneration {
+    enum TargetRequest: Hashable, Sendable {
+        case frameworks
+        case system
+        case allAvailable
+        case identifiers([String])
+        case query(String)
+    }
+
+    enum ResumeBehavior: Hashable, Sendable {
+        case resume
+        case fresh
+        case requireExplicitResume(resumeRequested: Bool)
+    }
+
     struct Options: Hashable, Sendable {
-        public init() {}
+        public var layout: Layout
+        public var targetRequest: TargetRequest
+        public var systemRoot: URL?
+        public var helperURLs: RawDumping.HelperURLs?
+        public var executionMode: RawDumping.ExecutionMode?
+        public var rawDumpingOptions: RawDumping.Options
+        public var includeNestedChildren: Bool
+        public var resumeBehavior: ResumeBehavior
+        public var toolVersion: String
+        public var outputBaseDirectory: URL?
+
+        public init(
+            layout: Layout = .headers,
+            targetRequest: TargetRequest = .allAvailable,
+            systemRoot: URL? = nil,
+            helperURLs: RawDumping.HelperURLs? = nil,
+            executionMode: RawDumping.ExecutionMode? = nil,
+            rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
+            includeNestedChildren: Bool = true,
+            resumeBehavior: ResumeBehavior = .requireExplicitResume(resumeRequested: false),
+            toolVersion: String = "0.1.0",
+            outputBaseDirectory: URL? = nil
+        ) {
+            self.layout = layout
+            self.targetRequest = targetRequest
+            self.systemRoot = systemRoot
+            self.helperURLs = helperURLs
+            self.executionMode = executionMode
+            self.rawDumpingOptions = rawDumpingOptions
+            self.includeNestedChildren = includeNestedChildren
+            self.resumeBehavior = resumeBehavior
+            self.toolVersion = toolVersion
+            self.outputBaseDirectory = outputBaseDirectory
+        }
     }
 
     struct Output: Hashable, Sendable {
@@ -192,21 +244,51 @@ public extension PrivateHeaderGeneration {
         public let plan: Plan
         public let artifactDirectory: URL
         public let generatedTargets: [Target]
+        public let runID: String
+        public let manifestURL: URL
+        public let runRecordURL: URL
 
-        init(plan: Plan, generatedTargets: [Target]) {
+        init(
+            plan: Plan,
+            generatedTargets: [Target],
+            runID: String,
+            manifestURL: URL,
+            runRecordURL: URL
+        ) {
             self.plan = plan
             self.artifactDirectory = plan.artifactDirectory
             self.generatedTargets = generatedTargets
+            self.runID = runID
+            self.manifestURL = manifestURL
+            self.runRecordURL = runRecordURL
         }
     }
 
     enum GenerationError: Error, Equatable, CustomStringConvertible, Sendable {
-        case notImplemented(plan: Plan)
+        case missingExecutionConfiguration(String)
+        case noDiscoveredTargets(systemRoot: String)
+        case unknownSelectedTargets([String])
+        case unresolvedTargetQuery(String)
+        case incompatibleResume([ResumeCompatibilityReason])
+        case resumeRequired(ResumeSummary)
+        case runFailed(runID: String, failedTargetIDs: [String])
 
         public var description: String {
             switch self {
-            case .notImplemented(let plan):
-                "private header generation is not implemented for \(plan.source.label.displayName)"
+            case .missingExecutionConfiguration(let field):
+                "private header generation requires \(field)"
+            case .noDiscoveredTargets(let systemRoot):
+                "no private header targets were discovered under \(systemRoot)"
+            case .unknownSelectedTargets(let targetIDs):
+                "selected targets were not discovered: \(targetIDs.joined(separator: ", "))"
+            case .unresolvedTargetQuery(let query):
+                "target query could not be resolved: \(query)"
+            case .incompatibleResume(let reasons):
+                "existing generation state is incompatible: \(reasons)"
+            case .resumeRequired(let summary):
+                "existing generation state is unfinished; explicit resume is required for \(summary.latestRunID ?? "unknown run")"
+            case .runFailed(let runID, let failedTargetIDs):
+                "private header generation run \(runID) failed for \(failedTargetIDs.count) targets"
             }
         }
     }
