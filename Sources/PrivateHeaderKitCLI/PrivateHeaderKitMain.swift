@@ -85,6 +85,10 @@ struct PrivateHeaderKitGenerationRequest: Sendable {
     var prefersRuntimeMetadata: Bool {
         options.rawDumpingOptions.preferRuntimeMetadata
     }
+
+    var helperEnvironment: [String: String] {
+        options.rawDumpingOptions.helperEnvironment
+    }
 }
 
 struct PrivateHeaderKitGenerationSummary: Equatable, Sendable {
@@ -339,6 +343,7 @@ private func makePrivateHeaderGenerationRequest(
         fileURLWithPath: command.outputBaseDirectory,
         isDirectory: true
     )
+    let systemRoot = URL(fileURLWithPath: command.systemRoot, isDirectory: true)
     let output = PrivateHeaderGeneration.Output(baseDirectory: outputBaseDirectory)
     let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
         host: helperExecutableURL,
@@ -346,12 +351,13 @@ private func makePrivateHeaderGenerationRequest(
     )
     let options = PrivateHeaderGeneration.Options(
         targetRequest: .query(command.targetQuery),
-        systemRoot: URL(fileURLWithPath: command.systemRoot, isDirectory: true),
+        systemRoot: systemRoot,
         helperURLs: helperURLs,
         executionMode: .host,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
             useSharedCache: true,
-            preferRuntimeMetadata: true
+            preferRuntimeMetadata: true,
+            helperEnvironment: ["PH_RUNTIME_ROOT": systemRoot.path]
         ),
         resumeBehavior: .requireExplicitResume(resumeRequested: command.resume),
         outputBaseDirectory: outputBaseDirectory

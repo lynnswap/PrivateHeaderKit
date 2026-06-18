@@ -313,6 +313,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.usesHostExecution)
         #expect(request.usesSharedCache)
         #expect(request.prefersRuntimeMetadata)
+        #expect(request.helperEnvironment == ["PH_RUNTIME_ROOT": "/tmp/RuntimeRoot"])
         #expect(outputMessages == [
             "private header generation completed",
             "source: iOS 27.0 (24A5355q)",
