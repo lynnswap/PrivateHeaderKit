@@ -227,6 +227,32 @@ struct PrivateHeaderKitCLIParsingTests {
         }
     }
 
+    @Test func generateRejectsValuedOptionFollowedByAnotherFlag() throws {
+        do {
+            _ = try parsePrivateHeaderKitCommand([
+                "privateheaderkit",
+                "generate",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--build",
+                "24A5355q",
+                "--system-root",
+                "/tmp/RuntimeRoot",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "--resume",
+            ])
+            Issue.record("expected target missing value to be rejected")
+        } catch let error as PrivateHeaderKitCLIError {
+            #expect(error == .missingValue("--target"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     @Test func validGenerateRunReturnsTemporaryIntegrationError() async {
         var loggedMessages: [String] = []
         let exitCode = await runPrivateHeaderKitCommand([

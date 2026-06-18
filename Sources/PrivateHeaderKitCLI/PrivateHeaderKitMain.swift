@@ -336,6 +336,9 @@ private func readOptionValue(
     guard valueIndex < args.count else {
         throw PrivateHeaderKitCLIError.missingValue(option)
     }
+    guard !args[valueIndex].hasPrefix("--") else {
+        throw PrivateHeaderKitCLIError.missingValue(option)
+    }
     index += 2
     return args[valueIndex]
 }
