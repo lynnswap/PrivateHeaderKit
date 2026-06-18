@@ -2,6 +2,8 @@ import Foundation
 
 extension PrivateHeaderGeneration {
     enum RawDumping {
+        static let helperSubcommand = "__raw-dump"
+
         static func makeInvocation(_ request: Request) -> Invocation {
             let helperURL = request.executionMode.helperURL(from: request.helperURLs)
             let command = makeCommand(
@@ -30,6 +32,7 @@ extension PrivateHeaderGeneration {
             case .host:
                 command = [
                     helperURL.path,
+                    helperSubcommand,
                     "-o",
                     request.stagingOutputDirectory.path,
                 ]
@@ -40,6 +43,7 @@ extension PrivateHeaderGeneration {
                     "spawn",
                     deviceUDID,
                     helperURL.path,
+                    helperSubcommand,
                     "-o",
                     request.stagingOutputDirectory.path,
                 ]

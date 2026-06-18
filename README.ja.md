@@ -15,7 +15,7 @@ PrivateHeaderKit は、ユーザーが直接使うコマンドを 1 つに寄せ
 privateheaderkit
 ```
 
-旧 `privateheaderkit-dump` / `headerdump` / `headerdump-sim` は、user-facing command としてはインストール・案内しません。低レベル dump helper は、rewrite execution path を `privateheaderkit` に接続するまで内部実装として残る場合があります。
+旧 `privateheaderkit-dump` / `headerdump` / `headerdump-sim` は、user-facing command としてはインストール・案内しません。低レベル raw dump は `privateheaderkit` の hidden internal mode として保持します。
 
 ## インストール
 
