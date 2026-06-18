@@ -129,4 +129,29 @@ struct PrivateHeaderGenerationPlanTests {
             )
         }
     }
+
+    @Test func topLevelGeneratePrivateHeadersForwardsToNamespaceEntryPoint() async throws {
+        let source = try PrivateHeaderGeneration.Source(
+            platform: .macOS,
+            version: "16.0",
+            build: "25A5279m"
+        )
+        let output = PrivateHeaderGeneration.Output(
+            baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+        )
+
+        do {
+            _ = try await generatePrivateHeaders(source: source, output: output)
+            Issue.record("generatePrivateHeaders unexpectedly returned a result")
+        } catch let error as PrivateHeaderGeneration.GenerationError {
+            #expect(
+                error == .notImplemented(
+                    plan: PrivateHeaderGeneration.makePlan(
+                        source: source,
+                        output: output
+                    )
+                )
+            )
+        }
+    }
 }

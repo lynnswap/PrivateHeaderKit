@@ -28,6 +28,18 @@ public enum PrivateHeaderGeneration {
     }
 }
 
+public func generatePrivateHeaders(
+    source: PrivateHeaderGeneration.Source,
+    output: PrivateHeaderGeneration.Output,
+    options: PrivateHeaderGeneration.Options = PrivateHeaderGeneration.Options()
+) async throws -> PrivateHeaderGeneration.Result {
+    try await PrivateHeaderGeneration.generatePrivateHeaders(
+        source: source,
+        output: output,
+        options: options
+    )
+}
+
 public extension PrivateHeaderGeneration {
     struct Source: Hashable, Sendable {
         public let platform: Platform
