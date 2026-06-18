@@ -31,12 +31,21 @@ public extension PrivateHeaderGeneration {
         }
 
         var searchableNames: [String] {
-            [displayName] + aliases
+            [displayName] + inferredAliases + aliases
         }
 
         private static func validateNonEmpty(_ value: String, field: String) throws {
             guard !value.isEmpty else {
                 throw ValidationError.emptyComponent(field: field)
+            }
+        }
+
+        private var inferredAliases: [String] {
+            switch kind {
+            case .usrLibDylib where !displayName.hasPrefix("/"):
+                ["/usr/lib/\(displayName)"]
+            default:
+                []
             }
         }
     }
@@ -84,7 +93,7 @@ public extension PrivateHeaderGeneration {
                     requestedAll = true
                     continue
                 }
-                guard term != ".", term != "..", !term.contains(".."), !term.contains("/"), !term.contains("\0") else {
+                guard isSafeTargetSelector(term) else {
                     throw ValidationError.invalidPathComponent(field: "query", value: term)
                 }
             }
@@ -96,6 +105,32 @@ public extension PrivateHeaderGeneration {
 
         private static func normalize(_ value: String) -> String {
             value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+
+        private static func isSafeTargetSelector(_ value: String) -> Bool {
+            guard !value.contains("\0") else { return false }
+            if value.hasPrefix("/usr/lib/") {
+                return isValidUsrLibDylibSelector(value)
+            }
+            if value.hasPrefix("/") {
+                return false
+            }
+            let components = value.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            return components.allSatisfy(isSafeRelativePathComponent)
+        }
+
+        private static func isValidUsrLibDylibSelector(_ value: String) -> Bool {
+            let name = String(value.dropFirst("/usr/lib/".count))
+            return isSafeRelativePathComponent(name)
+                && !name.contains("/")
+                && name.lowercased().hasSuffix(".dylib")
+        }
+
+        private static func isSafeRelativePathComponent(_ component: String) -> Bool {
+            !component.isEmpty
+                && component != "."
+                && component != ".."
+                && !component.contains("..")
         }
     }
 

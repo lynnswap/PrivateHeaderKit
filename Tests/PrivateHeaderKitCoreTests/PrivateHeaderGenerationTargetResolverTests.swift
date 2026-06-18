@@ -149,11 +149,41 @@ struct PrivateHeaderGenerationTargetResolverTests {
         }
 
         #expect(throws: PrivateHeaderGeneration.ValidationError.self) {
-            _ = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "/usr/lib/libobjc.A.dylib")
+            _ = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "/tmp/libobjc.A.dylib")
+        }
+
+        #expect(throws: PrivateHeaderGeneration.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles/./Foo.bundle")
+        }
+
+        #expect(throws: PrivateHeaderGeneration.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "/usr/lib/subdir/libobjc.A.dylib")
         }
     }
 
-    @Test func candidatesKeepKindMetadataOutOfMatchingRequirements() throws {
+    @Test func relativeSystemLibraryPathSelectorCanResolveCandidate() throws {
+        let candidate = try candidate(
+            "PreferenceBundles/Foo.bundle",
+            kind: .systemBundle
+        )
+        let resolver = PrivateHeaderGeneration.TargetResolver(candidates: [candidate])
+        let query = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles/Foo.bundle")
+
+        #expect(resolver.resolve(query) == .selected(.targets([candidate])))
+    }
+
+    @Test func usrLibDylibPathSelectorCanResolveByInferredAlias() throws {
+        let candidate = try candidate(
+            "libobjc.A.dylib",
+            kind: .usrLibDylib
+        )
+        let resolver = PrivateHeaderGeneration.TargetResolver(candidates: [candidate])
+        let query = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "/usr/lib/libobjc.A.dylib")
+
+        #expect(resolver.resolve(query) == .selected(.targets([candidate])))
+    }
+
+    @Test func candidatesKeepKindMetadataOutOfUserFacingSelectionRequirements() throws {
         let resolver = PrivateHeaderGeneration.TargetResolver(
             candidates: try [
                 candidate(
