@@ -107,6 +107,21 @@ struct PrivateHeaderGenerationManifestTests {
         #expect(json.contains("\"failureSummary\" : null"))
     }
 
+    @Test func manifestDecodingRejectsMissingRequiredNullableFields() throws {
+        let manifest = try makeManifest()
+        let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "latestRunID")
+        let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        #expect(throws: DecodingError.self) {
+            _ = try PrivateHeaderGeneration.StateJSON.decode(
+                PrivateHeaderGeneration.Manifest.self,
+                from: missingKeyData
+            )
+        }
+    }
+
     @Test func artifactPathRejectsAbsoluteTraversalAndEmptyPaths() {
         #expect(throws: PrivateHeaderGeneration.StateValidationError.self) {
             _ = try PrivateHeaderGeneration.ArtifactPath("/System/Library/Foo.h")
@@ -188,6 +203,21 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(decoded == run)
         #expect(json.contains("\"endedAt\" : null"))
         #expect(json.contains("\"failureSummary\" : null"))
+    }
+
+    @Test func runRecordDecodingRejectsMissingRequiredNullableFields() throws {
+        let run = try makeRunRecord()
+        let data = try PrivateHeaderGeneration.StateJSON.encode(run)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "endedAt")
+        let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        #expect(throws: DecodingError.self) {
+            _ = try PrivateHeaderGeneration.StateJSON.decode(
+                PrivateHeaderGeneration.RunRecord.self,
+                from: missingKeyData
+            )
+        }
     }
 
     @Test func runHistoryRetentionKeepsLatestTenRuns() {
