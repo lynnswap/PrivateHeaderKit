@@ -106,7 +106,7 @@ public func makeTemporaryTestDirectories() throws -> TestDirectories {
     return dirs
 }
 
-public final class HeaderdumpFixtureRunner {
+public final class RawDumpFixtureRunner {
     public private(set) var sourcePaths: [String] = []
     public var failingSourceSuffixes: Set<String>
 
@@ -115,7 +115,7 @@ public final class HeaderdumpFixtureRunner {
     }
 
     public func handle(command: [String], env _: [String: String]?, cwd _: URL?) throws -> StreamingCommandResult {
-        let parsed = try parseHeaderdumpCommand(command)
+        let parsed = try parseRawDumpCommand(command)
         sourcePaths.append(parsed.sourcePath)
 
         if failingSourceSuffixes.contains(where: { parsed.sourcePath.hasSuffix($0) }) {
@@ -133,9 +133,9 @@ public final class HeaderdumpFixtureRunner {
         return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
     }
 
-    private func parseHeaderdumpCommand(_ command: [String]) throws -> (stageDir: URL, sourcePath: String) {
+    private func parseRawDumpCommand(_ command: [String]) throws -> (stageDir: URL, sourcePath: String) {
         guard let outIndex = command.firstIndex(of: "-o"), outIndex + 1 < command.count else {
-            throw ToolingError.message("headerdump command missing -o: \(command.joined(separator: " "))")
+            throw ToolingError.message("raw dump command missing -o: \(command.joined(separator: " "))")
         }
         let stageDir = URL(fileURLWithPath: command[outIndex + 1], isDirectory: true)
         let tail = Array(command.dropFirst(outIndex + 2))
@@ -145,7 +145,7 @@ public final class HeaderdumpFixtureRunner {
         } else if let firstPath = tail.first(where: { !$0.hasPrefix("-") }) {
             sourcePath = firstPath
         } else {
-            throw ToolingError.message("headerdump command missing source path: \(command.joined(separator: " "))")
+            throw ToolingError.message("raw dump command missing source path: \(command.joined(separator: " "))")
         }
         return (stageDir, sourcePath)
     }

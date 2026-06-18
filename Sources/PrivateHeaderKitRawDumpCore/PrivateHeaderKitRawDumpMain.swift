@@ -12,7 +12,7 @@ import Glibc
 #endif
 #if canImport(ObjectiveC)
 import ObjectiveC
-import HeaderDumpRuntimeObjC
+import PrivateHeaderKitRawDumpRuntimeObjC
 #endif
 
 protocol FileExistenceChecking {
@@ -86,7 +86,7 @@ struct DumpOptions {
     var logSwiftEvents: Bool = false
 }
 
-public struct HeaderDumpCLI {
+public struct PrivateHeaderKitRawDumpCLI {
     public static func main() async {
         await main(arguments: Array(CommandLine.arguments.dropFirst()))
     }
@@ -100,7 +100,7 @@ public struct HeaderDumpCLI {
         do {
             try await run(parsed: parsed)
         } catch {
-            fputs("headerdump: error: \(error)\n", stderr)
+            fputs("privateheaderkit __raw-dump: error: \(error)\n", stderr)
             exit(EXIT_FAILURE)
         }
     }
@@ -173,8 +173,8 @@ func parseArguments(
 
 private func printUsage() {
     let text = """
-    Usage: headerdump [<options>] <filename|framework>
-           headerdump [<options>] -r <sourcePath>
+    Usage: privateheaderkit __raw-dump [<options>] <filename|framework>
+           privateheaderkit __raw-dump [<options>] -r <sourcePath>
 
     Options:
         -o   Output directory
@@ -260,7 +260,7 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
         includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
         options: [.skipsHiddenFiles]
     ) else {
-        throw NSError(domain: "headerdump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
+        throw NSError(domain: "privateheaderkit.raw-dump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
     }
 
     while let url = enumerator.nextObject() as? URL {
@@ -716,7 +716,7 @@ private func profileLogDuration(
     let seconds = Double(delta) / 1_000_000_000.0
     // Intentionally stderr so `withSilencedStdout` doesn't hide it.
     let secondsText = String(format: "%.3fs", seconds)
-    fputs("headerdump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
+    fputs("privateheaderkit __raw-dump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
 }
 
 private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
@@ -864,7 +864,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
 
     private func log(now: UInt64, message: String) {
         let rel = formatDurationSeconds(now &- startNanos)
-        fputs("headerdump: swift-events [\(label)] +\(rel) \(message)\n", stderr)
+        fputs("privateheaderkit __raw-dump: swift-events [\(label)] +\(rel) \(message)\n", stderr)
     }
 
     private func formatDurationSeconds(_ nanos: UInt64) -> String {
@@ -959,7 +959,7 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
             )
             if options.verbose {
                 fputs(
-                    "headerdump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
+                    "privateheaderkit __raw-dump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
                     stderr
                 )
             }
@@ -1007,7 +1007,7 @@ private func dumpObjC(
         let runtimeInfos = runtimeClassInfos(for: imagePath, options: options)
         if options.verbose, !runtimeInfos.isEmpty {
             fputs(
-                "headerdump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
+                "privateheaderkit __raw-dump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
                 stderr
             )
         }
@@ -1053,7 +1053,7 @@ private func dumpObjC(
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
             if options.verbose {
-                fputs("headerdump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
+                fputs("privateheaderkit __raw-dump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
             }
             continue
         }
@@ -1070,7 +1070,7 @@ private func dumpObjC(
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
             if options.verbose {
-                fputs("headerdump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
+                fputs("privateheaderkit __raw-dump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
             }
             continue
         }
@@ -1088,7 +1088,7 @@ private func dumpObjC(
         if !isSaneObjCTypeName(info.className) || !isSaneObjCTypeName(info.name) {
             if options.verbose {
                 fputs(
-                    "headerdump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
+                    "privateheaderkit __raw-dump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
                     stderr
                 )
             }
@@ -1169,7 +1169,7 @@ private func runtimeClassInfo(
         if options.verbose {
             let stage = (failedStage as String?) ?? "unknown"
             fputs(
-                "headerdump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
+                "privateheaderkit __raw-dump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
                 stderr
             )
         }
@@ -1197,7 +1197,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
     guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
         if options.verbose {
-            fputs("headerdump: runtime dlopen failed for \(resolvedPath)\n", stderr)
+            fputs("privateheaderkit __raw-dump: runtime dlopen failed for \(resolvedPath)\n", stderr)
         }
         return []
     }
@@ -1207,7 +1207,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
         if options.verbose {
             fputs(
-                "headerdump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
+                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -1218,7 +1218,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     if count == 0 {
         if options.verbose {
             fputs(
-                "headerdump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
+                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -1288,7 +1288,7 @@ private func runtimeClassInfosByImageName(
 
     if options.verbose, !infos.isEmpty {
         fputs(
-            "headerdump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
+            "privateheaderkit __raw-dump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
             stderr
         )
     }
@@ -1343,7 +1343,7 @@ private func logClassInfoFailure<T: ObjCClassProtocol>(
     let displayName = name ?? "<unknown>"
     let metaImage = meta?.0.imagePath ?? "<nil>"
     fputs(
-        "headerdump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
+        "privateheaderkit __raw-dump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
         stderr
     )
 }

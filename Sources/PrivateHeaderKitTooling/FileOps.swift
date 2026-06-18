@@ -80,7 +80,7 @@ public enum FileOps {
         var roots: [URL] = [
             stageDir.appendingPathComponent("System/Library", isDirectory: true),
             // Some simulator runtimes expose system frameworks via symlinks into Cryptex.
-            // When the bundle executable path resolves to `/System/Cryptexes/OS/...`, headerdump
+            // When the bundle executable path resolves to `/System/Cryptexes/OS/...`, raw dump
             // may emit output under this root; include it so the dump tool can relocate results.
             stageDir.appendingPathComponent("System/Cryptexes/OS/System/Library", isDirectory: true),
             // macOS also uses Cryptex in Preboot for some system components.

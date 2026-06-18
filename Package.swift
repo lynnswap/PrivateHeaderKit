@@ -31,16 +31,16 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "HeaderDumpRuntimeObjC",
+            name: "PrivateHeaderKitRawDumpRuntimeObjC",
             dependencies: [],
-            path: "Sources/HeaderDumpRuntimeObjC",
+            path: "Sources/PrivateHeaderKitRawDumpRuntimeObjC",
             publicHeadersPath: "include"
         ),
         .target(
-            name: "HeaderDumpCore",
+            name: "PrivateHeaderKitRawDumpCore",
             dependencies: [
                 .target(
-                    name: "HeaderDumpRuntimeObjC",
+                    name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
@@ -49,7 +49,7 @@ let package = Package(
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
-            path: "Sources/HeaderDumpCore"
+            path: "Sources/PrivateHeaderKitRawDumpCore"
         ),
         .target(
             name: "PrivateHeaderKitTooling",
@@ -68,7 +68,7 @@ let package = Package(
         .executableTarget(
             name: "PrivateHeaderKitCLI",
             dependencies: [
-                "HeaderDumpCore",
+                "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitInstall",
             ]
@@ -88,12 +88,12 @@ let package = Package(
             path: "Tests/PrivateHeaderKitTestSupport"
         ),
         .testTarget(
-            name: "HeaderDumpCLITests",
+            name: "PrivateHeaderKitRawDumpTests",
             dependencies: [
-                "HeaderDumpCore",
+                "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitTestSupport",
                 .target(
-                    name: "HeaderDumpRuntimeObjC",
+                    name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
