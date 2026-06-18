@@ -153,6 +153,12 @@ struct PrivateHeaderGenerationTargetResolverTests {
         }
 
         #expect(throws: PrivateHeaderGeneration.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.TargetQuery(
+                commaSeparated: "/System/Library/PreferenceBundles/../Foo.bundle"
+            )
+        }
+
+        #expect(throws: PrivateHeaderGeneration.ValidationError.self) {
             _ = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles/./Foo.bundle")
         }
 
@@ -168,6 +174,20 @@ struct PrivateHeaderGenerationTargetResolverTests {
         )
         let resolver = PrivateHeaderGeneration.TargetResolver(candidates: [candidate])
         let query = try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles/Foo.bundle")
+
+        #expect(resolver.resolve(query) == .selected(.targets([candidate])))
+    }
+
+    @Test func absoluteSystemLibraryPathAliasCanResolveCandidate() throws {
+        let candidate = try candidate(
+            "PreferenceBundles/Foo.bundle",
+            kind: .systemBundle,
+            aliases: ["/System/Library/PreferenceBundles/Foo.bundle"]
+        )
+        let resolver = PrivateHeaderGeneration.TargetResolver(candidates: [candidate])
+        let query = try PrivateHeaderGeneration.TargetQuery(
+            commaSeparated: "/System/Library/PreferenceBundles/Foo.bundle"
+        )
 
         #expect(resolver.resolve(query) == .selected(.targets([candidate])))
     }

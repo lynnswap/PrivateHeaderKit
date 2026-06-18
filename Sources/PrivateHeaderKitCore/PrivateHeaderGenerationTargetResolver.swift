@@ -77,6 +77,8 @@ public extension PrivateHeaderGeneration {
             "@all",
             "すべて",
         ]
+        private static let systemLibraryPrefix = "/System/Library/"
+        private static let usrLibPrefix = "/usr/lib/"
 
         private static func validate(terms: [String]) throws {
             guard !terms.isEmpty else {
@@ -109,7 +111,10 @@ public extension PrivateHeaderGeneration {
 
         private static func isSafeTargetSelector(_ value: String) -> Bool {
             guard !value.contains("\0") else { return false }
-            if value.hasPrefix("/usr/lib/") {
+            if value.hasPrefix(systemLibraryPrefix) {
+                return isValidSystemLibrarySelector(value)
+            }
+            if value.hasPrefix(usrLibPrefix) {
                 return isValidUsrLibDylibSelector(value)
             }
             if value.hasPrefix("/") {
@@ -119,8 +124,14 @@ public extension PrivateHeaderGeneration {
             return components.allSatisfy(isSafeRelativePathComponent)
         }
 
+        private static func isValidSystemLibrarySelector(_ value: String) -> Bool {
+            let relativePath = String(value.dropFirst(systemLibraryPrefix.count))
+            let components = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            return components.allSatisfy(isSafeRelativePathComponent)
+        }
+
         private static func isValidUsrLibDylibSelector(_ value: String) -> Bool {
-            let name = String(value.dropFirst("/usr/lib/".count))
+            let name = String(value.dropFirst(usrLibPrefix.count))
             return isSafeRelativePathComponent(name)
                 && !name.contains("/")
                 && name.lowercased().hasSuffix(".dylib")
