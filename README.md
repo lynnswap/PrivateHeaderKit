@@ -52,9 +52,17 @@ swift build -c release --product privateheaderkit
 ```bash
 privateheaderkit --help
 privateheaderkit install --help
+privateheaderkit generate --help
 ```
 
-`privateheaderkit generate` is reserved for the rewrite execution integration. The old `<version>` positional style is not part of the new public surface; source selection will be explicit or interactive.
+`privateheaderkit generate` accepts the non-interactive rewrite input contract with explicit source, output, and target flags:
+
+```bash
+privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit generate --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
+```
+
+`--target` is a comma-separated target query, not a stable target ID list. `--resume` is an explicit non-interactive resume request. The old `<version>` positional style is not part of the new public surface.
 
 ## Output Layout Contract
 
