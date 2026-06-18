@@ -40,6 +40,20 @@ struct PrivateHeaderGenerationManifestTests {
         #expect(decoded == manifest)
     }
 
+    @Test func stateJSONPreservesFractionalSecondDates() throws {
+        let manifest = try makeManifest(updatedAt: Date(timeIntervalSince1970: 1_000.123))
+
+        let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.Manifest.self,
+            from: data
+        )
+
+        #expect(decoded.updatedAt == manifest.updatedAt)
+        #expect(json.contains("\"updatedAt\" : \"1970-01-01T00:16:40.123Z\""))
+    }
+
     @Test func artifactPathRejectsAbsoluteTraversalAndEmptyPaths() {
         #expect(throws: PrivateHeaderGeneration.StateValidationError.self) {
             _ = try PrivateHeaderGeneration.ArtifactPath("/System/Library/Foo.h")
@@ -119,7 +133,9 @@ struct PrivateHeaderGenerationRunRecordTests {
     }
 }
 
-private func makeManifest() throws -> PrivateHeaderGeneration.Manifest {
+private func makeManifest(
+    updatedAt: Date = Date(timeIntervalSince1970: 1_000)
+) throws -> PrivateHeaderGeneration.Manifest {
     let source = try PrivateHeaderGeneration.Source(
         platform: .iOS,
         version: "27.0",
@@ -131,8 +147,6 @@ private func makeManifest() throws -> PrivateHeaderGeneration.Manifest {
         stateBaseDirectory: root.appendingPathComponent(".state", isDirectory: true)
     )
     let plan = PrivateHeaderGeneration.makePlan(source: source, output: output)
-    let updatedAt = Date(timeIntervalSince1970: 1_000)
-
     return PrivateHeaderGeneration.Manifest(
         schemaVersion: 1,
         toolVersion: "0.1.0",

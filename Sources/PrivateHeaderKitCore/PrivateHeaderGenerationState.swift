@@ -329,14 +329,39 @@ public extension PrivateHeaderGeneration {
         private static func encoder() -> JSONEncoder {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
+            encoder.dateEncodingStrategy = .custom { date, encoder in
+                var container = encoder.singleValueContainer()
+                try container.encode(fractionalSecondsFormatter().string(from: date))
+            }
             return encoder
         }
 
         private static func decoder() -> JSONDecoder {
             let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
+            decoder.dateDecodingStrategy = .custom { decoder in
+                let container = try decoder.singleValueContainer()
+                let value = try container.decode(String.self)
+                if let date = fractionalSecondsFormatter().date(from: value) ?? wholeSecondsFormatter().date(from: value) {
+                    return date
+                }
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Invalid ISO 8601 date: \(value)"
+                )
+            }
             return decoder
+        }
+
+        private static func fractionalSecondsFormatter() -> ISO8601DateFormatter {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter
+        }
+
+        private static func wholeSecondsFormatter() -> ISO8601DateFormatter {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            return formatter
         }
     }
 
