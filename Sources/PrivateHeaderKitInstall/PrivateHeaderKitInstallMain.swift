@@ -17,37 +17,44 @@ struct InstallOptions {
 
 enum InstallError: Error, CustomStringConvertible {
     case message(String)
+    case helpRequested
 
     var description: String {
         switch self {
         case .message(let text):
             return text
+        case .helpRequested:
+            return "help requested"
         }
     }
 }
 
-@main
-struct PrivateHeaderKitInstallMain {
-    static func main() {
-        do {
-            let options = try parseOptions(CommandLine.arguments, environment: ProcessInfo.processInfo.environment)
-            try install(options: options)
-        } catch let error as InstallError {
-            logError("error: \(error.description)")
-            logError("run with --help for usage")
-            exit(1)
-        } catch {
-            logError("error: \(error)")
-            logError("run with --help for usage")
-            exit(1)
-        }
+public func runInstallCommand(
+    _ args: [String],
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Int32 {
+    do {
+        let options = try parseOptions(args, environment: environment)
+        try install(options: options)
+        return 0
+    } catch InstallError.helpRequested {
+        printInstallUsage()
+        return 0
+    } catch let error as InstallError {
+        logError("error: \(error.description)")
+        logError("run `privateheaderkit install --help` for usage")
+        return 1
+    } catch {
+        logError("error: \(error)")
+        logError("run `privateheaderkit install --help` for usage")
+        return 1
     }
 }
 
-private func printUsage() {
+func printInstallUsage() {
     let text = """
     Usage:
-      privateheaderkit-install [--bindir path] [--prefix path] [--dry-run]
+      privateheaderkit install [--bindir path] [--prefix path] [--dry-run]
 
     Options:
       --bindir path   Install to this directory (overrides --prefix)
@@ -56,8 +63,8 @@ private func printUsage() {
       -h, --help      Show this help
 
     Examples:
-      swift run -c release privateheaderkit-install
-      swift run -c release privateheaderkit-install --bindir "$HOME/bin"
+      swift run -c release privateheaderkit install
+      swift run -c release privateheaderkit install --bindir "$HOME/bin"
     """
     print(text)
 }
@@ -106,8 +113,7 @@ func parseOptions(_ args: [String], environment: [String: String]) throws -> Ins
             options.dryRun = true
             index += 1
         case "-h", "--help":
-            printUsage()
-            exit(0)
+            throw InstallError.helpRequested
         default:
             throw InstallError.message("unknown option: \(arg)")
         }
@@ -149,8 +155,8 @@ func repositoryRoot(from executableURL: URL) -> URL? {
 func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileManager) -> Bool {
     // Avoid accidentally treating some other Swift package as this repository.
     let markers = [
-        repoRoot.appendingPathComponent("Sources/HeaderDumpCore/HeaderDumpMain.swift"),
-        repoRoot.appendingPathComponent("Sources/HeaderDumpCLI/HeaderDumpMain.swift"),
+        repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCore/PrivateHeaderGeneration.swift"),
+        repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCLI/PrivateHeaderKitMain.swift"),
     ]
     return markers.allSatisfy { fileManager.fileExists(atPath: $0.path) }
 }
@@ -175,113 +181,6 @@ func resolveSwiftBinDir(repoRoot: URL, runner: CommandRunning) -> URL? {
     return URL(fileURLWithPath: path, isDirectory: true)
 }
 
-func resolveXcodeScheme(
-    repoRoot: URL,
-    runner: CommandRunning,
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) throws -> String {
-    struct ListOutput: Decodable {
-        struct Container: Decodable {
-            let schemes: [String]?
-        }
-        let workspace: Container?
-        let project: Container?
-    }
-
-    let output = try runner.runCapture(["xcodebuild", "-list", "-json"], env: nil, cwd: repoRoot)
-    // Some Xcode versions can emit extra non-JSON logging. Be defensive and parse the JSON region.
-    let jsonText: String
-    if let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}") {
-        jsonText = String(output[start...end])
-    } else {
-        jsonText = output
-    }
-
-    let decoded = try JSONDecoder().decode(ListOutput.self, from: Data(jsonText.utf8))
-    let workspaceSchemes = decoded.workspace?.schemes ?? []
-    let projectSchemes = decoded.project?.schemes ?? []
-    var schemes: [String] = []
-    for scheme in workspaceSchemes + projectSchemes {
-        let trimmed = scheme.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { continue }
-        if !schemes.contains(trimmed) {
-            schemes.append(trimmed)
-        }
-    }
-
-    let configuredRaw = environment["PH_XCODE_SCHEME"]
-    let configured = configuredRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let configured, !configured.isEmpty {
-        if schemes.isEmpty || schemes.contains(configured) {
-            return configured
-        }
-        logError("warning: PH_XCODE_SCHEME=\(configured) not found; falling back")
-    }
-
-    // Prefer a scheme that builds the `headerdump` executable.
-    let preferred = ["headerdump", "PrivateHeaderKit-Package", "PrivateHeaderKit"]
-    for candidate in preferred where schemes.contains(candidate) {
-        return candidate
-    }
-
-    if let first = schemes.first {
-        logError("warning: could not find preferred scheme; falling back to '\(first)'")
-        return first
-    }
-
-    throw InstallError.message("no xcodebuild schemes found (run `xcodebuild -list` from the repo root)")
-}
-
-private func buildHeaderdumpSim(repoRoot: URL, runner: CommandRunning) throws -> URL? {
-    // If no simulator runtimes exist, skip building the simulator binary.
-    let runtimes = (try? Simctl.listRuntimes(runner: runner)) ?? []
-    guard let runtime = runtimes.last else {
-        logError("warning: no available iOS runtimes found; skipping headerdump-sim build")
-        return nil
-    }
-
-    var devices = try Simctl.listDevices(runtimeId: runtime.identifier, runner: runner)
-    if devices.isEmpty {
-        try Simctl.createDefaultDevice(runtimeId: runtime.identifier, version: runtime.version, runner: runner)
-        devices = try Simctl.listDevices(runtimeId: runtime.identifier, runner: runner)
-    }
-    guard !devices.isEmpty else {
-        throw InstallError.message("no simulator device available for headerdump-sim build")
-    }
-
-    let device = try Simctl.pickDefaultDevice(devices: devices)
-    let scheme = try resolveXcodeScheme(repoRoot: repoRoot, runner: runner)
-    let derivedData = repoRoot
-        .appendingPathComponent(".build", isDirectory: true)
-        .appendingPathComponent("DerivedDataInstall", isDirectory: true)
-
-    print("Building headerdump for iOS Simulator (xcodebuild)...")
-    try runner.runSimple(
-        [
-            "xcodebuild",
-            "-scheme", scheme,
-            "-configuration", "Release",
-            "-destination", "id=\(device.udid)",
-            "-derivedDataPath", derivedData.path,
-            "-skipMacroValidation",
-            "-skipPackagePluginValidation",
-        ],
-        env: nil,
-        cwd: repoRoot
-    )
-
-    let binPath = derivedData
-        .appendingPathComponent("Build", isDirectory: true)
-        .appendingPathComponent("Products", isDirectory: true)
-        .appendingPathComponent("Release-iphonesimulator", isDirectory: true)
-        .appendingPathComponent("headerdump", isDirectory: false)
-
-    guard FileManager.default.fileExists(atPath: binPath.path) else {
-        throw InstallError.message("headerdump simulator build output not found")
-    }
-    return binPath
-}
-
 private func install(options: InstallOptions) throws {
     guard let selfURL = Bundle.main.executableURL else {
         throw InstallError.message("failed to locate installer executable")
@@ -291,9 +190,8 @@ private func install(options: InstallOptions) throws {
 
     let binDir = resolveBinDir(prefix: options.prefix, bindir: options.bindir)
 
-    // Host products are built by SwiftPM and placed next to the installer under `.build/release`.
-    let hostBinaries = ["privateheaderkit-dump", "headerdump"]
-    let installedBinaries = hostBinaries + ["headerdump-sim"]
+    // The rewrite exposes a single user-facing command. Low-level dump helpers stay internal.
+    let installedBinaries = ["privateheaderkit"]
 
     if options.dryRun {
         print("Would create: \(binDir.path)")
@@ -323,27 +221,12 @@ private func install(options: InstallOptions) throws {
     }
 
     if let repoRoot {
-        // Always build installed products when possible, so users get the latest binaries after pulling updates.
+        // Always build the installed product when possible, so users get the latest binary after pulling updates.
         do {
-            try buildProducts(hostBinaries, in: repoRoot, runner: runner)
+            try buildProducts(installedBinaries, in: repoRoot, runner: runner)
         } catch {
             logError("warning: swift build failed: \(error)")
         }
-    }
-
-    // Build everything first, then copy, so failures don't leave a partial install.
-    let simBinaryURL: URL?
-    if let repoRoot {
-        do {
-            simBinaryURL = try buildHeaderdumpSim(repoRoot: repoRoot, runner: runner)
-        } catch {
-            // Allow installing host binaries even if xcodebuild/simctl fails.
-            logError("warning: failed to build headerdump-sim: \(error)")
-            simBinaryURL = nil
-        }
-    } else {
-        logError("warning: repository root not found; skipping headerdump-sim build")
-        simBinaryURL = nil
     }
 
     let hostBinaryDir: URL
@@ -353,7 +236,7 @@ private func install(options: InstallOptions) throws {
         hostBinaryDir = baseURL
     }
 
-    for name in hostBinaries {
+    for name in installedBinaries {
         let sourceURL = hostBinaryDir.appendingPathComponent(name)
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw InstallError.message("\(name) not found next to installer (run with `swift run -c release` from the repo root)")
@@ -371,31 +254,16 @@ private func install(options: InstallOptions) throws {
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationURL.path)
         print("Installed \(name) to \(destinationURL.path)")
     }
-
-    if let simBinaryURL {
-        let destinationURL = binDir.appendingPathComponent("headerdump-sim")
-        if simBinaryURL.resolvingSymlinksInPath().path == destinationURL.resolvingSymlinksInPath().path {
-            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationURL.path)
-            print("Already installed headerdump-sim at \(destinationURL.path)")
-            return
-        }
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
-        }
-        try fileManager.copyItem(at: simBinaryURL, to: destinationURL)
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationURL.path)
-        print("Installed headerdump-sim to \(destinationURL.path)")
-    }
 }
 
 #else
 
-@main
-struct PrivateHeaderKitInstallMain {
-    static func main() {
-        fputs("privateheaderkit-install: unsupported on this platform\n", stderr)
-        exit(1)
-    }
+public func runInstallCommand(
+    _ args: [String],
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Int32 {
+    fputs("privateheaderkit install: unsupported on this platform\n", stderr)
+    return 1
 }
 
 #endif
