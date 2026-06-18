@@ -66,12 +66,6 @@ let package = Package(
             ],
             path: "Sources/HeaderDumpCLI"
         ),
-        .executableTarget(
-            name: "PrivateHeaderKitDump",
-            dependencies: [
-                "PrivateHeaderKitTooling",
-            ]
-        ),
         .target(
             name: "PrivateHeaderKitInstall",
             dependencies: [
@@ -115,13 +109,6 @@ let package = Package(
             name: "PrivateHeaderKitCoreTests",
             dependencies: [
                 "PrivateHeaderKitCore",
-            ]
-        ),
-        .testTarget(
-            name: "PrivateHeaderKitDumpTests",
-            dependencies: [
-                "PrivateHeaderKitDump",
-                "PrivateHeaderKitTestSupport",
             ]
         ),
         .testTarget(
