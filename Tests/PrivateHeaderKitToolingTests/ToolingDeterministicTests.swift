@@ -80,7 +80,17 @@ struct SimctlDeterministicTests {
             """
             {
               "runtimes": [
-                {"name": "iOS 26.10", "version": "26.10", "identifier": "ios-26-10", "runtimeRoot": "/runtimes/26.10", "isAvailable": true, "buildversion": "23Z1"},
+                {
+                  "name": "iOS 26.10",
+                  "version": "26.10",
+                  "identifier": "ios-26-10",
+                  "runtimeRoot": "/runtimes/26.10",
+                  "isAvailable": true,
+                  "buildversion": "23Z1",
+                  "supportedDeviceTypes": [
+                    {"name":"iPhone 17","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17","productFamily":"iPhone"}
+                  ]
+                },
                 {"name": "iOS 26.2", "version": "26.2", "identifier": "ios-26-2", "runtimeRoot": "/runtimes/26.2", "isAvailable": true, "buildversion": "23C54"},
                 {"name": "iOS 25.0", "version": "25.0", "identifier": "ios-25-0", "runtimeRoot": "/runtimes/25.0", "isAvailable": false},
                 {"name": "watchOS 26.0", "version": "26.0", "identifier": "watch-26-0", "runtimeRoot": "/runtimes/watch", "isAvailable": true}
@@ -94,6 +104,7 @@ struct SimctlDeterministicTests {
 
         #expect(runtimes.map(\.version) == ["26.2", "26.10"])
         #expect(runtimes.first?.build == "23C54")
+        #expect(runtimes.last?.supportedDeviceTypes.first?.identifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-17")
         #expect(runner.captureCommands.map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
     }
 
@@ -162,7 +173,19 @@ struct SimctlDeterministicTests {
             version: "27.0",
             build: "24A5355q",
             identifier: "ios-27",
-            runtimeRoot: "/runtimes/27"
+            runtimeRoot: "/runtimes/27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPad Pro",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Pro",
+                    productFamily: "iPad"
+                ),
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+            ]
         )
         runner.setCaptureOutputs(
             [
@@ -176,17 +199,11 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "devices", "-j"]
         )
         runner.setCaptureOutput(
-            """
-            {"devicetypes":[{"name":"iPhone 17","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17","productFamily":"iPhone"}]}
-            """,
-            for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
-        )
-        runner.setCaptureOutput(
             "CLONE-001\n",
             for: ["xcrun", "simctl", "clone", "BASE-001", "Dumping Device (iOS 27.0)"]
         )
 
-        let device = try Simctl.resolveDevice(runtime: runtime, query: nil, runner: runner)
+        let device = try Simctl.resolveDevice(runtime: runtime, query: nil, runner: runner, environment: [:])
 
         #expect(device.name == "Dumping Device (iOS 27.0)")
         #expect(device.udid == "CLONE-001")
@@ -202,6 +219,102 @@ struct SimctlDeterministicTests {
             ],
             ["xcrun", "simctl", "boot", "CLONE-001"],
             ["xcrun", "simctl", "bootstatus", "CLONE-001", "-b"],
+        ])
+        #expect(!runner.captureCommands.map(\.command).contains(["xcrun", "simctl", "list", "devicetypes", "-j"]))
+    }
+
+    @Test func createDefaultDeviceFallsBackToRuntimeCompatibleDeviceTypes() throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27"
+        )
+        runner.setCaptureOutput(
+            """
+            {
+              "devicetypes": [
+                {
+                  "name": "iPhone 14",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-14",
+                  "productFamily": "iPhone",
+                  "minRuntimeVersionString": "16.0",
+                  "maxRuntimeVersionString": "26.4"
+                },
+                {
+                  "name": "iPhone 17",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                  "productFamily": "iPhone",
+                  "minRuntimeVersionString": "27.0",
+                  "maxRuntimeVersionString": "28.0"
+                },
+                {
+                  "name": "iPad Pro",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro",
+                  "productFamily": "iPad",
+                  "minRuntimeVersionString": "27.0",
+                  "maxRuntimeVersionString": "28.0"
+                }
+              ]
+            }
+            """,
+            for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
+        )
+
+        try Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+
+        #expect(runner.simpleCommands.map(\.command) == [
+            [
+                "xcrun",
+                "simctl",
+                "create",
+                "iPhone 17 (27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                "ios-27",
+            ],
+        ])
+    }
+
+    @Test func createDefaultDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27"
+        )
+        runner.setCaptureOutput(
+            """
+            {
+              "devicetypes": [
+                {
+                  "name": "iPad Pro",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro",
+                  "productFamily": "iPad"
+                },
+                {
+                  "name": "iPhone 16",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+                  "productFamily": "iPhone"
+                }
+              ]
+            }
+            """,
+            for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
+        )
+
+        try Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+
+        #expect(runner.simpleCommands.map(\.command) == [
+            [
+                "xcrun",
+                "simctl",
+                "create",
+                "iPhone 16 (27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+                "ios-27",
+            ],
         ])
     }
 }

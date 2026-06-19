@@ -83,6 +83,14 @@ struct InstallCommandResolutionTests {
         #expect(looksLikePrivateHeaderKitRepo(repoRoot, fileManager: .default) == true)
     }
 
+    @Test func defaultSimulatorHelperTripleUsesProcessArchitecture() throws {
+        #expect(try defaultSimulatorHelperTriple(processArchitecture: "arm64") == "arm64-apple-ios-simulator")
+        #expect(try defaultSimulatorHelperTriple(processArchitecture: "x86_64") == "x86_64-apple-ios-simulator")
+        #expect(throws: InstallError.self) {
+            _ = try defaultSimulatorHelperTriple(processArchitecture: "ppc")
+        }
+    }
+
     @Test func buildProductsRecordsReleaseBuildCommands() throws {
         let dirs = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
@@ -94,7 +102,11 @@ struct InstallCommandResolutionTests {
         ])
 
         try buildProducts(["privateheaderkit"], in: dirs.root, runner: runner)
-        try buildSimulatorHelper(in: dirs.root, runner: runner)
+        try buildSimulatorHelper(
+            in: dirs.root,
+            runner: runner,
+            simulatorHelperTriple: "x86_64-apple-ios-simulator"
+        )
 
         #expect(runner.simpleCommands.map(\.command) == [
             ["swift", "build", "-c", "release", "--product", "privateheaderkit"],
@@ -106,7 +118,7 @@ struct InstallCommandResolutionTests {
                 "--sdk",
                 "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk",
                 "--triple",
-                "arm64-apple-ios-simulator",
+                "x86_64-apple-ios-simulator",
                 "--product",
                 "privateheaderkit-sim-helper",
             ],
@@ -174,7 +186,7 @@ struct InstallCommandResolutionTests {
         let installPrefix = dirs.root.appendingPathComponent("Install", isDirectory: true)
         let hostBinDir = repoRoot.appendingPathComponent(".build/release", isDirectory: true)
         let simulatorBinDir = repoRoot.appendingPathComponent(
-            ".build/arm64-apple-ios-simulator/release",
+            ".build/x86_64-apple-ios-simulator/release",
             isDirectory: true
         )
         try makePrivateHeaderKitRepoMarkers(in: repoRoot)
@@ -204,7 +216,7 @@ struct InstallCommandResolutionTests {
                 "--sdk",
                 "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk",
                 "--triple",
-                "arm64-apple-ios-simulator",
+                "x86_64-apple-ios-simulator",
                 "--show-bin-path",
             ]
         )
@@ -218,7 +230,8 @@ struct InstallCommandResolutionTests {
             runner: runner,
             fileManager: .default,
             outputLogger: { outputMessages.append($0) },
-            errorLogger: { errorMessages.append($0) }
+            errorLogger: { errorMessages.append($0) },
+            simulatorHelperTriple: "x86_64-apple-ios-simulator"
         )
 
         let layout = resolveInstallLayout(prefix: installPrefix.path, bindir: nil)
@@ -234,7 +247,7 @@ struct InstallCommandResolutionTests {
                 "--sdk",
                 "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk",
                 "--triple",
-                "arm64-apple-ios-simulator",
+                "x86_64-apple-ios-simulator",
                 "--product",
                 "privateheaderkit-sim-helper",
             ],

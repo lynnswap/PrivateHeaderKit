@@ -33,7 +33,6 @@ enum InstallConstants {
     static let publicCommandName = "privateheaderkit"
     static let simulatorHelperInstallName = "privateheaderkit-sim-helper"
     static let simulatorHelperBuildProductName = "privateheaderkit-sim-helper"
-    static let simulatorHelperTriple = "arm64-apple-ios-simulator"
 }
 
 enum InstallError: Error, CustomStringConvertible {
@@ -205,12 +204,53 @@ func buildProducts(_ products: [String], in directory: URL, runner: CommandRunni
     }
 }
 
-func buildSimulatorHelper(in directory: URL, runner: CommandRunning) throws {
-    let sdkPath = try resolveSimulatorSDKPath(runner: runner)
-    try buildSimulatorHelper(in: directory, sdkPath: sdkPath, runner: runner)
+func currentProcessArchitectureName() -> String {
+    #if arch(arm64)
+    return "arm64"
+    #elseif arch(x86_64)
+    return "x86_64"
+    #else
+    return "unknown"
+    #endif
 }
 
-func buildSimulatorHelper(in directory: URL, sdkPath: String, runner: CommandRunning) throws {
+func defaultSimulatorHelperTriple(
+    processArchitecture: String = currentProcessArchitectureName()
+) throws -> String {
+    switch processArchitecture {
+    case "arm64", "x86_64":
+        "\(processArchitecture)-apple-ios-simulator"
+    default:
+        throw InstallError.message("unsupported host architecture for iOS simulator helper: \(processArchitecture)")
+    }
+}
+
+func buildSimulatorHelper(
+    in directory: URL,
+    runner: CommandRunning,
+    simulatorHelperTriple: String? = nil
+) throws {
+    let sdkPath = try resolveSimulatorSDKPath(runner: runner)
+    try buildSimulatorHelper(
+        in: directory,
+        sdkPath: sdkPath,
+        runner: runner,
+        simulatorHelperTriple: simulatorHelperTriple
+    )
+}
+
+func buildSimulatorHelper(
+    in directory: URL,
+    sdkPath: String,
+    runner: CommandRunning,
+    simulatorHelperTriple: String? = nil
+) throws {
+    let triple: String
+    if let simulatorHelperTriple {
+        triple = simulatorHelperTriple
+    } else {
+        triple = try defaultSimulatorHelperTriple()
+    }
     try runner.runSimple(
         [
             "swift",
@@ -220,7 +260,7 @@ func buildSimulatorHelper(in directory: URL, sdkPath: String, runner: CommandRun
             "--sdk",
             sdkPath,
             "--triple",
-            InstallConstants.simulatorHelperTriple,
+            triple,
             "--product",
             InstallConstants.simulatorHelperBuildProductName,
         ],
@@ -296,7 +336,8 @@ func install(
     runner: CommandRunning,
     fileManager: FileManager,
     outputLogger: (String) -> Void,
-    errorLogger: (String) -> Void
+    errorLogger: (String) -> Void,
+    simulatorHelperTriple: String? = nil
 ) throws {
     let baseURL = selfURL.deletingLastPathComponent()
 
@@ -328,16 +369,31 @@ func install(
     }
 
     var simulatorSDKPath: String?
+    let resolvedSimulatorHelperTriple: String?
     if let repoRoot {
+        let triple: String
+        if let simulatorHelperTriple {
+            triple = simulatorHelperTriple
+        } else {
+            triple = try defaultSimulatorHelperTriple()
+        }
+        resolvedSimulatorHelperTriple = triple
         // Always build install artifacts when possible, so users get the latest binaries after pulling updates.
         do {
             try buildProducts([InstallConstants.publicCommandName], in: repoRoot, runner: runner)
             let sdkPath = try resolveSimulatorSDKPath(runner: runner)
             simulatorSDKPath = sdkPath
-            try buildSimulatorHelper(in: repoRoot, sdkPath: sdkPath, runner: runner)
+            try buildSimulatorHelper(
+                in: repoRoot,
+                sdkPath: sdkPath,
+                runner: runner,
+                simulatorHelperTriple: triple
+            )
         } catch {
             errorLogger("warning: swift build failed: \(error)")
         }
+    } else {
+        resolvedSimulatorHelperTriple = nil
     }
 
     let hostBinaryDir: URL
@@ -353,7 +409,7 @@ func install(
         let simulatorBinaryDir = resolveSwiftBinDir(
             repoRoot: repoRoot,
             runner: runner,
-            triple: InstallConstants.simulatorHelperTriple,
+            triple: resolvedSimulatorHelperTriple,
             sdkPath: sdkPath
         ) ?? baseURL
         simulatorHelperSourceURL = simulatorBinaryDir.appendingPathComponent(
