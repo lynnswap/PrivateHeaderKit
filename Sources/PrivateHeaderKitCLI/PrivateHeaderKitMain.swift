@@ -500,12 +500,9 @@ private func simulatorHelperURL(
 
 func defaultSimulatorHelperURL(hostExecutableURL: URL) -> URL {
     let binDir = hostExecutableURL.deletingLastPathComponent()
-    if binDir.lastPathComponent == "bin" {
-        return binDir
-            .deletingLastPathComponent()
-            .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper", isDirectory: false)
-    }
-    return binDir.appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+    return binDir
+        .deletingLastPathComponent()
+        .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper", isDirectory: false)
 }
 
 func resolvePrivateHeaderKitSimulator(

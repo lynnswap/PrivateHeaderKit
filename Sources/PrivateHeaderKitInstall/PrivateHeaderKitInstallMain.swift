@@ -449,12 +449,9 @@ func dryRunInstallMessages(layout: InstallLayout) -> [String] {
 
 func defaultInstalledSimulatorHelperURL(for executableURL: URL) -> URL {
     let binDir = executableURL.deletingLastPathComponent()
-    if binDir.lastPathComponent == "bin" {
-        return binDir
-            .deletingLastPathComponent()
-            .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper", isDirectory: false)
-    }
-    return binDir.appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+    return binDir
+        .deletingLastPathComponent()
+        .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper", isDirectory: false)
 }
 
 private func installExecutableFile(

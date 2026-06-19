@@ -406,6 +406,27 @@ struct PrivateHeaderKitCLIParsingTests {
         ])
     }
 
+    @Test func iOSGenerateDefaultsSimulatorHelperToInstallLayoutForCustomBindir() async throws {
+        let helperURL = URL(fileURLWithPath: "/opt/phk/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        let exitCode = await runPrivateHeaderKitCommand(
+            validGenerateArguments(),
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in simulatorResolution() },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.hostHelperURL == helperURL)
+        #expect(request.simulatorHelperURL?.path == "/opt/libexec/privateheaderkit/privateheaderkit-sim-helper")
+    }
+
     @Test func iOSGenerateWithoutSystemRootUsesResolvedRuntimeRootAndExplicitSimulatorHelper() async throws {
         let recorder = GenerationRequestRecorder()
         let simulatorHelper = "/tmp/privateheaderkit-sim-helper"

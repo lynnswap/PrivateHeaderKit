@@ -55,6 +55,11 @@ struct InstallOptionTests {
         let bindirLayout = resolveInstallLayout(prefix: "/ignored", bindir: "/custom/bin")
         #expect(bindirLayout.publicCommandURL.path == "/custom/bin/privateheaderkit")
         #expect(bindirLayout.simulatorHelperURL.path == "/custom/libexec/privateheaderkit/privateheaderkit-sim-helper")
+
+        let installedHelper = defaultInstalledSimulatorHelperURL(
+            for: URL(fileURLWithPath: "/custom/phk/privateheaderkit", isDirectory: false)
+        )
+        #expect(installedHelper.path == "/custom/libexec/privateheaderkit/privateheaderkit-sim-helper")
     }
 }
 
