@@ -19,6 +19,7 @@ public final class RecordingCommandRunner: CommandRunning {
     public private(set) var streamingCommands: [RecordedCommand] = []
 
     public var captureOutputs: [String: String] = [:]
+    private var captureOutputQueues: [String: [String]] = [:]
     public var simpleHandler: (([String], [String: String]?, URL?) throws -> Void)?
     public var streamingHandler: (([String], [String: String]?, URL?) throws -> StreamingCommandResult)?
 
@@ -28,8 +29,18 @@ public final class RecordingCommandRunner: CommandRunning {
         captureOutputs[key(for: command)] = output
     }
 
+    public func setCaptureOutputs(_ outputs: [String], for command: [String]) {
+        captureOutputQueues[key(for: command)] = outputs
+    }
+
     public func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) throws -> String {
         captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+        let commandKey = key(for: command)
+        if var outputs = captureOutputQueues[commandKey], !outputs.isEmpty {
+            let output = outputs.removeFirst()
+            captureOutputQueues[commandKey] = outputs
+            return output
+        }
         guard let output = captureOutputs[key(for: command)] else {
             throw ToolingError.message("unexpected runCapture command: \(command.joined(separator: " "))")
         }

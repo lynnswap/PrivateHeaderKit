@@ -23,7 +23,8 @@ privateheaderkit
 swift run -c release privateheaderkit install
 ```
 
-デフォルトでは、単一の `privateheaderkit` バイナリを `~/.local/bin` にインストールします。
+デフォルトでは、user-facing command として単一の `privateheaderkit` バイナリを `~/.local/bin` にインストールします。
+iOS Simulator raw dump 用の internal helper は `~/.local/libexec/privateheaderkit/privateheaderkit-sim-helper` にインストールします。
 
 `~/.local/bin` が `PATH` に入っていない場合は追加してください:
 
@@ -52,9 +53,20 @@ swift build -c release --product privateheaderkit
 ```bash
 privateheaderkit --help
 privateheaderkit install --help
+privateheaderkit generate --help
 ```
 
-`privateheaderkit generate` は rewrite execution integration 用に予約しています。旧 `<version>` positional style は新しい public surface には含めません。source selection は explicit option または interactive flow で扱う方針です。
+`privateheaderkit generate` は明示的な source / output / target flag を受け取ります。
+
+```bash
+privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit generate --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
+```
+
+iOS では `--version` / `--build` から利用可能な Simulator runtime を解決し、device を選択・boot して internal simulator helper で raw dump します。`--system-root` は iOS では任意です。指定した場合は、その runtime root を明示入力として使い、解決済み runtime root で黙って置き換えません。`--device <name-or-udid>` と `--sim-helper <path>` は automation 用の任意 flag です。
+
+`--target` は comma-separated target query です。`--resume` は明示的な non-interactive resume request です。旧 `<version>` positional style は新しい public surface には含めません。
 
 ## Output Layout Contract
 

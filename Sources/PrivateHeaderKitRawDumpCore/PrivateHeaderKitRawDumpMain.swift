@@ -3,8 +3,9 @@ import Dispatch
 import MachOKit
 import MachOObjCSection
 import ObjCDump
-import MachOSwiftSection
+#if canImport(SwiftInterface)
 @_spi(Support) import SwiftInterface
+#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -31,6 +32,7 @@ protocol SwiftInterfaceBuildingFactory {
 }
 
 struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
+    #if canImport(SwiftInterface)
     let configuration: SwiftInterfaceBuilderConfiguration
     let eventHandlers: [SwiftInterfaceEvents.Handler]
 
@@ -49,8 +51,16 @@ struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
             eventHandlers: eventHandlers
         )
     }
+    #else
+    init() {}
+
+    func makeBuilder(machO _: MachOFile) throws -> SwiftInterfaceBuilding {
+        throw SwiftInterfaceUnavailableError()
+    }
+    #endif
 }
 
+#if canImport(SwiftInterface)
 struct SwiftInterfaceBuilderAdapter: SwiftInterfaceBuilding {
     private let builder: SwiftInterfaceBuilder<MachOFile>
 
@@ -70,6 +80,9 @@ struct SwiftInterfaceBuilderAdapter: SwiftInterfaceBuilding {
         try await builder.printRoot().string
     }
 }
+#endif
+
+private struct SwiftInterfaceUnavailableError: Error {}
 
 struct DumpOptions {
     var outputDir: URL
@@ -378,24 +391,32 @@ private func dumpImage(
     try dumpObjC(machO: machO, imagePath: originalPath, outputDir: outputDir, options: options, fileManager: fileManager)
     profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "dumpObjC", since: objcStart)
 
-    let swiftFactory: SwiftInterfaceBuildingFactory
-    if options.logSwiftEvents {
-        let moduleName = URL(fileURLWithPath: originalPath).lastPathComponent
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory(
-            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
-        )
-    } else {
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory()
-    }
-
     try await dumpSwift(
         machO: machO,
         imagePath: originalPath,
         outputDir: outputDir,
         options: options,
-        interfaceBuilderFactory: swiftFactory,
+        interfaceBuilderFactory: defaultSwiftInterfaceBuilderFactory(
+            imagePath: originalPath,
+            options: options
+        ),
         fileManager: fileManager
     )
+}
+
+private func defaultSwiftInterfaceBuilderFactory(
+    imagePath: String,
+    options: DumpOptions
+) -> SwiftInterfaceBuildingFactory {
+    #if canImport(SwiftInterface)
+    if options.logSwiftEvents {
+        let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
+        return DefaultSwiftInterfaceBuilderFactory(
+            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
+        )
+    }
+    #endif
+    return DefaultSwiftInterfaceBuilderFactory()
 }
 
 private func loadMachOFile(url: URL, options: DumpOptions) -> MachOFile? {
@@ -719,6 +740,7 @@ private func profileLogDuration(
     fputs("privateheaderkit __raw-dump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
 }
 
+#if canImport(SwiftInterface)
 private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
     private struct OpKey: Hashable {
         let phase: SwiftInterfaceEvents.Phase
@@ -912,6 +934,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         }
     }
 }
+#endif
 
 private struct PendingObjCHeaderFileName {
     let entry: ObjCHeaderEntry
@@ -1356,6 +1379,9 @@ func dumpSwift(
     interfaceBuilderFactory: SwiftInterfaceBuildingFactory = DefaultSwiftInterfaceBuilderFactory(),
     fileManager: FileManager
 ) async throws {
+    #if !canImport(SwiftInterface)
+    return
+    #else
     if shouldSkipSwiftInterface(imagePath: imagePath, outputDir: outputDir, options: options, fileManager: fileManager) {
         return
     }
@@ -1376,6 +1402,7 @@ func dumpSwift(
             return text
         }
     )
+    #endif
 }
 
 func swiftInterfaceOutputURL(imagePath: String, outputDir: URL) -> URL {

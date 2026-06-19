@@ -97,6 +97,26 @@ struct SimctlDeterministicTests {
         #expect(runner.captureCommands.map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
     }
 
+    @Test func findRuntimeMatchesExplicitBuildWhenProvided() throws {
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput(
+            """
+            {
+              "runtimes": [
+                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"},
+                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24B2"}
+              ]
+            }
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+
+        let runtime = try Simctl.findRuntime(version: "27.0", build: "24B2", runner: runner)
+
+        #expect(runtime.identifier == "ios-27-b")
+        #expect(runtime.runtimeRoot == "/runtimes/27B")
+    }
+
     @Test func listDevicesParsesDevicesForRuntime() throws {
         let runner = RecordingCommandRunner()
         runner.setCaptureOutput(
@@ -133,6 +153,55 @@ struct SimctlDeterministicTests {
         #expect(runner.simpleCommands.map(\.command) == [
             ["xcrun", "simctl", "boot", "BOOTED"],
             ["xcrun", "simctl", "bootstatus", "BOOTED", "-b"],
+        ])
+    }
+
+    @Test func resolveDeviceCreatesRelistsClonesAndBootsWhenRuntimeHasNoDevices() throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27"
+        )
+        runner.setCaptureOutputs(
+            [
+                """
+                {"devices":{"ios-27":[]}}
+                """,
+                """
+                {"devices":{"ios-27":[{"name":"iPhone 17 (27.0)","udid":"BASE-001","state":"Shutdown"}]}}
+                """,
+            ],
+            for: ["xcrun", "simctl", "list", "devices", "-j"]
+        )
+        runner.setCaptureOutput(
+            """
+            {"devicetypes":[{"name":"iPhone 17","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17","productFamily":"iPhone"}]}
+            """,
+            for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
+        )
+        runner.setCaptureOutput(
+            "CLONE-001\n",
+            for: ["xcrun", "simctl", "clone", "BASE-001", "Dumping Device (iOS 27.0)"]
+        )
+
+        let device = try Simctl.resolveDevice(runtime: runtime, query: nil, runner: runner)
+
+        #expect(device.name == "Dumping Device (iOS 27.0)")
+        #expect(device.udid == "CLONE-001")
+        #expect(device.state == "Booted")
+        #expect(runner.simpleCommands.map(\.command) == [
+            [
+                "xcrun",
+                "simctl",
+                "create",
+                "iPhone 17 (27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                "ios-27",
+            ],
+            ["xcrun", "simctl", "boot", "CLONE-001"],
+            ["xcrun", "simctl", "bootstatus", "CLONE-001", "-b"],
         ])
     }
 }

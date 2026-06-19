@@ -55,7 +55,9 @@ struct PrivateHeaderKitCLIParsingTests {
                     systemRoot: "/tmp/RuntimeRoot",
                     outputBaseDirectory: "/tmp/PrivateHeaderKit",
                     targetQuery: "SwiftUI,UIKit",
-                    resume: false
+                    resume: false,
+                    device: nil,
+                    simulatorHelperPath: nil
                 )
             )
         )
@@ -85,7 +87,45 @@ struct PrivateHeaderKitCLIParsingTests {
                     systemRoot: "/",
                     outputBaseDirectory: "/tmp/PrivateHeaderKit",
                     targetQuery: "AppKit,Foundation",
-                    resume: true
+                    resume: true,
+                    device: nil,
+                    simulatorHelperPath: nil
+                )
+            )
+        )
+    }
+
+    @Test func generateParsesIOSInputWithoutSystemRootAndOptionalSimulatorFlags() throws {
+        #expect(
+            try parsePrivateHeaderKitCommand([
+                "privateheaderkit",
+                "generate",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--build",
+                "24A5355q",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "SwiftUI,UIKit",
+                "--device",
+                "SIM-001",
+                "--sim-helper",
+                "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper",
+            ])
+            == .generate(
+                PrivateHeaderKitGenerateCommand(
+                    platform: .iOS,
+                    version: "27.0",
+                    build: "24A5355q",
+                    systemRoot: nil,
+                    outputBaseDirectory: "/tmp/PrivateHeaderKit",
+                    targetQuery: "SwiftUI,UIKit",
+                    resume: false,
+                    device: "SIM-001",
+                    simulatorHelperPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper"
                 )
             )
         )
@@ -126,6 +166,8 @@ struct PrivateHeaderKitCLIParsingTests {
         let usage = privateHeaderKitGenerateUsageText()
         #expect(usage.contains("--platform <iOS|macOS>"))
         #expect(usage.contains("--target <query>"))
+        #expect(usage.contains("--device <name-or-udid>"))
+        #expect(usage.contains("--sim-helper <path>"))
         #expect(!usage.contains("__raw-dump"))
     }
 
@@ -170,6 +212,28 @@ struct PrivateHeaderKitCLIParsingTests {
             Issue.record("expected missing target query to be rejected")
         } catch let error as PrivateHeaderKitCLIError {
             #expect(error == .missingRequiredOption("--target"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test func generateRejectsMissingMacOSSystemRoot() throws {
+        do {
+            _ = try parsePrivateHeaderKitCommand([
+                "privateheaderkit",
+                "generate",
+                "--platform",
+                "macOS",
+                "--version",
+                "16.0",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "AppKit",
+            ])
+            Issue.record("expected missing macOS system root to be rejected")
+        } catch let error as PrivateHeaderKitCLIError {
+            #expect(error == .missingRequiredOption("--system-root"))
         } catch {
             Issue.record("unexpected error: \(error)")
         }
@@ -256,47 +320,61 @@ struct PrivateHeaderKitCLIParsingTests {
     }
 
     @Test func validGenerateRunInvokesGenerationRunnerWithCoreRequestAndPrintsSuccessOutput() async throws {
-        let helperURL = URL(fileURLWithPath: "/tmp/privateheaderkit-test-helper", isDirectory: false)
+        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let simulatorHelperURL = URL(
+            fileURLWithPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper",
+            isDirectory: false
+        )
         let recorder = GenerationRequestRecorder()
         var outputMessages: [String] = []
         var loggedMessages: [String] = []
-        let exitCode = await runPrivateHeaderKitCommand([
-            "privateheaderkit",
-            "generate",
-            "--platform",
-            "iOS",
-            "--version",
-            "27.0",
-            "--build",
-            "24A5355q",
-            "--system-root",
-            "/tmp/RuntimeRoot",
-            "--out",
-            "/tmp/PrivateHeaderKit",
-            "--target",
-            "SwiftUI,UIKit",
-            "--resume",
-        ], currentExecutableURL: helperURL, generationRunner: { request in
-            recorder.request = request
-            return PrivateHeaderKitGenerationSummary(
-                sourceDisplayName: request.sourceDisplayName,
-                artifactDirectory: URL(
-                    fileURLWithPath: "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
-                    isDirectory: true
-                ),
-                manifestURL: URL(
-                    fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
-                    isDirectory: false
-                ),
-                runRecordURL: URL(
-                    fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
-                    isDirectory: false
-                ),
-                runID: "run-test",
-                generatedTargetCount: 2,
-                skippedTargetCount: 1
-            )
-        }, outputLogger: { outputMessages.append($0) }, errorLogger: { loggedMessages.append($0) })
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "generate",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--build",
+                "24A5355q",
+                "--system-root",
+                "/tmp/RuntimeRoot",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "SwiftUI,UIKit",
+                "--resume",
+            ],
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return PrivateHeaderKitGenerationSummary(
+                    sourceDisplayName: request.sourceDisplayName,
+                    artifactDirectory: URL(
+                        fileURLWithPath: "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
+                        isDirectory: true
+                    ),
+                    manifestURL: URL(
+                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
+                        isDirectory: false
+                    ),
+                    runRecordURL: URL(
+                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
+                        isDirectory: false
+                    ),
+                    runID: "run-test",
+                    generatedTargetCount: 2,
+                    skippedTargetCount: 1
+                )
+            },
+            simulatorResolver: { command in
+                #expect(command.device == nil)
+                return simulatorResolution()
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { loggedMessages.append($0) }
+        )
 
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
@@ -309,12 +387,15 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.targetQuery == "SwiftUI,UIKit")
         #expect(request.resumeRequested == true)
         #expect(request.hostHelperURL == helperURL)
-        #expect(request.simulatorHelperURL == helperURL)
-        #expect(request.usesHostExecution)
+        #expect(request.simulatorHelperURL == simulatorHelperURL)
+        #expect(!request.usesHostExecution)
+        #expect(request.simulatorDeviceUDID == "SIM-001")
+        #expect(request.simulatorRuntimeRoot == "/tmp/RuntimeRoot")
         #expect(request.usesSharedCache)
         #expect(request.prefersRuntimeMetadata)
         #expect(request.helperEnvironment == ["PH_RUNTIME_ROOT": "/tmp/RuntimeRoot"])
         #expect(outputMessages == [
+            "selected simulator: iPhone 17 (SIM-001)",
             "private header generation completed",
             "source: iOS 27.0 (24A5355q)",
             "artifact directory: /tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
@@ -323,6 +404,87 @@ struct PrivateHeaderKitCLIParsingTests {
             "run ID: run-test",
             "targets: generated 2, skipped 1",
         ])
+    }
+
+    @Test func iOSGenerateWithoutSystemRootUsesResolvedRuntimeRootAndExplicitSimulatorHelper() async throws {
+        let recorder = GenerationRequestRecorder()
+        let simulatorHelper = "/tmp/privateheaderkit-sim-helper"
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "generate",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--build",
+                "24A5355q",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "SwiftUI",
+                "--device",
+                "iPhone 17",
+                "--sim-helper",
+                simulatorHelper,
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false),
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { command in
+                #expect(command.device == "iPhone 17")
+                return simulatorResolution(resolvedRuntimeRoot: "/Resolved/RuntimeRoot")
+            },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.systemRoot?.path == "/Resolved/RuntimeRoot")
+        #expect(request.simulatorRuntimeRoot == "/Resolved/RuntimeRoot")
+        #expect(request.simulatorHelperURL?.path == simulatorHelper)
+    }
+
+    @Test func macOSGenerateUsesHostExecutionAndDoesNotResolveSimulator() async throws {
+        let helperURL = URL(fileURLWithPath: "/tmp/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "generate",
+                "--platform",
+                "macOS",
+                "--version",
+                "16.0",
+                "--system-root",
+                "/",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "AppKit",
+            ],
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in
+                Issue.record("macOS generation should not resolve a simulator")
+                return simulatorResolution()
+            },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.systemRoot?.path == "/")
+        #expect(request.hostHelperURL == helperURL)
+        #expect(request.usesHostExecution)
+        #expect(request.simulatorDeviceUDID == nil)
     }
 
     @Test func generateResumeRequiredErrorReturnsGuidance() async throws {
@@ -336,12 +498,15 @@ struct PrivateHeaderKitCLIParsingTests {
                     try resumeSummaryFixture(latestRunID: "run-previous")
                 )
             },
+            simulatorResolver: { _ in simulatorResolution() },
             outputLogger: { outputMessages.append($0) },
             errorLogger: { loggedMessages.append($0) }
         )
 
         #expect(exitCode == 2)
-        #expect(outputMessages.isEmpty)
+        #expect(outputMessages == [
+            "selected simulator: iPhone 17 (SIM-001)",
+        ])
         #expect(loggedMessages == [
             "error: existing generation state is unfinished; explicit resume is required for run-previous",
             "rerun with `--resume` to continue the unfinished generation state",
@@ -377,6 +542,40 @@ struct PrivateHeaderKitCLIParsingTests {
 
 private final class GenerationRequestRecorder {
     var request: PrivateHeaderKitGenerationRequest?
+}
+
+private func simulatorResolution(
+    resolvedRuntimeRoot: String = "/tmp/RuntimeRoot"
+) -> PrivateHeaderKitSimulatorResolution {
+    PrivateHeaderKitSimulatorResolution(
+        runtimeVersion: "27.0",
+        runtimeBuild: "24A5355q",
+        runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+        resolvedRuntimeRoot: resolvedRuntimeRoot,
+        deviceName: "iPhone 17",
+        deviceUDID: "SIM-001"
+    )
+}
+
+private func summaryFixture(
+    for request: PrivateHeaderKitGenerationRequest
+) -> PrivateHeaderKitGenerationSummary {
+    PrivateHeaderKitGenerationSummary(
+        sourceDisplayName: request.sourceDisplayName,
+        artifactDirectory: request.artifactBaseDirectory.appendingPathComponent(
+            request.sourceDirectoryName,
+            isDirectory: true
+        ),
+        manifestURL: request.stateBaseDirectory
+            .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
+            .appendingPathComponent("manifest.json", isDirectory: false),
+        runRecordURL: request.stateBaseDirectory
+            .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
+            .appendingPathComponent("runs/run-test/run.json", isDirectory: false),
+        runID: "run-test",
+        generatedTargetCount: 1,
+        skippedTargetCount: nil
+    )
 }
 
 private func validGenerateArguments() -> [String] {

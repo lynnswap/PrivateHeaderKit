@@ -1,6 +1,52 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
+let isSimulatorHelperBuild = Context.environment["PHK_SIMULATOR_HELPER_BUILD"] == "1"
+
+var packageDependencies: [Package.Dependency] = [
+    .package(
+        url: "https://github.com/lynnswap/MachOKit.git",
+        from: "0.47.0"
+    ),
+    .package(
+        url: "https://github.com/lynnswap/MachOObjCSection.git",
+        revision: "3dbf6a856cbdc856d4d7c1fe6bbf81161e0fbe9c"
+    ),
+    .package(
+        url: "https://github.com/p-x9/swift-objc-dump.git",
+        from: "0.8.0"
+    ),
+]
+
+if !isSimulatorHelperBuild {
+    packageDependencies.append(
+        .package(
+            url: "https://github.com/lynnswap/MachOSwiftSection.git",
+            revision: "2fbb1a78e316a2beaf2911488ecda6455e205f84"
+        )
+    )
+}
+
+var rawDumpCoreDependencies: [Target.Dependency] = [
+    .target(
+        name: "PrivateHeaderKitRawDumpRuntimeObjC",
+        condition: .when(platforms: [.macOS, .iOS])
+    ),
+    .product(name: "MachOKit", package: "MachOKit"),
+    .product(name: "MachOObjCSection", package: "MachOObjCSection"),
+    .product(name: "ObjCDump", package: "swift-objc-dump"),
+]
+
+if !isSimulatorHelperBuild {
+    rawDumpCoreDependencies.append(
+        .product(
+            name: "SwiftInterface",
+            package: "MachOSwiftSection",
+            condition: .when(platforms: [.macOS])
+        )
+    )
+}
+
 let package = Package(
     name: "PrivateHeaderKit",
     platforms: [
@@ -10,25 +56,9 @@ let package = Package(
     products: [
         .library(name: "PrivateHeaderKitCore", targets: ["PrivateHeaderKitCore"]),
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
+        .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
     ],
-    dependencies: [
-        .package(
-            url: "https://github.com/lynnswap/MachOKit.git",
-            from: "0.47.0"
-        ),
-        .package(
-            url: "https://github.com/lynnswap/MachOObjCSection.git",
-            revision: "3dbf6a856cbdc856d4d7c1fe6bbf81161e0fbe9c"
-        ),
-        .package(
-            url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "2fbb1a78e316a2beaf2911488ecda6455e205f84"
-        ),
-        .package(
-            url: "https://github.com/p-x9/swift-objc-dump.git",
-            from: "0.8.0"
-        ),
-    ],
+    dependencies: packageDependencies,
     targets: [
         .target(
             name: "PrivateHeaderKitRawDumpRuntimeObjC",
@@ -38,17 +68,7 @@ let package = Package(
         ),
         .target(
             name: "PrivateHeaderKitRawDumpCore",
-            dependencies: [
-                .target(
-                    name: "PrivateHeaderKitRawDumpRuntimeObjC",
-                    condition: .when(platforms: [.macOS, .iOS])
-                ),
-                .product(name: "MachOKit", package: "MachOKit"),
-                .product(name: "MachOObjCSection", package: "MachOObjCSection"),
-                .product(name: "ObjCDump", package: "swift-objc-dump"),
-                .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
-                .product(name: "SwiftInterface", package: "MachOSwiftSection"),
-            ],
+            dependencies: rawDumpCoreDependencies,
             path: "Sources/PrivateHeaderKitRawDumpCore"
         ),
         .target(
@@ -71,6 +91,13 @@ let package = Package(
                 "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitInstall",
+                "PrivateHeaderKitTooling",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitSimulatorHelper",
+            dependencies: [
+                "PrivateHeaderKitRawDumpCore",
             ]
         ),
         .executableTarget(

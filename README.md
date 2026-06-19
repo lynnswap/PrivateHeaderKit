@@ -23,7 +23,8 @@ The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no
 swift run -c release privateheaderkit install
 ```
 
-By default, this installs the single `privateheaderkit` binary to `~/.local/bin`.
+By default, this installs the single user-facing `privateheaderkit` binary to `~/.local/bin`.
+iOS simulator raw dumping also installs an internal helper to `~/.local/libexec/privateheaderkit/privateheaderkit-sim-helper`.
 
 If `~/.local/bin` is not in your `PATH`, add it:
 
@@ -58,9 +59,12 @@ privateheaderkit generate --help
 `privateheaderkit generate` accepts the non-interactive rewrite input contract with explicit source, output, and target flags:
 
 ```bash
-privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
 privateheaderkit generate --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
 ```
+
+For iOS, `generate` resolves an available iOS simulator runtime from `--version`/`--build`, selects and boots a simulator device, and uses the internal simulator helper. `--system-root` is optional for iOS; when supplied, it is used as the runtime root instead of silently replacing it with the resolved runtime path. `--device <name-or-udid>` and `--sim-helper <path>` are optional automation flags.
 
 `--target` is a comma-separated target query, not a stable target ID list. `--resume` is an explicit non-interactive resume request. The old `<version>` positional style is not part of the new public surface.
 

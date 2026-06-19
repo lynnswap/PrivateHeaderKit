@@ -1,13 +1,13 @@
 import Foundation
 
-public struct RuntimeInfo: Codable, Equatable {
+public struct RuntimeInfo: Codable, Equatable, Sendable {
     public let version: String
     public let build: String
     public let identifier: String
     public let runtimeRoot: String
 }
 
-public struct DeviceInfo: Codable, Equatable {
+public struct DeviceInfo: Codable, Equatable, Sendable {
     public let name: String
     public let udid: String
     public var state: String
@@ -74,6 +74,21 @@ public enum Simctl {
             return runtime
         }
         throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
+    }
+
+    public static func findRuntime(version: String, build: String?, runner: CommandRunning) throws -> RuntimeInfo {
+        let matches = try listRuntimes(runner: runner).filter { $0.version == version }
+        guard !matches.isEmpty else {
+            throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
+        }
+
+        guard let build, !build.isEmpty else {
+            return matches[0]
+        }
+        if let match = matches.first(where: { $0.build == build }) {
+            return match
+        }
+        throw ToolingError.message("iOS runtime not found or unavailable: \(version) (\(build))")
     }
 
     public static func latestRuntime(runner: CommandRunning) throws -> RuntimeInfo {
@@ -153,8 +168,30 @@ public enum Simctl {
         return try cloneDevice(base: base, runtimeId: runtime.identifier, cloneName: cloneName, runner: runner)
     }
 
+    public static func resolveDevice(runtime: RuntimeInfo, query: String?, runner: CommandRunning) throws -> DeviceInfo {
+        var devices = try listDevices(runtimeId: runtime.identifier, runner: runner)
+        if devices.isEmpty {
+            try createDefaultDevice(runtimeId: runtime.identifier, version: runtime.version, runner: runner)
+            devices = try listDevices(runtimeId: runtime.identifier, runner: runner)
+        }
+
+        let selected: DeviceInfo
+        if let query = query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty {
+            guard let match = matchDevice(devices: devices, query: query) else {
+                throw ToolingError.message("simulator device not found for iOS \(runtime.version): \(query)")
+            }
+            selected = match
+        } else {
+            selected = try resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
+        }
+
+        var booted = selected
+        try ensureDeviceBooted(&booted, runner: runner, force: false)
+        return booted
+    }
+
     public static func ensureDeviceBooted(_ device: inout DeviceInfo, runner: CommandRunning, force: Bool) throws {
-        if device.state == "Booted", !force { return }
+        if stateEquals(device.state, "Booted"), !force { return }
         print("Booting simulator: \(device.name) (\(device.udid))")
         try runner.runSimple(["xcrun", "simctl", "boot", device.udid], env: nil, cwd: nil)
         try runner.runSimple(["xcrun", "simctl", "bootstatus", device.udid, "-b"], env: nil, cwd: nil)
