@@ -319,7 +319,7 @@ public enum Simctl {
 
     private static func compatibleDeviceTypes(from deviceTypes: [DeviceTypeInfo], runtime: RuntimeInfo) -> [DeviceTypeInfo]? {
         let hasRuntimeMetadata = deviceTypes.contains { deviceType in
-            hasText(deviceType.minRuntimeVersionString) || hasText(deviceType.maxRuntimeVersionString)
+            hasRuntimeBoundMetadata(deviceType)
         }
         guard hasRuntimeMetadata else {
             return nil
@@ -328,6 +328,7 @@ public enum Simctl {
     }
 
     private static func supports(runtime: RuntimeInfo, deviceType: DeviceTypeInfo) -> Bool {
+        let runtimeVersionKey = VersionUtils.versionKey(runtime.version)
         if let min = normalizedVersionString(deviceType.minRuntimeVersionString),
            compareVersionStrings(runtime.version, min) == .orderedAscending {
             return false
@@ -336,7 +337,22 @@ public enum Simctl {
            compareVersionStrings(runtime.version, max) == .orderedDescending {
             return false
         }
+        if let min = coreSimulatorVersionKey(deviceType.minRuntimeVersion),
+           compareVersionKeys(runtimeVersionKey, min) == .orderedAscending {
+            return false
+        }
+        if let max = coreSimulatorVersionKey(deviceType.maxRuntimeVersion),
+           compareVersionKeys(runtimeVersionKey, max) == .orderedDescending {
+            return false
+        }
         return true
+    }
+
+    private static func hasRuntimeBoundMetadata(_ deviceType: DeviceTypeInfo) -> Bool {
+        hasText(deviceType.minRuntimeVersionString)
+            || hasText(deviceType.maxRuntimeVersionString)
+            || deviceType.minRuntimeVersion != nil
+            || deviceType.maxRuntimeVersion != nil
     }
 
     private static func normalizedVersionString(_ value: String?) -> String? {
@@ -349,8 +365,10 @@ public enum Simctl {
     }
 
     private static func compareVersionStrings(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        let left = VersionUtils.versionKey(lhs)
-        let right = VersionUtils.versionKey(rhs)
+        compareVersionKeys(VersionUtils.versionKey(lhs), VersionUtils.versionKey(rhs))
+    }
+
+    private static func compareVersionKeys(_ left: [Int], _ right: [Int]) -> ComparisonResult {
         let count = max(left.count, right.count)
         for index in 0..<count {
             let leftValue = index < left.count ? left[index] : 0
@@ -359,5 +377,14 @@ public enum Simctl {
             if leftValue > rightValue { return .orderedDescending }
         }
         return .orderedSame
+    }
+
+    private static func coreSimulatorVersionKey(_ value: Int?) -> [Int]? {
+        guard let value else { return nil }
+        return [
+            (value >> 16) & 0xffff,
+            (value >> 8) & 0xff,
+            value & 0xff,
+        ]
     }
 }
