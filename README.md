@@ -51,17 +51,16 @@ swift build -c release --product privateheaderkit
 ## Command Surface
 
 ```bash
+privateheaderkit
 privateheaderkit --help
-privateheaderkit install --help
-privateheaderkit generate --help
 ```
 
-`privateheaderkit generate` accepts the non-interactive rewrite input contract with explicit source, output, and target flags:
+Running `privateheaderkit` without arguments starts the interactive generation flow. For automation and CI, pass the generation options directly:
 
 ```bash
-privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
-privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
-privateheaderkit generate --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
+privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
 ```
 
 For iOS, `generate` resolves an available iOS simulator runtime from `--version`/`--build`, selects and boots a simulator device, and uses the internal simulator helper. `--system-root` is optional for iOS; when supplied, it is used as the runtime root instead of silently replacing it with the resolved runtime path. `--device <name-or-udid>` and `--sim-helper <path>` are optional automation flags.

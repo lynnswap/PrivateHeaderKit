@@ -20,6 +20,7 @@ struct PrivateHeaderKitMain {
 enum PrivateHeaderKitCommand: Equatable {
     case help
     case generateHelp
+    case interactiveGenerate
     case install([String])
     case generate(PrivateHeaderKitGenerateCommand)
     case rawDump([String])
@@ -253,6 +254,25 @@ typealias PrivateHeaderKitSimulatorResolver = (
     PrivateHeaderKitGenerateCommand
 ) throws -> PrivateHeaderKitSimulatorResolution
 
+typealias PrivateHeaderKitInputReader = () -> String?
+
+struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
+    let platform: PrivateHeaderKitGenerateCommand.Platform
+    let version: String
+    let build: String?
+    let systemRoot: String?
+
+    var displayName: String {
+        let baseName = "\(platform.rawValue) \(version)"
+        if let build, !build.isEmpty {
+            return "\(baseName) (\(build))"
+        }
+        return baseName
+    }
+}
+
+typealias PrivateHeaderKitInteractiveSourceProvider = () throws -> [PrivateHeaderKitInteractiveSource]
+
 private let legacyPublicCommandNames: Set<String> = [
     "privateheaderkit-dump",
     "headerdump",
@@ -312,6 +332,9 @@ func runPrivateHeaderKitCommand(
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationRunner: @escaping PrivateHeaderKitGenerationRunner = runPrivateHeaderGeneration,
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
+    interactiveSourceProvider: @escaping PrivateHeaderKitInteractiveSourceProvider =
+        discoverPrivateHeaderKitInteractiveSources,
+    inputReader: @escaping PrivateHeaderKitInputReader = { readLine() },
     outputLogger: (String) -> Void = logCLIOutput,
     errorLogger: (String) -> Void = logCLIError
 ) async -> Int32 {
@@ -323,6 +346,17 @@ func runPrivateHeaderKitCommand(
         case .generateHelp:
             printPrivateHeaderKitGenerateUsage()
             return 0
+        case .interactiveGenerate:
+            return await runPrivateHeaderKitInteractiveGenerate(
+                invokedProgramName: args.first ?? "privateheaderkit",
+                currentExecutableURL: currentExecutableURL,
+                generationRunner: generationRunner,
+                simulatorResolver: simulatorResolver,
+                sourceProvider: interactiveSourceProvider,
+                inputReader: inputReader,
+                outputLogger: outputLogger,
+                errorLogger: errorLogger
+            )
         case .install(let installArgs):
             return runInstallCommand(installArgs, environment: environment)
         case .generate(let command):
@@ -346,6 +380,81 @@ func runPrivateHeaderKitCommand(
     } catch {
         errorLogger("error: \(error)")
         errorLogger("run `privateheaderkit --help` for usage")
+        return 1
+    }
+}
+
+private func runPrivateHeaderKitInteractiveGenerate(
+    invokedProgramName: String,
+    currentExecutableURL: URL?,
+    generationRunner: PrivateHeaderKitGenerationRunner,
+    simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
+    inputReader: PrivateHeaderKitInputReader,
+    outputLogger: (String) -> Void,
+    errorLogger: (String) -> Void
+) async -> Int32 {
+    do {
+        let sources = try sourceProvider()
+        guard !sources.isEmpty else {
+            errorLogger("error: no available generation sources found")
+            return 2
+        }
+
+        outputLogger("Available sources:")
+        for (offset, source) in sources.enumerated() {
+            outputLogger("  [\(offset + 1)] \(source.displayName)")
+        }
+
+        let source = try promptIndexedSelection(
+            prompt: "Select source:",
+            values: sources,
+            inputReader: inputReader,
+            outputLogger: outputLogger
+        )
+        let outputBaseDirectory = try promptRequiredValue(
+            prompt: "Output base directory:",
+            inputReader: inputReader,
+            outputLogger: outputLogger
+        )
+        let targetQuery = try promptRequiredValue(
+            prompt: "Targets (comma-separated, or all):",
+            inputReader: inputReader,
+            outputLogger: outputLogger
+        )
+        try validateTargetQuery(targetQuery)
+        let resume = try promptYesNo(
+            prompt: "Resume a compatible unfinished run if one exists? (y/n):",
+            inputReader: inputReader,
+            outputLogger: outputLogger
+        )
+
+        let command = PrivateHeaderKitGenerateCommand(
+            platform: source.platform,
+            version: source.version,
+            build: source.build,
+            systemRoot: source.systemRoot,
+            outputBaseDirectory: outputBaseDirectory,
+            targetQuery: targetQuery,
+            resume: resume,
+            device: nil,
+            simulatorHelperPath: nil
+        )
+
+        return await runPrivateHeaderKitGenerateCommand(
+            command,
+            invokedProgramName: invokedProgramName,
+            currentExecutableURL: currentExecutableURL,
+            generationRunner: generationRunner,
+            simulatorResolver: simulatorResolver,
+            outputLogger: outputLogger,
+            errorLogger: errorLogger
+        )
+    } catch let error as PrivateHeaderKitCLIError {
+        errorLogger("error: \(error.description)")
+        return 1
+    } catch {
+        errorLogger("error: \(error)")
         return 1
     }
 }
@@ -522,6 +631,50 @@ func resolvePrivateHeaderKitSimulator(
     return PrivateHeaderKitSimulatorResolution(runtime: runtime, device: device)
 }
 
+func discoverPrivateHeaderKitInteractiveSources() throws -> [PrivateHeaderKitInteractiveSource] {
+    let runner = ProcessRunner()
+    var sources: [PrivateHeaderKitInteractiveSource] = []
+
+    if let runtimes = try? Simctl.listRuntimes(runner: runner) {
+        sources += runtimes.map { runtime in
+            PrivateHeaderKitInteractiveSource(
+                platform: .iOS,
+                version: runtime.version,
+                build: runtime.build.isEmpty ? nil : runtime.build,
+                systemRoot: nil
+            )
+        }
+    }
+
+    if let macOSSource = try? currentMacOSInteractiveSource(runner: runner) {
+        sources.append(macOSSource)
+    }
+
+    return sources
+}
+
+private func currentMacOSInteractiveSource(
+    runner: CommandRunning
+) throws -> PrivateHeaderKitInteractiveSource {
+    let version = try runner
+        .runCapture(["/usr/bin/sw_vers", "-productVersion"], env: nil, cwd: nil)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let build = try runner
+        .runCapture(["/usr/bin/sw_vers", "-buildVersion"], env: nil, cwd: nil)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !version.isEmpty else {
+        throw PrivateHeaderKitCLIError.missingRequiredOption("--version")
+    }
+
+    return PrivateHeaderKitInteractiveSource(
+        platform: .macOS,
+        version: version,
+        build: build.isEmpty ? nil : build,
+        systemRoot: "/"
+    )
+}
+
 private func privateHeaderKitExecutableURL(
     currentExecutableURL: URL?,
     fallbackProgramName: String
@@ -573,7 +726,7 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
     }
 
     guard let command = remaining.first else {
-        return .help
+        return .interactiveGenerate
     }
 
     switch command {
@@ -583,18 +736,23 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
         let installArgs = ["\(programName) install"] + Array(remaining.dropFirst())
         return .install(installArgs)
     case "generate":
-        return try parsePrivateHeaderKitGenerateCommand(Array(remaining.dropFirst()))
+        let generateArgs = Array(remaining.dropFirst())
+        return generateArgs.isEmpty
+            ? .interactiveGenerate
+            : try parsePrivateHeaderKitGenerateCommand(generateArgs)
     case "__raw-dump":
         return .rawDump(Array(remaining.dropFirst()))
     case let command where legacyPublicCommandNames.contains(command):
         throw PrivateHeaderKitCLIError.legacyCommand(command)
+    case let option where option.hasPrefix("--"):
+        return try parsePrivateHeaderKitGenerateCommand(remaining)
     default:
         throw PrivateHeaderKitCLIError.unknownCommand(command)
     }
 }
 
 private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> PrivateHeaderKitCommand {
-    if args == ["-h"] || args == ["--help"] || args == ["help"] {
+    if args.isEmpty || args == ["-h"] || args == ["--help"] || args == ["help"] {
         return .generateHelp
     }
 
@@ -789,6 +947,66 @@ private func validateTargetQuery(_ value: String) throws {
     }
 }
 
+private func promptIndexedSelection<Value>(
+    prompt: String,
+    values: [Value],
+    inputReader: PrivateHeaderKitInputReader,
+    outputLogger: (String) -> Void
+) throws -> Value {
+    while true {
+        outputLogger(prompt)
+        guard let line = inputReader() else {
+            throw PrivateHeaderKitCLIError.missingValue(prompt)
+        }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let number = Int(trimmed), values.indices.contains(number - 1) else {
+            outputLogger("Enter a number from 1 to \(values.count).")
+            continue
+        }
+        return values[number - 1]
+    }
+}
+
+private func promptRequiredValue(
+    prompt: String,
+    inputReader: PrivateHeaderKitInputReader,
+    outputLogger: (String) -> Void
+) throws -> String {
+    while true {
+        outputLogger(prompt)
+        guard let line = inputReader() else {
+            throw PrivateHeaderKitCLIError.missingValue(prompt)
+        }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            outputLogger("Enter a value.")
+            continue
+        }
+        return PathUtils.expandTilde(trimmed)
+    }
+}
+
+private func promptYesNo(
+    prompt: String,
+    inputReader: PrivateHeaderKitInputReader,
+    outputLogger: (String) -> Void
+) throws -> Bool {
+    while true {
+        outputLogger(prompt)
+        guard let line = inputReader() else {
+            throw PrivateHeaderKitCLIError.missingValue(prompt)
+        }
+        switch line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "y", "yes":
+            return true
+        case "n", "no":
+            return false
+        default:
+            outputLogger("Enter y or n.")
+        }
+    }
+}
+
 private extension PrivateHeaderKitGenerateCommand.Platform {
     var corePlatform: PrivateHeaderGeneration.Source.Platform {
         switch self {
@@ -811,25 +1029,25 @@ func printPrivateHeaderKitGenerateUsage() {
 func privateHeaderKitUsageText() -> String {
     """
     Usage:
-      privateheaderkit [command] [options]
-
-    Commands:
-      install    Install the privateheaderkit command
-      generate   Generate private headers from an explicit source and target query
+      privateheaderkit [options]
 
     Options:
-      -h, --help  Show this help
+      --platform <iOS|macOS>  Source platform
+      --version <version>     Source OS version
+      --out <path>            Output base directory
+      --target <query>        Comma-separated target query, for example SwiftUI,UIKit
+      -h, --help              Show this help
 
     Examples:
-      privateheaderkit install --bindir "$HOME/bin"
-      privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+      privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+      privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
     """
 }
 
 func privateHeaderKitGenerateUsageText() -> String {
     """
     Usage:
-      privateheaderkit generate --platform <iOS|macOS> --version <version> [--build <build>] [--system-root <path>] --out <path> --target <query> [--device <name-or-udid>] [--sim-helper <path>] [--resume]
+      privateheaderkit --platform <iOS|macOS> --version <version> [--build <build>] [--system-root <path>] --out <path> --target <query> [--device <name-or-udid>] [--sim-helper <path>] [--resume]
 
     Required Options:
       --platform <iOS|macOS>  Source platform
@@ -850,8 +1068,8 @@ func privateHeaderKitGenerateUsageText() -> String {
       State:   <out>/.state/<platform><version>(<build>)/
 
     Examples:
-      privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
-      privateheaderkit generate --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
+      privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+      privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
     """
 }
 
@@ -862,4 +1080,5 @@ private func logCLIError(_ message: String) {
 
 private func logCLIOutput(_ message: String) {
     print(message)
+    fflush(stdout)
 }

@@ -6,13 +6,17 @@ import PrivateHeaderKitCore
 
 @Suite
 struct PrivateHeaderKitCLIParsingTests {
-    @Test func helpFlagsResolveToHelp() throws {
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit"]) == .help)
+    @Test func noArgumentsStartInteractiveGeneration() throws {
+        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit"]) == .interactiveGenerate)
+        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "generate"]) == .interactiveGenerate)
+    }
+
+    @Test func helpFlagsResolveToPublicHelp() throws {
         #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "--help"]) == .help)
         #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "help"]) == .help)
     }
 
-    @Test func installSubcommandForwardsInstallerArguments() throws {
+    @Test func hiddenInstallSubcommandForwardsInstallerArguments() throws {
         let command = try parsePrivateHeaderKitCommand([
             "privateheaderkit",
             "install",
@@ -33,7 +37,6 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(
             try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -66,7 +69,6 @@ struct PrivateHeaderKitCLIParsingTests {
     @Test func generateParsesMacOSInputWithoutBuildAndExplicitResume() throws {
         let command = try parsePrivateHeaderKitCommand([
             "privateheaderkit",
-            "generate",
             "--platform=macOS",
             "--version=16.0",
             "--system-root",
@@ -99,7 +101,6 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(
             try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -134,7 +135,6 @@ struct PrivateHeaderKitCLIParsingTests {
     @Test func generateInputComputesUserFacingLabelsAndHiddenStateDirectory() throws {
         let command = try parsePrivateHeaderKitCommand([
             "privateheaderkit",
-            "generate",
             "--platform",
             "iOS",
             "--version",
@@ -160,7 +160,18 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(generateCommand.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)")
     }
 
-    @Test func generateHelpIsParsedAndDoesNotExposeInternalRawDump() throws {
+    @Test func publicHelpDoesNotExposeHiddenCommands() throws {
+        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "--help"]) == .help)
+
+        let usage = privateHeaderKitUsageText()
+        #expect(usage.contains("--platform <iOS|macOS>"))
+        #expect(usage.contains("--target <query>"))
+        #expect(!usage.contains("__raw-dump"))
+        #expect(!usage.contains("install"))
+        #expect(!usage.contains("generate "))
+    }
+
+    @Test func hiddenGenerateHelpIsParsedAndDoesNotExposeInternalRawDump() throws {
         #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "generate", "--help"]) == .generateHelp)
 
         let usage = privateHeaderKitGenerateUsageText()
@@ -169,6 +180,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(usage.contains("--device <name-or-udid>"))
         #expect(usage.contains("--sim-helper <path>"))
         #expect(!usage.contains("__raw-dump"))
+        #expect(!usage.contains("privateheaderkit generate"))
     }
 
     @Test func hiddenRawDumpCommandForwardsRawDumpArguments() throws {
@@ -191,13 +203,13 @@ struct PrivateHeaderKitCLIParsingTests {
     @Test func publicHelpDoesNotListHiddenRawDumpCommand() {
         let usage = privateHeaderKitUsageText()
         #expect(!usage.contains("__raw-dump"))
+        #expect(!usage.contains("install"))
     }
 
     @Test func generateRejectsMissingRequiredTargetQuery() throws {
         do {
             _ = try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -221,7 +233,6 @@ struct PrivateHeaderKitCLIParsingTests {
         do {
             _ = try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "macOS",
                 "--version",
@@ -243,7 +254,6 @@ struct PrivateHeaderKitCLIParsingTests {
         do {
             _ = try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -271,7 +281,6 @@ struct PrivateHeaderKitCLIParsingTests {
         do {
             _ = try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -297,7 +306,6 @@ struct PrivateHeaderKitCLIParsingTests {
         do {
             _ = try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -331,7 +339,6 @@ struct PrivateHeaderKitCLIParsingTests {
         let exitCode = await runPrivateHeaderKitCommand(
             [
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -406,6 +413,64 @@ struct PrivateHeaderKitCLIParsingTests {
         ])
     }
 
+    @Test func noArgumentRunStartsInteractiveGenerationFlow() async throws {
+        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        var inputs = [
+            "1",
+            "/tmp/PrivateHeaderKit",
+            "SwiftUI,UIKit",
+            "n",
+        ]
+        var outputMessages: [String] = []
+        var loggedMessages: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { command in
+                #expect(command.platform == .iOS)
+                #expect(command.version == "27.0")
+                #expect(command.build == "24A5355q")
+                return simulatorResolution()
+            },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A5355q",
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            inputReader: {
+                inputs.isEmpty ? nil : inputs.removeFirst()
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { loggedMessages.append($0) }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(loggedMessages.isEmpty)
+        #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
+        #expect(request.targetQuery == "SwiftUI,UIKit")
+        #expect(request.resumeRequested == false)
+        #expect(outputMessages.prefix(6) == [
+            "Available sources:",
+            "  [1] iOS 27.0 (24A5355q)",
+            "Select source:",
+            "Output base directory:",
+            "Targets (comma-separated, or all):",
+            "Resume a compatible unfinished run if one exists? (y/n):",
+        ])
+    }
+
     @Test func iOSGenerateDefaultsSimulatorHelperToInstallLayoutForCustomBindir() async throws {
         let helperURL = URL(fileURLWithPath: "/opt/phk/privateheaderkit", isDirectory: false)
         let recorder = GenerationRequestRecorder()
@@ -433,7 +498,6 @@ struct PrivateHeaderKitCLIParsingTests {
         let exitCode = await runPrivateHeaderKitCommand(
             [
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "iOS",
                 "--version",
@@ -475,7 +539,6 @@ struct PrivateHeaderKitCLIParsingTests {
         let exitCode = await runPrivateHeaderKitCommand(
             [
                 "privateheaderkit",
-                "generate",
                 "--platform",
                 "macOS",
                 "--version",
@@ -602,7 +665,6 @@ private func summaryFixture(
 private func validGenerateArguments() -> [String] {
     [
         "privateheaderkit",
-        "generate",
         "--platform",
         "iOS",
         "--version",
