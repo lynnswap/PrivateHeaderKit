@@ -276,6 +276,66 @@ struct SimctlDeterministicTests {
         ])
     }
 
+    @Test func createDefaultDeviceFallsBackToNumericRuntimeCompatibleDeviceTypes() throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27"
+        )
+        runner.setCaptureOutput(
+            """
+            {
+              "devicetypes": [
+                {
+                  "name": "iPhone 14",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-14",
+                  "productFamily": "iPhone",
+                  "minRuntimeVersion": \(coreSimulatorRuntimeVersion(16)),
+                  "maxRuntimeVersion": \(coreSimulatorRuntimeVersion(26, 4))
+                },
+                {
+                  "name": "iPhone 17e",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17e",
+                  "productFamily": "iPhone",
+                  "minRuntimeVersion": \(coreSimulatorRuntimeVersion(27, 1)),
+                  "maxRuntimeVersion": \(coreSimulatorRuntimeVersion(28))
+                },
+                {
+                  "name": "iPhone 17",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                  "productFamily": "iPhone",
+                  "minRuntimeVersion": \(coreSimulatorRuntimeVersion(27)),
+                  "maxRuntimeVersion": \(coreSimulatorRuntimeVersion(28))
+                },
+                {
+                  "name": "iPad Pro",
+                  "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro",
+                  "productFamily": "iPad",
+                  "minRuntimeVersion": \(coreSimulatorRuntimeVersion(27)),
+                  "maxRuntimeVersion": \(coreSimulatorRuntimeVersion(28))
+                }
+              ]
+            }
+            """,
+            for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
+        )
+
+        try Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+
+        #expect(runner.simpleCommands.map(\.command) == [
+            [
+                "xcrun",
+                "simctl",
+                "create",
+                "iPhone 17 (27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                "ios-27",
+            ],
+        ])
+    }
+
     @Test func createDefaultDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
@@ -317,4 +377,8 @@ struct SimctlDeterministicTests {
             ],
         ])
     }
+}
+
+private func coreSimulatorRuntimeVersion(_ major: Int, _ minor: Int = 0, _ patch: Int = 0) -> Int {
+    (major << 16) | (minor << 8) | patch
 }

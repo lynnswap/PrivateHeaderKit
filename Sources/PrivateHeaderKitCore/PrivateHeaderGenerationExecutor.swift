@@ -58,172 +58,17 @@ public extension PrivateHeaderGeneration {
 
             let repository = RunRepository(plan: plan)
             let artifactStore = ArtifactStore(artifactRoot: plan.artifactDirectory)
-            let existingManifest = try repository.readManifest()
-            let latestRun = try existingManifest.flatMap { try repository.readLatestRun(from: $0) }
-            let runPlan = Self.runPlanRecord(
-                plan: plan,
-                selectedTargets: selectedTargets,
-                executionMode: executionMode,
-                helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
-                    for: executionMode
-                )
-            )
-
-            let resumeSummary = try Self.resumeSummary(
-                for: options.resumeBehavior,
-                runPlan: runPlan,
-                manifest: existingManifest,
-                latestRun: latestRun,
-                artifactStore: artifactStore
-            )
-            let targetIDsToRun = Self.targetIDsToRun(
-                resumeBehavior: options.resumeBehavior,
-                selectedTargets: selectedTargets,
-                resumeSummary: resumeSummary
-            )
-            let targetsToRun = selectedTargets.filter { targetIDsToRun.contains($0.candidate.identifier) }
-
-            try repository.prepareStateDirectory()
-            let runID = runIDGenerator()
-            let runDirectories = try repository.prepareRunDirectories(for: runID)
-            try FileManager.default.createDirectory(
-                at: plan.artifactDirectory,
-                withIntermediateDirectories: true
-            )
-
-            var targetRecords = existingManifest?.targets ?? []
-            if case .fresh = options.resumeBehavior {
-                targetRecords = targetRecords.filter { record in
-                    !selectedTargets.contains { $0.candidate.identifier == record.id }
-                }
-            }
-
-            let startedAt = dateProvider()
-            var runRecord = RunRecord(
-                runID: runID,
-                schemaVersion: 1,
-                toolVersion: options.toolVersion,
-                plan: runPlan,
-                startedAt: startedAt,
-                endedAt: nil,
-                status: .running,
-                targetResults: [],
-                attemptedArtifacts: [],
-                logs: []
-            )
-            try repository.writeRun(runRecord)
-            try repository.writeManifest(
-                Self.manifest(
+            return try await repository.withExclusiveLock {
+                try await runWithLockedState(
                     plan: plan,
-                    runPlan: runPlan,
-                    runID: runID,
-                    targetRecords: targetRecords,
-                    updatedAt: startedAt
-                )
-            )
-
-            let previousTargetRecords = Self.targetsByID(existingManifest?.targets ?? [])
-            let previousCommitFailedAttempts = Self.commitFailedAttemptedArtifactsByTargetID(latestRun)
-            var generatedTargetIDs: [String] = []
-
-            for target in targetsToRun {
-                let targetResult = try await executeTarget(
-                    target,
-                    runID: runID,
-                    runDirectories: runDirectories,
-                    plan: plan,
-                    helperURLs: helperURLs,
-                    executionMode: executionMode,
-                    rawDumpingOptions: options.rawDumpingOptions,
+                    options: options,
+                    selectedTargets: selectedTargets,
+                    repository: repository,
                     artifactStore: artifactStore,
-                    previousTarget: previousTargetRecords[target.candidate.identifier],
-                    previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
-                    cleanupBeforeRun: Self.shouldCleanupBeforeRun(
-                        targetID: target.candidate.identifier,
-                        resumeBehavior: options.resumeBehavior,
-                        previousTarget: previousTargetRecords[target.candidate.identifier]
-                    )
-                )
-
-                runRecord = Self.runRecordByAppending(
-                    targetResult.runTarget,
-                    to: runRecord,
-                    status: .running,
-                    endedAt: nil
-                )
-                targetRecords = Self.upserting(targetResult.manifestTarget, in: targetRecords)
-                try repository.writeRun(runRecord)
-                try repository.writeManifest(
-                    Self.manifest(
-                        plan: plan,
-                        runPlan: runPlan,
-                        runID: runID,
-                        targetRecords: targetRecords,
-                        updatedAt: dateProvider()
-                    )
-                )
-
-                if targetResult.runTarget.status == .completed {
-                    generatedTargetIDs.append(target.candidate.identifier)
-                }
-            }
-
-            let skippedTargetRecords = Self.skippedRunTargets(
-                selectedTargets: selectedTargets,
-                targetIDsToRun: targetIDsToRun
-            )
-            for skipped in skippedTargetRecords {
-                runRecord = Self.runRecordByAppending(
-                    skipped,
-                    to: runRecord,
-                    status: .running,
-                    endedAt: nil
+                    helperURLs: helperURLs,
+                    executionMode: executionMode
                 )
             }
-
-            let finalStatus = Self.finalRunStatus(for: runRecord.targetResults)
-            let endedAt = dateProvider()
-            runRecord = RunRecord(
-                runID: runRecord.runID,
-                schemaVersion: runRecord.schemaVersion,
-                toolVersion: runRecord.toolVersion,
-                plan: runRecord.plan,
-                startedAt: runRecord.startedAt,
-                endedAt: endedAt,
-                status: finalStatus,
-                targetResults: runRecord.targetResults,
-                attemptedArtifacts: runRecord.targetResults.flatMap(\.attemptedArtifacts),
-                logs: runRecord.logs
-            )
-            try repository.writeRun(runRecord)
-            try repository.writeManifest(
-                Self.manifest(
-                    plan: plan,
-                    runPlan: runPlan,
-                    runID: runID,
-                    targetRecords: targetRecords,
-                    updatedAt: endedAt
-                )
-            )
-            try repository.pruneRunHistory(from: repository.listRunSummaries())
-
-            let failedTargetIDs = runRecord.targetResults
-                .filter { !$0.status.isSuccessfulOrSkipped }
-                .map(\.targetID)
-            if !failedTargetIDs.isEmpty {
-                throw GenerationError.runFailed(
-                    runID: runID,
-                    failedTargetIDs: failedTargetIDs
-                )
-            }
-
-            return Result(
-                plan: plan,
-                generatedTargets: generatedTargetIDs.map(Target.generated(identifier:)),
-                runID: runID,
-                manifestURL: repository.manifestURL,
-                runRecordURL: try repository.runRecordURL(for: runID)
-            )
         }
     }
 }
@@ -232,6 +77,183 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
     struct TargetExecutionResult {
         let runTarget: PrivateHeaderGeneration.RunTargetRecord
         let manifestTarget: PrivateHeaderGeneration.TargetRecord
+    }
+
+    func runWithLockedState(
+        plan: PrivateHeaderGeneration.Plan,
+        options: PrivateHeaderGeneration.Options,
+        selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
+        repository: PrivateHeaderGeneration.RunRepository,
+        artifactStore: PrivateHeaderGeneration.ArtifactStore,
+        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
+        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
+    ) async throws -> PrivateHeaderGeneration.Result {
+        let existingManifest = try repository.readManifest()
+        let latestRun = try existingManifest.flatMap { try repository.readLatestRun(from: $0) }
+        let runPlan = Self.runPlanRecord(
+            plan: plan,
+            selectedTargets: selectedTargets,
+            executionMode: executionMode,
+            helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
+                for: executionMode
+            )
+        )
+
+        let resumeSummary = try Self.resumeSummary(
+            for: options.resumeBehavior,
+            runPlan: runPlan,
+            manifest: existingManifest,
+            latestRun: latestRun,
+            artifactStore: artifactStore
+        )
+        let targetIDsToRun = Self.targetIDsToRun(
+            resumeBehavior: options.resumeBehavior,
+            selectedTargets: selectedTargets,
+            resumeSummary: resumeSummary
+        )
+        let targetsToRun = selectedTargets.filter { targetIDsToRun.contains($0.candidate.identifier) }
+
+        try repository.prepareStateDirectory()
+        let runID = runIDGenerator()
+        let runDirectories = try repository.prepareRunDirectories(for: runID)
+        try FileManager.default.createDirectory(
+            at: plan.artifactDirectory,
+            withIntermediateDirectories: true
+        )
+
+        var targetRecords = existingManifest?.targets ?? []
+        if case .fresh = options.resumeBehavior {
+            targetRecords = targetRecords.filter { record in
+                !selectedTargets.contains { $0.candidate.identifier == record.id }
+            }
+        }
+
+        let startedAt = dateProvider()
+        var runRecord = PrivateHeaderGeneration.RunRecord(
+            runID: runID,
+            schemaVersion: 1,
+            toolVersion: options.toolVersion,
+            plan: runPlan,
+            startedAt: startedAt,
+            endedAt: nil,
+            status: .running,
+            targetResults: [],
+            attemptedArtifacts: [],
+            logs: []
+        )
+        try repository.writeRun(runRecord)
+        try repository.writeManifest(
+            Self.manifest(
+                plan: plan,
+                runPlan: runPlan,
+                runID: runID,
+                targetRecords: targetRecords,
+                updatedAt: startedAt
+            )
+        )
+
+        let previousTargetRecords = Self.targetsByID(existingManifest?.targets ?? [])
+        let previousCommitFailedAttempts = Self.commitFailedAttemptedArtifactsByTargetID(latestRun)
+        var generatedTargetIDs: [String] = []
+
+        for target in targetsToRun {
+            let targetResult = try await executeTarget(
+                target,
+                runID: runID,
+                runDirectories: runDirectories,
+                plan: plan,
+                helperURLs: helperURLs,
+                executionMode: executionMode,
+                rawDumpingOptions: options.rawDumpingOptions,
+                artifactStore: artifactStore,
+                previousTarget: previousTargetRecords[target.candidate.identifier],
+                previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
+                cleanupBeforeRun: Self.shouldCleanupBeforeRun(
+                    targetID: target.candidate.identifier,
+                    resumeBehavior: options.resumeBehavior,
+                    previousTarget: previousTargetRecords[target.candidate.identifier]
+                )
+            )
+
+            runRecord = Self.runRecordByAppending(
+                targetResult.runTarget,
+                to: runRecord,
+                status: .running,
+                endedAt: nil
+            )
+            targetRecords = Self.upserting(targetResult.manifestTarget, in: targetRecords)
+            try repository.writeRun(runRecord)
+            try repository.writeManifest(
+                Self.manifest(
+                    plan: plan,
+                    runPlan: runPlan,
+                    runID: runID,
+                    targetRecords: targetRecords,
+                    updatedAt: dateProvider()
+                )
+            )
+
+            if targetResult.runTarget.status == .completed {
+                generatedTargetIDs.append(target.candidate.identifier)
+            }
+        }
+
+        let skippedTargetRecords = Self.skippedRunTargets(
+            selectedTargets: selectedTargets,
+            targetIDsToRun: targetIDsToRun
+        )
+        for skipped in skippedTargetRecords {
+            runRecord = Self.runRecordByAppending(
+                skipped,
+                to: runRecord,
+                status: .running,
+                endedAt: nil
+            )
+        }
+
+        let finalStatus = Self.finalRunStatus(for: runRecord.targetResults)
+        let endedAt = dateProvider()
+        runRecord = PrivateHeaderGeneration.RunRecord(
+            runID: runRecord.runID,
+            schemaVersion: runRecord.schemaVersion,
+            toolVersion: runRecord.toolVersion,
+            plan: runRecord.plan,
+            startedAt: runRecord.startedAt,
+            endedAt: endedAt,
+            status: finalStatus,
+            targetResults: runRecord.targetResults,
+            attemptedArtifacts: runRecord.targetResults.flatMap(\.attemptedArtifacts),
+            logs: runRecord.logs
+        )
+        try repository.writeRun(runRecord)
+        try repository.writeManifest(
+            Self.manifest(
+                plan: plan,
+                runPlan: runPlan,
+                runID: runID,
+                targetRecords: targetRecords,
+                updatedAt: endedAt
+            )
+        )
+        try repository.pruneRunHistory(from: repository.listRunSummaries())
+
+        let failedTargetIDs = runRecord.targetResults
+            .filter { !$0.status.isSuccessfulOrSkipped }
+            .map(\.targetID)
+        if !failedTargetIDs.isEmpty {
+            throw PrivateHeaderGeneration.GenerationError.runFailed(
+                runID: runID,
+                failedTargetIDs: failedTargetIDs
+            )
+        }
+
+        return PrivateHeaderGeneration.Result(
+            plan: plan,
+            generatedTargets: generatedTargetIDs.map(PrivateHeaderGeneration.Target.generated(identifier:)),
+            runID: runID,
+            manifestURL: repository.manifestURL,
+            runRecordURL: try repository.runRecordURL(for: runID)
+        )
     }
 
     func executeTarget(
