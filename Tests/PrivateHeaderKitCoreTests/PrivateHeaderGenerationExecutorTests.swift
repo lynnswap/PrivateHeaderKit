@@ -146,6 +146,52 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(runner.invocations.isEmpty)
     }
 
+    @Test func availableResumeSummaryIsNilWithoutManifest() throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+
+        let summary = try PrivateHeaderGeneration.availableResumeSummary(
+            source: plan.source,
+            output: plan.output,
+            options: plan.options
+        )
+
+        #expect(summary == nil)
+    }
+
+    @Test func availableResumeSummaryReturnsCompatibleUnfinishedState() throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let targetID = "framework:Foo.framework"
+        let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers/Generated.h")
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        try fixture.writeState(
+            plan: plan,
+            runID: "run-prev",
+            targetID: targetID,
+            status: .partial,
+            artifacts: [artifact],
+            runStatus: .partial,
+            attemptedArtifacts: []
+        )
+
+        let availableSummary = try PrivateHeaderGeneration.availableResumeSummary(
+            source: plan.source,
+            output: plan.output,
+            options: plan.options
+        )
+        let summary = try #require(availableSummary)
+
+        #expect(summary.latestRunID == "run-prev")
+        #expect(summary.targetIDsToRun == [targetID])
+        #expect(summary.counts.unfinished == 1)
+    }
+
     @Test func bundleLayoutCommitsArtifactsWithBundleSuffixes() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }

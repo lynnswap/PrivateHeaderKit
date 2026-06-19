@@ -1,6 +1,85 @@
 import Foundation
 
 public extension PrivateHeaderGeneration {
+    static func availableResumeSummary(
+        source: Source,
+        output: Output,
+        options: Options = Options()
+    ) throws -> ResumeSummary? {
+        let plan = makePlan(
+            source: source,
+            output: output,
+            options: options
+        )
+        return try GenerationExecutor.availableResumeSummary(for: plan)
+    }
+}
+
+extension PrivateHeaderGeneration.GenerationExecutor {
+    static func availableResumeSummary(
+        for plan: PrivateHeaderGeneration.Plan
+    ) throws -> PrivateHeaderGeneration.ResumeSummary? {
+        let options = plan.options
+
+        guard let systemRoot = options.systemRoot else {
+            throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("systemRoot")
+        }
+        guard let executionMode = options.executionMode else {
+            throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
+        }
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+            in: systemRoot,
+            includeNestedChildren: options.includeNestedChildren
+        )
+        let selectedTargets = try Self.selectedExecutionTargets(
+            request: options.targetRequest,
+            catalog: catalog
+        )
+        guard !selectedTargets.isEmpty else {
+            throw PrivateHeaderGeneration.GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
+        }
+
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        guard let manifest = try repository.readManifest() else {
+            return nil
+        }
+
+        let latestRun = try repository.readLatestRun(from: manifest)
+        let runPlan = Self.runPlanRecord(
+            plan: plan,
+            selectedTargets: selectedTargets,
+            executionMode: executionMode,
+            helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
+                for: executionMode
+            )
+        )
+        let compatibility = PrivateHeaderGeneration.evaluateResumeCompatibility(
+            plan: runPlan,
+            manifest: manifest,
+            latestRun: latestRun
+        )
+        guard compatibility.isCompatible else {
+            return nil
+        }
+
+        let artifactStore = PrivateHeaderGeneration.ArtifactStore(
+            artifactRoot: plan.artifactDirectory
+        )
+        let artifactExists: PrivateHeaderGeneration.ArtifactExistence = { artifact in
+            (try? artifactStore.contains(artifact)) == true
+        }
+        let summary = PrivateHeaderGeneration.makeResumeSummary(
+            plan: runPlan,
+            manifest: manifest,
+            latestRun: latestRun,
+            artifactExists: artifactExists
+        )
+        return summary.isUnfinished ? summary : nil
+    }
+}
+
+public extension PrivateHeaderGeneration {
     struct GenerationExecutor: Sendable {
         public typealias RawDumpRunner = @Sendable (
             PrivateHeaderGeneration.RawDumping.Invocation

@@ -65,6 +65,13 @@ struct PrivateHeaderKitGenerationRequest: Sendable {
         return resumeRequested
     }
 
+    var startsFresh: Bool {
+        guard case .fresh = options.resumeBehavior else {
+            return false
+        }
+        return true
+    }
+
     var hostHelperURL: URL? {
         options.helperURLs?.host
     }
@@ -204,6 +211,10 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
             .appendingPathComponent(sourceDirectoryName, isDirectory: true)
     }
 
+    var manifestPath: String {
+        stateDirectory.appendingPathComponent("manifest.json", isDirectory: false).path
+    }
+
     private func sourceLabel(separator: String) -> String {
         let baseName = "\(platform.rawValue)\(separator)\(version)"
         if let build {
@@ -255,6 +266,7 @@ typealias PrivateHeaderKitSimulatorResolver = (
 ) throws -> PrivateHeaderKitSimulatorResolution
 
 typealias PrivateHeaderKitInputReader = () -> String?
+typealias PrivateHeaderKitInteractiveScreenClearer = () -> Void
 
 struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let platform: PrivateHeaderKitGenerateCommand.Platform
@@ -334,6 +346,8 @@ func runPrivateHeaderKitCommand(
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
     interactiveSourceProvider: @escaping PrivateHeaderKitInteractiveSourceProvider =
         discoverPrivateHeaderKitInteractiveSources,
+    interactiveOutputBaseDirectoryProvider: @escaping () -> String = defaultInteractiveOutputBaseDirectory,
+    interactiveScreenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer = clearInteractiveScreen,
     inputReader: @escaping PrivateHeaderKitInputReader = { readLine() },
     outputLogger: (String) -> Void = logCLIOutput,
     errorLogger: (String) -> Void = logCLIError
@@ -353,6 +367,8 @@ func runPrivateHeaderKitCommand(
                 generationRunner: generationRunner,
                 simulatorResolver: simulatorResolver,
                 sourceProvider: interactiveSourceProvider,
+                outputBaseDirectoryProvider: interactiveOutputBaseDirectoryProvider,
+                screenClearer: interactiveScreenClearer,
                 inputReader: inputReader,
                 outputLogger: outputLogger,
                 errorLogger: errorLogger
@@ -390,6 +406,8 @@ private func runPrivateHeaderKitInteractiveGenerate(
     generationRunner: PrivateHeaderKitGenerationRunner,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
+    outputBaseDirectoryProvider: () -> String,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
     outputLogger: (String) -> Void,
     errorLogger: (String) -> Void
@@ -401,10 +419,11 @@ private func runPrivateHeaderKitInteractiveGenerate(
             return 2
         }
 
-        outputLogger("Available sources:")
-        for (offset, source) in sources.enumerated() {
-            outputLogger("  [\(offset + 1)] \(source.displayName)")
-        }
+        renderInteractiveSourceScreen(
+            sources: sources,
+            screenClearer: screenClearer,
+            outputLogger: outputLogger
+        )
 
         let source = try promptIndexedSelection(
             prompt: "Select source:",
@@ -412,19 +431,19 @@ private func runPrivateHeaderKitInteractiveGenerate(
             inputReader: inputReader,
             outputLogger: outputLogger
         )
-        let outputBaseDirectory = defaultInteractiveOutputBaseDirectory()
-        outputLogger("Output directory: \(outputBaseDirectory)")
+        let outputBaseDirectory = outputBaseDirectoryProvider()
+        renderInteractiveTargetScreen(
+            source: source,
+            outputBaseDirectory: outputBaseDirectory,
+            screenClearer: screenClearer,
+            outputLogger: outputLogger
+        )
         let targetQuery = try promptRequiredValue(
             prompt: "Targets (comma-separated, or all):",
             inputReader: inputReader,
             outputLogger: outputLogger
         )
         try validateTargetQuery(targetQuery)
-        let resume = try promptYesNo(
-            prompt: "Resume a compatible unfinished run if one exists? (y/n):",
-            inputReader: inputReader,
-            outputLogger: outputLogger
-        )
 
         let command = PrivateHeaderKitGenerateCommand(
             platform: source.platform,
@@ -433,9 +452,18 @@ private func runPrivateHeaderKitInteractiveGenerate(
             systemRoot: source.systemRoot,
             outputBaseDirectory: outputBaseDirectory,
             targetQuery: targetQuery,
-            resume: resume,
+            resume: false,
             device: nil,
             simulatorHelperPath: nil
+        )
+        let resumeDecision = try interactiveResumeDecision(
+            for: command,
+            invokedProgramName: invokedProgramName,
+            currentExecutableURL: currentExecutableURL,
+            simulatorResolver: simulatorResolver,
+            screenClearer: screenClearer,
+            inputReader: inputReader,
+            outputLogger: outputLogger
         )
 
         return await runPrivateHeaderKitGenerateCommand(
@@ -444,6 +472,8 @@ private func runPrivateHeaderKitInteractiveGenerate(
             currentExecutableURL: currentExecutableURL,
             generationRunner: generationRunner,
             simulatorResolver: simulatorResolver,
+            preResolvedSimulatorResolution: resumeDecision.simulatorResolution,
+            resumeBehaviorOverride: resumeDecision.resumeBehavior,
             outputLogger: outputLogger,
             errorLogger: errorLogger
         )
@@ -460,12 +490,118 @@ private func defaultInteractiveOutputBaseDirectory() -> String {
     PathUtils.expandTilde("~/PrivateHeaderKit")
 }
 
+private func renderInteractiveSourceScreen(
+    sources: [PrivateHeaderKitInteractiveSource],
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    outputLogger: (String) -> Void
+) {
+    screenClearer()
+    outputLogger("Available sources:")
+    for (offset, source) in sources.enumerated() {
+        outputLogger("  [\(offset + 1)] \(source.displayName)")
+    }
+}
+
+private func renderInteractiveTargetScreen(
+    source: PrivateHeaderKitInteractiveSource,
+    outputBaseDirectory: String,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    outputLogger: (String) -> Void
+) {
+    screenClearer()
+    outputLogger("Selected source: \(source.displayName)")
+    outputLogger("Output directory: \(outputBaseDirectory)")
+}
+
+private func renderInteractiveResumeScreen(
+    source: PrivateHeaderKitGenerateCommand,
+    summary: PrivateHeaderGeneration.ResumeSummary,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    outputLogger: (String) -> Void
+) {
+    screenClearer()
+    outputLogger("Unfinished run found:")
+    if let latestRunID = summary.latestRunID {
+        outputLogger("  run ID: \(latestRunID)")
+    }
+    outputLogger("  source: \(source.sourceDisplayName)")
+    outputLogger("  output directory: \(source.outputBaseDirectory)")
+    outputLogger("  targets remaining: \(summary.counts.unfinished) of \(summary.counts.total)")
+}
+
+private func interactiveResumeDecision(
+    for command: PrivateHeaderKitGenerateCommand,
+    invokedProgramName: String,
+    currentExecutableURL: URL?,
+    simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    inputReader: PrivateHeaderKitInputReader,
+    outputLogger: (String) -> Void
+) throws -> PrivateHeaderKitInteractiveResumeDecision {
+    guard FileManager.default.fileExists(atPath: command.manifestPath) else {
+        return PrivateHeaderKitInteractiveResumeDecision(
+            resumeBehavior: .fresh,
+            simulatorResolution: nil
+        )
+    }
+
+    let hostHelperExecutableURL = privateHeaderKitExecutableURL(
+        currentExecutableURL: currentExecutableURL,
+        fallbackProgramName: invokedProgramName
+    )
+    let simulatorResolution: PrivateHeaderKitSimulatorResolution?
+    if command.platform == .iOS {
+        simulatorResolution = try simulatorResolver(command)
+    } else {
+        simulatorResolution = nil
+    }
+    let request = try makePrivateHeaderGenerationRequest(
+        from: command,
+        hostHelperExecutableURL: hostHelperExecutableURL,
+        simulatorResolution: simulatorResolution,
+        resumeBehaviorOverride: .requireExplicitResume(resumeRequested: false)
+    )
+    guard let summary = try PrivateHeaderGeneration.availableResumeSummary(
+        source: request.source,
+        output: request.output,
+        options: request.options
+    ) else {
+        return PrivateHeaderKitInteractiveResumeDecision(
+            resumeBehavior: .fresh,
+            simulatorResolution: simulatorResolution
+        )
+    }
+
+    renderInteractiveResumeScreen(
+        source: command,
+        summary: summary,
+        screenClearer: screenClearer,
+        outputLogger: outputLogger
+    )
+    let shouldResume = try promptYesNo(
+        prompt: "Continue previous run? (y/n):",
+        inputReader: inputReader,
+        outputLogger: outputLogger
+    )
+    return PrivateHeaderKitInteractiveResumeDecision(
+        resumeBehavior: shouldResume ? .resume : .fresh,
+        simulatorResolution: simulatorResolution
+    )
+}
+
+private struct PrivateHeaderKitInteractiveResumeDecision {
+    let resumeBehavior: PrivateHeaderGeneration.ResumeBehavior
+    let simulatorResolution: PrivateHeaderKitSimulatorResolution?
+}
+
 private func runPrivateHeaderKitGenerateCommand(
     _ command: PrivateHeaderKitGenerateCommand,
     invokedProgramName: String,
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    preResolvedSimulatorResolution: PrivateHeaderKitSimulatorResolution? = nil,
+    resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil,
     outputLogger: (String) -> Void,
     errorLogger: (String) -> Void
 ) async -> Int32 {
@@ -476,7 +612,7 @@ private func runPrivateHeaderKitGenerateCommand(
         )
         let simulatorResolution: PrivateHeaderKitSimulatorResolution?
         if command.platform == .iOS {
-            simulatorResolution = try simulatorResolver(command)
+            simulatorResolution = try preResolvedSimulatorResolution ?? simulatorResolver(command)
             if let simulatorResolution {
                 logPrivateHeaderKitSimulatorSelection(
                     simulatorResolution,
@@ -490,7 +626,8 @@ private func runPrivateHeaderKitGenerateCommand(
         let request = try makePrivateHeaderGenerationRequest(
             from: command,
             hostHelperExecutableURL: hostHelperExecutableURL,
-            simulatorResolution: simulatorResolution
+            simulatorResolution: simulatorResolution,
+            resumeBehaviorOverride: resumeBehaviorOverride
         )
         let summary = try await generationRunner(request)
         logPrivateHeaderGenerationSuccess(summary, outputLogger: outputLogger)
@@ -521,7 +658,8 @@ private func runPrivateHeaderGeneration(
 private func makePrivateHeaderGenerationRequest(
     from command: PrivateHeaderKitGenerateCommand,
     hostHelperExecutableURL: URL,
-    simulatorResolution: PrivateHeaderKitSimulatorResolution?
+    simulatorResolution: PrivateHeaderKitSimulatorResolution?,
+    resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil
 ) throws -> PrivateHeaderKitGenerationRequest {
     let source = try PrivateHeaderGeneration.Source(
         platform: command.platform.corePlatform,
@@ -568,7 +706,7 @@ private func makePrivateHeaderGenerationRequest(
             preferRuntimeMetadata: true,
             helperEnvironment: helperEnvironment
         ),
-        resumeBehavior: .requireExplicitResume(resumeRequested: command.resume),
+        resumeBehavior: resumeBehaviorOverride ?? .requireExplicitResume(resumeRequested: command.resume),
         outputBaseDirectory: outputBaseDirectory
     )
 
@@ -971,7 +1109,8 @@ private func promptIndexedSelection<Value>(
 private func promptRequiredValue(
     prompt: String,
     inputReader: PrivateHeaderKitInputReader,
-    outputLogger: (String) -> Void
+    outputLogger: (String) -> Void,
+    expandTilde: Bool = false
 ) throws -> String {
     while true {
         outputLogger(prompt)
@@ -983,7 +1122,7 @@ private func promptRequiredValue(
             outputLogger("Enter a value.")
             continue
         }
-        return PathUtils.expandTilde(trimmed)
+        return expandTilde ? PathUtils.expandTilde(trimmed) : trimmed
     }
 }
 
@@ -1081,5 +1220,23 @@ private func logCLIError(_ message: String) {
 
 private func logCLIOutput(_ message: String) {
     print(message)
+    fflush(stdout)
+}
+
+private func clearInteractiveScreen() {
+#if canImport(Darwin)
+    let outputIsTerminal = isatty(STDOUT_FILENO) != 0
+#elseif canImport(Glibc)
+    let outputIsTerminal = isatty(STDOUT_FILENO) != 0
+#else
+    let outputIsTerminal = false
+#endif
+    guard outputIsTerminal else {
+        return
+    }
+    guard ProcessInfo.processInfo.environment["TERM"] != "dumb" else {
+        return
+    }
+    fputs("\u{001B}[2J\u{001B}[H", stdout)
     fflush(stdout)
 }

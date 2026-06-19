@@ -419,7 +419,6 @@ struct PrivateHeaderKitCLIParsingTests {
         var inputs = [
             "1",
             "SwiftUI,UIKit",
-            "n",
         ]
         let defaultOutputBaseDirectory = FileManager.default
             .homeDirectoryForCurrentUser
@@ -451,6 +450,7 @@ struct PrivateHeaderKitCLIParsingTests {
                     ),
                 ]
             },
+            interactiveScreenClearer: {},
             inputReader: {
                 inputs.isEmpty ? nil : inputs.removeFirst()
             },
@@ -464,15 +464,17 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
         #expect(request.artifactBaseDirectory.path == defaultOutputBaseDirectory)
         #expect(request.targetQuery == "SwiftUI,UIKit")
-        #expect(request.resumeRequested == false)
-        #expect(outputMessages.prefix(6) == [
+        #expect(request.startsFresh)
+        #expect(request.resumeRequested == nil)
+        #expect(!outputMessages.contains("Continue previous run? (y/n):"))
+        #expect(outputMessages.prefix(5) == [
             "Available sources:",
             "  [1] iOS 27.0 (24A5355q)",
             "Select source:",
+            "Selected source: iOS 27.0 (24A5355q)",
             "Output directory: \(defaultOutputBaseDirectory)",
-            "Targets (comma-separated, or all):",
-            "Resume a compatible unfinished run if one exists? (y/n):",
         ])
+        #expect(outputMessages.contains("Targets (comma-separated, or all):"))
     }
 
     @Test func iOSGenerateDefaultsSimulatorHelperToInstallLayoutForCustomBindir() async throws {
