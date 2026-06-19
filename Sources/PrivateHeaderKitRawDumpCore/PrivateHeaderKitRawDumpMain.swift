@@ -734,7 +734,7 @@ private final class SwiftInterfaceTimingHandler: SwiftIndexEvents.Handler {
     private let label: String
     private let startNanos: UInt64
     private let lock = NSLock()
-    private var phaseStart: [SwiftIndexEvents.Phase: UInt64] = [:]
+    private var phaseStart: [SwiftIndexEvents.Phase: [UInt64]] = [:]
     private var opStart: [OpKey: UInt64] = [:]
     private var extractionSectionStart: [SwiftIndexEvents.Section: UInt64] = [:]
 
@@ -775,15 +775,27 @@ private final class SwiftInterfaceTimingHandler: SwiftIndexEvents.Handler {
 
         switch state {
         case .started:
-            phaseStart[phase] = now
+            phaseStart[phase, default: []].append(now)
             log(now: now, message: "\(phaseName(phase)) started")
         case .completed:
-            let start = phaseStart.removeValue(forKey: phase) ?? now
+            let start = popPhaseStart(for: phase) ?? now
             log(now: now, message: "\(phaseName(phase)) completed (\(formatDurationSeconds(now &- start)))")
         case .failed(let error):
-            let start = phaseStart.removeValue(forKey: phase) ?? now
+            let start = popPhaseStart(for: phase) ?? now
             log(now: now, message: "\(phaseName(phase)) failed (\(formatDurationSeconds(now &- start))): \(String(describing: error))")
         }
+    }
+
+    private func popPhaseStart(for phase: SwiftIndexEvents.Phase) -> UInt64? {
+        guard var starts = phaseStart[phase], let start = starts.popLast() else {
+            return nil
+        }
+        if starts.isEmpty {
+            phaseStart.removeValue(forKey: phase)
+        } else {
+            phaseStart[phase] = starts
+        }
+        return start
     }
 
     private func handleOpStarted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
