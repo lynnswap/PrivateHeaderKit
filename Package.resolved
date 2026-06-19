@@ -1,5 +1,5 @@
 {
-  "originHash" : "e1890902106b78b1a23dd873a38dd5d33c6d1465e29bce4f7b9fb5b3ad4a2b83",
+  "originHash" : "dc17d247dfaca6dd6fa23816b8fd4d265d7d15259cccf44de8ecdc144ebe3eec",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -20,21 +20,12 @@
       }
     },
     {
-      "identity" : "dyldprivate",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lynnswap/DyldPrivate.git",
-      "state" : {
-        "revision" : "3b4d596b702d7c8f589d0babe42c7387e5d24dbc",
-        "version" : "0.1.0"
-      }
-    },
-    {
       "identity" : "frameworktoolbox",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lynnswap/FrameworkToolbox.git",
+      "location" : "https://github.com/Mx-Iris/FrameworkToolbox",
       "state" : {
-        "revision" : "b0f1043d407fa10b8af42e0dc9c11ff2363b3632",
-        "version" : "0.3.3"
+        "revision" : "b82281eb8a6ffcb312941c3d06584182837f4ca9",
+        "version" : "0.7.1"
       }
     },
     {
@@ -58,7 +49,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "5b0ffcfde22caa6aeed971c9014db6d3075f5da7"
+        "revision" : "35698144adde6d39e071046135cd4a32330c582d"
       }
     },
     {
@@ -143,6 +134,15 @@
       }
     },
     {
+      "identity" : "swift-confidential",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Library-Forks/swift-confidential.git",
+      "state" : {
+        "revision" : "0e3e84cc18ffb4b39c4e51d9deacc3007e5fc67b",
+        "version" : "0.5.100"
+      }
+    },
+    {
       "identity" : "swift-crypto",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
@@ -152,12 +152,30 @@
       }
     },
     {
+      "identity" : "swift-demangling",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
+      "state" : {
+        "revision" : "d32f3154b6a551728e06fe4d5ad3e8f9e83010f5",
+        "version" : "0.4.2"
+      }
+    },
+    {
       "identity" : "swift-dependencies",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-dependencies",
       "state" : {
         "revision" : "c79f72b3e67a1eb64f66f76704c22ed6a5c1ed84",
         "version" : "1.11.0"
+      }
+    },
+    {
+      "identity" : "swift-dyld-private",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-dyld-private",
+      "state" : {
+        "revision" : "e9b255ed123e0ff5bb998d11639b993196159214",
+        "version" : "1.2.1"
       }
     },
     {
@@ -188,21 +206,12 @@
       }
     },
     {
-      "identity" : "swift-log",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-log.git",
-      "state" : {
-        "revision" : "2778fd4e5a12a8aaa30a3ee8285f4ce54c5f3181",
-        "version" : "1.9.1"
-      }
-    },
-    {
       "identity" : "swift-memberwise-init-macro",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Library-Forks/swift-memberwise-init-macro",
+      "location" : "https://github.com/gohanlon/swift-memberwise-init-macro",
       "state" : {
-        "revision" : "6121b169fb5a83d7262a69b640468606f98c6c6e",
-        "version" : "0.5.3-fork.1"
+        "revision" : "d0fb82bb6638051524214fb54524bfcd876735a1",
+        "version" : "0.6.0"
       }
     },
     {
@@ -221,6 +230,15 @@
       "state" : {
         "revision" : "93806cfecae1f198c894ed5585b93aff0e2d1f5a",
         "version" : "0.5.0"
+      }
+    },
+    {
+      "identity" : "swift-semantic-string",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string",
+      "state" : {
+        "revision" : "1c3438861ea6dbba0856ab02071d683914468e82",
+        "version" : "0.1.1"
       }
     },
     {

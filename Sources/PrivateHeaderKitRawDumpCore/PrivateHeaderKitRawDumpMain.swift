@@ -3,6 +3,7 @@ import Dispatch
 import MachOKit
 import MachOObjCSection
 import ObjCDump
+import SwiftDeclaration
 @_spi(Support) import SwiftInterface
 #if canImport(Darwin)
 import Darwin
@@ -31,11 +32,11 @@ protocol SwiftInterfaceBuildingFactory {
 
 struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
     let configuration: SwiftInterfaceBuilderConfiguration
-    let eventHandlers: [SwiftInterfaceEvents.Handler]
+    let eventHandlers: [SwiftIndexEvents.Handler]
 
     init(
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
-        eventHandlers: [SwiftInterfaceEvents.Handler] = []
+        eventHandlers: [SwiftIndexEvents.Handler] = []
     ) {
         self.configuration = configuration
         self.eventHandlers = eventHandlers
@@ -56,7 +57,7 @@ struct SwiftInterfaceBuilderAdapter: SwiftInterfaceBuilding {
     init(
         machO: MachOFile,
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
-        eventHandlers: [SwiftInterfaceEvents.Handler] = []
+        eventHandlers: [SwiftIndexEvents.Handler] = []
     ) throws {
         self.builder = try SwiftInterfaceBuilder(configuration: configuration, eventHandlers: eventHandlers, in: machO)
     }
@@ -724,25 +725,25 @@ private func profileLogDuration(
     fputs("privateheaderkit __raw-dump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
 }
 
-private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
+private final class SwiftInterfaceTimingHandler: SwiftIndexEvents.Handler {
     private struct OpKey: Hashable {
-        let phase: SwiftInterfaceEvents.Phase
-        let operation: SwiftInterfaceEvents.PhaseOperation
+        let phase: SwiftIndexEvents.Phase
+        let operation: SwiftIndexEvents.PhaseOperation
     }
 
     private let label: String
     private let startNanos: UInt64
     private let lock = NSLock()
-    private var phaseStart: [SwiftInterfaceEvents.Phase: UInt64] = [:]
+    private var phaseStart: [SwiftIndexEvents.Phase: UInt64] = [:]
     private var opStart: [OpKey: UInt64] = [:]
-    private var extractionSectionStart: [SwiftInterfaceEvents.Section: UInt64] = [:]
+    private var extractionSectionStart: [SwiftIndexEvents.Section: UInt64] = [:]
 
     init(label: String) {
         self.label = label
         self.startNanos = DispatchTime.now().uptimeNanoseconds
     }
 
-    func handle(event: SwiftInterfaceEvents.Payload) {
+    func handle(event: SwiftIndexEvents.Payload) {
         switch event {
         case .phaseTransition(let phase, let state):
             handlePhaseTransition(phase: phase, state: state)
@@ -762,26 +763,12 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
             handlePhaseTransition(phase: .moduleCollection, state: .started)
         case .moduleCollectionCompleted(result: _):
             handlePhaseTransition(phase: .moduleCollection, state: .completed)
-        case .dependencyLoadingStarted(input: _):
-            handlePhaseTransition(phase: .dependencyLoading, state: .started)
-        case .dependencyLoadingCompleted(result: _):
-            handlePhaseTransition(phase: .dependencyLoading, state: .completed)
-        case .dependencyLoadingFailed(failure: let failure):
-            handlePhaseTransition(phase: .dependencyLoading, state: .failed(failure.error))
-        case .typeDatabaseIndexingStarted(input: _):
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .started)
-        case .typeDatabaseIndexingCompleted:
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .completed)
-        case .typeDatabaseIndexingFailed(error: let error):
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .failed(error))
-        case .diagnostic(message: let message):
-            handleDiagnostic(message: message)
         default:
             break
         }
     }
 
-    private func handlePhaseTransition(phase: SwiftInterfaceEvents.Phase, state: SwiftInterfaceEvents.State) {
+    private func handlePhaseTransition(phase: SwiftIndexEvents.Phase, state: SwiftIndexEvents.State) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         defer { lock.unlock() }
@@ -799,7 +786,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         }
     }
 
-    private func handleOpStarted(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation) {
+    private func handleOpStarted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -808,7 +795,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleOpCompleted(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation) {
+    private func handleOpCompleted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -817,7 +804,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleOpFailed(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation, error: any Error) {
+    private func handleOpFailed(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation, error: any Error) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -826,7 +813,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionStarted(section: SwiftInterfaceEvents.Section) {
+    private func handleExtractionStarted(section: SwiftIndexEvents.Section) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         extractionSectionStart[section] = now
@@ -834,7 +821,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionCompleted(result: SwiftInterfaceEvents.ExtractionResult) {
+    private func handleExtractionCompleted(result: SwiftIndexEvents.ExtractionResult) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let start = extractionSectionStart.removeValue(forKey: result.section) ?? now
@@ -845,7 +832,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionFailed(section: SwiftInterfaceEvents.Section, error: any Error) {
+    private func handleExtractionFailed(section: SwiftIndexEvents.Section, error: any Error) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let start = extractionSectionStart.removeValue(forKey: section) ?? now
@@ -853,17 +840,6 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
             now: now,
             message: "extraction.\(sectionName(section)) failed (\(formatDurationSeconds(now &- start))): \(String(describing: error))"
         )
-        lock.unlock()
-    }
-
-    private func handleDiagnostic(message: SwiftInterfaceEvents.DiagnosticMessage) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        lock.lock()
-        var text = "diagnostic.\(diagnosticLevelName(message.level)) \(message.message)"
-        if let error = message.error {
-            text += " error=\(String(describing: error))"
-        }
-        log(now: now, message: text)
         lock.unlock()
     }
 
@@ -876,44 +852,32 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         String(format: "%.3fs", Double(nanos) / 1_000_000_000.0)
     }
 
-    private func phaseName(_ phase: SwiftInterfaceEvents.Phase) -> String {
+    private func phaseName(_ phase: SwiftIndexEvents.Phase) -> String {
         switch phase {
-        case .initialization: return "initialization"
         case .preparation: return "preparation"
         case .extraction: return "extraction"
         case .indexing: return "indexing"
         case .moduleCollection: return "moduleCollection"
-        case .dependencyLoading: return "dependencyLoading"
-        case .typeDatabaseIndexing: return "typeDatabaseIndexing"
         case .build: return "build"
         }
     }
 
-    private func operationName(_ op: SwiftInterfaceEvents.PhaseOperation) -> String {
+    private func operationName(_ op: SwiftIndexEvents.PhaseOperation) -> String {
         switch op {
         case .typeIndexing: return "typeIndexing"
         case .protocolIndexing: return "protocolIndexing"
         case .conformanceIndexing: return "conformanceIndexing"
         case .extensionIndexing: return "extensionIndexing"
-        case .dependencyIndexing: return "dependencyIndexing"
         }
     }
 
-    private func sectionName(_ section: SwiftInterfaceEvents.Section) -> String {
+    private func sectionName(_ section: SwiftIndexEvents.Section) -> String {
         switch section {
         case .swiftTypes: return "swiftTypes"
         case .swiftProtocols: return "swiftProtocols"
         case .protocolConformances: return "protocolConformances"
         case .associatedTypes: return "associatedTypes"
-        }
-    }
-
-    private func diagnosticLevelName(_ level: SwiftInterfaceEvents.DiagnosticLevel) -> String {
-        switch level {
-        case .warning: return "warning"
-        case .error: return "error"
-        case .debug: return "debug"
-        case .trace: return "trace"
+        case .symbolIndex: return "symbolIndex"
         }
     }
 }

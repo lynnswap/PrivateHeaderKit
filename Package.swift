@@ -27,7 +27,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "5b0ffcfde22caa6aeed971c9014db6d3075f5da7"
+            revision: "35698144adde6d39e071046135cd4a32330c582d"
         ),
     ],
     targets: [
@@ -47,6 +47,7 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                .product(name: "SwiftDeclaration", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
             path: "Sources/PrivateHeaderKitRawDumpCore"
