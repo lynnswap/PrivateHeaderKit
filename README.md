@@ -55,7 +55,7 @@ privateheaderkit
 privateheaderkit --help
 ```
 
-Running `privateheaderkit` without arguments starts the interactive generation flow. For automation and CI, pass the generation options directly:
+Running `privateheaderkit` without arguments starts the interactive generation flow and writes to `~/PrivateHeaderKit`. For automation and CI, pass the generation options directly:
 
 ```bash
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"

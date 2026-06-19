@@ -412,11 +412,8 @@ private func runPrivateHeaderKitInteractiveGenerate(
             inputReader: inputReader,
             outputLogger: outputLogger
         )
-        let outputBaseDirectory = try promptRequiredValue(
-            prompt: "Output base directory:",
-            inputReader: inputReader,
-            outputLogger: outputLogger
-        )
+        let outputBaseDirectory = defaultInteractiveOutputBaseDirectory()
+        outputLogger("Output directory: \(outputBaseDirectory)")
         let targetQuery = try promptRequiredValue(
             prompt: "Targets (comma-separated, or all):",
             inputReader: inputReader,
@@ -457,6 +454,10 @@ private func runPrivateHeaderKitInteractiveGenerate(
         errorLogger("error: \(error)")
         return 1
     }
+}
+
+private func defaultInteractiveOutputBaseDirectory() -> String {
+    PathUtils.expandTilde("~/PrivateHeaderKit")
 }
 
 private func runPrivateHeaderKitGenerateCommand(

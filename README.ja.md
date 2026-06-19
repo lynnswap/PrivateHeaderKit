@@ -55,7 +55,7 @@ privateheaderkit
 privateheaderkit --help
 ```
 
-`privateheaderkit` を引数なしで実行すると interactive generation flow を開始します。automation / CI では generation option を直接渡します。
+`privateheaderkit` を引数なしで実行すると interactive generation flow を開始し、`~/PrivateHeaderKit` に出力します。automation / CI では generation option を直接渡します。
 
 ```bash
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"

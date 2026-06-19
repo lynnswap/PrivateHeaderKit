@@ -418,10 +418,13 @@ struct PrivateHeaderKitCLIParsingTests {
         let recorder = GenerationRequestRecorder()
         var inputs = [
             "1",
-            "/tmp/PrivateHeaderKit",
             "SwiftUI,UIKit",
             "n",
         ]
+        let defaultOutputBaseDirectory = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("PrivateHeaderKit", isDirectory: true)
+            .path
         var outputMessages: [String] = []
         var loggedMessages: [String] = []
 
@@ -459,13 +462,14 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(exitCode == 0)
         #expect(loggedMessages.isEmpty)
         #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
+        #expect(request.artifactBaseDirectory.path == defaultOutputBaseDirectory)
         #expect(request.targetQuery == "SwiftUI,UIKit")
         #expect(request.resumeRequested == false)
         #expect(outputMessages.prefix(6) == [
             "Available sources:",
             "  [1] iOS 27.0 (24A5355q)",
             "Select source:",
-            "Output base directory:",
+            "Output directory: \(defaultOutputBaseDirectory)",
             "Targets (comma-separated, or all):",
             "Resume a compatible unfinished run if one exists? (y/n):",
         ])
