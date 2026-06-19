@@ -53,6 +53,32 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Headers/Generated.h"])
     }
 
+    @Test func executorHoldsStateLockWhileGeneratingTargets() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let probe = StateLockProbe(repository: repository)
+        let runner = RecordingRawDumpRunner()
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in
+                await probe.recordNestedLockAttempt()
+                return try await runner.run(invocation)
+            },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        _ = try await executor.run(.init(plan: plan))
+
+        #expect(probe.unavailablePath == repository.lockURL.path)
+        #expect(probe.unexpectedlyAcquired == false)
+        #expect(probe.unexpectedError == nil)
+        #expect(fileExists(repository.lockURL))
+    }
+
     @Test func completedTargetWithManagedArtifactsIsSkippedOnResume() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
@@ -388,6 +414,34 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(target.attemptedArtifacts.map(\.rawValue) == [
             "Frameworks/Foo/Headers/Generated.h",
         ])
+    }
+}
+
+private final class StateLockProbe: @unchecked Sendable {
+    let repository: PrivateHeaderGeneration.RunRepository
+    var unavailablePath: String?
+    var unexpectedlyAcquired = false
+    var unexpectedError: String?
+
+    init(repository: PrivateHeaderGeneration.RunRepository) {
+        self.repository = repository
+    }
+
+    func recordNestedLockAttempt() async {
+        do {
+            try await repository.withExclusiveLock(wait: false) {
+                unexpectedlyAcquired = true
+            }
+        } catch let error as PrivateHeaderGeneration.RunRepositoryError {
+            switch error {
+            case .lockUnavailable(let path):
+                unavailablePath = path
+            default:
+                unexpectedError = String(describing: error)
+            }
+        } catch {
+            unexpectedError = String(describing: error)
+        }
     }
 }
 
