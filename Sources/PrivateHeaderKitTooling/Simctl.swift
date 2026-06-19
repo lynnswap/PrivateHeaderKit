@@ -1,13 +1,56 @@
 import Foundation
 
-public struct RuntimeInfo: Codable, Equatable {
+public struct DeviceTypeInfo: Codable, Equatable, Sendable {
+    public let name: String?
+    public let identifier: String?
+    public let productFamily: String?
+    public let minRuntimeVersionString: String?
+    public let maxRuntimeVersionString: String?
+    public let minRuntimeVersion: Int?
+    public let maxRuntimeVersion: Int?
+
+    public init(
+        name: String?,
+        identifier: String?,
+        productFamily: String?,
+        minRuntimeVersionString: String? = nil,
+        maxRuntimeVersionString: String? = nil,
+        minRuntimeVersion: Int? = nil,
+        maxRuntimeVersion: Int? = nil
+    ) {
+        self.name = name
+        self.identifier = identifier
+        self.productFamily = productFamily
+        self.minRuntimeVersionString = minRuntimeVersionString
+        self.maxRuntimeVersionString = maxRuntimeVersionString
+        self.minRuntimeVersion = minRuntimeVersion
+        self.maxRuntimeVersion = maxRuntimeVersion
+    }
+}
+
+public struct RuntimeInfo: Codable, Equatable, Sendable {
     public let version: String
     public let build: String
     public let identifier: String
     public let runtimeRoot: String
+    public let supportedDeviceTypes: [DeviceTypeInfo]
+
+    public init(
+        version: String,
+        build: String,
+        identifier: String,
+        runtimeRoot: String,
+        supportedDeviceTypes: [DeviceTypeInfo] = []
+    ) {
+        self.version = version
+        self.build = build
+        self.identifier = identifier
+        self.runtimeRoot = runtimeRoot
+        self.supportedDeviceTypes = supportedDeviceTypes
+    }
 }
 
-public struct DeviceInfo: Codable, Equatable {
+public struct DeviceInfo: Codable, Equatable, Sendable {
     public let name: String
     public let udid: String
     public var state: String
@@ -26,6 +69,7 @@ public enum Simctl {
             let runtimeRoot: String?
             let isAvailable: Bool?
             let buildversion: String?
+            let supportedDeviceTypes: [DeviceTypeInfo]?
         }
         let runtimes: [RuntimeEntry]?
     }
@@ -40,12 +84,7 @@ public enum Simctl {
     }
 
     private struct DeviceTypesList: Decodable {
-        struct DeviceTypeEntry: Decodable {
-            let name: String?
-            let identifier: String?
-            let productFamily: String?
-        }
-        let devicetypes: [DeviceTypeEntry]?
+        let devicetypes: [DeviceTypeInfo]?
     }
 
     public static func listRuntimes(runner: CommandRunning) throws -> [RuntimeInfo] {
@@ -62,7 +101,15 @@ public enum Simctl {
             guard let identifier = entry.identifier, !identifier.isEmpty else { continue }
             guard let runtimeRoot = entry.runtimeRoot, !runtimeRoot.isEmpty else { continue }
             let build = entry.buildversion ?? ""
-            results.append(RuntimeInfo(version: version, build: build, identifier: identifier, runtimeRoot: runtimeRoot))
+            results.append(
+                RuntimeInfo(
+                    version: version,
+                    build: build,
+                    identifier: identifier,
+                    runtimeRoot: runtimeRoot,
+                    supportedDeviceTypes: entry.supportedDeviceTypes ?? []
+                )
+            )
         }
 
         results.sort { VersionUtils.versionKey($0.version).lexicographicallyPrecedes(VersionUtils.versionKey($1.version)) }
@@ -74,6 +121,21 @@ public enum Simctl {
             return runtime
         }
         throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
+    }
+
+    public static func findRuntime(version: String, build: String?, runner: CommandRunning) throws -> RuntimeInfo {
+        let matches = try listRuntimes(runner: runner).filter { $0.version == version }
+        guard !matches.isEmpty else {
+            throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
+        }
+
+        guard let build, !build.isEmpty else {
+            return matches[0]
+        }
+        if let match = matches.first(where: { $0.build == build }) {
+            return match
+        }
+        throw ToolingError.message("iOS runtime not found or unavailable: \(version) (\(build))")
     }
 
     public static func latestRuntime(runner: CommandRunning) throws -> RuntimeInfo {
@@ -153,27 +215,68 @@ public enum Simctl {
         return try cloneDevice(base: base, runtimeId: runtime.identifier, cloneName: cloneName, runner: runner)
     }
 
+    public static func resolveDevice(
+        runtime: RuntimeInfo,
+        query: String?,
+        runner: CommandRunning,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> DeviceInfo {
+        var devices = try listDevices(runtimeId: runtime.identifier, runner: runner)
+        if devices.isEmpty {
+            try createDefaultDevice(runtime: runtime, runner: runner, environment: environment)
+            devices = try listDevices(runtimeId: runtime.identifier, runner: runner)
+        }
+
+        let selected: DeviceInfo
+        if let query = query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty {
+            guard let match = matchDevice(devices: devices, query: query) else {
+                throw ToolingError.message("simulator device not found for iOS \(runtime.version): \(query)")
+            }
+            selected = match
+        } else {
+            selected = try resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
+        }
+
+        var booted = selected
+        try ensureDeviceBooted(&booted, runner: runner, force: false)
+        return booted
+    }
+
     public static func ensureDeviceBooted(_ device: inout DeviceInfo, runner: CommandRunning, force: Bool) throws {
-        if device.state == "Booted", !force { return }
+        if stateEquals(device.state, "Booted"), !force { return }
         print("Booting simulator: \(device.name) (\(device.udid))")
         try runner.runSimple(["xcrun", "simctl", "boot", device.udid], env: nil, cwd: nil)
         try runner.runSimple(["xcrun", "simctl", "bootstatus", device.udid, "-b"], env: nil, cwd: nil)
         device.state = "Booted"
     }
 
-    public static func createDefaultDevice(runtimeId: String, version: String, runner: CommandRunning) throws {
-        let output = try runner.runCapture(["xcrun", "simctl", "list", "devicetypes", "-j"], env: nil, cwd: nil)
-        let data = Data(output.utf8)
-        let decoded = try JSONDecoder().decode(DeviceTypesList.self, from: data)
-        let deviceTypes = decoded.devicetypes ?? []
+    public static func createDefaultDevice(
+        runtimeId: String,
+        version: String,
+        runner: CommandRunning,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws {
+        try createDefaultDevice(
+            runtime: RuntimeInfo(version: version, build: "", identifier: runtimeId, runtimeRoot: ""),
+            runner: runner,
+            environment: environment
+        )
+    }
 
-        func matchesEnv(_ entry: DeviceTypesList.DeviceTypeEntry, needle: String) -> Bool {
+    public static func createDefaultDevice(
+        runtime: RuntimeInfo,
+        runner: CommandRunning,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws {
+        let deviceTypes = try defaultDeviceTypeCandidates(for: runtime, runner: runner)
+
+        func matchesEnv(_ entry: DeviceTypeInfo, needle: String) -> Bool {
             if entry.identifier == needle || entry.name == needle { return true }
             return (entry.identifier ?? "").lowercased() == needle.lowercased() || (entry.name ?? "").lowercased() == needle.lowercased()
         }
 
-        var choice: DeviceTypesList.DeviceTypeEntry?
-        if let envType = ProcessInfo.processInfo.environment["PH_DEVICE_TYPE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        var choice: DeviceTypeInfo?
+        if let envType = environment["PH_DEVICE_TYPE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !envType.isEmpty {
             choice = deviceTypes.first(where: { matchesEnv($0, needle: envType) })
             if choice == nil {
@@ -187,6 +290,9 @@ public enum Simctl {
         if choice == nil {
             choice = deviceTypes.first(where: { ($0.name ?? "").hasPrefix("iPhone") })
         }
+        if choice == nil {
+            choice = deviceTypes.first
+        }
         guard let picked = choice,
               let deviceName = picked.name, !deviceName.isEmpty,
               let deviceType = picked.identifier, !deviceType.isEmpty
@@ -194,8 +300,64 @@ public enum Simctl {
             throw ToolingError.message("no device types available")
         }
 
-        let createdName = "\(deviceName) (\(version))"
+        let createdName = "\(deviceName) (\(runtime.version))"
         print("Creating device: \(createdName)")
-        try runner.runSimple(["xcrun", "simctl", "create", createdName, deviceType, runtimeId], env: nil, cwd: nil)
+        try runner.runSimple(["xcrun", "simctl", "create", createdName, deviceType, runtime.identifier], env: nil, cwd: nil)
+    }
+
+    private static func defaultDeviceTypeCandidates(for runtime: RuntimeInfo, runner: CommandRunning) throws -> [DeviceTypeInfo] {
+        if !runtime.supportedDeviceTypes.isEmpty {
+            return runtime.supportedDeviceTypes
+        }
+
+        let output = try runner.runCapture(["xcrun", "simctl", "list", "devicetypes", "-j"], env: nil, cwd: nil)
+        let data = Data(output.utf8)
+        let decoded = try JSONDecoder().decode(DeviceTypesList.self, from: data)
+        let deviceTypes = decoded.devicetypes ?? []
+        return compatibleDeviceTypes(from: deviceTypes, runtime: runtime) ?? deviceTypes
+    }
+
+    private static func compatibleDeviceTypes(from deviceTypes: [DeviceTypeInfo], runtime: RuntimeInfo) -> [DeviceTypeInfo]? {
+        let hasRuntimeMetadata = deviceTypes.contains { deviceType in
+            hasText(deviceType.minRuntimeVersionString) || hasText(deviceType.maxRuntimeVersionString)
+        }
+        guard hasRuntimeMetadata else {
+            return nil
+        }
+        return deviceTypes.filter { supports(runtime: runtime, deviceType: $0) }
+    }
+
+    private static func supports(runtime: RuntimeInfo, deviceType: DeviceTypeInfo) -> Bool {
+        if let min = normalizedVersionString(deviceType.minRuntimeVersionString),
+           compareVersionStrings(runtime.version, min) == .orderedAscending {
+            return false
+        }
+        if let max = normalizedVersionString(deviceType.maxRuntimeVersionString),
+           compareVersionStrings(runtime.version, max) == .orderedDescending {
+            return false
+        }
+        return true
+    }
+
+    private static func normalizedVersionString(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func hasText(_ value: String?) -> Bool {
+        normalizedVersionString(value) != nil
+    }
+
+    private static func compareVersionStrings(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let left = VersionUtils.versionKey(lhs)
+        let right = VersionUtils.versionKey(rhs)
+        let count = max(left.count, right.count)
+        for index in 0..<count {
+            let leftValue = index < left.count ? left[index] : 0
+            let rightValue = index < right.count ? right[index] : 0
+            if leftValue < rightValue { return .orderedAscending }
+            if leftValue > rightValue { return .orderedDescending }
+        }
+        return .orderedSame
     }
 }

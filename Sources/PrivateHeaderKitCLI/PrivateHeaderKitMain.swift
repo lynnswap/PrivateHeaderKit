@@ -2,6 +2,7 @@ import Foundation
 import PrivateHeaderKitCore
 import PrivateHeaderKitInstall
 import PrivateHeaderKitRawDumpCore
+import PrivateHeaderKitTooling
 
 #if canImport(Darwin)
 import Darwin
@@ -76,6 +77,20 @@ struct PrivateHeaderKitGenerationRequest: Sendable {
             return false
         }
         return true
+    }
+
+    var simulatorDeviceUDID: String? {
+        guard case .simulator(let deviceUDID, _) = options.executionMode else {
+            return nil
+        }
+        return deviceUDID
+    }
+
+    var simulatorRuntimeRoot: String? {
+        guard case .simulator(_, let runtimeRoot) = options.executionMode else {
+            return nil
+        }
+        return runtimeRoot
     }
 
     var usesSharedCache: Bool {
@@ -162,10 +177,12 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     let platform: Platform
     let version: String
     let build: String?
-    let systemRoot: String
+    let systemRoot: String?
     let outputBaseDirectory: String
     let targetQuery: String
     let resume: Bool
+    let device: String?
+    let simulatorHelperPath: String?
 
     var sourceDisplayName: String {
         sourceLabel(separator: " ")
@@ -196,6 +213,46 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     }
 }
 
+struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
+    let runtimeVersion: String
+    let runtimeBuild: String
+    let runtimeIdentifier: String
+    let resolvedRuntimeRoot: String
+    let deviceName: String
+    let deviceUDID: String
+
+    init(
+        runtimeVersion: String,
+        runtimeBuild: String,
+        runtimeIdentifier: String,
+        resolvedRuntimeRoot: String,
+        deviceName: String,
+        deviceUDID: String
+    ) {
+        self.runtimeVersion = runtimeVersion
+        self.runtimeBuild = runtimeBuild
+        self.runtimeIdentifier = runtimeIdentifier
+        self.resolvedRuntimeRoot = resolvedRuntimeRoot
+        self.deviceName = deviceName
+        self.deviceUDID = deviceUDID
+    }
+
+    init(runtime: RuntimeInfo, device: DeviceInfo) {
+        self.init(
+            runtimeVersion: runtime.version,
+            runtimeBuild: runtime.build,
+            runtimeIdentifier: runtime.identifier,
+            resolvedRuntimeRoot: runtime.runtimeRoot,
+            deviceName: device.name,
+            deviceUDID: device.udid
+        )
+    }
+}
+
+typealias PrivateHeaderKitSimulatorResolver = (
+    PrivateHeaderKitGenerateCommand
+) throws -> PrivateHeaderKitSimulatorResolution
+
 private let legacyPublicCommandNames: Set<String> = [
     "privateheaderkit-dump",
     "headerdump",
@@ -215,6 +272,7 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
     case emptyOptionValue(String)
     case invalidSourceComponent(option: String, value: String)
     case invalidTargetQuery(String)
+    case missingSimulatorResolution
 
     var description: String {
         switch self {
@@ -242,6 +300,8 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
             return "\(option) is not safe as a source label path component: \(value)"
         case .invalidTargetQuery(let value):
             return "target query must be a comma-separated list without empty entries: \(value)"
+        case .missingSimulatorResolution:
+            return "iOS generation requires a resolved simulator runtime and device"
         }
     }
 }
@@ -251,6 +311,7 @@ func runPrivateHeaderKitCommand(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationRunner: @escaping PrivateHeaderKitGenerationRunner = runPrivateHeaderGeneration,
+    simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
     outputLogger: (String) -> Void = logCLIOutput,
     errorLogger: (String) -> Void = logCLIError
 ) async -> Int32 {
@@ -270,6 +331,7 @@ func runPrivateHeaderKitCommand(
                 invokedProgramName: args.first ?? "privateheaderkit",
                 currentExecutableURL: currentExecutableURL,
                 generationRunner: generationRunner,
+                simulatorResolver: simulatorResolver,
                 outputLogger: outputLogger,
                 errorLogger: errorLogger
             )
@@ -293,16 +355,32 @@ private func runPrivateHeaderKitGenerateCommand(
     invokedProgramName: String,
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
+    simulatorResolver: PrivateHeaderKitSimulatorResolver,
     outputLogger: (String) -> Void,
     errorLogger: (String) -> Void
 ) async -> Int32 {
     do {
+        let hostHelperExecutableURL = privateHeaderKitExecutableURL(
+            currentExecutableURL: currentExecutableURL,
+            fallbackProgramName: invokedProgramName
+        )
+        let simulatorResolution: PrivateHeaderKitSimulatorResolution?
+        if command.platform == .iOS {
+            simulatorResolution = try simulatorResolver(command)
+            if let simulatorResolution {
+                logPrivateHeaderKitSimulatorSelection(
+                    simulatorResolution,
+                    command: command,
+                    outputLogger: outputLogger
+                )
+            }
+        } else {
+            simulatorResolution = nil
+        }
         let request = try makePrivateHeaderGenerationRequest(
             from: command,
-            helperExecutableURL: privateHeaderKitExecutableURL(
-                currentExecutableURL: currentExecutableURL,
-                fallbackProgramName: invokedProgramName
-            )
+            hostHelperExecutableURL: hostHelperExecutableURL,
+            simulatorResolution: simulatorResolution
         )
         let summary = try await generationRunner(request)
         logPrivateHeaderGenerationSuccess(summary, outputLogger: outputLogger)
@@ -332,7 +410,8 @@ private func runPrivateHeaderGeneration(
 
 private func makePrivateHeaderGenerationRequest(
     from command: PrivateHeaderKitGenerateCommand,
-    helperExecutableURL: URL
+    hostHelperExecutableURL: URL,
+    simulatorResolution: PrivateHeaderKitSimulatorResolution?
 ) throws -> PrivateHeaderKitGenerationRequest {
     let source = try PrivateHeaderGeneration.Source(
         platform: command.platform.corePlatform,
@@ -343,21 +422,41 @@ private func makePrivateHeaderGenerationRequest(
         fileURLWithPath: command.outputBaseDirectory,
         isDirectory: true
     )
-    let systemRoot = URL(fileURLWithPath: command.systemRoot, isDirectory: true)
+    let systemRoot = try effectiveSystemRootURL(from: command, simulatorResolution: simulatorResolution)
     let output = PrivateHeaderGeneration.Output(baseDirectory: outputBaseDirectory)
     let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
-        host: helperExecutableURL,
-        simulator: helperExecutableURL
+        host: hostHelperExecutableURL,
+        simulator: simulatorHelperURL(
+            from: command,
+            hostHelperExecutableURL: hostHelperExecutableURL
+        )
     )
+    let executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode = try {
+        switch command.platform {
+        case .macOS:
+            return .host
+        case .iOS:
+            guard let simulatorResolution else {
+                throw PrivateHeaderKitCLIError.missingSimulatorResolution
+            }
+            return .simulator(
+                deviceUDID: simulatorResolution.deviceUDID,
+                runtimeRoot: systemRoot.path
+            )
+        }
+    }()
+    let helperEnvironment = [
+        "PH_RUNTIME_ROOT": systemRoot.path,
+    ]
     let options = PrivateHeaderGeneration.Options(
         targetRequest: .query(command.targetQuery),
         systemRoot: systemRoot,
         helperURLs: helperURLs,
-        executionMode: .host,
+        executionMode: executionMode,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
             useSharedCache: true,
             preferRuntimeMetadata: true,
-            helperEnvironment: ["PH_RUNTIME_ROOT": systemRoot.path]
+            helperEnvironment: helperEnvironment
         ),
         resumeBehavior: .requireExplicitResume(resumeRequested: command.resume),
         outputBaseDirectory: outputBaseDirectory
@@ -370,6 +469,59 @@ private func makePrivateHeaderGenerationRequest(
     )
 }
 
+private func effectiveSystemRootURL(
+    from command: PrivateHeaderKitGenerateCommand,
+    simulatorResolution: PrivateHeaderKitSimulatorResolution?
+) throws -> URL {
+    if let systemRoot = command.systemRoot {
+        return URL(fileURLWithPath: systemRoot, isDirectory: true)
+    }
+
+    switch command.platform {
+    case .macOS:
+        throw PrivateHeaderKitCLIError.missingRequiredOption("--system-root")
+    case .iOS:
+        guard let simulatorResolution else {
+            throw PrivateHeaderKitCLIError.missingSimulatorResolution
+        }
+        return URL(fileURLWithPath: simulatorResolution.resolvedRuntimeRoot, isDirectory: true)
+    }
+}
+
+private func simulatorHelperURL(
+    from command: PrivateHeaderKitGenerateCommand,
+    hostHelperExecutableURL: URL
+) -> URL {
+    if let simulatorHelperPath = command.simulatorHelperPath {
+        return URL(fileURLWithPath: PathUtils.expandTilde(simulatorHelperPath), isDirectory: false)
+    }
+    return defaultSimulatorHelperURL(hostExecutableURL: hostHelperExecutableURL)
+}
+
+func defaultSimulatorHelperURL(hostExecutableURL: URL) -> URL {
+    let binDir = hostExecutableURL.deletingLastPathComponent()
+    return binDir
+        .deletingLastPathComponent()
+        .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper", isDirectory: false)
+}
+
+func resolvePrivateHeaderKitSimulator(
+    for command: PrivateHeaderKitGenerateCommand
+) throws -> PrivateHeaderKitSimulatorResolution {
+    let runner = ProcessRunner()
+    let runtime = try Simctl.findRuntime(
+        version: command.version,
+        build: command.build,
+        runner: runner
+    )
+    let device = try Simctl.resolveDevice(
+        runtime: runtime,
+        query: command.device,
+        runner: runner
+    )
+    return PrivateHeaderKitSimulatorResolution(runtime: runtime, device: device)
+}
+
 private func privateHeaderKitExecutableURL(
     currentExecutableURL: URL?,
     fallbackProgramName: String
@@ -378,6 +530,20 @@ private func privateHeaderKitExecutableURL(
         return currentExecutableURL
     }
     return URL(fileURLWithPath: fallbackProgramName, isDirectory: false)
+}
+
+private func logPrivateHeaderKitSimulatorSelection(
+    _ resolution: PrivateHeaderKitSimulatorResolution,
+    command: PrivateHeaderKitGenerateCommand,
+    outputLogger: (String) -> Void
+) {
+    outputLogger("selected simulator: \(resolution.deviceName) (\(resolution.deviceUDID))")
+    if let systemRoot = command.systemRoot,
+       URL(fileURLWithPath: systemRoot, isDirectory: true).standardizedFileURL.path
+        != URL(fileURLWithPath: resolution.resolvedRuntimeRoot, isDirectory: true).standardizedFileURL.path {
+        outputLogger("using explicit system root: \(systemRoot)")
+        outputLogger("resolved runtime root: \(resolution.resolvedRuntimeRoot)")
+    }
 }
 
 private func logPrivateHeaderGenerationSuccess(
@@ -438,6 +604,8 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
     var systemRoot: String?
     var outputBaseDirectory: String?
     var targetQuery: String?
+    var device: String?
+    var simulatorHelperPath: String?
     var resume = false
     var seenOptions: Set<String> = []
 
@@ -506,6 +674,18 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
             )
             try validateTargetQuery(value)
             targetQuery = value
+        case "--device":
+            try markOptionSeen(option, in: &seenOptions)
+            device = try nonEmptyOptionValue(
+                try readOptionValue(option: option, inlineValue: inlineValue, args: args, index: &index),
+                option: option
+            )
+        case "--sim-helper":
+            try markOptionSeen(option, in: &seenOptions)
+            simulatorHelperPath = try nonEmptyOptionValue(
+                try readOptionValue(option: option, inlineValue: inlineValue, args: args, index: &index),
+                option: option
+            )
         case "--resume":
             try markOptionSeen(option, in: &seenOptions)
             if inlineValue != nil {
@@ -524,7 +704,7 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
     guard let version else {
         throw PrivateHeaderKitCLIError.missingRequiredOption("--version")
     }
-    guard let systemRoot else {
+    if platform == .macOS, systemRoot == nil {
         throw PrivateHeaderKitCLIError.missingRequiredOption("--system-root")
     }
     guard let outputBaseDirectory else {
@@ -542,7 +722,9 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
             systemRoot: systemRoot,
             outputBaseDirectory: outputBaseDirectory,
             targetQuery: targetQuery,
-            resume: resume
+            resume: resume,
+            device: device,
+            simulatorHelperPath: simulatorHelperPath
         )
     )
 }
@@ -640,24 +822,26 @@ func privateHeaderKitUsageText() -> String {
 
     Examples:
       privateheaderkit install --bindir "$HOME/bin"
-      privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+      privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
     """
 }
 
 func privateHeaderKitGenerateUsageText() -> String {
     """
     Usage:
-      privateheaderkit generate --platform <iOS|macOS> --version <version> [--build <build>] --system-root <path> --out <path> --target <query> [--resume]
+      privateheaderkit generate --platform <iOS|macOS> --version <version> [--build <build>] [--system-root <path>] --out <path> --target <query> [--device <name-or-udid>] [--sim-helper <path>] [--resume]
 
     Required Options:
       --platform <iOS|macOS>  Source platform
       --version <version>     Source OS version
-      --system-root <path>    Mounted system root to scan
       --out <path>            Output base directory
       --target <query>        Comma-separated target query, for example SwiftUI,UIKit
 
     Optional Options:
       --build <build>         Source build train for labels and state keys
+      --system-root <path>    Mounted system root to scan; required for macOS, optional for iOS
+      --device <name-or-udid> iOS simulator device to use
+      --sim-helper <path>     iOS simulator raw-dump helper path
       --resume                Resume the matching explicit source/output/target run
       -h, --help              Show this help
 
@@ -666,7 +850,7 @@ func privateHeaderKitGenerateUsageText() -> String {
       State:   <out>/.state/<platform><version>(<build>)/
 
     Examples:
-      privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+      privateheaderkit generate --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
       privateheaderkit generate --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
     """
 }

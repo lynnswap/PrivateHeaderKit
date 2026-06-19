@@ -478,6 +478,26 @@ struct PrivateHeaderKitRawDumpSwiftInterfaceTests {
         #expect(FileManager.default.fileExists(atPath: outputURL.path) == true)
         #expect(try String(contentsOf: outputURL, encoding: .utf8) == "public struct Foo {}")
     }
+
+    @Test func dumpSwiftInterfacePropagatesBuildFailure() async throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let outputDir = dirs.root.appendingPathComponent("out", isDirectory: true)
+        let options = DumpOptions(outputDir: outputDir)
+
+        await #expect(throws: FixtureSwiftInterfaceError.self) {
+            try await dumpSwiftInterface(
+                imagePath: "/tmp/FixtureFailure",
+                outputDir: outputDir,
+                options: options,
+                fileManager: FileManager.default,
+                buildInterface: { throw FixtureSwiftInterfaceError.failed }
+            )
+        }
+    }
+
+    private enum FixtureSwiftInterfaceError: Error {
+        case failed
+    }
 }
 
 @Suite

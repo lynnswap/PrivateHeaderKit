@@ -177,7 +177,8 @@ struct PrivateHeaderGenerationExecutorTests {
             result: PrivateHeaderGeneration.RawDumping.Result(
                 terminationStatus: 1,
                 failureSummary: "simulated raw failure"
-            )
+            ),
+            writesArtifacts: false
         )
         let executor = PrivateHeaderGeneration.GenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
@@ -203,10 +204,58 @@ struct PrivateHeaderGenerationExecutorTests {
         )
 
         #expect(finalText == "old")
-        #expect(manifest.targets.first?.status == .partial)
+        #expect(manifest.targets.first?.status == .failed)
         #expect(manifest.targets.first?.artifacts == [artifact])
-        #expect(run.targetResults.first?.status == .partial)
-        #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Headers/Generated.h"])
+        #expect(run.targetResults.first?.status == .failed)
+        #expect(run.targetResults.first?.attemptedArtifacts.isEmpty == true)
+    }
+
+    @Test func rawDumpFailureCommitsStagedArtifactsAsPartial() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let runner = RecordingRawDumpRunner(
+            result: PrivateHeaderGeneration.RawDumping.Result(
+                terminationStatus: 1,
+                failureSummary: "Swift interface generation failed"
+            )
+        )
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+            _ = try await executor.run(.init(plan: plan))
+        }
+
+        let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers/Generated.h")
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: plan.stateDirectory.appendingPathComponent("manifest.json")
+        )
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: plan.stateDirectory.appendingPathComponent("runs/run-001/run.json")
+        )
+        let manifestTarget = try #require(manifest.targets.first)
+        let runTarget = try #require(run.targetResults.first)
+
+        #expect(fileExists(plan.artifactDirectory.appendingPathComponent(artifact.rawValue)))
+        #expect(manifestTarget.status == .partial)
+        #expect(manifestTarget.artifacts == [artifact])
+        #expect(manifestTarget.failureSummary == "Swift interface generation failed")
+        #expect(run.status == .partial)
+        #expect(run.attemptedArtifacts == [artifact])
+        #expect(runTarget.status == .partial)
+        #expect(runTarget.phases.map(\.name) == ["raw-header-dump", "commit"])
+        #expect(runTarget.phases.map(\.status) == [.failed, .completed])
+        #expect(runTarget.artifacts == [artifact])
+        #expect(runTarget.attemptedArtifacts == [artifact])
+        #expect(runTarget.failureSummary == "Swift interface generation failed")
     }
 
     @Test func commitFailedResumeCleansManagedAndAttemptedArtifactsBeforeRerun() async throws {
@@ -247,7 +296,7 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")))
     }
 
-    @Test func simulatorExecutionUsesRuntimeInputPathAndChildEnvironment() async throws {
+    @Test func simulatorExecutionUsesRuntimeInputPathAndCommitsHeaderAndSwiftInterfaceArtifacts() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
@@ -267,14 +316,78 @@ struct PrivateHeaderGenerationExecutorTests {
             dateProvider: fixedDates()
         )
 
-        _ = try await executor.run(.init(plan: plan))
+        let result = try await executor.run(.init(plan: plan))
 
         let invocation = try #require(runner.invocations.first)
+        #expect(runner.invocations.count == 1)
+        #expect(invocation.phaseLabel == "raw-header-dump")
         #expect(invocation.inputPath == "/System/Library/Frameworks/Foo.framework")
         #expect(Array(invocation.command.prefix(4)) == ["xcrun", "simctl", "spawn", "SIM-001"])
+        #expect(invocation.command.contains(fixture.helperURLs.simulator.path))
         #expect(invocation.environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] == fixture.systemRoot.path)
         #expect(invocation.environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] == fixture.systemRoot.path)
         #expect(invocation.environment["SIMCTL_CHILD_PH_PROFILE"] == "1")
+
+        let expectedArtifacts = [
+            "Frameworks/Foo/Headers/Foo.swiftinterface",
+            "Frameworks/Foo/Headers/Generated.h",
+        ]
+        #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")))
+        #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Foo.swiftinterface")))
+
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: result.manifestURL
+        )
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: result.runRecordURL
+        )
+        #expect(manifest.targets.first?.artifacts.map(\.rawValue) == expectedArtifacts)
+        #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == expectedArtifacts)
+    }
+
+    @Test func simulatorExecutionCompletesWhenRawDumpProducesHeaderOnlyArtifacts() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let runner = RecordingRawDumpRunner(
+            writesSwiftInterfaceForSimulator: false
+        )
+        let plan = try fixture.makePlan(
+            targetRequest: .query("Foo"),
+            executionMode: .simulator(deviceUDID: "SIM-001", runtimeRoot: fixture.systemRoot.path),
+            rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(useSharedCache: true)
+        )
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        let result = try await executor.run(.init(plan: plan))
+
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: result.manifestURL
+        )
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: result.runRecordURL
+        )
+        let target = try #require(run.targetResults.first)
+        #expect(runner.invocations.map(\.phaseLabel) == ["raw-header-dump"])
+        #expect(target.status == .completed)
+        #expect(target.phases.map(\.name) == ["raw-header-dump", "commit"])
+        #expect(target.phases.map(\.status) == [.completed, .completed])
+        #expect(target.failureSummary == nil)
+        #expect(manifest.targets.first?.artifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
+        #expect(target.attemptedArtifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
     }
 }
 
@@ -282,13 +395,16 @@ private final class RecordingRawDumpRunner: @unchecked Sendable {
     var invocations: [PrivateHeaderGeneration.RawDumping.Invocation] = []
     var result: PrivateHeaderGeneration.RawDumping.Result
     var writesArtifacts: Bool
+    var writesSwiftInterfaceForSimulator: Bool
 
     init(
         result: PrivateHeaderGeneration.RawDumping.Result = PrivateHeaderGeneration.RawDumping.Result(terminationStatus: 0),
-        writesArtifacts: Bool = true
+        writesArtifacts: Bool = true,
+        writesSwiftInterfaceForSimulator: Bool = true
     ) {
         self.result = result
         self.writesArtifacts = writesArtifacts
+        self.writesSwiftInterfaceForSimulator = writesSwiftInterfaceForSimulator
     }
 
     func run(
@@ -306,6 +422,10 @@ private final class RecordingRawDumpRunner: @unchecked Sendable {
             )
             try Data("// generated\n".utf8)
                 .write(to: outputDirectory.appendingPathComponent("Generated.h"))
+            if case .simulator = invocation.executionMode, writesSwiftInterfaceForSimulator {
+                try Data("// generated\n".utf8)
+                    .write(to: outputDirectory.appendingPathComponent("Foo.swiftinterface"))
+            }
         }
         return result
     }
@@ -341,9 +461,10 @@ private struct ExecutorFixture {
         systemRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
         outputBase = root.appendingPathComponent("Output", isDirectory: true)
         let helperURL = root.appendingPathComponent("bin/privateheaderkit")
+        let simulatorHelperURL = root.appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper")
         helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
             host: helperURL,
-            simulator: helperURL
+            simulator: simulatorHelperURL
         )
         try FileManager.default.createDirectory(at: systemRoot, withIntermediateDirectories: true)
     }

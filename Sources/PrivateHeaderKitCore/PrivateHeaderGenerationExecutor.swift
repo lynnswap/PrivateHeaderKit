@@ -334,29 +334,10 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         )
         let attemptedArtifacts = staged.artifacts
 
-        guard rawResult.succeeded else {
-            let failureSummary = rawResult.failureSummary
-                ?? "raw dump exited with status \(rawResult.terminationStatus)"
-            let status: PrivateHeaderGeneration.RunTargetStatus = attemptedArtifacts.isEmpty ? .failed : .partial
-            return failedTargetResult(
-                target: target,
-                runID: runID,
-                status: status,
-                phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: invocation.phaseLabel,
-                        status: .failed,
-                        failureSummary: failureSummary
-                    ),
-                ],
-                artifacts: preservedArtifacts,
-                attemptedArtifacts: attemptedArtifacts,
-                failureSummary: failureSummary
-            )
-        }
-
         guard !attemptedArtifacts.isEmpty, let stagedSourceDirectory = staged.sourceDirectory else {
-            let failureSummary = "raw dump produced no header artifacts"
+            let failureSummary = rawResult.succeeded
+                ? "raw dump produced no header artifacts"
+                : rawResult.failureSummary ?? "raw dump exited with status \(rawResult.terminationStatus)"
             return failedTargetResult(
                 target: target,
                 runID: runID,
@@ -374,6 +355,28 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             )
         }
 
+        let rawDumpPhase: PrivateHeaderGeneration.PhaseRecord
+        let targetStatus: PrivateHeaderGeneration.RunTargetStatus
+        let targetFailureSummary: String?
+        if rawResult.succeeded {
+            rawDumpPhase = PrivateHeaderGeneration.PhaseRecord(
+                name: invocation.phaseLabel,
+                status: .completed
+            )
+            targetStatus = .completed
+            targetFailureSummary = nil
+        } else {
+            let failureSummary = rawResult.failureSummary
+                ?? "raw dump exited with status \(rawResult.terminationStatus)"
+            rawDumpPhase = PrivateHeaderGeneration.PhaseRecord(
+                name: invocation.phaseLabel,
+                status: .failed,
+                failureSummary: failureSummary
+            )
+            targetStatus = .partial
+            targetFailureSummary = failureSummary
+        }
+
         do {
             try artifactStore.cleanupManagedArtifacts(
                 PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
@@ -388,10 +391,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 runID: runID,
                 status: .commitFailed,
                 phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: invocation.phaseLabel,
-                        status: .completed
-                    ),
+                    rawDumpPhase,
                     PrivateHeaderGeneration.PhaseRecord(
                         name: "cleanup",
                         status: .failed,
@@ -417,10 +417,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 runID: runID,
                 status: .commitFailed,
                 phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: invocation.phaseLabel,
-                        status: .completed
-                    ),
+                    rawDumpPhase,
                     PrivateHeaderGeneration.PhaseRecord(
                         name: "commit",
                         status: .failed,
@@ -434,10 +431,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         }
 
         let phases = [
-            PrivateHeaderGeneration.PhaseRecord(
-                name: invocation.phaseLabel,
-                status: .completed
-            ),
+            rawDumpPhase,
             PrivateHeaderGeneration.PhaseRecord(
                 name: "commit",
                 status: .completed
@@ -447,20 +441,20 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             id: targetID,
             displayName: target.candidate.displayName,
             kind: target.candidate.kind.rawValue,
-            status: .completed,
+            status: PrivateHeaderGeneration.TargetStatus(runStatus: targetStatus),
             phases: phases,
             artifacts: attemptedArtifacts,
             lastRunID: runID,
             updatedAt: dateProvider(),
-            failureSummary: nil
+            failureSummary: targetFailureSummary
         )
         let runTarget = PrivateHeaderGeneration.RunTargetRecord(
             targetID: targetID,
-            status: .completed,
+            status: targetStatus,
             phases: phases,
             artifacts: attemptedArtifacts,
             attemptedArtifacts: attemptedArtifacts,
-            failureSummary: nil
+            failureSummary: targetFailureSummary
         )
         return TargetExecutionResult(runTarget: runTarget, manifestTarget: manifestTarget)
     }
@@ -1025,6 +1019,7 @@ private extension PrivateHeaderGeneration.RawDumping.Options {
     ) -> [String: String] {
         var environment = helperEnvironment
         if case .simulator(_, let runtimeRoot) = executionMode {
+            environment["PH_RUNTIME_ROOT"] = runtimeRoot
             environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = runtimeRoot
             environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] = runtimeRoot
         }

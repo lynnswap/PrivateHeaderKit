@@ -10,23 +10,24 @@ let package = Package(
     products: [
         .library(name: "PrivateHeaderKitCore", targets: ["PrivateHeaderKitCore"]),
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
+        .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
     ],
     dependencies: [
         .package(
             url: "https://github.com/lynnswap/MachOKit.git",
-            from: "0.47.0"
+            revision: "006b7c88a62d086b5483f0277afade29ef8c687c"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",
-            revision: "3dbf6a856cbdc856d4d7c1fe6bbf81161e0fbe9c"
-        ),
-        .package(
-            url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "2fbb1a78e316a2beaf2911488ecda6455e205f84"
+            revision: "46b96a919b7c305283659053476c8a3ebb274fce"
         ),
         .package(
             url: "https://github.com/p-x9/swift-objc-dump.git",
             from: "0.8.0"
+        ),
+        .package(
+            url: "https://github.com/lynnswap/MachOSwiftSection.git",
+            revision: "5b0ffcfde22caa6aeed971c9014db6d3075f5da7"
         ),
     ],
     targets: [
@@ -46,7 +47,6 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
-                .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
             path: "Sources/PrivateHeaderKitRawDumpCore"
@@ -71,6 +71,13 @@ let package = Package(
                 "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitInstall",
+                "PrivateHeaderKitTooling",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitSimulatorHelper",
+            dependencies: [
+                "PrivateHeaderKitRawDumpCore",
             ]
         ),
         .executableTarget(

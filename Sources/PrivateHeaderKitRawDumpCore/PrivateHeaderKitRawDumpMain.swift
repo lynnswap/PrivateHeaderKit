@@ -3,7 +3,6 @@ import Dispatch
 import MachOKit
 import MachOObjCSection
 import ObjCDump
-import MachOSwiftSection
 @_spi(Support) import SwiftInterface
 #if canImport(Darwin)
 import Darwin
@@ -378,24 +377,30 @@ private func dumpImage(
     try dumpObjC(machO: machO, imagePath: originalPath, outputDir: outputDir, options: options, fileManager: fileManager)
     profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "dumpObjC", since: objcStart)
 
-    let swiftFactory: SwiftInterfaceBuildingFactory
-    if options.logSwiftEvents {
-        let moduleName = URL(fileURLWithPath: originalPath).lastPathComponent
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory(
-            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
-        )
-    } else {
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory()
-    }
-
     try await dumpSwift(
         machO: machO,
         imagePath: originalPath,
         outputDir: outputDir,
         options: options,
-        interfaceBuilderFactory: swiftFactory,
+        interfaceBuilderFactory: defaultSwiftInterfaceBuilderFactory(
+            imagePath: originalPath,
+            options: options
+        ),
         fileManager: fileManager
     )
+}
+
+private func defaultSwiftInterfaceBuilderFactory(
+    imagePath: String,
+    options: DumpOptions
+) -> SwiftInterfaceBuildingFactory {
+    if options.logSwiftEvents {
+        let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
+        return DefaultSwiftInterfaceBuilderFactory(
+            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
+        )
+    }
+    return DefaultSwiftInterfaceBuilderFactory()
 }
 
 private func loadMachOFile(url: URL, options: DumpOptions) -> MachOFile? {
@@ -1420,6 +1425,7 @@ func dumpSwiftInterface(
         if options.verbose {
             fputs("Swift interface generation failed for \(imagePath): \(error)\n", stderr)
         }
+        throw error
     }
 }
 

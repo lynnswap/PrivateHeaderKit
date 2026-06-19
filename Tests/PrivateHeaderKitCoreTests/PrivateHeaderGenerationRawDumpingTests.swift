@@ -104,6 +104,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
             )
         )
 
+        #expect(invocation.phaseLabel == "raw-header-dump")
+        #expect(invocation.executionMode == .simulator(deviceUDID: "A1B2C3D4-E5F6-7890-ABCD-111111111111", runtimeRoot: runtimeRoot))
         #expect(invocation.helperURL.path == "/opt/privateheaderkit/bin/privateheaderkit-sim")
         #expect(invocation.inputPath == inputPath)
         #expect(invocation.command == [
