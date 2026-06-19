@@ -355,28 +355,6 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             )
         }
 
-        if let missingArtifactSummary = Self.missingRequiredArtifactSummary(
-            in: attemptedArtifacts,
-            executionMode: executionMode
-        ) {
-            let status: PrivateHeaderGeneration.RunTargetStatus = attemptedArtifacts.isEmpty ? .failed : .partial
-            return failedTargetResult(
-                target: target,
-                runID: runID,
-                status: status,
-                phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: invocation.phaseLabel,
-                        status: .failed,
-                        failureSummary: missingArtifactSummary
-                    ),
-                ],
-                artifacts: preservedArtifacts,
-                attemptedArtifacts: attemptedArtifacts,
-                failureSummary: missingArtifactSummary
-            )
-        }
-
         guard !attemptedArtifacts.isEmpty, let stagedSourceDirectory = staged.sourceDirectory else {
             let failureSummary = "raw dump produced no header artifacts"
             return failedTargetResult(
@@ -806,23 +784,6 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         }
 
         return artifacts.sorted { $0.rawValue < $1.rawValue }
-    }
-
-    static func missingRequiredArtifactSummary(
-        in artifacts: [PrivateHeaderGeneration.ArtifactPath],
-        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
-    ) -> String? {
-        guard case .simulator = executionMode else { return nil }
-
-        var missing: [String] = []
-        if !artifacts.contains(where: { $0.rawValue.hasSuffix(".h") }) {
-            missing.append(".h")
-        }
-        if !artifacts.contains(where: { $0.rawValue.hasSuffix(".swiftinterface") }) {
-            missing.append(".swiftinterface")
-        }
-        guard !missing.isEmpty else { return nil }
-        return "raw dump missing required simulator artifacts: \(missing.joined(separator: ", "))"
     }
 
     static func commit(

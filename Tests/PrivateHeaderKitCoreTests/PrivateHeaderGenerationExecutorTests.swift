@@ -298,7 +298,7 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == expectedArtifacts)
     }
 
-    @Test func simulatorExecutionFailsWhenSwiftInterfaceArtifactIsMissing() async throws {
+    @Test func simulatorExecutionCompletesWhenRawDumpProducesHeaderOnlyArtifacts() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
@@ -317,21 +317,25 @@ struct PrivateHeaderGenerationExecutorTests {
             dateProvider: fixedDates()
         )
 
-        await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
-            _ = try await executor.run(.init(plan: plan))
-        }
+        let result = try await executor.run(.init(plan: plan))
 
-        let runURL = plan.stateDirectory.appendingPathComponent("runs/run-001/run.json")
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: result.manifestURL
+        )
         let run = try PrivateHeaderGeneration.StateJSON.read(
             PrivateHeaderGeneration.RunRecord.self,
-            from: runURL
+            from: result.runRecordURL
         )
         let target = try #require(run.targetResults.first)
         #expect(runner.invocations.map(\.phaseLabel) == ["raw-header-dump"])
-        #expect(target.status == .partial)
-        #expect(target.phases.map(\.name) == ["raw-header-dump"])
-        #expect(target.phases.map(\.status) == [.failed])
-        #expect(target.failureSummary?.contains(".swiftinterface") == true)
+        #expect(target.status == .completed)
+        #expect(target.phases.map(\.name) == ["raw-header-dump", "commit"])
+        #expect(target.phases.map(\.status) == [.completed, .completed])
+        #expect(target.failureSummary == nil)
+        #expect(manifest.targets.first?.artifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
         #expect(target.attemptedArtifacts.map(\.rawValue) == [
             "Frameworks/Foo/Headers/Generated.h",
         ])
