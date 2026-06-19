@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-import PrivateHeaderKitCore
+@testable import PrivateHeaderKitCore
 
 @Suite
 struct PrivateHeaderGenerationRunRepositoryTests {
@@ -65,6 +65,39 @@ struct PrivateHeaderGenerationRunRepositoryTests {
 
         #expect(try repository.readManifest() == nil)
         #expect(try repository.readLatestRun() == nil)
+    }
+
+    @Test func exclusiveLockCreatesLockFileUnderStateDirectoryAndRejectsNestedNonBlockingAcquire() async throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let stateBaseDirectory = root.appendingPathComponent(".state", isDirectory: true)
+        let stateDirectory = stateBaseDirectory
+            .appendingPathComponent("iOS27.0(24A5355q)", isDirectory: true)
+        let repository = PrivateHeaderGeneration.RunRepository(stateDirectory: stateDirectory)
+        let expectedLockURL = stateDirectory.appendingPathComponent("generation.lock", isDirectory: false)
+
+        #expect(!fileExists(expectedLockURL))
+
+        try await repository.withExclusiveLock {
+            #expect(fileExists(expectedLockURL))
+            #expect(expectedLockURL.path.hasPrefix(stateBaseDirectory.path + "/"))
+            do {
+                _ = try await repository.withExclusiveLock(wait: false) {
+                    Issue.record("nested lock acquisition unexpectedly succeeded")
+                }
+            } catch let error as PrivateHeaderGeneration.RunRepositoryError {
+                switch error {
+                case .lockUnavailable(let path):
+                    #expect(path == expectedLockURL.path)
+                default:
+                    Issue.record("unexpected lock error: \(error)")
+                }
+            } catch {
+                Issue.record("unexpected error: \(error)")
+            }
+        }
     }
 
     @Test func readLatestRunUsesManifestLatestRunIDWhenPresent() throws {
@@ -285,4 +318,8 @@ private func directoryExists(_ url: URL) -> Bool {
     var isDirectory: ObjCBool = false
     let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
     return exists && isDirectory.boolValue
+}
+
+private func fileExists(_ url: URL) -> Bool {
+    FileManager.default.fileExists(atPath: url.path)
 }

@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public extension PrivateHeaderGeneration {
     struct RunRepository: Sendable {
@@ -18,6 +23,10 @@ public extension PrivateHeaderGeneration {
 
         public var runsDirectory: URL {
             stateDirectory.appendingPathComponent("runs", isDirectory: true)
+        }
+
+        internal var lockURL: URL {
+            stateDirectory.appendingPathComponent("generation.lock", isDirectory: false)
         }
 
         public func runDirectory(for runID: String) throws -> URL {
@@ -42,6 +51,19 @@ public extension PrivateHeaderGeneration {
                 at: stateDirectory,
                 withIntermediateDirectories: true
             )
+        }
+
+        internal func withExclusiveLock<Result>(
+            wait: Bool = true,
+            _ operation: () async throws -> Result
+        ) async throws -> Result {
+            try prepareStateDirectory()
+            return try await StateFileLock.withExclusiveLock(
+                at: lockURL,
+                wait: wait
+            ) {
+                try await operation()
+            }
         }
 
         @discardableResult
@@ -173,11 +195,20 @@ public extension PrivateHeaderGeneration {
 
     enum RunRepositoryError: Error, Equatable, CustomStringConvertible, Sendable {
         case invalidRunID(String)
+        case lockOpenFailed(path: String, errno: Int32)
+        case lockAcquisitionFailed(path: String, errno: Int32)
+        case lockUnavailable(path: String)
 
         public var description: String {
             switch self {
             case .invalidRunID(let runID):
                 "run ID is not safe as a path component: \(runID)"
+            case .lockOpenFailed(let path, let errno):
+                "failed to open generation state lock at \(path): errno \(errno)"
+            case .lockAcquisitionFailed(let path, let errno):
+                "failed to acquire generation state lock at \(path): errno \(errno)"
+            case .lockUnavailable(let path):
+                "generation state lock is already held at \(path)"
             }
         }
     }
@@ -231,5 +262,43 @@ private extension PrivateHeaderGeneration.RunRepository {
         else {
             throw PrivateHeaderGeneration.RunRepositoryError.invalidRunID(runID)
         }
+    }
+}
+
+private enum StateFileLock {
+    static func withExclusiveLock<Result>(
+        at lockURL: URL,
+        wait: Bool,
+        _ operation: () async throws -> Result
+    ) async throws -> Result {
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else {
+            throw PrivateHeaderGeneration.RunRepositoryError.lockOpenFailed(
+                path: lockURL.path,
+                errno: errno
+            )
+        }
+        defer {
+            _ = close(descriptor)
+        }
+
+        let lockOperation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
+        guard flock(descriptor, lockOperation) == 0 else {
+            let lockErrno = errno
+            if lockErrno == EWOULDBLOCK || lockErrno == EAGAIN {
+                throw PrivateHeaderGeneration.RunRepositoryError.lockUnavailable(
+                    path: lockURL.path
+                )
+            }
+            throw PrivateHeaderGeneration.RunRepositoryError.lockAcquisitionFailed(
+                path: lockURL.path,
+                errno: lockErrno
+            )
+        }
+        defer {
+            _ = flock(descriptor, LOCK_UN)
+        }
+
+        return try await operation()
     }
 }
