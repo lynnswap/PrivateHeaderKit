@@ -177,7 +177,8 @@ struct PrivateHeaderGenerationExecutorTests {
             result: PrivateHeaderGeneration.RawDumping.Result(
                 terminationStatus: 1,
                 failureSummary: "simulated raw failure"
-            )
+            ),
+            writesArtifacts: false
         )
         let executor = PrivateHeaderGeneration.GenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
@@ -203,10 +204,58 @@ struct PrivateHeaderGenerationExecutorTests {
         )
 
         #expect(finalText == "old")
-        #expect(manifest.targets.first?.status == .partial)
+        #expect(manifest.targets.first?.status == .failed)
         #expect(manifest.targets.first?.artifacts == [artifact])
-        #expect(run.targetResults.first?.status == .partial)
-        #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Headers/Generated.h"])
+        #expect(run.targetResults.first?.status == .failed)
+        #expect(run.targetResults.first?.attemptedArtifacts.isEmpty == true)
+    }
+
+    @Test func rawDumpFailureCommitsStagedArtifactsAsPartial() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let runner = RecordingRawDumpRunner(
+            result: PrivateHeaderGeneration.RawDumping.Result(
+                terminationStatus: 1,
+                failureSummary: "Swift interface generation failed"
+            )
+        )
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+            _ = try await executor.run(.init(plan: plan))
+        }
+
+        let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers/Generated.h")
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: plan.stateDirectory.appendingPathComponent("manifest.json")
+        )
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: plan.stateDirectory.appendingPathComponent("runs/run-001/run.json")
+        )
+        let manifestTarget = try #require(manifest.targets.first)
+        let runTarget = try #require(run.targetResults.first)
+
+        #expect(fileExists(plan.artifactDirectory.appendingPathComponent(artifact.rawValue)))
+        #expect(manifestTarget.status == .partial)
+        #expect(manifestTarget.artifacts == [artifact])
+        #expect(manifestTarget.failureSummary == "Swift interface generation failed")
+        #expect(run.status == .partial)
+        #expect(run.attemptedArtifacts == [artifact])
+        #expect(runTarget.status == .partial)
+        #expect(runTarget.phases.map(\.name) == ["raw-header-dump", "commit"])
+        #expect(runTarget.phases.map(\.status) == [.failed, .completed])
+        #expect(runTarget.artifacts == [artifact])
+        #expect(runTarget.attemptedArtifacts == [artifact])
+        #expect(runTarget.failureSummary == "Swift interface generation failed")
     }
 
     @Test func commitFailedResumeCleansManagedAndAttemptedArtifactsBeforeRerun() async throws {
