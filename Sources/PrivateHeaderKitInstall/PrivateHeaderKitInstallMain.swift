@@ -204,7 +204,7 @@ func buildProducts(_ products: [String], in directory: URL, runner: CommandRunni
     }
 }
 
-func currentProcessArchitectureName() -> String {
+func currentExecutableArchitectureName() -> String {
     #if arch(arm64)
     return "arm64"
     #elseif arch(x86_64)
@@ -214,15 +214,41 @@ func currentProcessArchitectureName() -> String {
     #endif
 }
 
-func defaultSimulatorHelperTriple(
-    processArchitecture: String = currentProcessArchitectureName()
+func hostSupportsNativeArm64() -> Bool {
+    #if canImport(Darwin)
+    var value: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    let result = sysctlbyname("hw.optional.arm64", &value, &size, nil, 0)
+    return result == 0 && value != 0
+    #else
+    return false
+    #endif
+}
+
+func nativeHostSimulatorArchitecture(
+    executableArchitecture: String,
+    supportsNativeArm64: Bool
 ) throws -> String {
-    switch processArchitecture {
-    case "arm64", "x86_64":
-        "\(processArchitecture)-apple-ios-simulator"
-    default:
-        throw InstallError.message("unsupported host architecture for iOS simulator helper: \(processArchitecture)")
+    if supportsNativeArm64 {
+        return "arm64"
     }
+    switch executableArchitecture {
+    case "arm64", "x86_64":
+        return executableArchitecture
+    default:
+        throw InstallError.message("unsupported host architecture for iOS simulator helper: \(executableArchitecture)")
+    }
+}
+
+func defaultSimulatorHelperTriple(
+    executableArchitecture: String = currentExecutableArchitectureName(),
+    supportsNativeArm64: Bool = hostSupportsNativeArm64()
+) throws -> String {
+    let architecture = try nativeHostSimulatorArchitecture(
+        executableArchitecture: executableArchitecture,
+        supportsNativeArm64: supportsNativeArm64
+    )
+    return "\(architecture)-apple-ios-simulator"
 }
 
 func buildSimulatorHelper(

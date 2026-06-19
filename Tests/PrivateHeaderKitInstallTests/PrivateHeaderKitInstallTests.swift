@@ -88,11 +88,30 @@ struct InstallCommandResolutionTests {
         #expect(looksLikePrivateHeaderKitRepo(repoRoot, fileManager: .default) == true)
     }
 
-    @Test func defaultSimulatorHelperTripleUsesProcessArchitecture() throws {
-        #expect(try defaultSimulatorHelperTriple(processArchitecture: "arm64") == "arm64-apple-ios-simulator")
-        #expect(try defaultSimulatorHelperTriple(processArchitecture: "x86_64") == "x86_64-apple-ios-simulator")
+    @Test func defaultSimulatorHelperTripleUsesNativeHostArchitecture() throws {
+        #expect(
+            try defaultSimulatorHelperTriple(
+                executableArchitecture: "x86_64",
+                supportsNativeArm64: true
+            ) == "arm64-apple-ios-simulator"
+        )
+        #expect(
+            try defaultSimulatorHelperTriple(
+                executableArchitecture: "x86_64",
+                supportsNativeArm64: false
+            ) == "x86_64-apple-ios-simulator"
+        )
+        #expect(
+            try defaultSimulatorHelperTriple(
+                executableArchitecture: "arm64",
+                supportsNativeArm64: true
+            ) == "arm64-apple-ios-simulator"
+        )
         #expect(throws: InstallError.self) {
-            _ = try defaultSimulatorHelperTriple(processArchitecture: "ppc")
+            _ = try defaultSimulatorHelperTriple(
+                executableArchitecture: "ppc",
+                supportsNativeArm64: false
+            )
         }
     }
 
