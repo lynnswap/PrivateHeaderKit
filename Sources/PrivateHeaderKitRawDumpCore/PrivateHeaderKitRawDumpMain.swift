@@ -1085,7 +1085,7 @@ private func runtimePropertyInfo(
 ) -> ObjCPropertyInfo {
     ObjCPropertyInfo(
         name: snapshot.name,
-        attributes: snapshot.attributesString,
+        attributesString: snapshot.attributesString,
         isClassProperty: snapshot.isClassProperty
     )
 }
@@ -1096,7 +1096,8 @@ private func runtimeMethodInfo(
     ObjCMethodInfo(
         name: snapshot.name,
         typeEncoding: snapshot.typeEncoding,
-        isClassMethod: snapshot.isClassMethod
+        isClassMethod: snapshot.isClassMethod,
+        imp: 0
     )
 }
 
