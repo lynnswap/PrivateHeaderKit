@@ -113,7 +113,7 @@ struct InstallCommandResolutionTests {
         ])
         #expect(runner.simpleCommands.allSatisfy { $0.cwd == dirs.root })
         #expect(runner.simpleCommands[0].env == nil)
-        #expect(runner.simpleCommands[1].env == ["PHK_SIMULATOR_HELPER_BUILD": "1"])
+        #expect(runner.simpleCommands[1].env == nil)
     }
 
     @Test func resolveSwiftBinDirUsesLastNonEmptyOutputLine() throws {
@@ -239,10 +239,8 @@ struct InstallCommandResolutionTests {
                 "privateheaderkit-sim-helper",
             ],
         ])
-        #expect(runner.simpleCommands[1].env == ["PHK_SIMULATOR_HELPER_BUILD": "1"])
-        #expect(runner.captureCommands.first(where: { $0.command.contains("--triple") })?.env == [
-            "PHK_SIMULATOR_HELPER_BUILD": "1",
-        ])
+        #expect(runner.simpleCommands[1].env == nil)
+        #expect(runner.captureCommands.first(where: { $0.command.contains("--triple") })?.env == nil)
         #expect(outputMessages == [
             "Installed privateheaderkit to \(layout.publicCommandURL.path)",
             "Installed privateheaderkit-sim-helper to \(layout.simulatorHelperURL.path)",

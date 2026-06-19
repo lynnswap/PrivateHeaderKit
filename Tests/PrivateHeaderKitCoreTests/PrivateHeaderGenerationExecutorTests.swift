@@ -247,7 +247,7 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")))
     }
 
-    @Test func simulatorExecutionUsesRuntimeInputPathAndChildEnvironment() async throws {
+    @Test func simulatorExecutionUsesRuntimeInputPathAndCommitsHeaderAndSwiftInterfaceArtifacts() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
@@ -267,14 +267,74 @@ struct PrivateHeaderGenerationExecutorTests {
             dateProvider: fixedDates()
         )
 
-        _ = try await executor.run(.init(plan: plan))
+        let result = try await executor.run(.init(plan: plan))
 
         let invocation = try #require(runner.invocations.first)
+        #expect(runner.invocations.count == 1)
+        #expect(invocation.phaseLabel == "raw-header-dump")
         #expect(invocation.inputPath == "/System/Library/Frameworks/Foo.framework")
         #expect(Array(invocation.command.prefix(4)) == ["xcrun", "simctl", "spawn", "SIM-001"])
+        #expect(invocation.command.contains(fixture.helperURLs.simulator.path))
         #expect(invocation.environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] == fixture.systemRoot.path)
         #expect(invocation.environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] == fixture.systemRoot.path)
         #expect(invocation.environment["SIMCTL_CHILD_PH_PROFILE"] == "1")
+
+        let expectedArtifacts = [
+            "Frameworks/Foo/Headers/Foo.swiftinterface",
+            "Frameworks/Foo/Headers/Generated.h",
+        ]
+        #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")))
+        #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Foo.swiftinterface")))
+
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: result.manifestURL
+        )
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: result.runRecordURL
+        )
+        #expect(manifest.targets.first?.artifacts.map(\.rawValue) == expectedArtifacts)
+        #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == expectedArtifacts)
+    }
+
+    @Test func simulatorExecutionFailsWhenSwiftInterfaceArtifactIsMissing() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let runner = RecordingRawDumpRunner(
+            writesSwiftInterfaceForSimulator: false
+        )
+        let plan = try fixture.makePlan(
+            targetRequest: .query("Foo"),
+            executionMode: .simulator(deviceUDID: "SIM-001", runtimeRoot: fixture.systemRoot.path),
+            rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(useSharedCache: true)
+        )
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+            _ = try await executor.run(.init(plan: plan))
+        }
+
+        let runURL = plan.stateDirectory.appendingPathComponent("runs/run-001/run.json")
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: runURL
+        )
+        let target = try #require(run.targetResults.first)
+        #expect(runner.invocations.map(\.phaseLabel) == ["raw-header-dump"])
+        #expect(target.status == .partial)
+        #expect(target.phases.map(\.name) == ["raw-header-dump"])
+        #expect(target.phases.map(\.status) == [.failed])
+        #expect(target.failureSummary?.contains(".swiftinterface") == true)
+        #expect(target.attemptedArtifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
     }
 }
 
@@ -282,13 +342,16 @@ private final class RecordingRawDumpRunner: @unchecked Sendable {
     var invocations: [PrivateHeaderGeneration.RawDumping.Invocation] = []
     var result: PrivateHeaderGeneration.RawDumping.Result
     var writesArtifacts: Bool
+    var writesSwiftInterfaceForSimulator: Bool
 
     init(
         result: PrivateHeaderGeneration.RawDumping.Result = PrivateHeaderGeneration.RawDumping.Result(terminationStatus: 0),
-        writesArtifacts: Bool = true
+        writesArtifacts: Bool = true,
+        writesSwiftInterfaceForSimulator: Bool = true
     ) {
         self.result = result
         self.writesArtifacts = writesArtifacts
+        self.writesSwiftInterfaceForSimulator = writesSwiftInterfaceForSimulator
     }
 
     func run(
@@ -306,6 +369,10 @@ private final class RecordingRawDumpRunner: @unchecked Sendable {
             )
             try Data("// generated\n".utf8)
                 .write(to: outputDirectory.appendingPathComponent("Generated.h"))
+            if case .simulator = invocation.executionMode, writesSwiftInterfaceForSimulator {
+                try Data("// generated\n".utf8)
+                    .write(to: outputDirectory.appendingPathComponent("Foo.swiftinterface"))
+            }
         }
         return result
     }
@@ -341,9 +408,10 @@ private struct ExecutorFixture {
         systemRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
         outputBase = root.appendingPathComponent("Output", isDirectory: true)
         let helperURL = root.appendingPathComponent("bin/privateheaderkit")
+        let simulatorHelperURL = root.appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper")
         helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
             host: helperURL,
-            simulator: helperURL
+            simulator: simulatorHelperURL
         )
         try FileManager.default.createDirectory(at: systemRoot, withIntermediateDirectories: true)
     }

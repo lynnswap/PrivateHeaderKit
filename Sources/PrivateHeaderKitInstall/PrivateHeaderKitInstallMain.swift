@@ -34,7 +34,6 @@ enum InstallConstants {
     static let simulatorHelperInstallName = "privateheaderkit-sim-helper"
     static let simulatorHelperBuildProductName = "privateheaderkit-sim-helper"
     static let simulatorHelperTriple = "arm64-apple-ios-simulator"
-    static let simulatorHelperBuildEnvironment = ["PHK_SIMULATOR_HELPER_BUILD": "1"]
 }
 
 enum InstallError: Error, CustomStringConvertible {
@@ -225,7 +224,7 @@ func buildSimulatorHelper(in directory: URL, sdkPath: String, runner: CommandRun
             "--product",
             InstallConstants.simulatorHelperBuildProductName,
         ],
-        env: InstallConstants.simulatorHelperBuildEnvironment,
+        env: nil,
         cwd: directory
     )
 }
@@ -355,8 +354,7 @@ func install(
             repoRoot: repoRoot,
             runner: runner,
             triple: InstallConstants.simulatorHelperTriple,
-            sdkPath: sdkPath,
-            env: InstallConstants.simulatorHelperBuildEnvironment
+            sdkPath: sdkPath
         ) ?? baseURL
         simulatorHelperSourceURL = simulatorBinaryDir.appendingPathComponent(
             InstallConstants.simulatorHelperBuildProductName,
