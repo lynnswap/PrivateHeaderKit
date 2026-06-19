@@ -1,5 +1,5 @@
 {
-  "originHash" : "9a0905a5e091e289ce5acc56e377b969c84e779d41ecff31c5fc4555b7b3f1a7",
+  "originHash" : "d32991a571bfb863e46c19a01505c1a36bdc067634f94f77c4ca009ebaa13486",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -49,9 +49,9 @@
     {
       "identity" : "machoswiftsection",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
       "state" : {
-        "revision" : "35698144adde6d39e071046135cd4a32330c582d"
+        "revision" : "f17bc65b57f372b461fe45687298671c3400909e"
       }
     },
     {

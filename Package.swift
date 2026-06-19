@@ -26,8 +26,8 @@ let package = Package(
             from: "0.8.100"
         ),
         .package(
-            url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "35698144adde6d39e071046135cd4a32330c582d"
+            url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
+            revision: "f17bc65b57f372b461fe45687298671c3400909e"
         ),
     ],
     targets: [
