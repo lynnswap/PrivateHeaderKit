@@ -408,13 +408,29 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.helperEnvironment == ["PH_RUNTIME_ROOT": "/tmp/RuntimeRoot"])
         #expect(outputMessages == [
             "selected simulator: iPhone 17 (SIM-001)",
-            "private header generation completed",
-            "source: iOS 27.0 (24A5355q)",
-            "artifact directory: /tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
-            "manifest path: /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
-            "run record path: /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
-            "run ID: run-test",
-            "targets: generated 2, skipped 1",
+            "PrivateHeaderKit",
+            "",
+            "Generation completed",
+            "",
+            "Source",
+            "  iOS 27.0 (24A5355q)",
+            "",
+            "Targets",
+            "  SwiftUI, UIKit",
+            "",
+            "Result",
+            "  Generated 2",
+            "  Failed    0",
+            "  Skipped   1",
+            "",
+            "Output",
+            "  Headers   /tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
+            "  State     /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)",
+            "",
+            "Run",
+            "  ID        run-test",
+            "  Manifest  .state/iOS27.0(24A5355q)/manifest.json",
+            "  Record    .state/iOS27.0(24A5355q)/runs/run-test/run.json",
         ])
     }
 
@@ -432,6 +448,7 @@ struct PrivateHeaderKitCLIParsingTests {
             .path
         var outputMessages: [String] = []
         var loggedMessages: [String] = []
+        var screenClearCount = 0
 
         let exitCode = await runPrivateHeaderKitCommand(
             ["privateheaderkit"],
@@ -462,7 +479,7 @@ struct PrivateHeaderKitCLIParsingTests {
                     ),
                 ]
             },
-            interactiveScreenClearer: {},
+            interactiveScreenClearer: { screenClearCount += 1 },
             inputReader: {
                 inputs.isEmpty ? nil : inputs.removeFirst()
             },
@@ -478,6 +495,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.targetQuery == "SwiftUI,UIKit")
         #expect(request.startsFresh)
         #expect(request.resumeRequested == nil)
+        #expect(screenClearCount == 4)
         #expect(!outputMessages.contains("Continue previous run? (y/n):"))
         #expect(!outputMessages.contains("Output directory: \(defaultOutputBaseDirectory)"))
         #expect(outputMessages.prefix(25) == [
@@ -883,15 +901,38 @@ struct PrivateHeaderKitCLIParsingTests {
 
         #expect(exitCode == 2)
         #expect(loggedMessages == [
-            "error: private header generation run run-failed failed for 2 targets",
-            "failed targets:",
-            "  - SwiftUI.framework (framework:SwiftUI.framework)",
+            "PrivateHeaderKit",
+            "",
+            "Generation completed with failures",
+            "",
+            "Source",
+            "  iOS 27.0 (24A5355q)",
+            "",
+            "Targets",
+            "  SwiftUI, UIKit",
+            "",
+            "Result",
+            "  Generated 0",
+            "  Failed    2",
+            "  Skipped   0",
+            "",
+            "Failed targets",
+            "  [1] SwiftUI.framework",
             "      raw dump exited with status 10",
             "      Child process terminated with signal 10: Bus error",
             "      MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds",
-            "  - UIKit.framework (framework:UIKit.framework)",
+            "",
+            "  [2] UIKit.framework",
             "      no failure summary recorded",
-            "manifest path: \(outputDirectory.path)/.state/iOS27.0(24A5355q)/manifest.json",
+            "",
+            "Output",
+            "  Headers   \(outputDirectory.path)/iOS27.0(24A5355q)",
+            "  State     \(outputDirectory.path)/.state/iOS27.0(24A5355q)",
+            "",
+            "Run",
+            "  ID        run-failed",
+            "  Manifest  .state/iOS27.0(24A5355q)/manifest.json",
+            "  Record    .state/iOS27.0(24A5355q)/runs/run-failed/run.json",
         ])
     }
 

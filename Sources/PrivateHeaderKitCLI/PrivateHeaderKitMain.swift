@@ -422,7 +422,7 @@ private func runPrivateHeaderKitInteractiveGenerate(
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
     outputBaseDirectoryProvider: () -> String,
-    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
     outputLogger: (String) -> Void,
     errorLogger: (String) -> Void
@@ -572,7 +572,7 @@ private func runPrivateHeaderKitInteractiveSelection(
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
-    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
     outputLogger: (String) -> Void,
     errorLogger: (String) -> Void
@@ -607,6 +607,7 @@ private func runPrivateHeaderKitInteractiveSelection(
             simulatorResolver: simulatorResolver,
             preResolvedSimulatorResolution: resumeDecision.simulatorResolution,
             resumeBehaviorOverride: resumeDecision.resumeBehavior,
+            resultScreenClearer: screenClearer,
             outputLogger: outputLogger,
             errorLogger: errorLogger
         )
@@ -800,6 +801,31 @@ private struct PrivateHeaderKitInteractiveResumeDecision {
     let simulatorResolution: PrivateHeaderKitSimulatorResolution?
 }
 
+private struct PrivateHeaderKitGenerationResultScreen {
+    let title: String
+    let sourceDisplayName: String
+    let targetQuery: String
+    let counts: Counts
+    let artifactDirectory: URL
+    let stateDirectory: URL
+    let manifestURL: URL
+    let runRecordURL: URL
+    let runID: String
+    let failedTargets: [FailedTarget]
+
+    struct Counts: Equatable {
+        let generated: Int
+        let partial: Int
+        let failed: Int
+        let skipped: Int
+    }
+
+    struct FailedTarget: Equatable {
+        let displayName: String
+        let summaryLines: [String]
+    }
+}
+
 private func runPrivateHeaderKitGenerateCommand(
     _ command: PrivateHeaderKitGenerateCommand,
     invokedProgramName: String,
@@ -808,6 +834,7 @@ private func runPrivateHeaderKitGenerateCommand(
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     preResolvedSimulatorResolution: PrivateHeaderKitSimulatorResolution? = nil,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil,
+    resultScreenClearer: PrivateHeaderKitInteractiveScreenClearer? = nil,
     outputLogger: (String) -> Void,
     errorLogger: (String) -> Void
 ) async -> Int32 {
@@ -841,16 +868,25 @@ private func runPrivateHeaderKitGenerateCommand(
             resumeBehaviorOverride: resumeBehaviorOverride
         )
         let summary = try await generationRunner(request)
-        logPrivateHeaderGenerationSuccess(summary, outputLogger: outputLogger)
+        resultScreenClearer?()
+        renderPrivateHeaderGenerationResultScreen(
+            successResultScreen(command: command, summary: summary),
+            outputLogger: outputLogger
+        )
         return 0
     } catch let error as PrivateHeaderGeneration.GenerationError {
-        errorLogger("error: \(error.description)")
-        if case .runFailed(_, let failedTargetIDs) = error {
-            logPrivateHeaderGenerationFailureDetails(
-                command: command,
-                failedTargetIDs: failedTargetIDs,
-                errorLogger: errorLogger
+        if case .runFailed(let runID, let failedTargetIDs) = error {
+            resultScreenClearer?()
+            renderPrivateHeaderGenerationResultScreen(
+                failedResultScreen(
+                    command: command,
+                    runID: runID,
+                    failedTargetIDs: failedTargetIDs
+                ),
+                outputLogger: errorLogger
             )
+        } else {
+            errorLogger("error: \(error.description)")
         }
         if case .resumeRequired = error {
             errorLogger("rerun with `--resume` to continue the unfinished generation state")
@@ -860,6 +896,250 @@ private func runPrivateHeaderKitGenerateCommand(
         errorLogger("error: \(error)")
         return 2
     }
+}
+
+private func successResultScreen(
+    command: PrivateHeaderKitGenerateCommand,
+    summary: PrivateHeaderKitGenerationSummary
+) -> PrivateHeaderKitGenerationResultScreen {
+    PrivateHeaderKitGenerationResultScreen(
+        title: "Generation completed",
+        sourceDisplayName: summary.sourceDisplayName,
+        targetQuery: formattedTargetQuery(command.targetQuery),
+        counts: PrivateHeaderKitGenerationResultScreen.Counts(
+            generated: summary.generatedTargetCount,
+            partial: 0,
+            failed: 0,
+            skipped: summary.skippedTargetCount ?? 0
+        ),
+        artifactDirectory: summary.artifactDirectory,
+        stateDirectory: summary.manifestURL.deletingLastPathComponent(),
+        manifestURL: summary.manifestURL,
+        runRecordURL: summary.runRecordURL,
+        runID: summary.runID,
+        failedTargets: []
+    )
+}
+
+private func failedResultScreen(
+    command: PrivateHeaderKitGenerateCommand,
+    runID: String,
+    failedTargetIDs: [String]
+) -> PrivateHeaderKitGenerationResultScreen {
+    let manifestURL = URL(fileURLWithPath: command.manifestPath, isDirectory: false)
+    let runRecordURL = command.stateDirectory
+        .appendingPathComponent("runs/\(runID)/run.json", isDirectory: false)
+    let manifest = readGenerationManifest(at: manifestURL)
+    let runRecord = readGenerationRunRecord(at: runRecordURL)
+
+    return PrivateHeaderKitGenerationResultScreen(
+        title: "Generation completed with failures",
+        sourceDisplayName: command.sourceDisplayName,
+        targetQuery: formattedTargetQuery(command.targetQuery),
+        counts: runRecord.map(resultCounts(from:))
+            ?? manifest.map(resultCounts(from:))
+            ?? PrivateHeaderKitGenerationResultScreen.Counts(
+                generated: 0,
+                partial: 0,
+                failed: failedTargetIDs.count,
+                skipped: 0
+            ),
+        artifactDirectory: command.artifactDirectory,
+        stateDirectory: command.stateDirectory,
+        manifestURL: manifestURL,
+        runRecordURL: runRecordURL,
+        runID: runID,
+        failedTargets: failedTargets(failedTargetIDs, manifest: manifest)
+    )
+}
+
+private func readGenerationManifest(at url: URL) -> PrivateHeaderGeneration.Manifest? {
+    guard let data = try? Data(contentsOf: url) else {
+        return nil
+    }
+    return try? PrivateHeaderGeneration.StateJSON.decode(
+        PrivateHeaderGeneration.Manifest.self,
+        from: data
+    )
+}
+
+private func readGenerationRunRecord(at url: URL) -> PrivateHeaderGeneration.RunRecord? {
+    guard let data = try? Data(contentsOf: url) else {
+        return nil
+    }
+    return try? PrivateHeaderGeneration.StateJSON.decode(
+        PrivateHeaderGeneration.RunRecord.self,
+        from: data
+    )
+}
+
+private func resultCounts(
+    from runRecord: PrivateHeaderGeneration.RunRecord
+) -> PrivateHeaderKitGenerationResultScreen.Counts {
+    var generated = 0
+    var partial = 0
+    var failed = 0
+    var skipped = 0
+
+    for target in runRecord.targetResults {
+        switch target.status {
+        case .completed:
+            generated += 1
+        case .partial:
+            partial += 1
+        case .failed, .interrupted, .commitFailed:
+            failed += 1
+        case .skipped:
+            skipped += 1
+        case .pending, .running:
+            break
+        }
+    }
+
+    return PrivateHeaderKitGenerationResultScreen.Counts(
+        generated: generated,
+        partial: partial,
+        failed: failed,
+        skipped: skipped
+    )
+}
+
+private func resultCounts(
+    from manifest: PrivateHeaderGeneration.Manifest
+) -> PrivateHeaderKitGenerationResultScreen.Counts {
+    var generated = 0
+    var partial = 0
+    var failed = 0
+
+    for target in manifest.targets {
+        switch target.status {
+        case .completed:
+            generated += 1
+        case .partial:
+            partial += 1
+        case .failed, .interrupted, .commitFailed, .stale:
+            failed += 1
+        }
+    }
+
+    return PrivateHeaderKitGenerationResultScreen.Counts(
+        generated: generated,
+        partial: partial,
+        failed: failed,
+        skipped: 0
+    )
+}
+
+private func failedTargets(
+    _ failedTargetIDs: [String],
+    manifest: PrivateHeaderGeneration.Manifest?
+) -> [PrivateHeaderKitGenerationResultScreen.FailedTarget] {
+    var targetsByID: [String: PrivateHeaderGeneration.TargetRecord] = [:]
+    for target in manifest?.targets ?? [] {
+        targetsByID[target.id] = target
+    }
+
+    return failedTargetIDs.prefix(20).map { targetID in
+        guard let target = targetsByID[targetID] else {
+            return PrivateHeaderKitGenerationResultScreen.FailedTarget(
+                displayName: targetID,
+                summaryLines: ["no failure summary recorded"]
+            )
+        }
+        return PrivateHeaderKitGenerationResultScreen.FailedTarget(
+            displayName: target.displayName,
+            summaryLines: failureSummaryLines(from: target.failureSummary)
+        )
+    }
+}
+
+private func renderPrivateHeaderGenerationResultScreen(
+    _ screen: PrivateHeaderKitGenerationResultScreen,
+    outputLogger: (String) -> Void
+) {
+    outputLogger("PrivateHeaderKit")
+    outputLogger("")
+    outputLogger(screen.title)
+    outputLogger("")
+    outputLogger("Source")
+    outputLogger("  \(screen.sourceDisplayName)")
+    outputLogger("")
+    outputLogger("Targets")
+    outputLogger("  \(screen.targetQuery)")
+    outputLogger("")
+    outputLogger("Result")
+    outputLogger(formatResultMetric("Generated", screen.counts.generated))
+    if screen.counts.partial > 0 {
+        outputLogger(formatResultMetric("Partial", screen.counts.partial))
+    }
+    outputLogger(formatResultMetric("Failed", screen.counts.failed))
+    outputLogger(formatResultMetric("Skipped", screen.counts.skipped))
+
+    if !screen.failedTargets.isEmpty {
+        outputLogger("")
+        outputLogger("Failed targets")
+        for (index, target) in screen.failedTargets.enumerated() {
+            outputLogger("  [\(index + 1)] \(target.displayName)")
+            for line in target.summaryLines {
+                outputLogger("      \(line)")
+            }
+            if index < screen.failedTargets.count - 1 {
+                outputLogger("")
+            }
+        }
+    }
+
+    outputLogger("")
+    outputLogger("Output")
+    outputLogger(formatResultField("Headers", screen.artifactDirectory.path))
+    outputLogger(formatResultField("State", screen.stateDirectory.path))
+    outputLogger("")
+    outputLogger("Run")
+    outputLogger(formatResultField("ID", shortenedRunID(screen.runID)))
+    outputLogger(formatResultField(
+        "Manifest",
+        relativePath(screen.manifestURL, from: screen.artifactDirectory)
+    ))
+    outputLogger(formatResultField(
+        "Record",
+        relativePath(screen.runRecordURL, from: screen.artifactDirectory)
+    ))
+}
+
+private func formatResultMetric(_ label: String, _ value: Int) -> String {
+    formatResultField(label, "\(value)")
+}
+
+private func formatResultField(_ label: String, _ value: String) -> String {
+    "  \(label.padding(toLength: 9, withPad: " ", startingAt: 0)) \(value)"
+}
+
+private func formattedTargetQuery(_ query: String) -> String {
+    query == "all"
+        ? "All targets"
+        : query
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+}
+
+private func relativePath(_ url: URL, from artifactDirectory: URL) -> String {
+    let outputBaseDirectory = artifactDirectory.deletingLastPathComponent()
+    let outputPath = outputBaseDirectory.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    guard path.hasPrefix(outputPath + "/") else {
+        return path
+    }
+    return String(path.dropFirst(outputPath.count + 1))
+}
+
+private func shortenedRunID(_ runID: String) -> String {
+    let maxLength = 36
+    guard runID.count > maxLength else {
+        return runID
+    }
+    return String(runID.prefix(maxLength - 1)) + "..."
 }
 
 private func runPrivateHeaderGeneration(
@@ -1202,61 +1482,6 @@ private func logPrivateHeaderKitSimulatorSelection(
         outputLogger("using explicit system root: \(systemRoot)")
         outputLogger("resolved runtime root: \(resolution.resolvedRuntimeRoot)")
     }
-}
-
-private func logPrivateHeaderGenerationSuccess(
-    _ summary: PrivateHeaderKitGenerationSummary,
-    outputLogger: (String) -> Void
-) {
-    outputLogger("private header generation completed")
-    outputLogger("source: \(summary.sourceDisplayName)")
-    outputLogger("artifact directory: \(summary.artifactDirectory.path)")
-    outputLogger("manifest path: \(summary.manifestURL.path)")
-    outputLogger("run record path: \(summary.runRecordURL.path)")
-    outputLogger("run ID: \(summary.runID)")
-    if let skippedTargetCount = summary.skippedTargetCount {
-        outputLogger("targets: generated \(summary.generatedTargetCount), skipped \(skippedTargetCount)")
-    } else {
-        outputLogger("targets: generated \(summary.generatedTargetCount)")
-    }
-}
-
-private func logPrivateHeaderGenerationFailureDetails(
-    command: PrivateHeaderKitGenerateCommand,
-    failedTargetIDs: [String],
-    errorLogger: (String) -> Void
-) {
-    let manifestURL = URL(fileURLWithPath: command.manifestPath, isDirectory: false)
-    guard
-        let manifestData = try? Data(contentsOf: manifestURL),
-        let manifest = try? PrivateHeaderGeneration.StateJSON.decode(
-            PrivateHeaderGeneration.Manifest.self,
-            from: manifestData
-        )
-    else {
-        errorLogger("manifest path: \(command.manifestPath)")
-        return
-    }
-
-    var targetsByID: [String: PrivateHeaderGeneration.TargetRecord] = [:]
-    for target in manifest.targets {
-        targetsByID[target.id] = target
-    }
-    errorLogger("failed targets:")
-    for targetID in failedTargetIDs.prefix(20) {
-        guard let target = targetsByID[targetID] else {
-            errorLogger("  - \(targetID): no failure summary recorded")
-            continue
-        }
-        errorLogger("  - \(target.displayName) (\(target.id))")
-        for line in failureSummaryLines(from: target.failureSummary) {
-            errorLogger("      \(line)")
-        }
-    }
-    if failedTargetIDs.count > 20 {
-        errorLogger("  ... and \(failedTargetIDs.count - 20) more")
-    }
-    errorLogger("manifest path: \(command.manifestPath)")
 }
 
 private func failureSummaryLines(from summary: String?) -> [String] {
