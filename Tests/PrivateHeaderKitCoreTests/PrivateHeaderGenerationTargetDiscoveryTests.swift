@@ -190,6 +190,28 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         #expect(catalog.allTargetsIncludingNestedChildren.map(\.candidate.displayName) == ["Foo"])
     }
 
+    @Test func unreadableNestedContainerDoesNotAbortDiscovery() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        try createDirectory("System/Library/Frameworks/Foo.framework/PlugIns", in: root)
+        let plugInsURL = root.appendingPathComponent(
+            "System/Library/Frameworks/Foo.framework/PlugIns",
+            isDirectory: true
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: plugInsURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: plugInsURL.path)
+        }
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+
+        let framework = try #require(catalog.targets.first { $0.candidate.displayName == "Foo" })
+        #expect(framework.childTargets.isEmpty)
+    }
+
     @Test func resolverUsesDisplayNamesAndExactAliasesWithoutCategoryPartialSelection() throws {
         let root = try makeTemporaryDirectory()
         defer {

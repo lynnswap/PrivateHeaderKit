@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 import PrivateHeaderKitCore
+import PrivateHeaderKitTooling
 @testable import PrivateHeaderKitCLI
 
 @Suite
@@ -183,21 +184,21 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(!usage.contains("privateheaderkit generate"))
     }
 
-    @Test func hiddenRawDumpCommandForwardsRawDumpArguments() throws {
-        #expect(
-            try parsePrivateHeaderKitCommand([
+    @Test func rawDumpHelperSubcommandIsNotPublicCLI() throws {
+        do {
+            _ = try parsePrivateHeaderKitCommand([
                 "privateheaderkit",
                 "__raw-dump",
                 "-o",
                 "/tmp/out",
                 "/tmp/input",
             ])
-            == .rawDump([
-                "-o",
-                "/tmp/out",
-                "/tmp/input",
-            ])
-        )
+            Issue.record("expected hidden raw dump helper entrypoint to be rejected by public CLI")
+        } catch let error as PrivateHeaderKitCLIError {
+            #expect(error == .unknownCommand("__raw-dump"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
     }
 
     @Test func publicHelpDoesNotListHiddenRawDumpCommand() {
@@ -328,7 +329,11 @@ struct PrivateHeaderKitCLIParsingTests {
     }
 
     @Test func validGenerateRunInvokesGenerationRunnerWithCoreRequestAndPrintsSuccessOutput() async throws {
-        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let publicCommandURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let rawDumpHelperURL = URL(
+            fileURLWithPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-raw-helper",
+            isDirectory: false
+        )
         let simulatorHelperURL = URL(
             fileURLWithPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper",
             isDirectory: false
@@ -353,7 +358,7 @@ struct PrivateHeaderKitCLIParsingTests {
                 "SwiftUI,UIKit",
                 "--resume",
             ],
-            currentExecutableURL: helperURL,
+            currentExecutableURL: publicCommandURL,
             generationRunner: { request in
                 recorder.request = request
                 return PrivateHeaderKitGenerationSummary(
@@ -393,7 +398,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.systemRoot?.path == "/tmp/RuntimeRoot")
         #expect(request.targetQuery == "SwiftUI,UIKit")
         #expect(request.resumeRequested == true)
-        #expect(request.hostHelperURL == helperURL)
+        #expect(request.hostHelperURL == rawDumpHelperURL)
         #expect(request.simulatorHelperURL == simulatorHelperURL)
         #expect(!request.usesHostExecution)
         #expect(request.simulatorDeviceUDID == "SIM-001")
@@ -418,6 +423,7 @@ struct PrivateHeaderKitCLIParsingTests {
         let recorder = GenerationRequestRecorder()
         var inputs = [
             "1",
+            "2",
             "SwiftUI,UIKit",
         ]
         let defaultOutputBaseDirectory = FileManager.default
@@ -448,6 +454,12 @@ struct PrivateHeaderKitCLIParsingTests {
                         build: "24A5355q",
                         systemRoot: nil
                     ),
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .macOS,
+                        version: "26.5.1",
+                        build: "25F80",
+                        systemRoot: "/"
+                    ),
                 ]
             },
             interactiveScreenClearer: {},
@@ -467,22 +479,178 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.startsFresh)
         #expect(request.resumeRequested == nil)
         #expect(!outputMessages.contains("Continue previous run? (y/n):"))
-        #expect(outputMessages.prefix(5) == [
+        #expect(!outputMessages.contains("Output directory: \(defaultOutputBaseDirectory)"))
+        #expect(outputMessages.prefix(25) == [
+            "PrivateHeaderKit",
+            "Generate private headers from an installed runtime or this Mac.",
+            "",
+            "Step 1 of 3: Source",
+            "Choose where PrivateHeaderKit reads system binaries from.",
+            "iOS sources are Simulator runtimes. macOS is this Mac's system.",
+            "",
             "Available sources:",
-            "  [1] iOS 27.0 (24A5355q)",
+            "  iOS Simulator Runtimes",
+            "    [1] iOS 27.0 (24A5355q)",
+            "",
+            "  macOS",
+            "    [2] macOS 26.5.1 (25F80)",
+            "",
             "Select source:",
-            "Selected source: iOS 27.0 (24A5355q)",
-            "Output directory: \(defaultOutputBaseDirectory)",
+            "PrivateHeaderKit",
+            "",
+            "Step 2 of 3: Targets",
+            "Source: iOS 27.0 (24A5355q)",
+            "",
+            "  [1] All targets",
+            "      Generate every discoverable target.",
+            "  [2] Specific targets",
+            "      Enter target names separated by commas.",
+            "Select targets:",
         ])
-        #expect(outputMessages.contains("Targets (comma-separated, or all):"))
+        #expect(outputMessages.contains("Enter targets separated by commas."))
+        #expect(outputMessages.contains("  SwiftUI,UIKit"))
+        #expect(outputMessages.contains("  SpringBoardServices"))
+        #expect(outputMessages.contains("Targets:"))
+    }
+
+    @Test func noArgumentRunCanSelectAllTargetsWithoutTargetInput() async throws {
+        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        var inputs = [
+            "1",
+            "1",
+        ]
+        var outputMessages: [String] = []
+        var loggedMessages: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in simulatorResolution() },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A5355q",
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveScreenClearer: {},
+            inputReader: {
+                inputs.isEmpty ? nil : inputs.removeFirst()
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { loggedMessages.append($0) }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(loggedMessages.isEmpty)
+        #expect(request.targetQuery == "all")
+        #expect(request.startsFresh)
+        #expect(outputMessages.contains("      Generate every discoverable target."))
+        #expect(!outputMessages.contains("Enter targets separated by commas."))
+    }
+
+    @Test func interactiveEscapeReturnsFromTargetModeToSourceSelection() async throws {
+        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        var inputs = [
+            "1",
+            "\u{001B}",
+            "1",
+            "1",
+        ]
+        var outputMessages: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in simulatorResolution() },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A5355q",
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveScreenClearer: {},
+            inputReader: {
+                inputs.isEmpty ? nil : inputs.removeFirst()
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.targetQuery == "all")
+        #expect(outputMessages.filter { $0 == "Available sources:" }.count == 2)
+    }
+
+    @Test func interactiveEscapeReturnsFromSpecificTargetsToTargetMode() async throws {
+        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        var inputs = [
+            "1",
+            "2",
+            "\u{001B}",
+            "1",
+        ]
+        var outputMessages: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: helperURL,
+            generationRunner: { request in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in simulatorResolution() },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A5355q",
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveScreenClearer: {},
+            inputReader: {
+                inputs.isEmpty ? nil : inputs.removeFirst()
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.targetQuery == "all")
+        #expect(outputMessages.contains("Step 2 of 3: Specific targets"))
+        #expect(outputMessages.filter { $0 == "Step 2 of 3: Targets" }.count == 2)
     }
 
     @Test func iOSGenerateDefaultsSimulatorHelperToInstallLayoutForCustomBindir() async throws {
-        let helperURL = URL(fileURLWithPath: "/opt/phk/privateheaderkit", isDirectory: false)
+        let publicCommandURL = URL(fileURLWithPath: "/opt/phk/privateheaderkit", isDirectory: false)
         let recorder = GenerationRequestRecorder()
         let exitCode = await runPrivateHeaderKitCommand(
             validGenerateArguments(),
-            currentExecutableURL: helperURL,
+            currentExecutableURL: publicCommandURL,
             generationRunner: { request in
                 recorder.request = request
                 return summaryFixture(for: request)
@@ -494,8 +662,72 @@ struct PrivateHeaderKitCLIParsingTests {
 
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
-        #expect(request.hostHelperURL == helperURL)
+        #expect(request.hostHelperURL?.path == "/opt/libexec/privateheaderkit/privateheaderkit-raw-helper")
         #expect(request.simulatorHelperURL?.path == "/opt/libexec/privateheaderkit/privateheaderkit-sim-helper")
+    }
+
+    @Test func helperDefaultsSupportSwiftPMBuildProducts() {
+        let publicCommandURL = URL(
+            fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit",
+            isDirectory: false
+        )
+        let rawHelperURL = defaultRawDumpHelperURL(publicExecutableURL: publicCommandURL)
+
+        #expect(rawHelperURL.path == "/repo/.build/arm64-apple-macosx/debug/privateheaderkit-raw-helper")
+        #expect(
+            swiftPMBuildSimulatorHelperURL(
+                hostBuildExecutableURL: rawHelperURL,
+                simulatorTriple: "arm64-apple-ios-simulator"
+            )?.path == "/repo/.build/arm64-apple-ios-simulator/debug/privateheaderkit-sim-helper"
+        )
+    }
+
+    @Test func swiftPMBuildHelpersBuildMissingSourceTreeProducts() throws {
+        let publicCommandURL = URL(
+            fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit",
+            isDirectory: false
+        )
+        let runner = RecordingCommandRunner()
+
+        try ensureSwiftPMBuildHelpersIfNeeded(
+            publicExecutableURL: publicCommandURL,
+            includeSimulatorHelper: true,
+            runner: runner,
+            simulatorTriple: "arm64-apple-ios-simulator"
+        )
+
+        #expect(runner.commands == [
+            RecordedCommand(
+                command: [
+                    "swift",
+                    "build",
+                    "-c",
+                    "debug",
+                    "--product",
+                    "privateheaderkit-raw-helper",
+                ],
+                cwd: "/repo"
+            ),
+            RecordedCommand(
+                command: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+                cwd: nil
+            ),
+            RecordedCommand(
+                command: [
+                    "swift",
+                    "build",
+                    "-c",
+                    "debug",
+                    "--sdk",
+                    "/SDK/iPhoneSimulator",
+                    "--triple",
+                    "arm64-apple-ios-simulator",
+                    "--product",
+                    "privateheaderkit-sim-helper",
+                ],
+                cwd: "/repo"
+            ),
+        ])
     }
 
     @Test func iOSGenerateWithoutSystemRootUsesResolvedRuntimeRootAndExplicitSimulatorHelper() async throws {
@@ -540,7 +772,11 @@ struct PrivateHeaderKitCLIParsingTests {
     }
 
     @Test func macOSGenerateUsesHostExecutionAndDoesNotResolveSimulator() async throws {
-        let helperURL = URL(fileURLWithPath: "/tmp/privateheaderkit", isDirectory: false)
+        let publicCommandURL = URL(fileURLWithPath: "/tmp/phk/bin/privateheaderkit", isDirectory: false)
+        let rawDumpHelperURL = URL(
+            fileURLWithPath: "/tmp/phk/libexec/privateheaderkit/privateheaderkit-raw-helper",
+            isDirectory: false
+        )
         let recorder = GenerationRequestRecorder()
         let exitCode = await runPrivateHeaderKitCommand(
             [
@@ -556,7 +792,7 @@ struct PrivateHeaderKitCLIParsingTests {
                 "--target",
                 "AppKit",
             ],
-            currentExecutableURL: helperURL,
+            currentExecutableURL: publicCommandURL,
             generationRunner: { request in
                 recorder.request = request
                 return summaryFixture(for: request)
@@ -572,7 +808,7 @@ struct PrivateHeaderKitCLIParsingTests {
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
         #expect(request.systemRoot?.path == "/")
-        #expect(request.hostHelperURL == helperURL)
+        #expect(request.hostHelperURL == rawDumpHelperURL)
         #expect(request.usesHostExecution)
         #expect(request.simulatorDeviceUDID == nil)
     }
@@ -600,6 +836,62 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(loggedMessages == [
             "error: existing generation state is unfinished; explicit resume is required for run-previous",
             "rerun with `--resume` to continue the unfinished generation state",
+        ])
+    }
+
+    @Test func generateRunFailedPrintsFailedTargetDetailsFromManifest() async throws {
+        let outputDirectory = try makeCLITestTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        var loggedMessages: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--build",
+                "24A5355q",
+                "--system-root",
+                "/tmp/RuntimeRoot",
+                "--out",
+                outputDirectory.path,
+                "--target",
+                "SwiftUI,UIKit",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/tmp/privateheaderkit", isDirectory: false),
+            generationRunner: { request in
+                try writeFailedGenerationManifest(
+                    for: request,
+                    runID: "run-failed"
+                )
+                throw PrivateHeaderGeneration.GenerationError.runFailed(
+                    runID: "run-failed",
+                    failedTargetIDs: [
+                        "framework:SwiftUI.framework",
+                        "framework:UIKit.framework",
+                    ]
+                )
+            },
+            simulatorResolver: { _ in simulatorResolution() },
+            outputLogger: { _ in },
+            errorLogger: { loggedMessages.append($0) }
+        )
+
+        #expect(exitCode == 2)
+        #expect(loggedMessages == [
+            "error: private header generation run run-failed failed for 2 targets",
+            "failed targets:",
+            "  - SwiftUI.framework (framework:SwiftUI.framework)",
+            "      raw dump exited with status 10",
+            "      Child process terminated with signal 10: Bus error",
+            "      MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds",
+            "  - UIKit.framework (framework:UIKit.framework)",
+            "      no failure summary recorded",
+            "manifest path: \(outputDirectory.path)/.state/iOS27.0(24A5355q)/manifest.json",
         ])
     }
 
@@ -632,6 +924,44 @@ struct PrivateHeaderKitCLIParsingTests {
 
 private final class GenerationRequestRecorder {
     var request: PrivateHeaderKitGenerationRequest?
+}
+
+private struct RecordedCommand: Equatable {
+    let command: [String]
+    let cwd: String?
+}
+
+private final class RecordingCommandRunner: CommandRunning {
+    var commands: [RecordedCommand] = []
+
+    func runCapture(_ command: [String], env _: [String: String]?, cwd: URL?) throws -> String {
+        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
+        if command == ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"] {
+            return "/SDK/iPhoneSimulator\n"
+        }
+        return ""
+    }
+
+    func runSimple(_ command: [String], env _: [String: String]?, cwd: URL?) throws {
+        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
+    }
+
+    func runStreaming(_ command: [String], env _: [String: String]?, cwd: URL?) throws -> StreamingCommandResult {
+        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
+        return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+    }
+
+    func runStreaming(
+        _ command: [String],
+        env _: [String: String]?,
+        cwd: URL?,
+        streamOutput _: Bool,
+        onLaunch _: ((Int32) -> Void)?,
+        onCleanup _: ((Int32) -> Void)?
+    ) throws -> StreamingCommandResult {
+        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
+        return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+    }
 }
 
 private func simulatorResolution(
@@ -732,5 +1062,85 @@ private func resumeSummaryFixture(
                 status: .partial
             ),
         ]
+    )
+}
+
+private func makeCLITestTemporaryDirectory() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PrivateHeaderKitCLITests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}
+
+private func writeFailedGenerationManifest(
+    for request: PrivateHeaderKitGenerationRequest,
+    runID: String
+) throws {
+    let manifestDirectory = request.stateBaseDirectory
+        .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
+    try FileManager.default.createDirectory(at: manifestDirectory, withIntermediateDirectories: true)
+
+    let manifest = PrivateHeaderGeneration.Manifest(
+        schemaVersion: 1,
+        toolVersion: "0.1.0",
+        source: PrivateHeaderGeneration.SourceRecord(source: request.source),
+        output: PrivateHeaderGeneration.OutputRecord(
+            baseDirectory: request.artifactBaseDirectory.path,
+            artifactDirectory: request.artifactBaseDirectory
+                .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
+                .path,
+            stateDirectory: manifestDirectory.path
+        ),
+        layout: .headers,
+        latestRunID: runID,
+        targets: [
+            PrivateHeaderGeneration.TargetRecord(
+                id: "framework:SwiftUI.framework",
+                displayName: "SwiftUI.framework",
+                kind: "framework",
+                status: .failed,
+                phases: [
+                    PrivateHeaderGeneration.PhaseRecord(
+                        name: "raw-header-dump",
+                        status: .failed,
+                        failureSummary: """
+                        raw dump exited with status 10
+                        Child process terminated with signal 10: Bus error
+                        MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds
+                        """
+                    ),
+                ],
+                artifacts: [],
+                lastRunID: runID,
+                updatedAt: Date(timeIntervalSince1970: 1_000),
+                failureSummary: """
+                raw dump exited with status 10
+                Child process terminated with signal 10: Bus error
+                MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds
+                """
+            ),
+            PrivateHeaderGeneration.TargetRecord(
+                id: "framework:UIKit.framework",
+                displayName: "UIKit.framework",
+                kind: "framework",
+                status: .failed,
+                phases: [
+                    PrivateHeaderGeneration.PhaseRecord(
+                        name: "raw-header-dump",
+                        status: .failed
+                    ),
+                ],
+                artifacts: [],
+                lastRunID: runID,
+                updatedAt: Date(timeIntervalSince1970: 1_000),
+                failureSummary: nil
+            ),
+        ],
+        updatedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
+    try data.write(
+        to: manifestDirectory.appendingPathComponent("manifest.json", isDirectory: false),
+        options: [.atomic]
     )
 }

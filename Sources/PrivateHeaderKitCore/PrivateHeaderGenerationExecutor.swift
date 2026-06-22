@@ -1082,8 +1082,12 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
         invocation: PrivateHeaderGeneration.RawDumping.Invocation
     ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
         let process = Process()
+        let outputPipe = Pipe()
+        let outputCapture = RawDumpOutputCapture()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = invocation.command
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
         if !invocation.environment.isEmpty {
             var environment = ProcessInfo.processInfo.environment
             invocation.environment.forEach { key, value in
@@ -1092,12 +1096,109 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
             process.environment = environment
         }
 
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                outputCapture.append(data)
+            }
+        }
+        defer {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+        }
+
         try process.run()
         process.waitUntilExit()
-        return PrivateHeaderGeneration.RawDumping.Result(
-            terminationStatus: process.terminationStatus,
-            wasKilled: process.terminationReason == .uncaughtSignal
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        outputCapture.append(outputPipe.fileHandleForReading.readDataToEndOfFile())
+        let wasKilled = process.terminationReason == .uncaughtSignal
+        let terminationStatus = process.terminationStatus
+        let failureSummary = Self.rawDumpFailureSummary(
+            terminationStatus: terminationStatus,
+            wasKilled: wasKilled,
+            outputLines: outputCapture.lines()
         )
+        return PrivateHeaderGeneration.RawDumping.Result(
+            terminationStatus: terminationStatus,
+            wasKilled: wasKilled,
+            failureSummary: failureSummary
+        )
+    }
+
+    static func rawDumpFailureSummary(
+        terminationStatus: Int32,
+        wasKilled: Bool,
+        outputLines: [String]
+    ) -> String? {
+        guard terminationStatus != 0 || wasKilled else {
+            return nil
+        }
+
+        let statusLine: String
+        if wasKilled {
+            if let signalName = rawDumpSignalName(terminationStatus) {
+                statusLine = "raw dump terminated by signal \(terminationStatus): \(signalName)"
+            } else {
+                statusLine = "raw dump terminated by signal \(terminationStatus)"
+            }
+        } else {
+            statusLine = "raw dump exited with status \(terminationStatus)"
+        }
+
+        let capturedLines = outputLines.suffix(8)
+        guard !capturedLines.isEmpty else {
+            return statusLine
+        }
+        return ([statusLine] + capturedLines).joined(separator: "\n")
+    }
+
+    private static func rawDumpSignalName(_ signal: Int32) -> String? {
+        switch signal {
+        case 5:
+            return "Trace/BPT trap"
+        case 9:
+            return "Killed"
+        case 10:
+            return "Bus error"
+        case 11:
+            return "Segmentation fault"
+        case 15:
+            return "Terminated"
+        default:
+            return nil
+        }
+    }
+}
+
+private final class RawDumpOutputCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maximumByteCount = 16 * 1024
+    private var buffer = Data()
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else {
+            return
+        }
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+
+        buffer.append(data)
+        if buffer.count > maximumByteCount {
+            buffer.removeFirst(buffer.count - maximumByteCount)
+        }
+    }
+
+    func lines() -> [String] {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+
+        return String(decoding: buffer, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }
 

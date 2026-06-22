@@ -1,7 +1,6 @@
 import Foundation
 import PrivateHeaderKitCore
 import PrivateHeaderKitInstall
-import PrivateHeaderKitRawDumpCore
 import PrivateHeaderKitTooling
 
 #if canImport(Darwin)
@@ -23,7 +22,6 @@ enum PrivateHeaderKitCommand: Equatable {
     case interactiveGenerate
     case install([String])
     case generate(PrivateHeaderKitGenerateCommand)
-    case rawDump([String])
 }
 
 struct PrivateHeaderKitGenerationRequest: Sendable {
@@ -283,6 +281,26 @@ struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     }
 }
 
+private enum PrivateHeaderKitInteractiveTargetMode: Equatable {
+    case all
+    case specific
+}
+
+private enum PrivateHeaderKitInteractiveAction: Equatable {
+    case continuePrevious
+    case restart
+}
+
+private enum PrivateHeaderKitInteractiveStep {
+    case source
+    case targetMode
+    case targetInput
+}
+
+private enum PrivateHeaderKitInteractiveNavigation: Error {
+    case back
+}
+
 typealias PrivateHeaderKitInteractiveSourceProvider = () throws -> [PrivateHeaderKitInteractiveSource]
 
 private let legacyPublicCommandNames: Set<String> = [
@@ -348,7 +366,7 @@ func runPrivateHeaderKitCommand(
         discoverPrivateHeaderKitInteractiveSources,
     interactiveOutputBaseDirectoryProvider: @escaping () -> String = defaultInteractiveOutputBaseDirectory,
     interactiveScreenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer = clearInteractiveScreen,
-    inputReader: @escaping PrivateHeaderKitInputReader = { readLine() },
+    inputReader: @escaping PrivateHeaderKitInputReader = readInteractiveLine,
     outputLogger: (String) -> Void = logCLIOutput,
     errorLogger: (String) -> Void = logCLIError
 ) async -> Int32 {
@@ -385,9 +403,6 @@ func runPrivateHeaderKitCommand(
                 outputLogger: outputLogger,
                 errorLogger: errorLogger
             )
-        case .rawDump(let rawDumpArgs):
-            await PrivateHeaderKitRawDumpCLI.main(arguments: rawDumpArgs)
-            return 0
         }
     } catch let error as PrivateHeaderKitCLIError {
         errorLogger("error: \(error.description)")
@@ -419,32 +434,150 @@ private func runPrivateHeaderKitInteractiveGenerate(
             return 2
         }
 
-        renderInteractiveSourceScreen(
-            sources: sources,
-            screenClearer: screenClearer,
-            outputLogger: outputLogger
-        )
-
-        let source = try promptIndexedSelection(
-            prompt: "Select source:",
-            values: sources,
-            inputReader: inputReader,
-            outputLogger: outputLogger
-        )
         let outputBaseDirectory = outputBaseDirectoryProvider()
-        renderInteractiveTargetScreen(
-            source: source,
-            outputBaseDirectory: outputBaseDirectory,
-            screenClearer: screenClearer,
-            outputLogger: outputLogger
-        )
-        let targetQuery = try promptRequiredValue(
-            prompt: "Targets (comma-separated, or all):",
-            inputReader: inputReader,
-            outputLogger: outputLogger
-        )
-        try validateTargetQuery(targetQuery)
+        var step = PrivateHeaderKitInteractiveStep.source
+        var source: PrivateHeaderKitInteractiveSource?
 
+        while true {
+            switch step {
+            case .source:
+                renderInteractiveSourceScreen(
+                    sources: sources,
+                    screenClearer: screenClearer,
+                    outputLogger: outputLogger
+                )
+                do {
+                    source = try promptIndexedSelection(
+                        prompt: "Select source:",
+                        values: sources,
+                        inputReader: inputReader,
+                        outputLogger: outputLogger
+                    )
+                    step = .targetMode
+                } catch PrivateHeaderKitInteractiveNavigation.back {
+                    outputLogger("Cancelled.")
+                    return 1
+                }
+
+            case .targetMode:
+                guard let selectedSource = source else {
+                    step = .source
+                    continue
+                }
+                renderInteractiveTargetModeScreen(
+                    source: selectedSource,
+                    screenClearer: screenClearer,
+                    outputLogger: outputLogger
+                )
+                let selectedTargetMode: PrivateHeaderKitInteractiveTargetMode
+                do {
+                    selectedTargetMode = try promptIndexedSelection(
+                        prompt: "Select targets:",
+                        values: [
+                            PrivateHeaderKitInteractiveTargetMode.all,
+                            PrivateHeaderKitInteractiveTargetMode.specific,
+                        ],
+                        inputReader: inputReader,
+                        outputLogger: outputLogger
+                    )
+                } catch PrivateHeaderKitInteractiveNavigation.back {
+                    step = .source
+                    continue
+                }
+
+                switch selectedTargetMode {
+                case .all:
+                    do {
+                        return try await runPrivateHeaderKitInteractiveSelection(
+                            source: selectedSource,
+                            outputBaseDirectory: outputBaseDirectory,
+                            targetQuery: "all",
+                            invokedProgramName: invokedProgramName,
+                            currentExecutableURL: currentExecutableURL,
+                            generationRunner: generationRunner,
+                            simulatorResolver: simulatorResolver,
+                            screenClearer: screenClearer,
+                            inputReader: inputReader,
+                            outputLogger: outputLogger,
+                            errorLogger: errorLogger
+                        )
+                    } catch PrivateHeaderKitInteractiveNavigation.back {
+                        step = .targetMode
+                        continue
+                    }
+                case .specific:
+                    step = .targetInput
+                }
+
+            case .targetInput:
+                guard let selectedSource = source else {
+                    step = .source
+                    continue
+                }
+                renderInteractiveTargetInputScreen(
+                    source: selectedSource,
+                    screenClearer: screenClearer,
+                    outputLogger: outputLogger
+                )
+                let targetQuery: String
+                do {
+                    targetQuery = try promptRequiredValue(
+                        prompt: "Targets:",
+                        inputReader: inputReader,
+                        outputLogger: outputLogger
+                    )
+                    try validateTargetQuery(targetQuery)
+                } catch PrivateHeaderKitInteractiveNavigation.back {
+                    step = .targetMode
+                    continue
+                }
+
+                do {
+                    return try await runPrivateHeaderKitInteractiveSelection(
+                        source: selectedSource,
+                        outputBaseDirectory: outputBaseDirectory,
+                        targetQuery: targetQuery,
+                        invokedProgramName: invokedProgramName,
+                        currentExecutableURL: currentExecutableURL,
+                        generationRunner: generationRunner,
+                        simulatorResolver: simulatorResolver,
+                        screenClearer: screenClearer,
+                        inputReader: inputReader,
+                        outputLogger: outputLogger,
+                        errorLogger: errorLogger
+                    )
+                } catch PrivateHeaderKitInteractiveNavigation.back {
+                    step = .targetInput
+                    continue
+                }
+            }
+        }
+    } catch PrivateHeaderKitInteractiveNavigation.back {
+        outputLogger("Cancelled.")
+        return 1
+    } catch let error as PrivateHeaderKitCLIError {
+        errorLogger("error: \(error.description)")
+        return 1
+    } catch {
+        errorLogger("error: \(error)")
+        return 1
+    }
+}
+
+private func runPrivateHeaderKitInteractiveSelection(
+    source: PrivateHeaderKitInteractiveSource,
+    outputBaseDirectory: String,
+    targetQuery: String,
+    invokedProgramName: String,
+    currentExecutableURL: URL?,
+    generationRunner: PrivateHeaderKitGenerationRunner,
+    simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    inputReader: PrivateHeaderKitInputReader,
+    outputLogger: (String) -> Void,
+    errorLogger: (String) -> Void
+) async throws -> Int32 {
+    do {
         let command = PrivateHeaderKitGenerateCommand(
             platform: source.platform,
             version: source.version,
@@ -477,6 +610,8 @@ private func runPrivateHeaderKitInteractiveGenerate(
             outputLogger: outputLogger,
             errorLogger: errorLogger
         )
+    } catch PrivateHeaderKitInteractiveNavigation.back {
+        throw PrivateHeaderKitInteractiveNavigation.back
     } catch let error as PrivateHeaderKitCLIError {
         errorLogger("error: \(error.description)")
         return 1
@@ -496,21 +631,80 @@ private func renderInteractiveSourceScreen(
     outputLogger: (String) -> Void
 ) {
     screenClearer()
+    outputLogger("PrivateHeaderKit")
+    outputLogger("Generate private headers from an installed runtime or this Mac.")
+    outputLogger("")
+    outputLogger("Step 1 of 3: Source")
+    outputLogger("Choose where PrivateHeaderKit reads system binaries from.")
+    outputLogger("iOS sources are Simulator runtimes. macOS is this Mac's system.")
+    outputLogger("")
     outputLogger("Available sources:")
-    for (offset, source) in sources.enumerated() {
-        outputLogger("  [\(offset + 1)] \(source.displayName)")
-    }
+    renderInteractiveSourceSection(
+        title: "iOS Simulator Runtimes",
+        sources: sources,
+        platform: .iOS,
+        outputLogger: outputLogger
+    )
+    renderInteractiveSourceSection(
+        title: "macOS",
+        sources: sources,
+        platform: .macOS,
+        outputLogger: outputLogger
+    )
 }
 
-private func renderInteractiveTargetScreen(
+private func renderInteractiveSourceSection(
+    title: String,
+    sources: [PrivateHeaderKitInteractiveSource],
+    platform: PrivateHeaderKitGenerateCommand.Platform,
+    outputLogger: (String) -> Void
+) {
+    let indexedSources = sources.enumerated().filter { $0.element.platform == platform }
+    guard !indexedSources.isEmpty else {
+        return
+    }
+    outputLogger("  \(title)")
+    for (offset, source) in indexedSources {
+        outputLogger("    [\(offset + 1)] \(source.displayName)")
+    }
+    outputLogger("")
+}
+
+private func renderInteractiveTargetModeScreen(
     source: PrivateHeaderKitInteractiveSource,
-    outputBaseDirectory: String,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     outputLogger: (String) -> Void
 ) {
     screenClearer()
-    outputLogger("Selected source: \(source.displayName)")
-    outputLogger("Output directory: \(outputBaseDirectory)")
+    outputLogger("PrivateHeaderKit")
+    outputLogger("")
+    outputLogger("Step 2 of 3: Targets")
+    outputLogger("Source: \(source.displayName)")
+    outputLogger("")
+    outputLogger("  [1] All targets")
+    outputLogger("      Generate every discoverable target.")
+    outputLogger("  [2] Specific targets")
+    outputLogger("      Enter target names separated by commas.")
+}
+
+private func renderInteractiveTargetInputScreen(
+    source: PrivateHeaderKitInteractiveSource,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    outputLogger: (String) -> Void
+) {
+    screenClearer()
+    outputLogger("PrivateHeaderKit")
+    outputLogger("")
+    outputLogger("Step 2 of 3: Specific targets")
+    outputLogger("Source: \(source.displayName)")
+    outputLogger("")
+    outputLogger("Enter targets separated by commas.")
+    outputLogger("Examples:")
+    outputLogger("  SwiftUI,UIKit")
+    outputLogger("  SpringBoardServices")
+    outputLogger("  /System/Library/PrivateFrameworks/SpringBoardServices.framework")
+    outputLogger("  /usr/lib/libobjc.A.dylib")
+    outputLogger("")
 }
 
 private func renderInteractiveResumeScreen(
@@ -520,13 +714,20 @@ private func renderInteractiveResumeScreen(
     outputLogger: (String) -> Void
 ) {
     screenClearer()
-    outputLogger("Unfinished run found:")
+    outputLogger("PrivateHeaderKit")
+    outputLogger("")
+    outputLogger("Step 3 of 3: Continue or restart")
+    outputLogger("An unfinished run was found.")
+    outputLogger("")
+    outputLogger("Source: \(source.sourceDisplayName)")
+    outputLogger("Targets: \(source.targetQuery)")
+    outputLogger("Remaining: \(summary.counts.unfinished) of \(summary.counts.total)")
     if let latestRunID = summary.latestRunID {
-        outputLogger("  run ID: \(latestRunID)")
+        outputLogger("Previous run: \(latestRunID)")
     }
-    outputLogger("  source: \(source.sourceDisplayName)")
-    outputLogger("  output directory: \(source.outputBaseDirectory)")
-    outputLogger("  targets remaining: \(summary.counts.unfinished) of \(summary.counts.total)")
+    outputLogger("")
+    outputLogger("  [1] Continue")
+    outputLogger("  [2] Restart")
 }
 
 private func interactiveResumeDecision(
@@ -545,10 +746,11 @@ private func interactiveResumeDecision(
         )
     }
 
-    let hostHelperExecutableURL = privateHeaderKitExecutableURL(
+    let publicExecutableURL = privateHeaderKitExecutableURL(
         currentExecutableURL: currentExecutableURL,
         fallbackProgramName: invokedProgramName
     )
+    let hostHelperExecutableURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
     let simulatorResolution: PrivateHeaderKitSimulatorResolution?
     if command.platform == .iOS {
         simulatorResolution = try simulatorResolver(command)
@@ -578,13 +780,17 @@ private func interactiveResumeDecision(
         screenClearer: screenClearer,
         outputLogger: outputLogger
     )
-    let shouldResume = try promptYesNo(
-        prompt: "Continue previous run? (y/n):",
+    let action = try promptIndexedSelection(
+        prompt: "Select action:",
+        values: [
+            PrivateHeaderKitInteractiveAction.continuePrevious,
+            PrivateHeaderKitInteractiveAction.restart,
+        ],
         inputReader: inputReader,
         outputLogger: outputLogger
     )
     return PrivateHeaderKitInteractiveResumeDecision(
-        resumeBehavior: shouldResume ? .resume : .fresh,
+        resumeBehavior: action == .continuePrevious ? .resume : .fresh,
         simulatorResolution: simulatorResolution
     )
 }
@@ -606,10 +812,15 @@ private func runPrivateHeaderKitGenerateCommand(
     errorLogger: (String) -> Void
 ) async -> Int32 {
     do {
-        let hostHelperExecutableURL = privateHeaderKitExecutableURL(
+        let publicExecutableURL = privateHeaderKitExecutableURL(
             currentExecutableURL: currentExecutableURL,
             fallbackProgramName: invokedProgramName
         )
+        try ensureSwiftPMBuildHelpersIfNeeded(
+            publicExecutableURL: publicExecutableURL,
+            includeSimulatorHelper: command.platform == .iOS && command.simulatorHelperPath == nil
+        )
+        let hostHelperExecutableURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
         let simulatorResolution: PrivateHeaderKitSimulatorResolution?
         if command.platform == .iOS {
             simulatorResolution = try preResolvedSimulatorResolution ?? simulatorResolver(command)
@@ -634,6 +845,13 @@ private func runPrivateHeaderKitGenerateCommand(
         return 0
     } catch let error as PrivateHeaderGeneration.GenerationError {
         errorLogger("error: \(error.description)")
+        if case .runFailed(_, let failedTargetIDs) = error {
+            logPrivateHeaderGenerationFailureDetails(
+                command: command,
+                failedTargetIDs: failedTargetIDs,
+                errorLogger: errorLogger
+            )
+        }
         if case .resumeRequired = error {
             errorLogger("rerun with `--resume` to continue the unfinished generation state")
         }
@@ -747,10 +965,158 @@ private func simulatorHelperURL(
 }
 
 func defaultSimulatorHelperURL(hostExecutableURL: URL) -> URL {
-    let binDir = hostExecutableURL.deletingLastPathComponent()
-    return binDir
+    let directory = hostExecutableURL.deletingLastPathComponent()
+    if directory.lastPathComponent == "privateheaderkit",
+       directory.deletingLastPathComponent().lastPathComponent == "libexec" {
+        return directory.appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+    }
+    if let swiftPMHelperURL = swiftPMBuildSimulatorHelperURL(
+        hostBuildExecutableURL: hostExecutableURL,
+        simulatorTriple: defaultSwiftPMIOSSimulatorTriple()
+    ) {
+        return swiftPMHelperURL
+    }
+    return directory
         .deletingLastPathComponent()
         .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-sim-helper", isDirectory: false)
+}
+
+func defaultRawDumpHelperURL(publicExecutableURL: URL) -> URL {
+    let binDir = publicExecutableURL.deletingLastPathComponent()
+    if swiftPMBuildProductLayout(for: publicExecutableURL) != nil {
+        return binDir.appendingPathComponent("privateheaderkit-raw-helper", isDirectory: false)
+    }
+    return binDir
+        .deletingLastPathComponent()
+        .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-raw-helper", isDirectory: false)
+}
+
+func ensureSwiftPMBuildHelpersIfNeeded(
+    publicExecutableURL: URL,
+    includeSimulatorHelper: Bool,
+    runner: CommandRunning = ProcessRunner(),
+    simulatorTriple: String = defaultSwiftPMIOSSimulatorTriple()
+) throws {
+    guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
+        return
+    }
+
+    let rawHelperURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
+    _ = try runner.runCapture(
+        [
+            "swift",
+            "build",
+            "-c",
+            layout.configuration,
+            "--product",
+            "privateheaderkit-raw-helper",
+        ],
+        env: nil,
+        cwd: layout.repoRoot
+    )
+
+    guard includeSimulatorHelper,
+          swiftPMBuildSimulatorHelperURL(
+              hostBuildExecutableURL: rawHelperURL,
+              simulatorTriple: simulatorTriple
+          ) != nil
+    else {
+        return
+    }
+
+    let sdkPath = try runner.runCapture(
+        ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+        env: nil,
+        cwd: nil
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    _ = try runner.runCapture(
+        [
+            "swift",
+            "build",
+            "-c",
+            layout.configuration,
+            "--sdk",
+            sdkPath,
+            "--triple",
+            simulatorTriple,
+            "--product",
+            "privateheaderkit-sim-helper",
+        ],
+        env: nil,
+        cwd: layout.repoRoot
+    )
+}
+
+func swiftPMBuildSimulatorHelperURL(
+    hostBuildExecutableURL: URL,
+    simulatorTriple: String
+) -> URL? {
+    guard let layout = swiftPMBuildProductLayout(for: hostBuildExecutableURL) else {
+        return nil
+    }
+    return layout.buildRoot
+        .appendingPathComponent(simulatorTriple, isDirectory: true)
+        .appendingPathComponent(layout.configuration, isDirectory: true)
+        .appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+}
+
+private struct SwiftPMBuildProductLayout {
+    let buildRoot: URL
+    let configuration: String
+
+    var repoRoot: URL {
+        buildRoot.deletingLastPathComponent()
+    }
+}
+
+private func swiftPMBuildProductLayout(for executableURL: URL) -> SwiftPMBuildProductLayout? {
+    let directory = executableURL.deletingLastPathComponent()
+    let components = directory.pathComponents
+    guard let buildIndex = components.lastIndex(of: ".build") else {
+        return nil
+    }
+    let trailingComponents = Array(components.dropFirst(buildIndex + 1))
+    let configuration: String
+    switch trailingComponents.count {
+    case 1 where isSwiftPMBuildConfiguration(trailingComponents[0]):
+        configuration = trailingComponents[0]
+    case 2 where isSwiftPMBuildConfiguration(trailingComponents[1]):
+        configuration = trailingComponents[1]
+    default:
+        return nil
+    }
+    let buildRoot = URL(fileURLWithPath: NSString.path(withComponents: Array(components.prefix(buildIndex + 1))))
+    return SwiftPMBuildProductLayout(buildRoot: buildRoot, configuration: configuration)
+}
+
+private func isSwiftPMBuildConfiguration(_ component: String) -> Bool {
+    component == "debug" || component == "release"
+}
+
+private func defaultSwiftPMIOSSimulatorTriple() -> String {
+    "\(defaultSwiftPMIOSSimulatorArchitecture())-apple-ios-simulator"
+}
+
+private func defaultSwiftPMIOSSimulatorArchitecture() -> String {
+    if currentHostSupportsNativeArm64Simulator() {
+        return "arm64"
+    }
+    #if arch(x86_64)
+    return "x86_64"
+    #else
+    return "arm64"
+    #endif
+}
+
+private func currentHostSupportsNativeArm64Simulator() -> Bool {
+    #if canImport(Darwin)
+    var value: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    let result = sysctlbyname("hw.optional.arm64", &value, &size, nil, 0)
+    return result == 0 && value != 0
+    #else
+    return false
+    #endif
 }
 
 func resolvePrivateHeaderKitSimulator(
@@ -855,6 +1221,58 @@ private func logPrivateHeaderGenerationSuccess(
     }
 }
 
+private func logPrivateHeaderGenerationFailureDetails(
+    command: PrivateHeaderKitGenerateCommand,
+    failedTargetIDs: [String],
+    errorLogger: (String) -> Void
+) {
+    let manifestURL = URL(fileURLWithPath: command.manifestPath, isDirectory: false)
+    guard
+        let manifestData = try? Data(contentsOf: manifestURL),
+        let manifest = try? PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.Manifest.self,
+            from: manifestData
+        )
+    else {
+        errorLogger("manifest path: \(command.manifestPath)")
+        return
+    }
+
+    var targetsByID: [String: PrivateHeaderGeneration.TargetRecord] = [:]
+    for target in manifest.targets {
+        targetsByID[target.id] = target
+    }
+    errorLogger("failed targets:")
+    for targetID in failedTargetIDs.prefix(20) {
+        guard let target = targetsByID[targetID] else {
+            errorLogger("  - \(targetID): no failure summary recorded")
+            continue
+        }
+        errorLogger("  - \(target.displayName) (\(target.id))")
+        for line in failureSummaryLines(from: target.failureSummary) {
+            errorLogger("      \(line)")
+        }
+    }
+    if failedTargetIDs.count > 20 {
+        errorLogger("  ... and \(failedTargetIDs.count - 20) more")
+    }
+    errorLogger("manifest path: \(command.manifestPath)")
+}
+
+private func failureSummaryLines(from summary: String?) -> [String] {
+    guard let summary else {
+        return ["no failure summary recorded"]
+    }
+    let lines = summary
+        .split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    if lines.count <= 5 {
+        return lines.isEmpty ? ["no failure summary recorded"] : lines
+    }
+    return Array(lines.prefix(5)) + ["..."]
+}
+
 func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCommand {
     let programName = args.first ?? "privateheaderkit"
     let remaining = Array(args.dropFirst())
@@ -879,8 +1297,6 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
         return generateArgs.isEmpty
             ? .interactiveGenerate
             : try parsePrivateHeaderKitGenerateCommand(generateArgs)
-    case "__raw-dump":
-        return .rawDump(Array(remaining.dropFirst()))
     case let command where legacyPublicCommandNames.contains(command):
         throw PrivateHeaderKitCLIError.legacyCommand(command)
     case let option where option.hasPrefix("--"):
@@ -1098,6 +1514,9 @@ private func promptIndexedSelection<Value>(
             throw PrivateHeaderKitCLIError.missingValue(prompt)
         }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isInteractiveBackInput(trimmed) {
+            throw PrivateHeaderKitInteractiveNavigation.back
+        }
         guard let number = Int(trimmed), values.indices.contains(number - 1) else {
             outputLogger("Enter a number from 1 to \(values.count).")
             continue
@@ -1118,6 +1537,9 @@ private func promptRequiredValue(
             throw PrivateHeaderKitCLIError.missingValue(prompt)
         }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isInteractiveBackInput(trimmed) {
+            throw PrivateHeaderKitInteractiveNavigation.back
+        }
         guard !trimmed.isEmpty else {
             outputLogger("Enter a value.")
             continue
@@ -1126,25 +1548,8 @@ private func promptRequiredValue(
     }
 }
 
-private func promptYesNo(
-    prompt: String,
-    inputReader: PrivateHeaderKitInputReader,
-    outputLogger: (String) -> Void
-) throws -> Bool {
-    while true {
-        outputLogger(prompt)
-        guard let line = inputReader() else {
-            throw PrivateHeaderKitCLIError.missingValue(prompt)
-        }
-        switch line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "y", "yes":
-            return true
-        case "n", "no":
-            return false
-        default:
-            outputLogger("Enter y or n.")
-        }
-    }
+private func isInteractiveBackInput(_ value: String) -> Bool {
+    value == "\u{001B}"
 }
 
 private extension PrivateHeaderKitGenerateCommand.Platform {
@@ -1213,14 +1618,93 @@ func privateHeaderKitGenerateUsageText() -> String {
     """
 }
 
+private func readInteractiveLine() -> String? {
+#if canImport(Darwin) || canImport(Glibc)
+    guard isatty(STDIN_FILENO) != 0 else {
+        return readLine()
+    }
+
+    var original = termios()
+    guard tcgetattr(STDIN_FILENO, &original) == 0 else {
+        return readLine()
+    }
+
+    var raw = original
+    raw.c_lflag &= ~tcflag_t(ICANON)
+    raw.c_lflag &= ~tcflag_t(ECHO)
+    withUnsafeMutableBytes(of: &raw.c_cc) { bytes in
+        bytes[Int(VMIN)] = 1
+        bytes[Int(VTIME)] = 0
+    }
+
+    guard tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0 else {
+        return readLine()
+    }
+    defer {
+        var restored = original
+        _ = tcsetattr(STDIN_FILENO, TCSANOW, &restored)
+    }
+
+    var bytes: [UInt8] = []
+    while true {
+        var byte: UInt8 = 0
+        let count = read(STDIN_FILENO, &byte, 1)
+        guard count == 1 else {
+            return nil
+        }
+
+        switch byte {
+        case 3:
+            FileHandle.standardOutput.write(Data("^C\n".utf8))
+            var restored = original
+            _ = tcsetattr(STDIN_FILENO, TCSANOW, &restored)
+            raise(SIGINT)
+            return nil
+        case 4 where bytes.isEmpty:
+            return nil
+        case 10, 13:
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return String(decoding: bytes, as: UTF8.self)
+        case 27:
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return "\u{001B}"
+        case 8, 127:
+            guard !bytes.isEmpty else {
+                continue
+            }
+            bytes.removeLast()
+            FileHandle.standardOutput.write(Data("\u{8} \u{8}".utf8))
+        default:
+            bytes.append(byte)
+            FileHandle.standardOutput.write(Data([byte]))
+        }
+    }
+#else
+    return readLine()
+#endif
+}
+
 private func logCLIError(_ message: String) {
     let data = Data((message + "\n").utf8)
     FileHandle.standardError.write(data)
 }
 
 private func logCLIOutput(_ message: String) {
-    print(message)
+    if isInteractivePromptMessage(message) {
+        print("\(message) ", terminator: "")
+    } else {
+        print(message)
+    }
     fflush(stdout)
+}
+
+private func isInteractivePromptMessage(_ message: String) -> Bool {
+    switch message {
+    case "Select source:", "Select targets:", "Targets:", "Select action:":
+        return true
+    default:
+        return false
+    }
 }
 
 private func clearInteractiveScreen() {

@@ -15,7 +15,7 @@ PrivateHeaderKit is being rewritten around a single user-facing command:
 privateheaderkit
 ```
 
-The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no longer installed or documented as user-facing commands. Low-level raw dumping is kept as a hidden internal mode of `privateheaderkit`.
+The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no longer installed or documented as user-facing commands. Low-level raw dumping is handled by internal helpers.
 
 ## Installation
 
@@ -24,7 +24,7 @@ swift run -c release privateheaderkit install
 ```
 
 By default, this installs the single user-facing `privateheaderkit` binary to `~/.local/bin`.
-iOS simulator raw dumping also installs an internal helper to `~/.local/libexec/privateheaderkit/privateheaderkit-sim-helper`.
+Raw dumping also installs internal helpers to `~/.local/libexec/privateheaderkit/`.
 
 If `~/.local/bin` is not in your `PATH`, add it:
 
@@ -73,8 +73,7 @@ Default output is planned under:
 
 ```text
 ~/PrivateHeaderKit/
-  generated-headers/
-    iOS27.0(24A5355q)/
+  iOS27.0(24A5355q)/
   .state/
     iOS27.0(24A5355q)/
       manifest.json

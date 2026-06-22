@@ -362,16 +362,21 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 continue
             }
 
-            let entries = try fileManager.contentsOfDirectory(
-                at: containerURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            .filter { entry in
-                entry.pathExtension.lowercased() == container.bundleKind.rawValue
-                    && isDirectory(entry, fileManager: fileManager)
+            let entries: [URL]
+            do {
+                entries = try fileManager.contentsOfDirectory(
+                    at: containerURL,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                )
+                .filter { entry in
+                    entry.pathExtension.lowercased() == container.bundleKind.rawValue
+                        && isDirectory(entry, fileManager: fileManager)
+                }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            } catch {
+                continue
             }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
 
             for entry in entries {
                 let childRelativePath = [

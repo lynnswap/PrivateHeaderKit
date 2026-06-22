@@ -131,6 +131,31 @@ struct PrivateHeaderGenerationRawDumpingTests {
         ])
     }
 
+    @Test func liveRawDumpRunnerCapturesFailureOutput() async throws {
+        let invocation = PrivateHeaderGeneration.RawDumping.Invocation(
+            phaseLabel: "raw-header-dump",
+            executionMode: .host,
+            helperURL: URL(fileURLWithPath: "/bin/sh", isDirectory: false),
+            inputPath: "/tmp/Foo.framework",
+            stagingOutputDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit/.tmp-run", isDirectory: true),
+            command: [
+                "/bin/sh",
+                "-c",
+                "printf 'before\\nMachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds\\n' >&2; exit 7",
+            ],
+            environment: [:]
+        )
+
+        let result = try await PrivateHeaderGeneration.GenerationExecutor.liveRawDumpRunner(
+            invocation: invocation
+        )
+
+        #expect(result.terminationStatus == 7)
+        #expect(!result.wasKilled)
+        #expect(result.failureSummary?.contains("raw dump exited with status 7") == true)
+        #expect(result.failureSummary?.contains("offsetOutOfBounds") == true)
+    }
+
     private func helperURLs() -> PrivateHeaderGeneration.RawDumping.HelperURLs {
         PrivateHeaderGeneration.RawDumping.HelperURLs(
             host: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit"),

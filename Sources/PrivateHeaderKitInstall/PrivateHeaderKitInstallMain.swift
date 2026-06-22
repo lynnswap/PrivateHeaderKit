@@ -13,6 +13,7 @@ struct InstallOptions {
     var prefix: String?
     var bindir: String?
     var dryRun: Bool
+    var buildConfiguration: BuildConfiguration? = nil
 }
 
 struct InstallLayout: Equatable {
@@ -27,12 +28,25 @@ struct InstallLayout: Equatable {
     var simulatorHelperURL: URL {
         libexecDir.appendingPathComponent(InstallConstants.simulatorHelperInstallName, isDirectory: false)
     }
+
+    var rawDumpHelperURL: URL {
+        libexecDir.appendingPathComponent(InstallConstants.rawDumpHelperInstallName, isDirectory: false)
+    }
 }
 
 enum InstallConstants {
     static let publicCommandName = "privateheaderkit"
+    static let rawDumpHelperInstallName = "privateheaderkit-raw-helper"
+    static let rawDumpHelperBuildProductName = "privateheaderkit-raw-helper"
     static let simulatorHelperInstallName = "privateheaderkit-sim-helper"
     static let simulatorHelperBuildProductName = "privateheaderkit-sim-helper"
+}
+
+enum BuildConfiguration: String, Equatable {
+    case debug
+    case release
+
+    var swiftBuildValue: String { rawValue }
 }
 
 enum InstallError: Error, CustomStringConvertible {
@@ -79,6 +93,8 @@ func printInstallUsage() {
     Options:
       --bindir path   Install to this directory (overrides --prefix)
       --prefix path   Install to <prefix>/bin and <prefix>/libexec/privateheaderkit (default: ~/.local)
+      --configuration debug|release
+                      Build installed artifacts with this configuration
       --dry-run       Print actions without copying files
       -h, --help      Show this help
 
@@ -90,7 +106,7 @@ func printInstallUsage() {
 }
 
 func parseOptions(_ args: [String], environment: [String: String]) throws -> InstallOptions {
-    var options = InstallOptions(prefix: nil, bindir: nil, dryRun: false)
+    var options = InstallOptions(prefix: nil, bindir: nil, dryRun: false, buildConfiguration: nil)
     if let envPrefix = environment["PREFIX"]?.trimmingCharacters(in: .whitespacesAndNewlines),
        !envPrefix.isEmpty {
         options.prefix = envPrefix
@@ -132,6 +148,16 @@ func parseOptions(_ args: [String], environment: [String: String]) throws -> Ins
         case "--dry-run":
             options.dryRun = true
             index += 1
+        case "--configuration":
+            guard index + 1 < args.count else {
+                throw InstallError.message("--configuration requires a value")
+            }
+            let value = args[index + 1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let configuration = BuildConfiguration(rawValue: value) else {
+                throw InstallError.message("unsupported configuration: \(args[index + 1])")
+            }
+            options.buildConfiguration = configuration
+            index += 2
         case "-h", "--help":
             throw InstallError.helpRequested
         default:
@@ -198,10 +224,44 @@ func looksLikePrivateHeaderKitRepo(_ repoRoot: URL, fileManager: FileManager) ->
     return markers.allSatisfy { fileManager.fileExists(atPath: $0.path) }
 }
 
-func buildProducts(_ products: [String], in directory: URL, runner: CommandRunning) throws {
+func buildProducts(
+    _ products: [String],
+    configuration: BuildConfiguration,
+    in directory: URL,
+    runner: CommandRunning
+) throws {
     for product in products {
-        try runner.runSimple(["swift", "build", "-c", "release", "--product", product], env: nil, cwd: directory)
+        try runner.runSimple(
+            ["swift", "build", "-c", configuration.swiftBuildValue, "--product", product],
+            env: nil,
+            cwd: directory
+        )
     }
+}
+
+func buildConfiguration(from executableURL: URL) -> BuildConfiguration? {
+    var current = executableURL.deletingLastPathComponent()
+    while current.path != "/" {
+        if let configuration = BuildConfiguration(rawValue: current.lastPathComponent.lowercased()) {
+            return configuration
+        }
+        current.deleteLastPathComponent()
+    }
+    return nil
+}
+
+func canInstallCurrentExecutableAsPublicCommand(
+    selfURL: URL,
+    repoRoot: URL,
+    configuration: BuildConfiguration
+) -> Bool {
+    guard selfURL.lastPathComponent == InstallConstants.publicCommandName else {
+        return false
+    }
+    guard repositoryRoot(from: selfURL)?.resolvingSymlinksInPath().path == repoRoot.resolvingSymlinksInPath().path else {
+        return false
+    }
+    return buildConfiguration(from: selfURL) == configuration
 }
 
 func currentExecutableArchitectureName() -> String {
@@ -253,12 +313,14 @@ func defaultSimulatorHelperTriple(
 
 func buildSimulatorHelper(
     in directory: URL,
+    configuration: BuildConfiguration,
     runner: CommandRunning,
     simulatorHelperTriple: String? = nil
 ) throws {
     let sdkPath = try resolveSimulatorSDKPath(runner: runner)
     try buildSimulatorHelper(
         in: directory,
+        configuration: configuration,
         sdkPath: sdkPath,
         runner: runner,
         simulatorHelperTriple: simulatorHelperTriple
@@ -267,6 +329,7 @@ func buildSimulatorHelper(
 
 func buildSimulatorHelper(
     in directory: URL,
+    configuration: BuildConfiguration,
     sdkPath: String,
     runner: CommandRunning,
     simulatorHelperTriple: String? = nil
@@ -282,7 +345,7 @@ func buildSimulatorHelper(
             "swift",
             "build",
             "-c",
-            "release",
+            configuration.swiftBuildValue,
             "--sdk",
             sdkPath,
             "--triple",
@@ -315,12 +378,13 @@ func resolveSimulatorSDKPath(runner: CommandRunning) throws -> String {
 func resolveSwiftBinDir(
     repoRoot: URL,
     runner: CommandRunning,
+    configuration: BuildConfiguration,
     triple: String? = nil,
     sdkPath: String? = nil,
     env: [String: String]? = nil
 ) -> URL? {
     // `swift build --show-bin-path` prints a single path line, but be defensive and pick the last non-empty line.
-    var command = ["swift", "build", "-c", "release"]
+    var command = ["swift", "build", "-c", configuration.swiftBuildValue]
     if let sdkPath {
         command += ["--sdk", sdkPath]
     }
@@ -394,6 +458,8 @@ func install(
         repoRoot = nil
     }
 
+    let configuration = options.buildConfiguration ?? buildConfiguration(from: selfURL) ?? .release
+    var publicCommandSourceURL: URL?
     var simulatorSDKPath: String?
     let resolvedSimulatorHelperTriple: String?
     if let repoRoot {
@@ -406,11 +472,31 @@ func install(
         resolvedSimulatorHelperTriple = triple
         // Always build install artifacts when possible, so users get the latest binaries after pulling updates.
         do {
-            try buildProducts([InstallConstants.publicCommandName], in: repoRoot, runner: runner)
+            if canInstallCurrentExecutableAsPublicCommand(
+                selfURL: selfURL,
+                repoRoot: repoRoot,
+                configuration: configuration
+            ) {
+                publicCommandSourceURL = selfURL
+            } else {
+                try buildProducts(
+                    [InstallConstants.publicCommandName],
+                    configuration: configuration,
+                    in: repoRoot,
+                    runner: runner
+                )
+            }
+            try buildProducts(
+                [InstallConstants.rawDumpHelperBuildProductName],
+                configuration: configuration,
+                in: repoRoot,
+                runner: runner
+            )
             let sdkPath = try resolveSimulatorSDKPath(runner: runner)
             simulatorSDKPath = sdkPath
             try buildSimulatorHelper(
                 in: repoRoot,
+                configuration: configuration,
                 sdkPath: sdkPath,
                 runner: runner,
                 simulatorHelperTriple: triple
@@ -424,9 +510,32 @@ func install(
 
     let hostBinaryDir: URL
     if let repoRoot {
-        hostBinaryDir = resolveSwiftBinDir(repoRoot: repoRoot, runner: runner) ?? baseURL
+        hostBinaryDir = resolveSwiftBinDir(
+            repoRoot: repoRoot,
+            runner: runner,
+            configuration: configuration
+        ) ?? baseURL
     } else {
         hostBinaryDir = baseURL
+    }
+
+    let resolvedPublicCommandSourceURL: URL
+    if let publicCommandSourceURL {
+        resolvedPublicCommandSourceURL = publicCommandSourceURL
+    } else {
+        resolvedPublicCommandSourceURL = hostBinaryDir.appendingPathComponent(
+            InstallConstants.publicCommandName,
+            isDirectory: false
+        )
+    }
+    let resolvedRawDumpHelperSourceURL: URL
+    if repoRoot != nil {
+        resolvedRawDumpHelperSourceURL = hostBinaryDir.appendingPathComponent(
+            InstallConstants.rawDumpHelperBuildProductName,
+            isDirectory: false
+        )
+    } else {
+        resolvedRawDumpHelperSourceURL = defaultInstalledRawDumpHelperURL(for: selfURL)
     }
 
     let simulatorHelperSourceURL: URL
@@ -435,6 +544,7 @@ func install(
         let simulatorBinaryDir = resolveSwiftBinDir(
             repoRoot: repoRoot,
             runner: runner,
+            configuration: configuration,
             triple: resolvedSimulatorHelperTriple,
             sdkPath: sdkPath
         ) ?? baseURL
@@ -447,10 +557,18 @@ func install(
     }
 
     try installExecutableFile(
-        sourceURL: hostBinaryDir.appendingPathComponent(InstallConstants.publicCommandName, isDirectory: false),
+        sourceURL: resolvedPublicCommandSourceURL,
         destinationURL: layout.publicCommandURL,
         displayName: InstallConstants.publicCommandName,
         missingMessage: "\(InstallConstants.publicCommandName) not found next to installer (run with `swift run -c release` from the repo root)",
+        fileManager: fileManager,
+        outputLogger: outputLogger
+    )
+    try installExecutableFile(
+        sourceURL: resolvedRawDumpHelperSourceURL,
+        destinationURL: layout.rawDumpHelperURL,
+        displayName: InstallConstants.rawDumpHelperInstallName,
+        missingMessage: "\(InstallConstants.rawDumpHelperInstallName) not found (run install from the repo root so SwiftPM can build the raw dump helper)",
         fileManager: fileManager,
         outputLogger: outputLogger
     )
@@ -469,8 +587,16 @@ func dryRunInstallMessages(layout: InstallLayout) -> [String] {
         "Would create: \(layout.binDir.path)",
         "Would create: \(layout.libexecDir.path)",
         "Would install: \(layout.publicCommandURL.path)",
+        "Would install internal helper: \(layout.rawDumpHelperURL.path)",
         "Would install internal helper: \(layout.simulatorHelperURL.path)",
     ]
+}
+
+func defaultInstalledRawDumpHelperURL(for executableURL: URL) -> URL {
+    let binDir = executableURL.deletingLastPathComponent()
+    return binDir
+        .deletingLastPathComponent()
+        .appendingPathComponent("libexec/privateheaderkit/privateheaderkit-raw-helper", isDirectory: false)
 }
 
 func defaultInstalledSimulatorHelperURL(for executableURL: URL) -> URL {
