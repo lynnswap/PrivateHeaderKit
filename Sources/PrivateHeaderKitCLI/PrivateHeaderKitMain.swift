@@ -171,7 +171,8 @@ struct PrivateHeaderKitGenerationSummary: Equatable, Sendable {
 }
 
 typealias PrivateHeaderKitGenerationRunner = (
-    PrivateHeaderKitGenerationRequest
+    PrivateHeaderKitGenerationRequest,
+    @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
 ) async throws -> PrivateHeaderKitGenerationSummary
 
 struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
@@ -367,7 +368,7 @@ func runPrivateHeaderKitCommand(
     interactiveOutputBaseDirectoryProvider: @escaping () -> String = defaultInteractiveOutputBaseDirectory,
     interactiveScreenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer = clearInteractiveScreen,
     inputReader: @escaping PrivateHeaderKitInputReader = readInteractiveLine,
-    outputLogger: (String) -> Void = logCLIOutput,
+    outputLogger: @escaping (String) -> Void = logCLIOutput,
     errorLogger: (String) -> Void = logCLIError
 ) async -> Int32 {
     do {
@@ -424,7 +425,7 @@ private func runPrivateHeaderKitInteractiveGenerate(
     outputBaseDirectoryProvider: () -> String,
     screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
-    outputLogger: (String) -> Void,
+    outputLogger: @escaping (String) -> Void,
     errorLogger: (String) -> Void
 ) async -> Int32 {
     do {
@@ -574,7 +575,7 @@ private func runPrivateHeaderKitInteractiveSelection(
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
-    outputLogger: (String) -> Void,
+    outputLogger: @escaping (String) -> Void,
     errorLogger: (String) -> Void
 ) async throws -> Int32 {
     do {
@@ -813,10 +814,15 @@ private struct PrivateHeaderKitGenerationResultScreen {
     let runID: String
     let failedTargets: [FailedTarget]
 
+    var wasInterrupted: Bool {
+        counts.interrupted > 0
+    }
+
     struct Counts: Equatable {
         let generated: Int
         let partial: Int
         let failed: Int
+        let interrupted: Int
         let skipped: Int
     }
 
@@ -835,7 +841,7 @@ private func runPrivateHeaderKitGenerateCommand(
     preResolvedSimulatorResolution: PrivateHeaderKitSimulatorResolution? = nil,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil,
     resultScreenClearer: PrivateHeaderKitInteractiveScreenClearer? = nil,
-    outputLogger: (String) -> Void,
+    outputLogger: @escaping (String) -> Void,
     errorLogger: (String) -> Void
 ) async -> Int32 {
     do {
@@ -867,7 +873,10 @@ private func runPrivateHeaderKitGenerateCommand(
             simulatorResolution: simulatorResolution,
             resumeBehaviorOverride: resumeBehaviorOverride
         )
-        let summary = try await generationRunner(request)
+        let summary = try await generationRunner(
+            request,
+            privateHeaderKitProgressLogger(outputLogger: outputLogger)
+        )
         resultScreenClearer?()
         renderPrivateHeaderGenerationResultScreen(
             successResultScreen(command: command, summary: summary),
@@ -876,13 +885,16 @@ private func runPrivateHeaderKitGenerateCommand(
         return 0
     } catch let error as PrivateHeaderGeneration.GenerationError {
         if case .runFailed(let runID, let failedTargetIDs) = error {
-            resultScreenClearer?()
+            let resultScreen = failedResultScreen(
+                command: command,
+                runID: runID,
+                failedTargetIDs: failedTargetIDs
+            )
+            if !resultScreen.wasInterrupted {
+                resultScreenClearer?()
+            }
             renderPrivateHeaderGenerationResultScreen(
-                failedResultScreen(
-                    command: command,
-                    runID: runID,
-                    failedTargetIDs: failedTargetIDs
-                ),
+                resultScreen,
                 outputLogger: errorLogger
             )
         } else {
@@ -910,6 +922,7 @@ private func successResultScreen(
             generated: summary.generatedTargetCount,
             partial: 0,
             failed: 0,
+            interrupted: 0,
             skipped: summary.skippedTargetCount ?? 0
         ),
         artifactDirectory: summary.artifactDirectory,
@@ -932,18 +945,23 @@ private func failedResultScreen(
     let manifest = readGenerationManifest(at: manifestURL)
     let runRecord = readGenerationRunRecord(at: runRecordURL)
 
+    let counts = runRecord.map(resultCounts(from:))
+        ?? manifest.map(resultCounts(from:))
+        ?? PrivateHeaderKitGenerationResultScreen.Counts(
+            generated: 0,
+            partial: 0,
+            failed: failedTargetIDs.count,
+            interrupted: 0,
+            skipped: 0
+        )
+
     return PrivateHeaderKitGenerationResultScreen(
-        title: "Generation completed with failures",
+        title: counts.interrupted > 0 && counts.failed == 0
+            ? "Generation interrupted"
+            : "Generation completed with failures",
         sourceDisplayName: command.sourceDisplayName,
         targetQuery: formattedTargetQuery(command.targetQuery),
-        counts: runRecord.map(resultCounts(from:))
-            ?? manifest.map(resultCounts(from:))
-            ?? PrivateHeaderKitGenerationResultScreen.Counts(
-                generated: 0,
-                partial: 0,
-                failed: failedTargetIDs.count,
-                skipped: 0
-            ),
+        counts: counts,
         artifactDirectory: command.artifactDirectory,
         stateDirectory: command.stateDirectory,
         manifestURL: manifestURL,
@@ -979,6 +997,7 @@ private func resultCounts(
     var generated = 0
     var partial = 0
     var failed = 0
+    var interrupted = 0
     var skipped = 0
 
     for target in runRecord.targetResults {
@@ -988,7 +1007,11 @@ private func resultCounts(
         case .partial:
             partial += 1
         case .failed, .interrupted, .commitFailed:
-            failed += 1
+            if target.status == .interrupted {
+                interrupted += 1
+            } else {
+                failed += 1
+            }
         case .skipped:
             skipped += 1
         case .pending, .running:
@@ -1000,6 +1023,7 @@ private func resultCounts(
         generated: generated,
         partial: partial,
         failed: failed,
+        interrupted: interrupted,
         skipped: skipped
     )
 }
@@ -1010,6 +1034,7 @@ private func resultCounts(
     var generated = 0
     var partial = 0
     var failed = 0
+    var interrupted = 0
 
     for target in manifest.targets {
         switch target.status {
@@ -1017,8 +1042,10 @@ private func resultCounts(
             generated += 1
         case .partial:
             partial += 1
-        case .failed, .interrupted, .commitFailed, .stale:
+        case .failed, .commitFailed, .stale:
             failed += 1
+        case .interrupted:
+            interrupted += 1
         }
     }
 
@@ -1026,6 +1053,7 @@ private func resultCounts(
         generated: generated,
         partial: partial,
         failed: failed,
+        interrupted: interrupted,
         skipped: 0
     )
 }
@@ -1073,6 +1101,9 @@ private func renderPrivateHeaderGenerationResultScreen(
         outputLogger(formatResultMetric("Partial", screen.counts.partial))
     }
     outputLogger(formatResultMetric("Failed", screen.counts.failed))
+    if screen.counts.interrupted > 0 {
+        outputLogger(formatResultMetric("Interrupted", screen.counts.interrupted))
+    }
     outputLogger(formatResultMetric("Skipped", screen.counts.skipped))
 
     if !screen.failedTargets.isEmpty {
@@ -1111,7 +1142,10 @@ private func formatResultMetric(_ label: String, _ value: Int) -> String {
 }
 
 private func formatResultField(_ label: String, _ value: String) -> String {
-    "  \(label.padding(toLength: 9, withPad: " ", startingAt: 0)) \(value)"
+    let displayLabel = label.count < 9
+        ? label.padding(toLength: 9, withPad: " ", startingAt: 0)
+        : label
+    return "  \(displayLabel) \(value)"
 }
 
 private func formattedTargetQuery(_ query: String) -> String {
@@ -1142,13 +1176,73 @@ private func shortenedRunID(_ runID: String) -> String {
     return String(runID.prefix(maxLength - 1)) + "..."
 }
 
+private func privateHeaderKitProgressLogger(
+    outputLogger: @escaping (String) -> Void
+) -> PrivateHeaderGeneration.GenerationExecutor.ProgressReporter {
+    let logger = PrivateHeaderKitProgressOutputLogger(outputLogger)
+    return { event in
+        switch event {
+        case .runStarted(let runID, let totalTargetCount):
+            logger.log("")
+            logger.log("Generation started")
+            logger.log(formatResultField("Run", shortenedRunID(runID)))
+            logger.log(formatResultField("Targets", "\(totalTargetCount)"))
+            logger.log("")
+        case .targetStarted(let index, let total, let displayName):
+            logger.log("[\(index)/\(total)] \(displayName)")
+        case .targetFinished(_, _, _, let status):
+            logger.log("  \(progressStatusLabel(status))")
+        case .runFinished(_, let status):
+            logger.log("")
+            logger.log("Generation finished: \(progressStatusLabel(status))")
+        }
+    }
+}
+
+private final class PrivateHeaderKitProgressOutputLogger: @unchecked Sendable {
+    private let outputLogger: (String) -> Void
+
+    init(_ outputLogger: @escaping (String) -> Void) {
+        self.outputLogger = outputLogger
+    }
+
+    func log(_ message: String) {
+        outputLogger(message)
+    }
+}
+
+private func progressStatusLabel(
+    _ status: PrivateHeaderGeneration.RunTargetStatus
+) -> String {
+    switch status {
+    case .pending:
+        "pending"
+    case .running:
+        "running"
+    case .skipped:
+        "skipped"
+    case .completed:
+        "completed"
+    case .partial:
+        "partial"
+    case .failed:
+        "failed"
+    case .interrupted:
+        "interrupted"
+    case .commitFailed:
+        "commit failed"
+    }
+}
+
 private func runPrivateHeaderGeneration(
-    request: PrivateHeaderKitGenerationRequest
+    request: PrivateHeaderKitGenerationRequest,
+    progressReporter: @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
 ) async throws -> PrivateHeaderKitGenerationSummary {
     let result = try await PrivateHeaderGeneration.generatePrivateHeaders(
         source: request.source,
         output: request.output,
-        options: request.options
+        options: request.options,
+        progressReporter: progressReporter
     )
     return PrivateHeaderKitGenerationSummary(result: result)
 }

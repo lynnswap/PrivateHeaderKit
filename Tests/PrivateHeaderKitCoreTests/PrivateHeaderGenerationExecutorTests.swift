@@ -53,6 +53,38 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(run.targetResults.first?.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Headers/Generated.h"])
     }
 
+    @Test func executorReportsGenerationProgress() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let runner = RecordingRawDumpRunner()
+        let progress = ProgressEventRecorder()
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        _ = try await executor.run(.init(
+            plan: plan,
+            progressReporter: { progress.record($0) }
+        ))
+
+        #expect(progress.events == [
+            .runStarted(runID: "run-001", totalTargetCount: 1),
+            .targetStarted(index: 1, total: 1, displayName: "Foo"),
+            .targetFinished(
+                index: 1,
+                total: 1,
+                displayName: "Foo",
+                status: .completed
+            ),
+            .runFinished(runID: "run-001", status: .completed),
+        ])
+    }
+
     @Test func executorHoldsStateLockWhileGeneratingTargets() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
@@ -702,6 +734,23 @@ private func fixedDates() -> @Sendable () -> Date {
     return {
         defer { counter.value += 1 }
         return Date(timeIntervalSinceReferenceDate: TimeInterval(counter.value))
+    }
+}
+
+private final class ProgressEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedEvents: [PrivateHeaderGeneration.ProgressEvent] = []
+
+    var events: [PrivateHeaderGeneration.ProgressEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedEvents
+    }
+
+    func record(_ event: PrivateHeaderGeneration.ProgressEvent) {
+        lock.lock()
+        recordedEvents.append(event)
+        lock.unlock()
     }
 }
 

@@ -84,12 +84,20 @@ public extension PrivateHeaderGeneration {
         public typealias RawDumpRunner = @Sendable (
             PrivateHeaderGeneration.RawDumping.Invocation
         ) async throws -> PrivateHeaderGeneration.RawDumping.Result
+        public typealias ProgressReporter = @Sendable (
+            PrivateHeaderGeneration.ProgressEvent
+        ) -> Void
 
         public struct Configuration: Sendable {
             public let plan: Plan
+            public let progressReporter: ProgressReporter?
 
-            public init(plan: Plan) {
+            public init(
+                plan: Plan,
+                progressReporter: ProgressReporter? = nil
+            ) {
                 self.plan = plan
+                self.progressReporter = progressReporter
             }
         }
 
@@ -145,7 +153,8 @@ public extension PrivateHeaderGeneration {
                     repository: repository,
                     artifactStore: artifactStore,
                     helperURLs: helperURLs,
-                    executionMode: executionMode
+                    executionMode: executionMode,
+                    progressReporter: configuration.progressReporter
                 )
             }
         }
@@ -165,7 +174,8 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         repository: PrivateHeaderGeneration.RunRepository,
         artifactStore: PrivateHeaderGeneration.ArtifactStore,
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
+        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+        progressReporter: PrivateHeaderGeneration.GenerationExecutor.ProgressReporter?
     ) async throws -> PrivateHeaderGeneration.Result {
         let existingManifest = try repository.readManifest()
         let latestRun = try existingManifest.flatMap { try repository.readLatestRun(from: $0) }
@@ -230,12 +240,22 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 updatedAt: startedAt
             )
         )
+        progressReporter?(.runStarted(
+            runID: runID,
+            totalTargetCount: targetsToRun.count
+        ))
 
         let previousTargetRecords = Self.targetsByID(existingManifest?.targets ?? [])
         let previousCommitFailedAttempts = Self.commitFailedAttemptedArtifactsByTargetID(latestRun)
         var generatedTargetIDs: [String] = []
 
-        for target in targetsToRun {
+        for (offset, target) in targetsToRun.enumerated() {
+            let targetIndex = offset + 1
+            progressReporter?(.targetStarted(
+                index: targetIndex,
+                total: targetsToRun.count,
+                displayName: target.candidate.displayName
+            ))
             let targetResult = try await executeTarget(
                 target,
                 runID: runID,
@@ -253,6 +273,12 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                     previousTarget: previousTargetRecords[target.candidate.identifier]
                 )
             )
+            progressReporter?(.targetFinished(
+                index: targetIndex,
+                total: targetsToRun.count,
+                displayName: target.candidate.displayName,
+                status: targetResult.runTarget.status
+            ))
 
             runRecord = Self.runRecordByAppending(
                 targetResult.runTarget,
@@ -314,6 +340,10 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 updatedAt: endedAt
             )
         )
+        progressReporter?(.runFinished(
+            runID: runID,
+            status: finalStatus
+        ))
         try repository.pruneRunHistory(from: repository.listRunSummaries())
 
         let failedTargetIDs = runRecord.targetResults

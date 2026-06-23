@@ -16,7 +16,8 @@ public enum PrivateHeaderGeneration {
     public static func generatePrivateHeaders(
         source: Source,
         output: Output,
-        options: Options = Options()
+        options: Options = Options(),
+        progressReporter: GenerationExecutor.ProgressReporter? = nil
     ) async throws -> Result {
         let plan = makePlan(
             source: source,
@@ -24,7 +25,10 @@ public enum PrivateHeaderGeneration {
             options: options
         )
         return try await GenerationExecutor().run(
-            GenerationExecutor.Configuration(plan: plan)
+            GenerationExecutor.Configuration(
+                plan: plan,
+                progressReporter: progressReporter
+            )
         )
     }
 }
@@ -32,12 +36,14 @@ public enum PrivateHeaderGeneration {
 public func generatePrivateHeaders(
     source: PrivateHeaderGeneration.Source,
     output: PrivateHeaderGeneration.Output,
-    options: PrivateHeaderGeneration.Options = PrivateHeaderGeneration.Options()
+    options: PrivateHeaderGeneration.Options = PrivateHeaderGeneration.Options(),
+    progressReporter: PrivateHeaderGeneration.GenerationExecutor.ProgressReporter? = nil
 ) async throws -> PrivateHeaderGeneration.Result {
     try await PrivateHeaderGeneration.generatePrivateHeaders(
         source: source,
         output: output,
-        options: options
+        options: options,
+        progressReporter: progressReporter
     )
 }
 
@@ -136,6 +142,20 @@ public extension PrivateHeaderGeneration {
         public var description: String {
             identifier
         }
+    }
+}
+
+public extension PrivateHeaderGeneration {
+    enum ProgressEvent: Equatable, Sendable {
+        case runStarted(runID: String, totalTargetCount: Int)
+        case targetStarted(index: Int, total: Int, displayName: String)
+        case targetFinished(
+            index: Int,
+            total: Int,
+            displayName: String,
+            status: RunTargetStatus
+        )
+        case runFinished(runID: String, status: RunTargetStatus)
     }
 }
 
