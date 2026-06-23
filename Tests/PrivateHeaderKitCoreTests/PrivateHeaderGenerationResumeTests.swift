@@ -127,15 +127,89 @@ struct PrivateHeaderGenerationResumeTests {
         #expect(summary.counts.pending == 1)
     }
 
-    @Test func selectedTargetSetMismatchReturnsStructuredReason() throws {
+    @Test func expandedSelectedTargetSetIsCompatibleAndTreatsNewTargetsAsPending() throws {
         let plan = try makeRunPlan(targetIDs: ["framework:Foo", "framework:Bar"])
         let manifest = try makeManifest(
             targets: [
-                makeTarget("framework:Foo", status: .partial),
+                makeTarget("framework:Foo", status: .completed),
             ]
         )
         let latestRun = try makeRunRecord(
             plan: makeRunPlan(targetIDs: ["framework:Foo"])
+        )
+        let artifactExists = existingArtifacts([
+            "Frameworks/Foo/Foo.h",
+        ])
+
+        #expect(
+            PrivateHeaderGeneration.evaluateResumeCompatibility(
+                plan: plan,
+                manifest: manifest,
+                latestRun: latestRun
+            ) == .compatible
+        )
+
+        let summary = PrivateHeaderGeneration.makeResumeSummary(
+            plan: plan,
+            manifest: manifest,
+            latestRun: latestRun,
+            artifactExists: artifactExists
+        )
+
+        #expect(summary.targets == [
+            PrivateHeaderGeneration.ResumeTargetDecision(
+                targetID: "framework:Foo",
+                status: .completed
+            ),
+            PrivateHeaderGeneration.ResumeTargetDecision(
+                targetID: "framework:Bar",
+                status: .pending
+            ),
+        ])
+        #expect(summary.targetIDsToRun == ["framework:Bar"])
+        #expect(
+            summary.counts == PrivateHeaderGeneration.ResumeTargetCounts(
+                total: 2,
+                completed: 1,
+                partial: 0,
+                failed: 0,
+                interrupted: 0,
+                commitFailed: 0,
+                stale: 0,
+                pending: 1
+            )
+        )
+
+        #expect(
+            PrivateHeaderGeneration.nonInteractiveResumeDecision(
+                plan: plan,
+                manifest: manifest,
+                latestRun: latestRun,
+                resumeRequested: false,
+                artifactExists: artifactExists
+            ) == .resumeRequired(summary)
+        )
+        #expect(
+            PrivateHeaderGeneration.nonInteractiveResumeDecision(
+                plan: plan,
+                manifest: manifest,
+                latestRun: latestRun,
+                resumeRequested: true,
+                artifactExists: artifactExists
+            ) == .resume(summary)
+        )
+    }
+
+    @Test func shrinkingSelectedTargetSetMismatchReturnsStructuredReason() throws {
+        let plan = try makeRunPlan(targetIDs: ["framework:Foo"])
+        let manifest = try makeManifest(
+            targets: [
+                makeTarget("framework:Foo", status: .completed),
+                makeTarget("framework:Bar", status: .completed),
+            ]
+        )
+        let latestRun = try makeRunRecord(
+            plan: makeRunPlan(targetIDs: ["framework:Foo", "framework:Bar"])
         )
 
         #expect(
@@ -146,8 +220,8 @@ struct PrivateHeaderGenerationResumeTests {
             ) == .incompatible(
                 [
                     .selectedTargetSetMismatch(
-                        expected: ["framework:Bar", "framework:Foo"],
-                        actual: ["framework:Foo"],
+                        expected: ["framework:Foo"],
+                        actual: ["framework:Bar", "framework:Foo"],
                         record: .run
                     ),
                 ]

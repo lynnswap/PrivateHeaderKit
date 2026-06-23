@@ -603,6 +603,76 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(!outputMessages.contains("Enter targets separated by commas."))
     }
 
+    @Test func noArgumentRunOffersContinueWhenAllExpandsPreviousSpecificTargetState() async throws {
+        let root = try makeCLITestTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        let outputDirectory = root.appendingPathComponent("Output", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtimeRoot.appendingPathComponent("System/Library/Frameworks/Foo.framework", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: runtimeRoot.appendingPathComponent("System/Library/Frameworks/Bar.framework", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try writeCompletedSubsetGenerationState(
+            outputBaseDirectory: outputDirectory,
+            runtimeRoot: runtimeRoot
+        )
+
+        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
+        let recorder = GenerationRequestRecorder()
+        var inputs = [
+            "1",
+            "1",
+            "1",
+        ]
+        var outputMessages: [String] = []
+        var loggedMessages: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: helperURL,
+            generationRunner: { request, _ in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in simulatorResolution(resolvedRuntimeRoot: runtimeRoot.path) },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A5355q",
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { outputDirectory.path },
+            interactiveScreenClearer: {},
+            inputReader: {
+                inputs.isEmpty ? nil : inputs.removeFirst()
+            },
+            outputLogger: { outputMessages.append($0) },
+            errorLogger: { loggedMessages.append($0) }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(loggedMessages.isEmpty)
+        #expect(request.targetQuery == "all")
+        #expect(!request.startsFresh)
+        #expect(outputMessages.contains("Step 3 of 3: Continue or restart"))
+        #expect(outputMessages.contains("Existing generation state was found."))
+        #expect(outputMessages.contains("Targets: all"))
+        #expect(outputMessages.contains("Remaining: 1 of 2"))
+        #expect(outputMessages.contains("  [1] Continue"))
+        #expect(outputMessages.contains("  [2] Restart"))
+    }
+
     @Test func interactiveEscapeReturnsFromTargetModeToSourceSelection() async throws {
         let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
         let recorder = GenerationRequestRecorder()
@@ -1194,6 +1264,109 @@ private func makeCLITestTemporaryDirectory() throws -> URL {
         .appendingPathComponent("PrivateHeaderKitCLITests-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     return directory
+}
+
+private func writeCompletedSubsetGenerationState(
+    outputBaseDirectory: URL,
+    runtimeRoot: URL
+) throws {
+    let source = try PrivateHeaderGeneration.Source(
+        platform: .iOS,
+        version: "27.0",
+        build: "24A5355q"
+    )
+    let sourceDirectoryName = source.label.directoryName
+    let artifactDirectory = outputBaseDirectory.appendingPathComponent(
+        sourceDirectoryName,
+        isDirectory: true
+    )
+    let stateDirectory = outputBaseDirectory
+        .appendingPathComponent(".state", isDirectory: true)
+        .appendingPathComponent(sourceDirectoryName, isDirectory: true)
+    let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
+    try FileManager.default.createDirectory(
+        at: artifactDirectory.appendingPathComponent("Frameworks/Foo", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data("foo".utf8).write(
+        to: artifactDirectory.appendingPathComponent(artifact.rawValue, isDirectory: false)
+    )
+
+    let sourceRecord = PrivateHeaderGeneration.SourceRecord(source: source)
+    let outputRecord = PrivateHeaderGeneration.OutputRecord(
+        baseDirectory: outputBaseDirectory.path,
+        artifactDirectory: artifactDirectory.path,
+        stateDirectory: stateDirectory.path
+    )
+    let executionRecord = PrivateHeaderGeneration.ExecutionRecord(
+        mode: "simulator",
+        runtimeIdentifier: nil,
+        deviceName: nil,
+        deviceUDID: "SIM-001",
+        clonePolicy: nil,
+        helperEnvironment: [
+            "PH_RUNTIME_ROOT": runtimeRoot.path,
+            "SIMCTL_CHILD_PH_RUNTIME_ROOT": runtimeRoot.path,
+            "SIMCTL_CHILD_DYLD_ROOT_PATH": runtimeRoot.path,
+        ]
+    )
+    let runPlan = PrivateHeaderGeneration.RunPlanRecord(
+        source: sourceRecord,
+        output: outputRecord,
+        layout: .headers,
+        targetIDs: ["framework:Foo.framework"],
+        execution: executionRecord
+    )
+    let runID = "run-prev"
+    let updatedAt = Date(timeIntervalSince1970: 1_000)
+    let target = PrivateHeaderGeneration.TargetRecord(
+        id: "framework:Foo.framework",
+        displayName: "Foo",
+        kind: "framework",
+        status: .completed,
+        phases: [
+            PrivateHeaderGeneration.PhaseRecord(name: "raw-header-dump", status: .completed),
+        ],
+        artifacts: [artifact],
+        lastRunID: runID,
+        updatedAt: updatedAt,
+        failureSummary: nil
+    )
+    let manifest = PrivateHeaderGeneration.Manifest(
+        schemaVersion: 1,
+        toolVersion: "0.1.0",
+        source: sourceRecord,
+        output: outputRecord,
+        layout: .headers,
+        latestRunID: runID,
+        targets: [target],
+        updatedAt: updatedAt
+    )
+    let run = PrivateHeaderGeneration.RunRecord(
+        runID: runID,
+        schemaVersion: 1,
+        toolVersion: "0.1.0",
+        plan: runPlan,
+        startedAt: updatedAt,
+        endedAt: updatedAt,
+        status: .completed,
+        targetResults: [
+            PrivateHeaderGeneration.RunTargetRecord(
+                targetID: target.id,
+                status: .completed,
+                phases: target.phases,
+                artifacts: target.artifacts,
+                attemptedArtifacts: target.artifacts,
+                failureSummary: nil
+            ),
+        ],
+        attemptedArtifacts: target.artifacts,
+        logs: []
+    )
+
+    let repository = PrivateHeaderGeneration.RunRepository(stateDirectory: stateDirectory)
+    try repository.writeManifest(manifest)
+    try repository.writeRun(run)
 }
 
 private func writeFailedGenerationManifest(

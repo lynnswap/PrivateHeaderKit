@@ -716,7 +716,7 @@ private func renderInteractiveResumeScreen(
     outputLogger("PrivateHeaderKit")
     outputLogger("")
     outputLogger("Step 3 of 3: Continue or restart")
-    outputLogger("An unfinished run was found.")
+    outputLogger("Existing generation state was found.")
     outputLogger("")
     outputLogger("Source: \(source.sourceDisplayName)")
     outputLogger("Targets: \(source.targetQuery)")

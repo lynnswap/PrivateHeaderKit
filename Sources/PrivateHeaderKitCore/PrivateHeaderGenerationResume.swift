@@ -387,7 +387,10 @@ private extension PrivateHeaderGeneration {
         if compareTargetSet {
             let expectedIDs = normalizedTargetIDs(expected.targetIDs)
             let actualIDs = normalizedTargetIDs(actual.targetIDs)
-            if expectedIDs != actualIDs {
+            if !isPreviousTargetSetCompatibleWithCurrentPlan(
+                previousTargetIDs: actualIDs,
+                currentTargetIDs: expectedIDs
+            ) {
                 reasons.append(
                     .selectedTargetSetMismatch(
                         expected: expectedIDs,
@@ -407,6 +410,13 @@ private extension PrivateHeaderGeneration {
                 )
             )
         }
+    }
+
+    static func isPreviousTargetSetCompatibleWithCurrentPlan(
+        previousTargetIDs: [String],
+        currentTargetIDs: [String]
+    ) -> Bool {
+        Set(previousTargetIDs).isSubset(of: Set(currentTargetIDs))
     }
 
     static func resumeStatus(
