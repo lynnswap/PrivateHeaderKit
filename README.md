@@ -1,11 +1,21 @@
 # PrivateHeaderKit
 
-[日本語](README.ja.md)
+[Japanese](README.ja.md)
 
 Generate private framework headers for iOS and macOS.
 
-- iOS: dump from simulator runtimes (dyld shared cache).
+- iOS: dump from simulator runtimes and dyld shared caches.
 - macOS: dump from host `/System/Library/{Frameworks,PrivateFrameworks}`.
+
+## Rewrite Status
+
+PrivateHeaderKit is being rewritten around a single user-facing command:
+
+```bash
+privateheaderkit
+```
+
+The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no longer installed or documented as user-facing commands. Low-level raw dumping is handled by internal helpers.
 
 ## Installation
 
@@ -13,11 +23,8 @@ Generate private framework headers for iOS and macOS.
 swift run -c release privateheaderkit-install
 ```
 
-By default, `privateheaderkit-install` installs the following binaries to `~/.local/bin`:
-
-- `privateheaderkit-dump`
-- `headerdump` (host)
-- `headerdump-sim` (iOS Simulator)
+By default, this installs the single user-facing `privateheaderkit` binary to `~/.local/bin`.
+Raw dumping also installs internal helpers to `~/.local/libexec/privateheaderkit/`.
 
 If `~/.local/bin` is not in your `PATH`, add it:
 
@@ -34,104 +41,52 @@ swift run -c release privateheaderkit-install --prefix "$HOME/.local"
 swift run -c release privateheaderkit-install --bindir "$HOME/bin"
 ```
 
-If you prefer running the built binary directly:
+If you prefer running the built installer directly:
 
 ```bash
 swift build -c release --product privateheaderkit-install
 "$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
 ```
 
-## Usage
+## Command Surface
 
-### 1) Dump headers
-
-```
-privateheaderkit-dump
-```
-
-### 2) Dump headers with args
-
-```
-privateheaderkit-dump 26.2
+```bash
+privateheaderkit
+privateheaderkit --help
 ```
 
-Default output directory is `~/PrivateHeaderKit/generated-headers/iOS/<version>`.
-This dumps both `Frameworks` and `PrivateFrameworks`.
-(Relative paths passed to `--out` / `PH_OUT_DIR` are resolved from the current directory. If you want the old output under this repo, run from the repo root and pass `--out generated-headers/iOS/<version>` or set `PH_OUT_DIR`.)
+Running `privateheaderkit` without arguments starts the interactive generation flow and writes to `~/PrivateHeaderKit`. For automation and CI, pass the generation options directly:
 
-### 3) Dump specific targets (`--target`)
-
-Use `--target` to specify what to dump. You can use it multiple times to include multiple targets.
-
-Examples:
-
-```
-# A single framework
-privateheaderkit-dump 26.2 --target SafariShared
-
-# A single SystemLibrary bundle
-privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
-
-# A single usr/lib dylib
-privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
-
-# Presets
-privateheaderkit-dump 26.2 --target @frameworks  # Frameworks / PrivateFrameworks
-privateheaderkit-dump 26.2 --target @system      # @frameworks + SystemLibrary bundles
-privateheaderkit-dump 26.2 --target @all         # @system + /usr/lib dylibs
-
-# Multiple targets example
-privateheaderkit-dump 26.2 --target SafariShared --target UIKitCore
-
-# Disable nested bundle dumping
-privateheaderkit-dump 26.2 --target SafariShared --no-nested
+```bash
+privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
 ```
 
-When `--layout headers` (default), output bundle directory suffixes are stripped for easier searching:
-`.framework`, `.app`, `.bundle`, `.xpc`, `.appex`.
+For iOS, `generate` resolves an available iOS simulator runtime from `--version`/`--build`, selects and boots a simulator device, and uses the internal simulator helper. `--system-root` is optional for iOS; when supplied, it is used as the runtime root instead of silently replacing it with the resolved runtime path. `--device <name-or-udid>` and `--sim-helper <path>` are optional automation flags.
 
-### 4) List runtimes / devices (iOS only)
+`--target` is a comma-separated target query, not a stable target ID list. `--resume` is an explicit non-interactive resume request. The old `<version>` positional style is not part of the new public surface.
 
+## Output Layout Contract
+
+Default output is planned under:
+
+```text
+~/PrivateHeaderKit/
+  iOS27.0(24A5355q)/
+  .state/
+    iOS27.0(24A5355q)/
+      manifest.json
+      runs/
 ```
-privateheaderkit-dump --list-runtimes
-privateheaderkit-dump --list-devices --runtime 26.0.1
-```
 
-#### Options
-
-| Option | Description |
-| --- | --- |
-| `--platform <ios\|macos>` | Target platform (default: `ios`; you can also set `PH_PLATFORM`) |
-| `--device <udid\|name>` | Choose a simulator device |
-| `--out <dir>` | Output directory |
-| `--force` | Always dump headers even if they already exist (successful frameworks replace their output directory; failures keep existing output and are recorded in `_failures.txt`) |
-| `--skip-existing` | Skip frameworks that already exist (useful to override `PH_FORCE=1`) |
-| `--exec-mode <host\|simulator>` | Force execution mode |
-| `--target <value>` | Select dump target (repeatable). Presets: `@frameworks`, `@system`, `@all`. |
-| `--no-nested` | Disable nested `XPCServices` / `PlugIns` bundle dumping (default: enabled) |
-| `--layout <bundle\|headers>` | Output layout (`bundle` keeps `.framework` dirs, `headers` removes the `.framework` suffix) |
-| `--framework <name>` | (Legacy) Dump only the exact framework name (repeatable, `.framework` optional) |
-| `--filter <substring>` | (Legacy) Substring filter for framework names (repeatable) |
-| `--scope <frameworks\|system\|all>` | (Legacy) Dump scope (default: `frameworks`) |
-| `--nested` | (Legacy) Enable nested bundle dumping (now enabled by default) |
-| `--list-runtimes` | List available iOS runtimes and exit |
-| `--list-devices` | List devices for a runtime and exit (use `--runtime`) |
-| `--runtime <version>` | Runtime version for `--list-devices` |
-| `--json` | JSON output for list commands |
-| `--shared-cache` | Use dyld shared cache when dumping (enabled by default; set `PH_SHARED_CACHE=0` to disable) |
-| `-D`, `--verbose` | Enable verbose logging |
-
-`--list-runtimes`, `--list-devices`, `--runtime`, and `--device` are iOS-only options.
+For custom output, `--out` and `PH_OUT_DIR` are treated as an output base directory. Generated headers live under `<output-base>/<source-label>/`; state lives under `<output-base>/.state/<source-label>/`.
 
 ## Notes
 
-- Requires Xcode command line tools (`xcrun`, `xcodebuild`).
-- Simulator mode uses `xcrun simctl spawn`.
-- During dumping, raw output is staged under `<out>/.tmp-<run-id>` and then moved to the final layout.
-- The output directory is locked for the duration of a run to avoid concurrent writes.
-- Verbose mode suppresses skipped-class logs by default; set `PH_VERBOSE_SKIP=1` to show them.
-- You can override the device type used for auto-creation with `PH_DEVICE_TYPE` (device name or identifier).
-- Environment overrides: `PH_PLATFORM`, `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
+- Requires Xcode command line tools (`xcrun`, `xcodebuild`) for Apple platform discovery and simulator execution.
+- State, logs, and staging data are kept outside the generated header tree.
+- The rewrite prioritizes resume-safe execution, explicit source identity, and a single public command over compatibility with the previous CLI.
 
 ## Testing
 

@@ -3,7 +3,7 @@ import Dispatch
 import MachOKit
 import MachOObjCSection
 import ObjCDump
-import MachOSwiftSection
+import SwiftDeclaration
 @_spi(Support) import SwiftInterface
 #if canImport(Darwin)
 import Darwin
@@ -12,7 +12,7 @@ import Glibc
 #endif
 #if canImport(ObjectiveC)
 import ObjectiveC
-import HeaderDumpRuntimeObjC
+import PrivateHeaderKitRawDumpRuntimeObjC
 #endif
 
 protocol FileExistenceChecking {
@@ -32,11 +32,11 @@ protocol SwiftInterfaceBuildingFactory {
 
 struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
     let configuration: SwiftInterfaceBuilderConfiguration
-    let eventHandlers: [SwiftInterfaceEvents.Handler]
+    let eventHandlers: [SwiftIndexEvents.Handler]
 
     init(
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
-        eventHandlers: [SwiftInterfaceEvents.Handler] = []
+        eventHandlers: [SwiftIndexEvents.Handler] = []
     ) {
         self.configuration = configuration
         self.eventHandlers = eventHandlers
@@ -57,7 +57,7 @@ struct SwiftInterfaceBuilderAdapter: SwiftInterfaceBuilding {
     init(
         machO: MachOFile,
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
-        eventHandlers: [SwiftInterfaceEvents.Handler] = []
+        eventHandlers: [SwiftIndexEvents.Handler] = []
     ) throws {
         self.builder = try SwiftInterfaceBuilder(configuration: configuration, eventHandlers: eventHandlers, in: machO)
     }
@@ -86,9 +86,12 @@ struct DumpOptions {
     var logSwiftEvents: Bool = false
 }
 
-public struct HeaderDumpCLI {
+public struct PrivateHeaderKitRawDumpCLI {
     public static func main() async {
-        let args = Array(CommandLine.arguments.dropFirst())
+        await main(arguments: Array(CommandLine.arguments.dropFirst()))
+    }
+
+    public static func main(arguments args: [String]) async {
         guard let parsed = parseArguments(args) else {
             printUsage()
             exit(EXIT_FAILURE)
@@ -97,7 +100,7 @@ public struct HeaderDumpCLI {
         do {
             try await run(parsed: parsed)
         } catch {
-            fputs("headerdump: error: \(error)\n", stderr)
+            fputs("privateheaderkit __raw-dump: error: \(error)\n", stderr)
             exit(EXIT_FAILURE)
         }
     }
@@ -170,8 +173,8 @@ func parseArguments(
 
 private func printUsage() {
     let text = """
-    Usage: headerdump [<options>] <filename|framework>
-           headerdump [<options>] -r <sourcePath>
+    Usage: privateheaderkit __raw-dump [<options>] <filename|framework>
+           privateheaderkit __raw-dump [<options>] -r <sourcePath>
 
     Options:
         -o   Output directory
@@ -257,7 +260,7 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
         includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
         options: [.skipsHiddenFiles]
     ) else {
-        throw NSError(domain: "headerdump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
+        throw NSError(domain: "privateheaderkit.raw-dump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
     }
 
     while let url = enumerator.nextObject() as? URL {
@@ -375,24 +378,30 @@ private func dumpImage(
     try dumpObjC(machO: machO, imagePath: originalPath, outputDir: outputDir, options: options, fileManager: fileManager)
     profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "dumpObjC", since: objcStart)
 
-    let swiftFactory: SwiftInterfaceBuildingFactory
-    if options.logSwiftEvents {
-        let moduleName = URL(fileURLWithPath: originalPath).lastPathComponent
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory(
-            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
-        )
-    } else {
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory()
-    }
-
     try await dumpSwift(
         machO: machO,
         imagePath: originalPath,
         outputDir: outputDir,
         options: options,
-        interfaceBuilderFactory: swiftFactory,
+        interfaceBuilderFactory: defaultSwiftInterfaceBuilderFactory(
+            imagePath: originalPath,
+            options: options
+        ),
         fileManager: fileManager
     )
+}
+
+private func defaultSwiftInterfaceBuilderFactory(
+    imagePath: String,
+    options: DumpOptions
+) -> SwiftInterfaceBuildingFactory {
+    if options.logSwiftEvents {
+        let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
+        return DefaultSwiftInterfaceBuilderFactory(
+            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
+        )
+    }
+    return DefaultSwiftInterfaceBuilderFactory()
 }
 
 private func loadMachOFile(url: URL, options: DumpOptions) -> MachOFile? {
@@ -713,28 +722,28 @@ private func profileLogDuration(
     let seconds = Double(delta) / 1_000_000_000.0
     // Intentionally stderr so `withSilencedStdout` doesn't hide it.
     let secondsText = String(format: "%.3fs", seconds)
-    fputs("headerdump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
+    fputs("privateheaderkit __raw-dump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
 }
 
-private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
+private final class SwiftInterfaceTimingHandler: SwiftIndexEvents.Handler {
     private struct OpKey: Hashable {
-        let phase: SwiftInterfaceEvents.Phase
-        let operation: SwiftInterfaceEvents.PhaseOperation
+        let phase: SwiftIndexEvents.Phase
+        let operation: SwiftIndexEvents.PhaseOperation
     }
 
     private let label: String
     private let startNanos: UInt64
     private let lock = NSLock()
-    private var phaseStart: [SwiftInterfaceEvents.Phase: UInt64] = [:]
+    private var phaseStart: [SwiftIndexEvents.Phase: [UInt64]] = [:]
     private var opStart: [OpKey: UInt64] = [:]
-    private var extractionSectionStart: [SwiftInterfaceEvents.Section: UInt64] = [:]
+    private var extractionSectionStart: [SwiftIndexEvents.Section: UInt64] = [:]
 
     init(label: String) {
         self.label = label
         self.startNanos = DispatchTime.now().uptimeNanoseconds
     }
 
-    func handle(event: SwiftInterfaceEvents.Payload) {
+    func handle(event: SwiftIndexEvents.Payload) {
         switch event {
         case .phaseTransition(let phase, let state):
             handlePhaseTransition(phase: phase, state: state)
@@ -754,44 +763,42 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
             handlePhaseTransition(phase: .moduleCollection, state: .started)
         case .moduleCollectionCompleted(result: _):
             handlePhaseTransition(phase: .moduleCollection, state: .completed)
-        case .dependencyLoadingStarted(input: _):
-            handlePhaseTransition(phase: .dependencyLoading, state: .started)
-        case .dependencyLoadingCompleted(result: _):
-            handlePhaseTransition(phase: .dependencyLoading, state: .completed)
-        case .dependencyLoadingFailed(failure: let failure):
-            handlePhaseTransition(phase: .dependencyLoading, state: .failed(failure.error))
-        case .typeDatabaseIndexingStarted(input: _):
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .started)
-        case .typeDatabaseIndexingCompleted:
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .completed)
-        case .typeDatabaseIndexingFailed(error: let error):
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .failed(error))
-        case .diagnostic(message: let message):
-            handleDiagnostic(message: message)
         default:
             break
         }
     }
 
-    private func handlePhaseTransition(phase: SwiftInterfaceEvents.Phase, state: SwiftInterfaceEvents.State) {
+    private func handlePhaseTransition(phase: SwiftIndexEvents.Phase, state: SwiftIndexEvents.State) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         defer { lock.unlock() }
 
         switch state {
         case .started:
-            phaseStart[phase] = now
+            phaseStart[phase, default: []].append(now)
             log(now: now, message: "\(phaseName(phase)) started")
         case .completed:
-            let start = phaseStart.removeValue(forKey: phase) ?? now
+            let start = popPhaseStart(for: phase) ?? now
             log(now: now, message: "\(phaseName(phase)) completed (\(formatDurationSeconds(now &- start)))")
         case .failed(let error):
-            let start = phaseStart.removeValue(forKey: phase) ?? now
+            let start = popPhaseStart(for: phase) ?? now
             log(now: now, message: "\(phaseName(phase)) failed (\(formatDurationSeconds(now &- start))): \(String(describing: error))")
         }
     }
 
-    private func handleOpStarted(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation) {
+    private func popPhaseStart(for phase: SwiftIndexEvents.Phase) -> UInt64? {
+        guard var starts = phaseStart[phase], let start = starts.popLast() else {
+            return nil
+        }
+        if starts.isEmpty {
+            phaseStart.removeValue(forKey: phase)
+        } else {
+            phaseStart[phase] = starts
+        }
+        return start
+    }
+
+    private func handleOpStarted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -800,7 +807,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleOpCompleted(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation) {
+    private func handleOpCompleted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -809,7 +816,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleOpFailed(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation, error: any Error) {
+    private func handleOpFailed(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation, error: any Error) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -818,7 +825,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionStarted(section: SwiftInterfaceEvents.Section) {
+    private func handleExtractionStarted(section: SwiftIndexEvents.Section) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         extractionSectionStart[section] = now
@@ -826,7 +833,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionCompleted(result: SwiftInterfaceEvents.ExtractionResult) {
+    private func handleExtractionCompleted(result: SwiftIndexEvents.ExtractionResult) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let start = extractionSectionStart.removeValue(forKey: result.section) ?? now
@@ -837,7 +844,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionFailed(section: SwiftInterfaceEvents.Section, error: any Error) {
+    private func handleExtractionFailed(section: SwiftIndexEvents.Section, error: any Error) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let start = extractionSectionStart.removeValue(forKey: section) ?? now
@@ -848,64 +855,41 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleDiagnostic(message: SwiftInterfaceEvents.DiagnosticMessage) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        lock.lock()
-        var text = "diagnostic.\(diagnosticLevelName(message.level)) \(message.message)"
-        if let error = message.error {
-            text += " error=\(String(describing: error))"
-        }
-        log(now: now, message: text)
-        lock.unlock()
-    }
-
     private func log(now: UInt64, message: String) {
         let rel = formatDurationSeconds(now &- startNanos)
-        fputs("headerdump: swift-events [\(label)] +\(rel) \(message)\n", stderr)
+        fputs("privateheaderkit __raw-dump: swift-events [\(label)] +\(rel) \(message)\n", stderr)
     }
 
     private func formatDurationSeconds(_ nanos: UInt64) -> String {
         String(format: "%.3fs", Double(nanos) / 1_000_000_000.0)
     }
 
-    private func phaseName(_ phase: SwiftInterfaceEvents.Phase) -> String {
+    private func phaseName(_ phase: SwiftIndexEvents.Phase) -> String {
         switch phase {
-        case .initialization: return "initialization"
         case .preparation: return "preparation"
         case .extraction: return "extraction"
         case .indexing: return "indexing"
         case .moduleCollection: return "moduleCollection"
-        case .dependencyLoading: return "dependencyLoading"
-        case .typeDatabaseIndexing: return "typeDatabaseIndexing"
         case .build: return "build"
         }
     }
 
-    private func operationName(_ op: SwiftInterfaceEvents.PhaseOperation) -> String {
+    private func operationName(_ op: SwiftIndexEvents.PhaseOperation) -> String {
         switch op {
         case .typeIndexing: return "typeIndexing"
         case .protocolIndexing: return "protocolIndexing"
         case .conformanceIndexing: return "conformanceIndexing"
         case .extensionIndexing: return "extensionIndexing"
-        case .dependencyIndexing: return "dependencyIndexing"
         }
     }
 
-    private func sectionName(_ section: SwiftInterfaceEvents.Section) -> String {
+    private func sectionName(_ section: SwiftIndexEvents.Section) -> String {
         switch section {
         case .swiftTypes: return "swiftTypes"
         case .swiftProtocols: return "swiftProtocols"
         case .protocolConformances: return "protocolConformances"
         case .associatedTypes: return "associatedTypes"
-        }
-    }
-
-    private func diagnosticLevelName(_ level: SwiftInterfaceEvents.DiagnosticLevel) -> String {
-        switch level {
-        case .warning: return "warning"
-        case .error: return "error"
-        case .debug: return "debug"
-        case .trace: return "trace"
+        case .symbolIndex: return "symbolIndex"
         }
     }
 }
@@ -956,7 +940,7 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
             )
             if options.verbose {
                 fputs(
-                    "headerdump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
+                    "privateheaderkit __raw-dump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
                     stderr
                 )
             }
@@ -1004,7 +988,7 @@ private func dumpObjC(
         let runtimeInfos = runtimeClassInfos(for: imagePath, options: options)
         if options.verbose, !runtimeInfos.isEmpty {
             fputs(
-                "headerdump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
+                "privateheaderkit __raw-dump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
                 stderr
             )
         }
@@ -1050,7 +1034,7 @@ private func dumpObjC(
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
             if options.verbose {
-                fputs("headerdump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
+                fputs("privateheaderkit __raw-dump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
             }
             continue
         }
@@ -1067,7 +1051,7 @@ private func dumpObjC(
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
             if options.verbose {
-                fputs("headerdump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
+                fputs("privateheaderkit __raw-dump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
             }
             continue
         }
@@ -1085,7 +1069,7 @@ private func dumpObjC(
         if !isSaneObjCTypeName(info.className) || !isSaneObjCTypeName(info.name) {
             if options.verbose {
                 fputs(
-                    "headerdump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
+                    "privateheaderkit __raw-dump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
                     stderr
                 )
             }
@@ -1113,7 +1097,7 @@ private func runtimePropertyInfo(
 ) -> ObjCPropertyInfo {
     ObjCPropertyInfo(
         name: snapshot.name,
-        attributes: snapshot.attributesString,
+        attributesString: snapshot.attributesString,
         isClassProperty: snapshot.isClassProperty
     )
 }
@@ -1124,7 +1108,8 @@ private func runtimeMethodInfo(
     ObjCMethodInfo(
         name: snapshot.name,
         typeEncoding: snapshot.typeEncoding,
-        isClassMethod: snapshot.isClassMethod
+        isClassMethod: snapshot.isClassMethod,
+        imp: 0
     )
 }
 
@@ -1166,7 +1151,7 @@ private func runtimeClassInfo(
         if options.verbose {
             let stage = (failedStage as String?) ?? "unknown"
             fputs(
-                "headerdump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
+                "privateheaderkit __raw-dump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
                 stderr
             )
         }
@@ -1194,7 +1179,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
     guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
         if options.verbose {
-            fputs("headerdump: runtime dlopen failed for \(resolvedPath)\n", stderr)
+            fputs("privateheaderkit __raw-dump: runtime dlopen failed for \(resolvedPath)\n", stderr)
         }
         return []
     }
@@ -1204,7 +1189,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
         if options.verbose {
             fputs(
-                "headerdump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
+                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -1215,7 +1200,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     if count == 0 {
         if options.verbose {
             fputs(
-                "headerdump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
+                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -1285,7 +1270,7 @@ private func runtimeClassInfosByImageName(
 
     if options.verbose, !infos.isEmpty {
         fputs(
-            "headerdump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
+            "privateheaderkit __raw-dump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
             stderr
         )
     }
@@ -1340,7 +1325,7 @@ private func logClassInfoFailure<T: ObjCClassProtocol>(
     let displayName = name ?? "<unknown>"
     let metaImage = meta?.0.imagePath ?? "<nil>"
     fputs(
-        "headerdump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
+        "privateheaderkit __raw-dump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
         stderr
     )
 }
@@ -1417,6 +1402,7 @@ func dumpSwiftInterface(
         if options.verbose {
             fputs("Swift interface generation failed for \(imagePath): \(error)\n", stderr)
         }
+        throw error
     }
 }
 

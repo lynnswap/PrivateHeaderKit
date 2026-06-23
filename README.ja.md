@@ -4,8 +4,18 @@
 
 iOS / macOS の private framework ヘッダを生成します。
 
-- iOS: Simulator ランタイム（dyld shared cache）から生成
+- iOS: Simulator ランタイムと dyld shared cache から生成
 - macOS: ホストの `/System/Library/{Frameworks,PrivateFrameworks}` から生成
+
+## Rewrite 状態
+
+PrivateHeaderKit は、ユーザーが直接使うコマンドを 1 つに寄せる前提で rewrite 中です。
+
+```bash
+privateheaderkit
+```
+
+旧 `privateheaderkit-dump` / `headerdump` / `headerdump-sim` は、user-facing command としてはインストール・案内しません。低レベル raw dump は internal helper で扱います。
 
 ## インストール
 
@@ -13,11 +23,8 @@ iOS / macOS の private framework ヘッダを生成します。
 swift run -c release privateheaderkit-install
 ```
 
-既定では `~/.local/bin` に以下のバイナリをインストールします:
-
-- `privateheaderkit-dump`
-- `headerdump`（host）
-- `headerdump-sim`（iOS Simulator）
+デフォルトでは、user-facing command として単一の `privateheaderkit` バイナリを `~/.local/bin` にインストールします。
+raw dump 用の internal helper は `~/.local/libexec/privateheaderkit/` にインストールします。
 
 `~/.local/bin` が `PATH` に入っていない場合は追加してください:
 
@@ -34,102 +41,58 @@ swift run -c release privateheaderkit-install --prefix "$HOME/.local"
 swift run -c release privateheaderkit-install --bindir "$HOME/bin"
 ```
 
-ビルド済みのバイナリを直接実行したい場合:
+ビルド済みの installer を直接実行したい場合:
 
 ```bash
 swift build -c release --product privateheaderkit-install
 "$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
 ```
 
-## 使い方
+## Command Surface
 
-### 1) ヘッダの一括ダンプ
-
-```
-privateheaderkit-dump
-```
-
-### 2) 引数を指定して実行
-
-```
-privateheaderkit-dump 26.2
+```bash
+privateheaderkit
+privateheaderkit --help
 ```
 
-デフォルト出力先は `~/PrivateHeaderKit/generated-headers/iOS/<version>` です。  
-`Frameworks` と `PrivateFrameworks` をまとめて出力します。  
-（`--out` / `PH_OUT_DIR` に指定した相対パスはカレントディレクトリを基準に解釈されます。従来どおりリポジトリ配下に出したい場合は、リポジトリrootで実行して `--out generated-headers/iOS/<version>` を指定するか `PH_OUT_DIR` を指定してください）
+`privateheaderkit` を引数なしで実行すると interactive generation flow を開始し、`~/PrivateHeaderKit` に出力します。automation / CI では generation option を直接渡します。
 
-### 3) 対象を指定してダンプする（`--target`）
-
-`--target` でダンプ対象を絞り込めます。複数回指定すると、それらすべてがダンプされます。
-
-```
-# Framework を 1つだけ
-privateheaderkit-dump 26.2 --target SafariShared
-
-# SystemLibrary の bundle を 1つだけ
-privateheaderkit-dump 26.2 --target PreferenceBundles/Foo.bundle
-
-# /usr/lib の dylib を 1つだけ
-privateheaderkit-dump 26.2 --target /usr/lib/libobjc.A.dylib
-
-# プリセット
-privateheaderkit-dump 26.2 --target @frameworks  # Frameworks / PrivateFrameworks
-privateheaderkit-dump 26.2 --target @system      # @frameworks + SystemLibrary bundles
-privateheaderkit-dump 26.2 --target @all         # @system + /usr/lib dylibs
-
-# 複数指定の例
-privateheaderkit-dump 26.2 --target SafariShared --target UIKitCore
-
-# ネストバンドルのダンプを無効化
-privateheaderkit-dump 26.2 --target SafariShared --no-nested
+```bash
+privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
+privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
 ```
 
-`--layout headers`（デフォルト）の場合、検索しやすいように出力側のバンドル拡張子を外します:
-`.framework`, `.app`, `.bundle`, `.xpc`, `.appex`
+iOS では `--version` / `--build` から利用可能な Simulator runtime を解決し、device を選択・boot して internal simulator helper で raw dump します。`--system-root` は iOS では任意です。指定した場合は、その runtime root を明示入力として使い、解決済み runtime root で黙って置き換えません。`--device <name-or-udid>` と `--sim-helper <path>` は automation 用の任意 flag です。
 
-### 4) ランタイム/デバイス一覧（iOS）
+`--target` は comma-separated target query です。`--resume` は明示的な non-interactive resume request です。旧 `<version>` positional style は新しい public surface には含めません。
 
+## Output Layout Contract
+
+デフォルト出力は次の構成を予定しています。
+
+```text
+~/PrivateHeaderKit/
+  iOS27.0(24A5355q)/
+  .state/
+    iOS27.0(24A5355q)/
+      manifest.json
+      runs/
 ```
-privateheaderkit-dump --list-runtimes
-privateheaderkit-dump --list-devices --runtime 26.0.1
-```
 
-#### オプション
-
-| Option | 説明 |
-| --- | --- |
-| `--platform <ios\|macos>` | 対象プラットフォーム（デフォルトは `ios`。`PH_PLATFORM` でも指定可） |
-| `--device <udid\|name>` | 対象シミュレーターを指定 |
-| `--out <dir>` | 出力先を指定 |
-| `--force` | 既存ヘッダがあっても常に再生成する（成功したフレームワークは出力を丸ごと置換。失敗分は既存出力を残し `_failures.txt` に記録） |
-| `--skip-existing` | 既に出力済みのフレームワークはスキップ（`PH_FORCE=1` を一時的に打ち消したい場合など） |
-| `--exec-mode <host\|simulator>` | 実行モードを強制 |
-| `--target <value>` | ダンプ対象を指定（複数指定可）。プリセット: `@frameworks`, `@system`, `@all` |
-| `--no-nested` | ネストバンドル（`XPCServices` / `PlugIns`）のダンプを無効化（デフォルト有効） |
-| `--layout <bundle\|headers>` | 出力レイアウト（`bundle` は `.framework` を保持、`headers` は `.framework` を外す） |
-| `--framework <name>` | (Legacy) 指定したフレームワークのみダンプ（複数指定可、`.framework` は省略可） |
-| `--filter <substring>` | (Legacy) フレームワーク名の部分一致フィルタ（複数指定可） |
-| `--scope <frameworks\|system\|all>` | (Legacy) ダンプ範囲（デフォルトは `frameworks`） |
-| `--nested` | (Legacy) ネストバンドルのダンプを有効化（現在はデフォルト有効） |
-| `--list-runtimes` | 利用可能な iOS ランタイム一覧を表示して終了 |
-| `--list-devices` | ランタイム内のデバイス一覧を表示して終了（`--runtime` 併用） |
-| `--runtime <version>` | `--list-devices` 用のランタイム指定 |
-| `--json` | list 系の JSON 出力 |
-| `--shared-cache` | dyld shared cache を使ってダンプ（デフォルト有効。無効化は `PH_SHARED_CACHE=0`） |
-| `-D`, `--verbose` | 詳細ログ |
-
-`--list-runtimes` / `--list-devices` / `--runtime` / `--device` は iOS 専用オプションです。
+custom output では、`--out` と `PH_OUT_DIR` は artifact root ではなく output base directory として扱います。生成ヘッダは `<output-base>/<source-label>/`、state は `<output-base>/.state/<source-label>/` に置きます。
 
 ## メモ
 
-- Xcode command line tools（`xcrun`, `xcodebuild`）が必要です。
-- `simulator` モード時は `xcrun simctl spawn` 経由です。
-- ダンプ中の一時出力は `<out>/.tmp-<run-id>` に作成し、最後にレイアウトへ移動します。
-- 実行中は出力ディレクトリをロックして、同時書き込みを防ぎます。
-- `-D` での詳細ログ時も、スキップクラスのログはデフォルトで出さない（`PH_VERBOSE_SKIP=1` で表示）。
-- 自動作成するデバイスタイプは `PH_DEVICE_TYPE` で指定可能（デバイス名または identifier）。
-- 環境変数で上書き可能: `PH_PLATFORM`, `PH_EXEC_MODE`, `PH_OUT_DIR`, `PH_FORCE=1|0`, `PH_SKIP_EXISTING=1|0`, `PH_LAYOUT`, `PH_SHARED_CACHE=1|0`, `PH_VERBOSE=1|0`, `PH_VERBOSE_SKIP=1`, `PH_DEVICE_TYPE`, `PH_PROFILE=1|0`, `PH_SWIFT_EVENTS=1|0`
+- Apple platform discovery と simulator execution には Xcode command line tools（`xcrun`, `xcodebuild`）が必要です。
+- state / log / staging data は generated header tree の外に置きます。
+- rewrite では、旧 CLI 互換より resume-safe execution、明示的な source identity、単一 public command を優先します。
+
+## テスト
+
+`swift test` は deterministic であることを期待します。通常テストは固定 fixture tree、注入された environment、stub command runner を使ってください。
+
+host dyld shared cache、インストール済み system app、simulator availability、runtime boot state、wall-clock time、生成済み `swiftc` binary、network access、stress loop に依存する通常テストは追加しないでください。integration smoke test にそれらが必要な場合は、`PHK_RUN_INTEGRATION_TESTS=1` のような明示 opt-in の後ろに置き、default acceptance path から外してください。
 
 ## ライセンス
 
