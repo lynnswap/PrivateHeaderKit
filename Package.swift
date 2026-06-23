@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .library(name: "PrivateHeaderKitCore", targets: ["PrivateHeaderKitCore"]),
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
+        .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstallCLI"]),
         .executable(name: "privateheaderkit-raw-helper", targets: ["PrivateHeaderKitRawDumpHelper"]),
         .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
     ],
@@ -71,8 +72,13 @@ let package = Package(
             name: "PrivateHeaderKitCLI",
             dependencies: [
                 "PrivateHeaderKitCore",
-                "PrivateHeaderKitInstall",
                 "PrivateHeaderKitTooling",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitInstallCLI",
+            dependencies: [
+                "PrivateHeaderKitInstall",
             ]
         ),
         .executableTarget(

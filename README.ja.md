@@ -20,7 +20,7 @@ privateheaderkit
 ## インストール
 
 ```bash
-swift run -c release privateheaderkit install
+swift run -c release privateheaderkit-install
 ```
 
 デフォルトでは、user-facing command として単一の `privateheaderkit` バイナリを `~/.local/bin` にインストールします。
@@ -36,16 +36,16 @@ source ~/.zshrc
 配置先を変更したい場合:
 
 ```bash
-swift run -c release privateheaderkit install --prefix "$HOME/.local"
+swift run -c release privateheaderkit-install --prefix "$HOME/.local"
 # または
-swift run -c release privateheaderkit install --bindir "$HOME/bin"
+swift run -c release privateheaderkit-install --bindir "$HOME/bin"
 ```
 
-ビルド済みのバイナリを直接実行したい場合:
+ビルド済みの installer を直接実行したい場合:
 
 ```bash
-swift build -c release --product privateheaderkit
-"$(swift build -c release --show-bin-path)/privateheaderkit" install --bindir "$HOME/bin"
+swift build -c release --product privateheaderkit-install
+"$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
 ```
 
 ## Command Surface

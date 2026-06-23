@@ -20,7 +20,7 @@ The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no
 ## Installation
 
 ```bash
-swift run -c release privateheaderkit install
+swift run -c release privateheaderkit-install
 ```
 
 By default, this installs the single user-facing `privateheaderkit` binary to `~/.local/bin`.
@@ -36,16 +36,16 @@ source ~/.zshrc
 To change the destination:
 
 ```bash
-swift run -c release privateheaderkit install --prefix "$HOME/.local"
+swift run -c release privateheaderkit-install --prefix "$HOME/.local"
 # or
-swift run -c release privateheaderkit install --bindir "$HOME/bin"
+swift run -c release privateheaderkit-install --bindir "$HOME/bin"
 ```
 
-If you prefer running the built binary directly:
+If you prefer running the built installer directly:
 
 ```bash
-swift build -c release --product privateheaderkit
-"$(swift build -c release --show-bin-path)/privateheaderkit" install --bindir "$HOME/bin"
+swift build -c release --product privateheaderkit-install
+"$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
 ```
 
 ## Command Surface

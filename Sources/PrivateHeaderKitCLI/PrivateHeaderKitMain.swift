@@ -1,7 +1,6 @@
 import Dispatch
 import Foundation
 import PrivateHeaderKitCore
-import PrivateHeaderKitInstall
 import PrivateHeaderKitTooling
 
 #if canImport(Darwin)
@@ -21,7 +20,6 @@ enum PrivateHeaderKitCommand: Equatable {
     case help
     case generateHelp
     case interactiveGenerate
-    case install([String])
     case generate(PrivateHeaderKitGenerateCommand)
 }
 
@@ -393,8 +391,6 @@ func runPrivateHeaderKitCommand(
                 outputLogger: outputLogger,
                 errorLogger: errorLogger
             )
-        case .install(let installArgs):
-            return runInstallCommand(installArgs, environment: environment)
         case .generate(let command):
             return await runPrivateHeaderKitGenerateCommand(
                 command,
@@ -1766,9 +1762,6 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
     switch command {
     case "-h", "--help", "help":
         return .help
-    case "install":
-        let installArgs = ["\(programName) install"] + Array(remaining.dropFirst())
-        return .install(installArgs)
     case "generate":
         let generateArgs = Array(remaining.dropFirst())
         return generateArgs.isEmpty

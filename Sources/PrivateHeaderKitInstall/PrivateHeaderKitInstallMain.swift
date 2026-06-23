@@ -76,11 +76,11 @@ public func runInstallCommand(
         return 0
     } catch let error as InstallError {
         logError("error: \(error.description)")
-        logError("run `privateheaderkit install --help` for usage")
+        logError("run `privateheaderkit-install --help` for usage")
         return 1
     } catch {
         logError("error: \(error)")
-        logError("run `privateheaderkit install --help` for usage")
+        logError("run `privateheaderkit-install --help` for usage")
         return 1
     }
 }
@@ -88,7 +88,7 @@ public func runInstallCommand(
 func printInstallUsage() {
     let text = """
     Usage:
-      privateheaderkit install [--bindir path] [--prefix path] [--dry-run]
+      privateheaderkit-install [--bindir path] [--prefix path] [--dry-run]
 
     Options:
       --bindir path   Install to this directory (overrides --prefix)
@@ -99,8 +99,8 @@ func printInstallUsage() {
       -h, --help      Show this help
 
     Examples:
-      swift run -c release privateheaderkit install
-      swift run -c release privateheaderkit install --bindir "$HOME/bin"
+      swift run -c release privateheaderkit-install
+      swift run -c release privateheaderkit-install --bindir "$HOME/bin"
     """
     print(text)
 }
@@ -636,7 +636,7 @@ public func runInstallCommand(
     _ args: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> Int32 {
-    fputs("privateheaderkit install: unsupported on this platform\n", stderr)
+    fputs("privateheaderkit-install: unsupported on this platform\n", stderr)
     return 1
 }
 

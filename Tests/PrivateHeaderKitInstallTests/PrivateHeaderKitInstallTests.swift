@@ -7,7 +7,7 @@ import PrivateHeaderKitTestSupport
 @Suite
 struct InstallOptionTests {
     @Test func parseOptionsUsesEnvironmentDefaultsAndCliOverrides() throws {
-        let envOptions = try parseOptions(["privateheaderkit install"], environment: [
+        let envOptions = try parseOptions(["privateheaderkit-install"], environment: [
             "PREFIX": "/env/prefix",
             "BINDIR": "/env/bin",
         ])
@@ -17,7 +17,7 @@ struct InstallOptionTests {
         #expect(envOptions.buildConfiguration == nil)
 
         let cliOptions = try parseOptions(
-            ["privateheaderkit install", "--prefix", "/cli/prefix", "--dry-run", "--configuration", "debug"],
+            ["privateheaderkit-install", "--prefix", "/cli/prefix", "--dry-run", "--configuration", "debug"],
             environment: ["BINDIR": "/env/bin"]
         )
         #expect(cliOptions.prefix == "/cli/prefix")
@@ -26,7 +26,7 @@ struct InstallOptionTests {
         #expect(cliOptions.buildConfiguration == .debug)
 
         let bindirOptions = try parseOptions(
-            ["privateheaderkit install", "--prefix", "/cli/prefix", "--bindir", "/cli/bin"],
+            ["privateheaderkit-install", "--prefix", "/cli/prefix", "--bindir", "/cli/bin"],
             environment: [:]
         )
         #expect(bindirOptions.prefix == "/cli/prefix")
@@ -35,7 +35,7 @@ struct InstallOptionTests {
 
     @Test func parseOptionsRejectsUnknownOptions() {
         do {
-            _ = try parseOptions(["privateheaderkit install", "--wat"], environment: [:])
+            _ = try parseOptions(["privateheaderkit-install", "--wat"], environment: [:])
             Issue.record("expected parse failure")
         } catch let error as InstallError {
             #expect(error.description == "unknown option: --wat")

@@ -17,21 +17,21 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "help"]) == .help)
     }
 
-    @Test func hiddenInstallSubcommandForwardsInstallerArguments() throws {
-        let command = try parsePrivateHeaderKitCommand([
-            "privateheaderkit",
-            "install",
-            "--bindir",
-            "/tmp/bin",
-            "--dry-run",
-        ])
-
-        #expect(command == .install([
-            "privateheaderkit install",
-            "--bindir",
-            "/tmp/bin",
-            "--dry-run",
-        ]))
+    @Test func installSubcommandIsNotPartOfPublicCLI() throws {
+        do {
+            _ = try parsePrivateHeaderKitCommand([
+                "privateheaderkit",
+                "install",
+                "--bindir",
+                "/tmp/bin",
+                "--dry-run",
+            ])
+            Issue.record("expected install to be rejected by the public CLI")
+        } catch let error as PrivateHeaderKitCLIError {
+            #expect(error == .unknownCommand("install"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
     }
 
     @Test func generateParsesExplicitIOSInputContract() throws {
