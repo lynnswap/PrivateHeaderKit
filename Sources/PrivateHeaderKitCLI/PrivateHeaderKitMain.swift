@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import PrivateHeaderKitCore
 import PrivateHeaderKitInstall
@@ -1179,7 +1180,10 @@ private func shortenedRunID(_ runID: String) -> String {
 private func privateHeaderKitProgressLogger(
     outputLogger: @escaping (String) -> Void
 ) -> PrivateHeaderGeneration.GenerationExecutor.ProgressReporter {
-    let logger = PrivateHeaderKitProgressOutputLogger(outputLogger)
+    let logger = PrivateHeaderKitProgressOutputLogger(
+        outputLogger,
+        inlineProgressEnabled: stdoutSupportsInlineProgress()
+    )
     return { event in
         switch event {
         case .runStarted(let runID, let totalTargetCount):
@@ -1189,9 +1193,13 @@ private func privateHeaderKitProgressLogger(
             logger.log(formatResultField("Targets", "\(totalTargetCount)"))
             logger.log("")
         case .targetStarted(let index, let total, let displayName):
-            logger.log("[\(index)/\(total)] \(displayName)")
+            logger.startTarget(
+                index: index,
+                total: total,
+                displayName: displayName
+            )
         case .targetFinished(_, _, _, let status):
-            logger.log("  \(progressStatusLabel(status))")
+            logger.finishTarget(status: progressStatusLabel(status))
         case .runFinished(_, let status):
             logger.log("")
             logger.log("Generation finished: \(progressStatusLabel(status))")
@@ -1200,15 +1208,165 @@ private func privateHeaderKitProgressLogger(
 }
 
 private final class PrivateHeaderKitProgressOutputLogger: @unchecked Sendable {
-    private let outputLogger: (String) -> Void
+    private struct ActiveTarget {
+        let index: Int
+        let total: Int
+        let displayName: String
+    }
 
-    init(_ outputLogger: @escaping (String) -> Void) {
+    private let outputLogger: (String) -> Void
+    private let inlineProgressEnabled: Bool
+    private let indicators = ["", ".", "..", "..."]
+    private let lock = NSLock()
+    private var timer: DispatchSourceTimer?
+    private var activeTarget: ActiveTarget?
+    private var indicatorIndex = 0
+    private var renderedLength = 0
+    private var cursorHidden = false
+
+    init(
+        _ outputLogger: @escaping (String) -> Void,
+        inlineProgressEnabled: Bool
+    ) {
         self.outputLogger = outputLogger
+        self.inlineProgressEnabled = inlineProgressEnabled
+    }
+
+    deinit {
+        stopProgressRendering()
     }
 
     func log(_ message: String) {
         outputLogger(message)
     }
+
+    func startTarget(index: Int, total: Int, displayName: String) {
+        guard inlineProgressEnabled else {
+            outputLogger("[\(index)/\(total)] \(displayName)")
+            return
+        }
+
+        lock.lock()
+        stopTimerLocked()
+        activeTarget = ActiveTarget(
+            index: index,
+            total: total,
+            displayName: displayName
+        )
+        indicatorIndex = 0
+        renderedLength = 0
+        hideCursorLocked()
+        renderIndicatorLocked()
+        startTimerLocked()
+        lock.unlock()
+    }
+
+    func finishTarget(status: String) {
+        guard inlineProgressEnabled else {
+            outputLogger("  \(status)")
+            return
+        }
+
+        lock.lock()
+        stopTimerLocked()
+        if let activeTarget {
+            writeInlineLineLocked(
+                "\(targetPrefix(activeTarget)) \(status)",
+                terminator: "\n"
+            )
+        }
+        showCursorLocked()
+        activeTarget = nil
+        renderedLength = 0
+        lock.unlock()
+    }
+
+    private func stopProgressRendering() {
+        lock.lock()
+        stopTimerLocked()
+        showCursorLocked()
+        lock.unlock()
+    }
+
+    private func startTimerLocked() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + .milliseconds(500), repeating: .milliseconds(500))
+        timer.setEventHandler { [weak self] in
+            self?.advanceIndicator()
+        }
+        self.timer = timer
+        timer.resume()
+    }
+
+    private func stopTimerLocked() {
+        timer?.cancel()
+        timer = nil
+    }
+
+    private func advanceIndicator() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard activeTarget != nil else {
+            return
+        }
+        indicatorIndex = (indicatorIndex + 1) % indicators.count
+        renderIndicatorLocked()
+    }
+
+    private func renderIndicatorLocked() {
+        guard let activeTarget else {
+            return
+        }
+        writeInlineLineLocked(
+            "\(targetPrefix(activeTarget)) \(indicators[indicatorIndex])",
+            terminator: ""
+        )
+    }
+
+    private func targetPrefix(_ target: ActiveTarget) -> String {
+        "[\(target.index)/\(target.total)] \(target.displayName)"
+    }
+
+    private func writeInlineLineLocked(_ line: String, terminator: String) {
+        let padding = max(0, renderedLength - line.count)
+        let output = "\r\(line)\(String(repeating: " ", count: padding))\(terminator)"
+        FileHandle.standardOutput.write(Data(output.utf8))
+        fflush(stdout)
+        renderedLength = terminator.isEmpty ? line.count : 0
+    }
+
+    private func hideCursorLocked() {
+        guard !cursorHidden else {
+            return
+        }
+        FileHandle.standardOutput.write(Data("\u{001B}[?25l".utf8))
+        fflush(stdout)
+        cursorHidden = true
+    }
+
+    private func showCursorLocked() {
+        guard cursorHidden else {
+            return
+        }
+        FileHandle.standardOutput.write(Data("\u{001B}[?25h".utf8))
+        fflush(stdout)
+        cursorHidden = false
+    }
+}
+
+private func stdoutSupportsInlineProgress() -> Bool {
+#if canImport(Darwin)
+    let outputIsTerminal = isatty(STDOUT_FILENO) != 0
+#elseif canImport(Glibc)
+    let outputIsTerminal = isatty(STDOUT_FILENO) != 0
+#else
+    let outputIsTerminal = false
+#endif
+    guard outputIsTerminal else {
+        return false
+    }
+    return ProcessInfo.processInfo.environment["TERM"] != "dumb"
 }
 
 private func progressStatusLabel(
