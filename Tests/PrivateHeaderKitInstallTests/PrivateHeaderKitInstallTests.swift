@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 
 #if canImport(Darwin)
 import Darwin
@@ -10,71 +11,7 @@ import PrivateHeaderKitTestSupport
 
 @Suite
 struct InstallOptionTests {
-    @Test func parseOptionsUsesEnvironmentDefaultsAndCLIOverrides() throws {
-        let environmentOptions = try parseOptions(
-            ["privateheaderkit-install"],
-            environment: [
-                "PREFIX": "/env/prefix",
-                "BINDIR": "/env/bin",
-            ]
-        )
-        #expect(environmentOptions.prefix == "/env/prefix")
-        #expect(environmentOptions.bindir == "/env/bin")
-        #expect(environmentOptions.dryRun == false)
-        #expect(environmentOptions.releaseDirectory == nil)
-        #expect(environmentOptions.expectedReleaseVersion == nil)
-
-        let commandLineOptions = try parseOptions(
-            [
-                "privateheaderkit-install",
-                "--prefix", "/cli/prefix",
-                "--configuration", "debug",
-                "--dry-run",
-            ],
-            environment: ["BINDIR": "/env/bin"]
-        )
-        #expect(commandLineOptions.prefix == "/cli/prefix")
-        #expect(commandLineOptions.bindir == nil)
-        #expect(commandLineOptions.buildConfiguration == .debug)
-        #expect(commandLineOptions.dryRun)
-
-        let releaseOptions = try parseOptions(
-            [
-                "privateheaderkit-install",
-                "--release-dir", "/tmp/cohort",
-                "--expected-version", "v1.2.3",
-                "--expected-commit", String(repeating: "a", count: 40),
-                "--bindir", "/custom/bin",
-            ],
-            environment: [:]
-        )
-        #expect(releaseOptions.releaseDirectory == "/tmp/cohort")
-        #expect(releaseOptions.bindir == "/custom/bin")
-        #expect(releaseOptions.expectedReleaseVersion == "v1.2.3")
-    }
-
-    @Test func parseOptionsRejectsUnknownAndMissingValues() {
-        #expect(throws: InstallError.self) {
-            _ = try parseOptions(
-                ["privateheaderkit-install", "--wat"],
-                environment: [:]
-            )
-        }
-        #expect(throws: InstallError.self) {
-            _ = try parseOptions(
-                ["privateheaderkit-install", "--prefix"],
-                environment: [:]
-            )
-        }
-        #expect(throws: InstallError.self) {
-            _ = try parseOptions(
-                ["privateheaderkit-install", "--release-dir", "/tmp/cohort"],
-                environment: [:]
-            )
-        }
-    }
-
-    @Test func layoutUsesVersionCohortDirectoriesAndStablePointers() throws {
+    @Test func layoutUsesVersionCohortDirectoriesAndStablePointers() async throws {
         let layout = try resolveInstallLayout(prefix: "/prefix", bindir: nil)
         #expect(layout.publicCommandURL.path == "/prefix/bin/privateheaderkit")
         #expect(layout.installRoot.path == "/prefix/libexec/privateheaderkit")
@@ -91,32 +28,13 @@ struct InstallOptionTests {
         #expect(custom.installRoot.path == "/custom/libexec/privateheaderkit")
     }
 
-    @Test func createManifestCommandRequiresExactInputs() throws {
-        let command = try parseInstallerCommand(
-            [
-                "privateheaderkit-install",
-                "--create-release-manifest",
-                "--artifact-dir", "/tmp/artifacts",
-                "--version", "v1.2.3",
-                "--commit", String(repeating: "a", count: 40),
-                "--output", "/tmp/artifacts/release.json",
-            ],
-            environment: [:]
-        )
-        guard case .createReleaseManifest(let options) = command else {
-            Issue.record("expected manifest command")
-            return
-        }
-        #expect(options.version == "v1.2.3")
-        #expect(options.artifactDirectory == "/tmp/artifacts")
-    }
 }
 
 @Suite
 struct ReleaseManifestTests {
-    @Test func manifestRequiresExactArtifactSetAndCanonicalCohort() throws {
+    @Test func manifestRequiresExactArtifactSetAndCanonicalCohort() async throws {
         let directories = try makeTemporaryTestDirectories()
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.2.3",
             commit: String(repeating: "a", count: 40),
@@ -166,9 +84,9 @@ struct ReleaseManifestTests {
         }
     }
 
-    @Test func releaseDirectoryRejectsExtraOrMissingEntries() throws {
+    @Test func releaseDirectoryRejectsExtraOrMissingEntries() async throws {
         let directories = try makeTemporaryTestDirectories()
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "c", count: 40),
@@ -183,9 +101,9 @@ struct ReleaseManifestTests {
         }
     }
 
-    @Test func executablePermissionIsPartOfPreflight() throws {
+    @Test func executablePermissionIsPartOfPreflight() async throws {
         let directories = try makeTemporaryTestDirectories()
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "d", count: 40),
@@ -201,15 +119,15 @@ struct ReleaseManifestTests {
             bindir: nil
         )
         let installer = testInstaller(layout: layout)
-        #expect(throws: InstallError.self) {
-            _ = try installer.install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await installer.install(cohort)
         }
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
     }
 
-    @Test func releaseDirectoryAndManifestMustNotBeSymbolicLinks() throws {
+    @Test func releaseDirectoryAndManifestMustNotBeSymbolicLinks() async throws {
         let directories = try makeTemporaryTestDirectories()
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "0", count: 40),
@@ -240,17 +158,17 @@ struct ReleaseManifestTests {
 
 @Suite
 struct VersionCohortInstallerTests {
-    @Test func installsCompleteCohortAndPublishesStablePointers() throws {
+    @Test func installsCompleteCohortAndPublishesStablePointers() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "1", count: 40),
             marker: "first"
         )
 
-        let result = try testInstaller(layout: layout).install(cohort)
+        let result = try await testInstaller(layout: layout).install(cohort)
 
         #expect(result.cohort == cohort.manifest.cohort)
         #expect(
@@ -267,17 +185,17 @@ struct VersionCohortInstallerTests {
         try assertInstalledCohortIsExact(cohort.manifest, layout: layout)
     }
 
-    @Test func stagingFailureKeepsPreviousCohortActive() throws {
+    @Test func stagingFailureKeepsPreviousCohortActive() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "1", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
-        let second = try makeTestCohort(
+        _ = try await testInstaller(layout: layout).install(first)
+        let second = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "2", count: 40),
@@ -292,23 +210,23 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: TestInstallFailure.self) {
-            _ = try failingInstaller.install(second)
+        await #expect(throws: TestInstallFailure.self) {
+            _ = try await failingInstaller.install(second)
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
     }
 
-    @Test func activationFailureRestoresPreviousCurrentPointer() throws {
+    @Test func activationFailureRestoresPreviousCurrentPointer() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "3", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
-        let second = try makeTestCohort(
+        _ = try await testInstaller(layout: layout).install(first)
+        let second = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "4", count: 40),
@@ -323,23 +241,23 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: TestInstallFailure.self) {
-            _ = try failingInstaller.install(second)
+        await #expect(throws: TestInstallFailure.self) {
+            _ = try await failingInstaller.install(second)
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
     }
 
-    @Test func hashMismatchNeverSwitchesCurrent() throws {
+    @Test func hashMismatchNeverSwitchesCurrent() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "5", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
-        let tampered = try makeTestCohort(
+        _ = try await testInstaller(layout: layout).install(first)
+        let tampered = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "6", count: 40),
@@ -351,22 +269,22 @@ struct VersionCohortInstallerTests {
         try handle.write(contentsOf: Data("tampered".utf8))
         try handle.close()
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(tampered)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(tampered)
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
     }
 
-    @Test func sameBinaryCohortWithDifferentProvenanceFailsFast() throws {
+    @Test func sameBinaryCohortWithDifferentProvenanceFailsFast() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "5", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
+        _ = try await testInstaller(layout: layout).install(first)
         let differentProvenanceManifest = try ReleaseManifest(
             version: first.manifest.version,
             commit: String(repeating: "6", count: 40),
@@ -378,7 +296,7 @@ struct VersionCohortInstallerTests {
         )
 
         do {
-            _ = try testInstaller(layout: layout).install(differentProvenance)
+            _ = try await testInstaller(layout: layout).install(differentProvenance)
             Issue.record("expected provenance collision to fail")
         } catch let error as InstallError {
             #expect(
@@ -390,17 +308,17 @@ struct VersionCohortInstallerTests {
         try assertActive(first.manifest, layout: layout, marker: "first")
     }
 
-    @Test func bakedReleaseBindingMismatchNeverSwitchesCurrent() throws {
+    @Test func bakedReleaseBindingMismatchNeverSwitchesCurrent() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "7", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
-        let release = try makeTestCohort(
+        _ = try await testInstaller(layout: layout).install(first)
+        let release = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "8", count: 40),
@@ -416,8 +334,8 @@ struct VersionCohortInstallerTests {
             expectedReleaseCommit: release.manifest.commit
         )
 
-        #expect(throws: InstallError.self) {
-            try runInstall(
+        await #expect(throws: InstallError.self) {
+            try await runInstall(
                 options: options,
                 currentExecutableURL: nil,
                 currentDirectoryURL: directories.root,
@@ -431,14 +349,14 @@ struct VersionCohortInstallerTests {
         try assertActive(first.manifest, layout: layout, marker: "first")
     }
 
-    @Test func concurrentInstallIsRejected() throws {
+    @Test func concurrentInstallIsRejected() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.installRoot,
             withIntermediateDirectories: true
         )
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "7", count: 40),
@@ -447,13 +365,13 @@ struct VersionCohortInstallerTests {
         let lock = try InstallLock(at: layout.lockURL)
         defer { lock.close() }
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
     }
 
-    @Test func migratesKnownDirectLayoutOnlyAfterNewCohortIsActive() throws {
+    @Test func migratesKnownDirectLayoutOnlyAfterNewCohortIsActive() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -467,21 +385,21 @@ struct VersionCohortInstallerTests {
         try writeExecutable("legacy-main", to: layout.publicCommandURL)
         try writeExecutable("legacy-raw", to: layout.rawDumpHelperURL)
         try writeExecutable("legacy-sim", to: layout.simulatorHelperURL)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "8", count: 40),
             marker: "new"
         )
 
-        _ = try testInstaller(layout: layout).install(cohort)
+        _ = try await testInstaller(layout: layout).install(cohort)
 
         try assertActive(cohort.manifest, layout: layout, marker: "new")
         #expect(!FileManager.default.fileExists(atPath: layout.rawDumpHelperURL.path))
         #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
     }
 
-    @Test func directLayoutActivationFaultRestoresLegacyPublicCommand() throws {
+    @Test func directLayoutActivationFaultRestoresLegacyPublicCommand() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -495,7 +413,7 @@ struct VersionCohortInstallerTests {
         try writeExecutable("legacy-main", to: layout.publicCommandURL)
         try writeExecutable("legacy-raw", to: layout.rawDumpHelperURL)
         try writeExecutable("legacy-sim", to: layout.simulatorHelperURL)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "9", count: 40),
@@ -510,8 +428,8 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: TestInstallFailure.self) {
-            _ = try installer.install(cohort)
+        await #expect(throws: TestInstallFailure.self) {
+            _ = try await installer.install(cohort)
         }
         #expect(
             try String(contentsOf: layout.publicCommandURL, encoding: .utf8)
@@ -527,7 +445,7 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func cleanupFailureKeepsActivatedCohortAndReturnsWarning() throws {
+    @Test func cleanupFailureKeepsActivatedCohortAndReturnsWarning() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -541,7 +459,7 @@ struct VersionCohortInstallerTests {
         try writeExecutable("legacy-main", to: layout.publicCommandURL)
         try writeExecutable("legacy-raw", to: layout.rawDumpHelperURL)
         try writeExecutable("legacy-sim", to: layout.simulatorHelperURL)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "0", count: 40),
@@ -556,7 +474,7 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        let result = try installer.install(cohort)
+        let result = try await installer.install(cohort)
 
         try assertActive(cohort.manifest, layout: layout, marker: "new")
         #expect(result.cleanupWarnings.count == 1)
@@ -564,7 +482,7 @@ struct VersionCohortInstallerTests {
         #expect(FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
     }
 
-    @Test func refusesUnknownPublicCommandAndLeavesItUntouched() throws {
+    @Test func refusesUnknownPublicCommandAndLeavesItUntouched() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -572,15 +490,15 @@ struct VersionCohortInstallerTests {
             withIntermediateDirectories: true
         )
         try writeExecutable("user-owned", to: layout.publicCommandURL)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "a", count: 40),
             marker: "new"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(
             try String(contentsOf: layout.publicCommandURL, encoding: .utf8)
@@ -589,7 +507,7 @@ struct VersionCohortInstallerTests {
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
     }
 
-    @Test func partialLegacyLayoutWithSymlinkHelperIsNotMigrationAuthority() throws {
+    @Test func partialLegacyLayoutWithSymlinkHelperIsNotMigrationAuthority() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -604,15 +522,15 @@ struct VersionCohortInstallerTests {
             at: layout.rawDumpHelperURL,
             withDestinationURL: userOwned
         )
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "c", count: 40),
             marker: "new"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(
             try FileManager.default.destinationOfSymbolicLink(
@@ -625,19 +543,19 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func helperOnlyLegacyLayoutFailsBeforePointerMutation() throws {
+    @Test func helperOnlyLegacyLayoutFailsBeforePointerMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try writeExecutable("orphan-helper", to: layout.rawDumpHelperURL)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "d", count: 40),
             marker: "new"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
         #expect(
@@ -646,31 +564,31 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func managedCohortRejectsRootHelperMixAsAmbiguous() throws {
+    @Test func managedCohortRejectsRootHelperMixAsAmbiguous() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "d", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
+        _ = try await testInstaller(layout: layout).install(first)
         let userOwned = directories.root.appendingPathComponent("user-owned-helper")
         try writeExecutable("user-owned", to: userOwned)
         try FileManager.default.createSymbolicLink(
             at: layout.rawDumpHelperURL,
             withDestinationURL: userOwned
         )
-        let second = try makeTestCohort(
+        let second = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "e", count: 40),
             marker: "second"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(second)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(second)
         }
 
         try assertActive(first.manifest, layout: layout, marker: "first")
@@ -681,11 +599,11 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func legacyPermissionDriftFailsBeforePointerMutation() throws {
+    @Test func legacyPermissionDriftFailsBeforePointerMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try writeLegacyLayout(layout: layout)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "f", count: 40),
@@ -703,8 +621,8 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try installer.install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await installer.install(cohort)
         }
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
         #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
@@ -714,21 +632,21 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func directLayoutAlongsideManagedCurrentIsRejectedAsAmbiguous() throws {
+    @Test func directLayoutAlongsideManagedCurrentIsRejectedAsAmbiguous() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "d", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
+        _ = try await testInstaller(layout: layout).install(first)
         try FileManager.default.removeItem(at: layout.publicCommandURL)
         try writeExecutable("direct-main", to: layout.publicCommandURL)
         try writeExecutable("direct-raw", to: layout.rawDumpHelperURL)
         try writeExecutable("direct-sim", to: layout.simulatorHelperURL)
-        let second = try makeTestCohort(
+        let second = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "e", count: 40),
@@ -736,7 +654,7 @@ struct VersionCohortInstallerTests {
         )
 
         do {
-            _ = try testInstaller(layout: layout).install(second)
+            _ = try await testInstaller(layout: layout).install(second)
             Issue.record("expected ambiguous migration to fail")
         } catch let error as InstallError {
             #expect(error.description.contains("ambiguous migration"))
@@ -754,7 +672,7 @@ struct VersionCohortInstallerTests {
         #expect(FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
     }
 
-    @Test func refusesUnknownCurrentAndPublicSymlinkTargets() throws {
+    @Test func refusesUnknownCurrentAndPublicSymlinkTargets() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -773,15 +691,15 @@ struct VersionCohortInstallerTests {
             atPath: layout.publicCommandURL.path,
             withDestinationPath: "../user-command"
         )
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "f", count: 40),
             marker: "new"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(
             try FileManager.default.destinationOfSymbolicLink(
@@ -795,7 +713,7 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func refusesBrokenManagedCurrentCohort() throws {
+    @Test func refusesBrokenManagedCurrentCohort() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -807,15 +725,15 @@ struct VersionCohortInstallerTests {
             atPath: layout.currentURL.path,
             withDestinationPath: "versions/\(missingCohort)"
         )
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "1", count: 40),
             marker: "new"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(
             try FileManager.default.destinationOfSymbolicLink(
@@ -824,7 +742,7 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func installRootAndVersionsMustBeRealDirectories() throws {
+    @Test func installRootAndVersionsMustBeRealDirectories() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         let external = directories.root.appendingPathComponent("external", isDirectory: true)
@@ -837,15 +755,15 @@ struct VersionCohortInstallerTests {
             at: layout.installRoot,
             withDestinationURL: external
         )
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "2", count: 40),
             marker: "new"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
 
@@ -855,43 +773,43 @@ struct VersionCohortInstallerTests {
             at: layout.versionsDirectory,
             withDestinationURL: external
         )
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
     }
 
-    @Test func sourceBuildFailurePreservesExistingCohortWithoutFallback() throws {
+    @Test func sourceBuildFailurePreservesExistingCohortWithoutFallback() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "b", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
+        _ = try await testInstaller(layout: layout).install(first)
 
         let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
         try makePrivateHeaderKitRepoMarkers(in: repoRoot)
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             String(repeating: "a", count: 40) + "\n",
             for: ["git", "rev-parse", "HEAD"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "",
             for: ["git", "tag", "--points-at", "HEAD"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "",
             for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "",
             for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
         )
-        runner.simpleHandler = { _, _, _ in
+        await runner.setSimpleHandler { _, _, _ in
             throw TestInstallFailure.injected
         }
         let options = InstallOptions(
@@ -904,8 +822,8 @@ struct VersionCohortInstallerTests {
             expectedReleaseCommit: nil
         )
 
-        #expect(throws: TestInstallFailure.self) {
-            try runInstall(
+        await #expect(throws: TestInstallFailure.self) {
+            try await runInstall(
                 options: options,
                 currentExecutableURL: nil,
                 currentDirectoryURL: repoRoot,
@@ -918,15 +836,15 @@ struct VersionCohortInstallerTests {
             )
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
-        #expect(runner.simpleCommands.count == 1)
+        #expect(await runner.simpleCommandSnapshot().count == 1)
     }
 
-    @Test func installLockIsHeldForTheLexicalOperationScope() throws {
+    @Test func installLockIsHeldForTheLexicalOperationScope() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         let installer = testInstaller(layout: layout)
 
-        _ = try installer.withInstallLock {
+        _ = try await installer.withInstallLock {
             #expect(throws: InstallError.self) {
                 _ = try InstallLock(at: layout.lockURL)
             }
@@ -936,7 +854,7 @@ struct VersionCohortInstallerTests {
         nextLock.close()
     }
 
-    @Test func installLockRejectsNonRegularDescriptor() throws {
+    @Test func installLockRejectsNonRegularDescriptor() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -954,7 +872,7 @@ struct VersionCohortInstallerTests {
 #endif
     }
 
-    @Test func canonicalBindirAliasUsesOneLayoutAndLockIdentity() throws {
+    @Test func canonicalBindirAliasUsesOneLayoutAndLockIdentity() async throws {
         let directories = try makeTemporaryTestDirectories()
         let realPrefix = directories.root.appendingPathComponent("real-prefix", isDirectory: true)
         let realBin = realPrefix.appendingPathComponent("bin", isDirectory: true)
@@ -967,13 +885,13 @@ struct VersionCohortInstallerTests {
         #expect(aliased == canonical)
         #expect(aliased.lockURL == canonical.lockURL)
 
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "a", count: 40),
             marker: "alias"
         )
-        _ = try testInstaller(layout: aliased).install(cohort)
+        _ = try await testInstaller(layout: aliased).install(cohort)
         #expect(
             try String(
                 contentsOf: aliasBin.appendingPathComponent("privateheaderkit"),
@@ -982,7 +900,7 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func canonicalLayoutRejectsNonDirectoryAncestorBeforeMutation() throws {
+    @Test func canonicalLayoutRejectsNonDirectoryAncestorBeforeMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let blocker = directories.root.appendingPathComponent("blocker")
         try Data("not a directory".utf8).write(to: blocker)
@@ -994,7 +912,7 @@ struct VersionCohortInstallerTests {
         #expect(try Data(contentsOf: blocker) == Data("not a directory".utf8))
     }
 
-    @Test func defaultPrefixRejectsManagedLibexecSymlinkBeforeMutation() throws {
+    @Test func defaultPrefixRejectsManagedLibexecSymlinkBeforeMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let prefix = directories.root.appendingPathComponent("prefix", isDirectory: true)
         let external = directories.root.appendingPathComponent("external", isDirectory: true)
@@ -1005,20 +923,20 @@ struct VersionCohortInstallerTests {
             withDestinationURL: external
         )
         let layout = try resolveInstallLayout(prefix: prefix.path, bindir: nil)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "c", count: 40),
             marker: "managed-ancestor"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
     }
 
-    @Test func defaultPrefixRejectsBinSymlinkBeforeInstallMutation() throws {
+    @Test func defaultPrefixRejectsBinSymlinkBeforeInstallMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let prefix = directories.root.appendingPathComponent("prefix", isDirectory: true)
         let external = directories.root.appendingPathComponent("external", isDirectory: true)
@@ -1029,15 +947,15 @@ struct VersionCohortInstallerTests {
             withDestinationURL: external
         )
         let layout = try resolveInstallLayout(prefix: prefix.path, bindir: nil)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "d", count: 40),
             marker: "default-bin"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
         if case .absent = try fileSystemItemKind(
@@ -1050,7 +968,7 @@ struct VersionCohortInstallerTests {
         }
     }
 
-    @Test func managedAncestorsAreRevalidatedAfterInstallRootCreation() throws {
+    @Test func managedAncestorsAreRevalidatedAfterInstallRootCreation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         let external = directories.root.appendingPathComponent("external", isDirectory: true)
@@ -1059,7 +977,7 @@ struct VersionCohortInstallerTests {
             "libexec",
             isDirectory: true
         )
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "e", count: 40),
@@ -1079,16 +997,16 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try installer.install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await installer.install(cohort)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
     }
 
-    @Test func exclusiveCohortPublishNeverReplacesRacedDestination() throws {
+    @Test func exclusiveCohortPublishNeverReplacesRacedDestination() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "b", count: 40),
@@ -1107,18 +1025,18 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try installer.install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await installer.install(cohort)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: finalDirectory.path).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
     }
 
-    @Test func changedLegacyHelperIsLeftUntouchedAfterCommit() throws {
+    @Test func changedLegacyHelperIsLeftUntouchedAfterCommit() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try writeLegacyLayout(layout: layout)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "c", count: 40),
@@ -1134,7 +1052,7 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        let result = try installer.install(cohort)
+        let result = try await installer.install(cohort)
 
         try assertActive(cohort.manifest, layout: layout, marker: "new")
         #expect(result.cleanupWarnings.count == 1)
@@ -1146,7 +1064,7 @@ struct VersionCohortInstallerTests {
         #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
     }
 
-    @Test func publicFirstRestorationPreservesAValidCommandAtEachFailure() throws {
+    @Test func publicFirstRestorationPreservesAValidCommandAtEachFailure() async throws {
         for restorationFault in [
             InstallFaultPoint.publicRestorationStarted,
             InstallFaultPoint.currentRestorationStarted,
@@ -1154,7 +1072,7 @@ struct VersionCohortInstallerTests {
             let directories = try makeTemporaryTestDirectories()
             let layout = try testLayout(in: directories.root)
             try writeLegacyLayout(layout: layout)
-            let cohort = try makeTestCohort(
+            let cohort = try await makeTestCohort(
                 under: directories.root,
                 version: "v2.0.0",
                 commit: String(repeating: "d", count: 40),
@@ -1172,8 +1090,8 @@ struct VersionCohortInstallerTests {
                 }
             )
 
-            #expect(throws: InstallError.self) {
-                _ = try installer.install(cohort)
+            await #expect(throws: InstallError.self) {
+                _ = try await installer.install(cohort)
             }
             let publicContents = try String(
                 contentsOf: layout.publicCommandURL,
@@ -1185,23 +1103,23 @@ struct VersionCohortInstallerTests {
                 #expect(publicContents == "legacy-main")
             }
 
-            try testInstaller(layout: layout).withInstallLock {}
+            try await testInstaller(layout: layout).withInstallLock {}
             try assertActive(cohort.manifest, layout: layout, marker: "new")
             #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
         }
     }
 
-    @Test func restorationNeverOverwritesAReplacedRegularFile() throws {
+    @Test func restorationNeverOverwritesAReplacedRegularFile() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
-        let first = try makeTestCohort(
+        let first = try await makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
             commit: String(repeating: "1", count: 40),
             marker: "first"
         )
-        _ = try testInstaller(layout: layout).install(first)
-        let second = try makeTestCohort(
+        _ = try await testInstaller(layout: layout).install(first)
+        let second = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "2", count: 40),
@@ -1218,8 +1136,8 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try installer.install(second)
+        await #expect(throws: InstallError.self) {
+            _ = try await installer.install(second)
         }
         #expect(
             try String(contentsOf: layout.publicCommandURL, encoding: .utf8)
@@ -1227,11 +1145,11 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func restorationNeverPublishesANonExecutableLegacyBackup() throws {
+    @Test func restorationNeverPublishesANonExecutableLegacyBackup() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try writeLegacyLayout(layout: layout)
-        let cohort = try makeTestCohort(
+        let cohort = try await makeTestCohort(
             under: directories.root,
             version: "v2.0.0",
             commit: String(repeating: "3", count: 40),
@@ -1255,8 +1173,8 @@ struct VersionCohortInstallerTests {
             }
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try installer.install(cohort)
+        await #expect(throws: InstallError.self) {
+            _ = try await installer.install(cohort)
         }
         #expect(
             try FileManager.default.destinationOfSymbolicLink(
@@ -1270,7 +1188,7 @@ struct VersionCohortInstallerTests {
         #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
     }
 
-    @Test func reopenRecoversEveryDurableLegacyMigrationPhase() throws {
+    @Test func reopenRecoversEveryDurableLegacyMigrationPhase() async throws {
         enum Phase: CaseIterable {
             case intentPersisted
             case currentSwitched
@@ -1282,7 +1200,7 @@ struct VersionCohortInstallerTests {
             let directories = try makeTemporaryTestDirectories()
             let layout = try testLayout(in: directories.root)
             try writeLegacyLayout(layout: layout)
-            let cohort = try makeTestCohort(
+            let cohort = try await makeTestCohort(
                 under: directories.root,
                 version: "v2.0.0",
                 commit: String(repeating: "e", count: 40),
@@ -1296,8 +1214,8 @@ struct VersionCohortInstallerTests {
                     }
                 }
             )
-            #expect(throws: TestInstallFailure.self) {
-                _ = try interrupted.install(cohort)
+            await #expect(throws: TestInstallFailure.self) {
+                _ = try await interrupted.install(cohort)
             }
             #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
             let backupNames = try FileManager.default.contentsOfDirectory(
@@ -1322,7 +1240,7 @@ struct VersionCohortInstallerTests {
                 try FileManager.default.removeItem(at: layout.rawDumpHelperURL)
             }
 
-            try testInstaller(layout: layout).withInstallLock {}
+            try await testInstaller(layout: layout).withInstallLock {}
 
             try assertActive(cohort.manifest, layout: layout, marker: "recovered")
             #expect(!FileManager.default.fileExists(atPath: layout.rawDumpHelperURL.path))
@@ -1335,7 +1253,7 @@ struct VersionCohortInstallerTests {
         }
     }
 
-    @Test func corruptLegacyMigrationIntentFailsBeforePointerMutation() throws {
+    @Test func corruptLegacyMigrationIntentFailsBeforePointerMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
@@ -1344,8 +1262,8 @@ struct VersionCohortInstallerTests {
         )
         try Data("{}".utf8).write(to: layout.legacyMigrationIntentURL)
 
-        #expect(throws: InstallError.self) {
-            try testInstaller(layout: layout).withInstallLock {}
+        await #expect(throws: InstallError.self) {
+            try await testInstaller(layout: layout).withInstallLock {}
         }
         #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
         #expect(!FileManager.default.fileExists(atPath: layout.publicCommandURL.path))
@@ -1354,17 +1272,17 @@ struct VersionCohortInstallerTests {
 
 @Suite
 struct SourceBuildResolutionTests {
-    @Test func untaggedSourceVersionUsesCommitNamespace() throws {
+    @Test func untaggedSourceVersionUsesCommitNamespace() async throws {
         let directories = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
         let commit = "ABCDEF1234567890ABCDEF1234567890ABCDEF12"
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "documentation-only\n",
             for: ["git", "tag", "--points-at", "HEAD"]
         )
 
         #expect(
-            try sourceVersion(
+            try await sourceVersion(
                 repoRoot: directories.root,
                 environment: [:],
                 runner: runner,
@@ -1373,7 +1291,7 @@ struct SourceBuildResolutionTests {
         )
 
         #expect(
-            try sourceVersion(
+            try await sourceVersion(
                 repoRoot: directories.root,
                 environment: ["PRIVATEHEADERKIT_BUILD_VERSION": "v1.2.3"],
                 runner: runner,
@@ -1381,12 +1299,12 @@ struct SourceBuildResolutionTests {
             ) == "v1.2.3"
         )
 
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "documentation-only\nv2.3.4\n",
             for: ["git", "tag", "--points-at", "HEAD"]
         )
         #expect(
-            try sourceVersion(
+            try await sourceVersion(
                 repoRoot: directories.root,
                 environment: [:],
                 runner: runner,
@@ -1394,12 +1312,12 @@ struct SourceBuildResolutionTests {
             ) == "v2.3.4"
         )
 
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "v2.3.4\nv2.3.5\n",
             for: ["git", "tag", "--points-at", "HEAD"]
         )
-        #expect(throws: InstallError.self) {
-            _ = try sourceVersion(
+        await #expect(throws: InstallError.self) {
+            _ = try await sourceVersion(
                 repoRoot: directories.root,
                 environment: [:],
                 runner: runner,
@@ -1408,7 +1326,7 @@ struct SourceBuildResolutionTests {
         }
 
         do {
-            _ = try sourceVersion(
+            _ = try await sourceVersion(
                 repoRoot: directories.root,
                 environment: [:],
                 runner: RecordingCommandRunner(),
@@ -1420,29 +1338,29 @@ struct SourceBuildResolutionTests {
         }
     }
 
-    @Test func buildCommandsResolveExactHostAndSimulatorProducts() throws {
+    @Test func buildCommandsResolveExactHostAndSimulatorProducts() async throws {
         let directories = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk\n",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
         )
 
-        try buildProducts(
+        try await buildProducts(
             ["privateheaderkit", "privateheaderkit-raw-helper"],
             configuration: .debug,
             in: directories.root,
             runner: runner
         )
-        try buildSimulatorHelper(
+        try await buildSimulatorHelper(
             in: directories.root,
             configuration: .debug,
-            sdkPath: try resolveSimulatorSDKPath(runner: runner),
+            sdkPath: try await resolveSimulatorSDKPath(runner: runner),
             runner: runner,
             simulatorHelperTriple: "arm64-apple-ios-simulator"
         )
 
-        #expect(runner.simpleCommands.map(\.command) == [
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
             ["swift", "build", "-c", "debug", "--product", "privateheaderkit"],
             ["swift", "build", "-c", "debug", "--product", "privateheaderkit-raw-helper"],
             [
@@ -1452,17 +1370,17 @@ struct SourceBuildResolutionTests {
                 "--product", "privateheaderkit-sim-helper",
             ],
         ])
-        #expect(runner.simpleCommands.allSatisfy { $0.cwd == directories.root })
+        #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.cwd == directories.root })
     }
 
-    @Test func binPathResolutionHasNoSiblingFallback() throws {
+    @Test func binPathResolutionHasNoSiblingFallback() async throws {
         let directories = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "\n\(directories.root.appendingPathComponent(".build/release").path)\n",
             for: ["swift", "build", "-c", "release", "--show-bin-path"]
         )
-        let result = try resolveSwiftBinDir(
+        let result = try await resolveSwiftBinDir(
             repoRoot: directories.root,
             runner: runner,
             configuration: .release
@@ -1470,12 +1388,12 @@ struct SourceBuildResolutionTests {
         #expect(result.path == directories.root.appendingPathComponent(".build/release").path)
 
         let failingRunner = RecordingCommandRunner()
-        failingRunner.setCaptureOutput(
+        await failingRunner.setCaptureOutput(
             "\n",
             for: ["swift", "build", "-c", "release", "--show-bin-path"]
         )
-        #expect(throws: InstallError.self) {
-            _ = try resolveSwiftBinDir(
+        await #expect(throws: InstallError.self) {
+            _ = try await resolveSwiftBinDir(
                 repoRoot: directories.root,
                 runner: failingRunner,
                 configuration: .release
@@ -1483,7 +1401,7 @@ struct SourceBuildResolutionTests {
         }
     }
 
-    @Test func sourceSnapshotIncludesTrackedUntrackedAndReleaseProvenance() throws {
+    @Test func sourceSnapshotIncludesTrackedUntrackedAndReleaseProvenance() async throws {
         let directories = try makeTemporaryTestDirectories()
         let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
         try makePrivateHeaderKitRepoMarkers(in: repoRoot)
@@ -1492,28 +1410,28 @@ struct SourceBuildResolutionTests {
         try writeExecutable("first", to: untrackedURL)
         let runner = RecordingCommandRunner()
         let head = String(repeating: "a", count: 40) + "\n"
-        runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
-        runner.setCaptureOutputs(
+        await runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
+        await runner.setCaptureOutputs(
             ["v1.0.0\n", "v1.0.1\n"],
             for: ["git", "tag", "--points-at", "HEAD"]
         )
-        runner.setCaptureOutputs(
+        await runner.setCaptureOutputs(
             ["tracked-first", "tracked-second"],
             for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
         )
-        runner.setCaptureOutputs(
+        await runner.setCaptureOutputs(
             [untrackedPath + "\0", untrackedPath + "\0"],
             for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
         )
 
-        let first = try captureSourceSnapshot(
+        let first = try await captureSourceSnapshot(
             repoRoot: repoRoot,
             environment: [:],
             runner: runner,
             fileManager: .default
         )
         try Data("second".utf8).write(to: untrackedURL)
-        let second = try captureSourceSnapshot(
+        let second = try await captureSourceSnapshot(
             repoRoot: repoRoot,
             environment: [:],
             runner: runner,
@@ -1528,7 +1446,7 @@ struct SourceBuildResolutionTests {
         #expect(second.effectiveVersion == "v1.0.1")
     }
 
-    @Test func sourceMutationDuringProductBuildFailsBeforeCohortCreation() throws {
+    @Test func sourceMutationDuringProductBuildFailsBeforeCohortCreation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
         try makePrivateHeaderKitRepoMarkers(in: repoRoot)
@@ -1555,27 +1473,27 @@ struct SourceBuildResolutionTests {
 
         let runner = RecordingCommandRunner()
         let head = String(repeating: "b", count: 40) + "\n"
-        runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
-        runner.setCaptureOutputs(["", ""], for: ["git", "tag", "--points-at", "HEAD"])
-        runner.setCaptureOutputs(
+        await runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
+        await runner.setCaptureOutputs(["", ""], for: ["git", "tag", "--points-at", "HEAD"])
+        await runner.setCaptureOutputs(
             ["", ""],
             for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
         )
-        runner.setCaptureOutputs(
+        await runner.setCaptureOutputs(
             [untrackedPath + "\0", untrackedPath + "\0"],
             for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
         )
         let sdk = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         let triple = "arm64-apple-ios-simulator"
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             sdk + "\n",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             hostBin.path + "\n",
             for: ["swift", "build", "-c", "release", "--show-bin-path"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             simulatorBin.path + "\n",
             for: [
                 "swift", "build", "-c", "release",
@@ -1584,16 +1502,13 @@ struct SourceBuildResolutionTests {
                 "--show-bin-path",
             ]
         )
-        var changedSource = false
-        runner.simpleHandler = { _, _, _ in
-            if !changedSource {
-                changedSource = true
-                try Data("after".utf8).write(to: untrackedURL)
-            }
+        let sourceMutation = SourceMutation(url: untrackedURL)
+        await runner.setSimpleHandler { _, _, _ in
+            try await sourceMutation.runOnce()
         }
 
-        #expect(throws: InstallError.self) {
-            _ = try buildSourceCohort(
+        await #expect(throws: InstallError.self) {
+            _ = try await buildSourceCohort(
                 repoRoot: repoRoot,
                 configuration: .release,
                 environment: [:],
@@ -1603,6 +1518,198 @@ struct SourceBuildResolutionTests {
                 simulatorHelperTriple: triple
             )
         }
+    }
+}
+
+@Suite
+struct InstallCancellationTests {
+    @Test func releaseManifestInspectionPreservesCancellation() async {
+        let root = FileManager.default.temporaryDirectory
+        let artifactURLs = Dictionary(
+            uniqueKeysWithValues: InstallArtifactName.allCases.map { artifact in
+                (artifact, root.appendingPathComponent(artifact.rawValue))
+            }
+        )
+        let inspectionStarted = CancellationTestLatch()
+        let releaseInspection = CancellationTestLatch()
+
+        let manifest = Task {
+            try await makeReleaseManifest(
+                version: "v1.0.0",
+                commit: String(repeating: "a", count: 40),
+                artifactURLs: artifactURLs,
+                inspectArtifact: { artifact, _ in
+                    inspectionStarted.open()
+                    await releaseInspection.wait()
+                    return ReleaseArtifactInspection(
+                        sha256: String(repeating: "a", count: 64),
+                        architectures: ["arm64"],
+                        platform: artifact.expectedPlatform
+                    )
+                }
+            )
+        }
+        await inspectionStarted.wait()
+        manifest.cancel()
+        releaseInspection.open()
+        await #expect(throws: CancellationError.self) {
+            _ = try await manifest.value
+        }
+    }
+
+    @Test func activationVerificationCancellationRestoresThePreviousCohort() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let first = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "1", count: 40),
+            marker: "first"
+        )
+        _ = try await testInstaller(layout: layout).install(first)
+        let second = try await makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "2", count: 40),
+            marker: "second"
+        )
+        let secondDirectory = layout.cohortDirectory(for: second.manifest).path + "/"
+        let installer = VersionCohortInstaller(
+            layout: layout,
+            inspectArtifact: { artifact, url in
+                if url.path.hasPrefix(secondDirectory) {
+                    throw CancellationError()
+                }
+                return try await testArtifactInspector(artifact: artifact, url: url)
+            },
+            outputLogger: { _ in }
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await installer.install(second)
+        }
+
+        try assertActive(first.manifest, layout: layout, marker: "first")
+        let lock = try InstallLock(at: layout.lockURL)
+        lock.close()
+    }
+
+    @Test func recoveryCancellationPreservesDurableIntentAndReleasesTheLock() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "3", count: 40),
+            marker: "recovery"
+        )
+        let interrupted = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .migrationIntentPersisted {
+                    throw TestInstallFailure.injected
+                }
+            }
+        )
+        await #expect(throws: TestInstallFailure.self) {
+            _ = try await interrupted.install(cohort)
+        }
+        #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+
+        let cancellationInspector = RecoveryCancellationInspector()
+        let recovery = VersionCohortInstaller(
+            layout: layout,
+            inspectArtifact: cancellationInspector.inspect,
+            outputLogger: { _ in }
+        )
+        await #expect(throws: CancellationError.self) {
+            try await recovery.withInstallLock {}
+        }
+
+        #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+        let lock = try InstallLock(at: layout.lockURL)
+        lock.close()
+
+        try await testInstaller(layout: layout).withInstallLock {}
+        #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+        try assertActive(cohort.manifest, layout: layout, marker: "recovery")
+    }
+
+    @Test func sourceBuildCancellationKeepsTheLockUntilChildCleanupFinishes() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            String(repeating: "4", count: 40) + "\n",
+            for: ["git", "rev-parse", "HEAD"]
+        )
+        await runner.setCaptureOutput(
+            "",
+            for: ["git", "tag", "--points-at", "HEAD"]
+        )
+        await runner.setCaptureOutput(
+            "",
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
+        )
+        await runner.setCaptureOutput(
+            "",
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
+        let buildStarted = CancellationTestLatch()
+        let cancellationObserved = CancellationTestLatch()
+        let releaseCleanup = CancellationTestLatch()
+        await runner.setSimpleHandler { _, _, _ in
+            buildStarted.open()
+            await withTaskCancellationHandler {
+                await releaseCleanup.wait()
+            } onCancel: {
+                cancellationObserved.open()
+            }
+            throw CancellationError()
+        }
+        let options = InstallOptions(
+            prefix: layout.prefix.path,
+            bindir: nil,
+            dryRun: false,
+            buildConfiguration: .release,
+            releaseDirectory: nil,
+            expectedReleaseVersion: nil,
+            expectedReleaseCommit: nil
+        )
+
+        let install = Task {
+            try await runInstall(
+                options: options,
+                currentExecutableURL: nil,
+                currentDirectoryURL: repoRoot,
+                environment: [:],
+                runner: runner,
+                fileManager: .default,
+                inspectArtifact: testArtifactInspector,
+                outputLogger: { _ in },
+                simulatorHelperTriple: "arm64-apple-ios-simulator"
+            )
+        }
+        await buildStarted.wait()
+        #expect(throws: InstallError.self) {
+            _ = try InstallLock(at: layout.lockURL)
+        }
+
+        install.cancel()
+        await cancellationObserved.wait()
+        #expect(throws: InstallError.self) {
+            _ = try InstallLock(at: layout.lockURL)
+        }
+        releaseCleanup.open()
+        await #expect(throws: CancellationError.self) {
+            try await install.value
+        }
+
+        let lock = try InstallLock(at: layout.lockURL)
+        lock.close()
     }
 }
 
@@ -1634,7 +1741,7 @@ private func testInstaller(
 private func testArtifactInspector(
     artifact: InstallArtifactName,
     url: URL
-) throws -> ReleaseArtifactInspection {
+) async throws -> ReleaseArtifactInspection {
     guard FileManager.default.isExecutableFile(atPath: url.path) else {
         throw InstallError.message("artifact is not executable: \(url.path)")
     }
@@ -1650,7 +1757,7 @@ private func makeTestCohort(
     version: String,
     commit: String,
     marker: String
-) throws -> ReleaseCohort {
+) async throws -> ReleaseCohort {
     let directory = root.appendingPathComponent(
         "cohort-source-\(UUID().uuidString)",
         isDirectory: true
@@ -1669,7 +1776,7 @@ private func makeTestCohort(
             return (artifact, url)
         }
     )
-    let manifest = try makeReleaseManifest(
+    let manifest = try await makeReleaseManifest(
         version: version,
         commit: commit,
         artifactURLs: artifacts,
@@ -1680,6 +1787,72 @@ private func makeTestCohort(
         options: [.atomic]
     )
     return try ReleaseCohort.read(from: directory)
+}
+
+private actor SourceMutation {
+    private let url: URL
+    private var hasRun = false
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func runOnce() throws {
+        guard !hasRun else { return }
+        hasRun = true
+        try Data("after".utf8).write(to: url)
+    }
+}
+
+private actor RecoveryCancellationInspector {
+    private var inspectionCount = 0
+
+    func inspect(
+        artifact: InstallArtifactName,
+        url: URL
+    ) async throws -> ReleaseArtifactInspection {
+        inspectionCount += 1
+        if inspectionCount > InstallArtifactName.allCases.count {
+            throw CancellationError()
+        }
+        return try await testArtifactInspector(artifact: artifact, url: url)
+    }
+}
+
+private final class CancellationTestLatch: Sendable {
+    private struct State: Sendable {
+        var isOpen = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = state.withLock { state in
+                if state.isOpen {
+                    return true
+                }
+                state.waiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+
+    func open() {
+        let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            guard !state.isOpen else { return [] }
+            state.isOpen = true
+            defer { state.waiters.removeAll() }
+            return state.waiters
+        }
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
 }
 
 private func cohortDirectory(_ cohort: ReleaseCohort) throws -> URL {

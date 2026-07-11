@@ -210,19 +210,19 @@ struct ReleaseArtifactInspection: Equatable, Sendable {
     let platform: InstallArtifactPlatform
 }
 
-typealias ReleaseArtifactInspector = (
+typealias ReleaseArtifactInspector = @Sendable (
     _ artifact: InstallArtifactName,
     _ url: URL
-) throws -> ReleaseArtifactInspection
+) async throws -> ReleaseArtifactInspection
 
-struct LiveReleaseArtifactInspector {
+struct LiveReleaseArtifactInspector: Sendable {
     let runner: CommandRunning
-    let fileManager: FileManager
 
     func inspect(
         artifact: InstallArtifactName,
         at url: URL
-    ) throws -> ReleaseArtifactInspection {
+    ) async throws -> ReleaseArtifactInspection {
+        try Task.checkCancellation()
         let resourceValues = try url.resourceValues(
             forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
         )
@@ -233,17 +233,18 @@ struct LiveReleaseArtifactInspector {
                 "install artifact is not a regular file: \(url.path)"
             )
         }
-        guard fileManager.isExecutableFile(atPath: url.path) else {
+        guard FileManager.default.isExecutableFile(atPath: url.path) else {
             throw InstallError.message(
                 "install artifact is not executable: \(url.path)"
             )
         }
 
-        let architectureOutput = try runner.runCapture(
+        let architectureOutput = try await runner.runCapture(
             ["/usr/bin/lipo", "-archs", url.path],
             env: nil,
             cwd: nil
         )
+        try Task.checkCancellation()
         let architectures = architectureOutput
             .split(whereSeparator: \Character.isWhitespace)
             .map(String.init)
@@ -254,11 +255,12 @@ struct LiveReleaseArtifactInspector {
             )
         }
 
-        let buildOutput = try runner.runCapture(
+        let buildOutput = try await runner.runCapture(
             ["/usr/bin/vtool", "-show-build", url.path],
             env: nil,
             cwd: nil
         )
+        try Task.checkCancellation()
         let rawPlatforms = Set(
             buildOutput
                 .split(whereSeparator: \Character.isNewline)
@@ -283,11 +285,12 @@ struct LiveReleaseArtifactInspector {
             )
         }
 
-        try runner.runSimple(
+        try await runner.runSimple(
             ["/usr/bin/codesign", "--verify", "--strict", url.path],
             env: nil,
             cwd: nil
         )
+        try Task.checkCancellation()
 
         return ReleaseArtifactInspection(
             sha256: try Self.sha256(of: url),
