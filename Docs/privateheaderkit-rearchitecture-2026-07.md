@@ -144,6 +144,13 @@ Decisions:
 
 `swift-subprocess` は beta のため exact pin とする。1.0 final 移行時は cancellation/teardown contract test を再実行して requirement を更新する。
 
+Persistence alternatives:
+
+- `apple/foundationdb` は distributed transactional key-value database であり、cluster process、client library、cluster file を前提とする。SwiftPM で tool-local state に埋め込む database ではないため採用しない。
+- Core Data は local transaction と migration を提供できるが、この tool の relational run/target/intent state に managed object graph、model resource、context lifecycle を追加する利点がないため採用しない。
+- SQLite C API の直接利用は可能だが、migration bookkeeping、row mapping、transaction error handling を package 内で再実装することになるため採用しない。
+- GRDB の `DatabaseQueue` を package-internal actor が完全所有する。これは SwiftData の `@ModelActor` に相当する isolation boundary を SwiftData なしで提供し、filesystem publication は別の durable intent protocol で接続する。
+
 ## 6. Package API sketch
 
 Core の入口は package scoped で、CLI の使用コードを基準にする。
