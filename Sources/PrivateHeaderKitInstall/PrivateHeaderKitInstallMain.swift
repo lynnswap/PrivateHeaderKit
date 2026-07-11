@@ -271,7 +271,11 @@ func runInstall(
     outputLogger: @escaping (String) -> Void,
     simulatorHelperTriple: String? = nil
 ) throws {
-    let layout = resolveInstallLayout(prefix: options.prefix, bindir: options.bindir)
+    let layout = try resolveInstallLayout(
+        prefix: options.prefix,
+        bindir: options.bindir,
+        fileManager: fileManager
+    )
     if options.dryRun {
         dryRunInstallMessages(layout: layout).forEach(outputLogger)
         return
@@ -397,6 +401,12 @@ func buildSourceCohort(
     inspectArtifact: ReleaseArtifactInspector,
     simulatorHelperTriple: String? = nil
 ) throws -> ReleaseCohort {
+    let sourceBeforeBuild = try captureSourceSnapshot(
+        repoRoot: repoRoot,
+        environment: environment,
+        runner: runner,
+        fileManager: fileManager
+    )
     try buildProducts(
         [
             InstallArtifactName.publicCommand.rawValue,
@@ -450,20 +460,20 @@ func buildSourceCohort(
         }
     }
 
-    let commit = try sourceCommit(
-        repoRoot: repoRoot,
-        environment: environment,
-        runner: runner
-    ).lowercased()
-    let version = try sourceVersion(
+    let sourceAfterBuild = try captureSourceSnapshot(
         repoRoot: repoRoot,
         environment: environment,
         runner: runner,
-        commit: commit
+        fileManager: fileManager
     )
+    guard sourceAfterBuild == sourceBeforeBuild else {
+        throw InstallError.message(
+            "source checkout changed while building the install cohort; refusing mixed-source artifacts"
+        )
+    }
     let manifest = try makeReleaseManifest(
-        version: version,
-        commit: commit,
+        version: sourceBeforeBuild.effectiveVersion,
+        commit: sourceBeforeBuild.effectiveCommit,
         artifactURLs: artifactURLs,
         inspectArtifact: inspectArtifact
     )
@@ -562,65 +572,6 @@ func resolveSwiftBinDir(
         )
     }
     return URL(fileURLWithPath: path, isDirectory: true)
-}
-
-func sourceCommit(
-    repoRoot: URL,
-    environment: [String: String],
-    runner: CommandRunning
-) throws -> String {
-    if let value = nonEmpty(environment["PRIVATEHEADERKIT_BUILD_COMMIT"]) {
-        return value
-    }
-    let output = try runner.runCapture(
-        ["git", "rev-parse", "HEAD"],
-        env: nil,
-        cwd: repoRoot
-    )
-    guard let value = output
-        .split(whereSeparator: \Character.isWhitespace)
-        .map(String.init)
-        .first
-    else {
-        throw InstallError.message("failed to determine source commit")
-    }
-    return value
-}
-
-func sourceVersion(
-    repoRoot: URL,
-    environment: [String: String],
-    runner: CommandRunning,
-    commit: String
-) throws -> String {
-    if let value = nonEmpty(environment["PRIVATEHEADERKIT_BUILD_VERSION"]) {
-        return value
-    }
-    let output = try runner.runCapture(
-        ["git", "tag", "--points-at", "HEAD"],
-        env: nil,
-        cwd: repoRoot
-    )
-    let releaseTags = output
-        .split(whereSeparator: \Character.isNewline)
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter {
-            $0.range(
-                of: #"^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$"#,
-                options: .regularExpression
-            ) != nil
-        }
-        .sorted()
-    switch releaseTags.count {
-    case 0:
-        return "0.0.0-dev.\(commit.lowercased().prefix(12))"
-    case 1:
-        return releaseTags[0]
-    default:
-        throw InstallError.message(
-            "multiple release tags point at HEAD: \(releaseTags.joined(separator: ", "))"
-        )
-    }
 }
 
 func repositoryRoot(from executableURL: URL) -> URL? {
