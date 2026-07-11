@@ -296,6 +296,147 @@ struct PrivateHeaderKitCLIExecutionTests {
         }
     }
 
+    @Test func cancelledCoreInterruptionReturns130InsteadOfGenericFailure() async {
+        let generationStarted = EventCounter()
+        let cancellationObserved = EventCounter()
+        let output = ThreadSafeStrings()
+        let task = Task {
+            await runPrivateHeaderKitCommand(
+                [
+                    "privateheaderkit",
+                    "--platform", "macOS",
+                    "--version", "16.0",
+                    "--system-root", "/SystemRoot",
+                    "--out", "/tmp/cancelled-core",
+                    "--target", "all",
+                ],
+                currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+                generationRunner: { request, _ in
+                    generationStarted.signal()
+                    await withTaskCancellationHandler {
+                        await cancellationObserved.wait(until: 1)
+                    } onCancel: {
+                        cancellationObserved.signal()
+                    }
+                    let summary = summaryFixture(
+                        for: request,
+                        status: .interrupted,
+                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, interrupted: 1)
+                    )
+                    throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+                        PrivateHeaderGeneration.RunInterruption(summary: summary)
+                    )
+                },
+                outputLogger: output.append,
+                errorLogger: output.append
+            )
+        }
+
+        await generationStarted.wait(until: 1)
+        task.cancel()
+        #expect(await task.value == 130)
+        #expect(!output.text.contains("Generation interrupted"))
+        #expect(!output.text.contains("error:"))
+    }
+
+    @Test func sourceDiscoveryDistinguishesAvailabilityFailureAndCancellation() async throws {
+        let availableRunner = CaptureOnlyCommandRunner { command, _, _ in
+            switch command {
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]:
+                return #"{"runtimes":[]}"#
+            case ["/usr/bin/sw_vers", "-productVersion"]:
+                return "16.0\n"
+            case ["/usr/bin/sw_vers", "-buildVersion"]:
+                return "24A1\n"
+            default:
+                throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+        let sources = try await discoverPrivateHeaderKitInteractiveSources(
+            runner: availableRunner
+        )
+        #expect(sources == [
+            PrivateHeaderKitInteractiveSource(
+                platform: .macOS,
+                version: "16.0",
+                build: "24A1",
+                systemRoot: "/"
+            ),
+        ])
+
+        let failingRunner = CaptureOnlyCommandRunner { _, _, _ in
+            throw DiscoveryProbeError.commandFailed
+        }
+        do {
+            _ = try await discoverPrivateHeaderKitInteractiveSources(runner: failingRunner)
+            Issue.record("expected discovery command failure")
+        } catch let error as DiscoveryProbeError {
+            #expect(error == .commandFailed)
+        } catch {
+            Issue.record("unexpected discovery error: \(error)")
+        }
+
+        let cancellingRunner = CaptureOnlyCommandRunner { _, _, _ in
+            throw CancellationError()
+        }
+        do {
+            _ = try await discoverPrivateHeaderKitInteractiveSources(runner: cancellingRunner)
+            Issue.record("expected discovery cancellation")
+        } catch is CancellationError {
+            // Cancellation remains distinct from source unavailability.
+        } catch {
+            Issue.record("unexpected cancellation error: \(error)")
+        }
+    }
+
+    @Test func signalCoordinatorWaitsForOperationCleanupBeforeReturningSignalStatus() async {
+        let cases: [(PrivateHeaderKitTerminationSignal, Int32)] = [
+            (.interrupt, 130),
+            (.terminate, 143),
+        ]
+        for (signal, expectedStatus) in cases {
+            let source = ControlledSignalSource()
+            let operationStarted = EventCounter()
+            let cancellationObserved = EventCounter()
+            let cleanupGate = EventCounter()
+            let completion = ThreadSafeBool()
+            let task = Task {
+                let status = await coordinatePrivateHeaderKitOperation(
+                    signalSource: source,
+                    operation: {
+                        operationStarted.signal()
+                        return await withTaskCancellationHandler {
+                            await cleanupGate.wait(until: 1)
+                            return 0
+                        } onCancel: {
+                            cancellationObserved.signal()
+                        }
+                    }
+                )
+                completion.setTrue()
+                return status
+            }
+
+            await operationStarted.wait(until: 1)
+            source.send(signal)
+            await cancellationObserved.wait(until: 1)
+            #expect(!completion.value)
+            cleanupGate.signal()
+            #expect(await task.value == expectedStatus)
+            #expect(completion.value)
+        }
+    }
+
+    @Test func signalCoordinatorCancelsItsSignalWaiterAfterNormalCompletion() async {
+        let source = ControlledSignalSource()
+        let status = await coordinatePrivateHeaderKitOperation(
+            signalSource: source,
+            operation: { 7 }
+        )
+        #expect(status == 7)
+        #expect(source.isFinished)
+    }
+
     @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -779,6 +920,112 @@ struct PrivateHeaderKitAsyncInputTests {
         } catch let error as PrivateHeaderKitInputError {
             #expect(error == .terminalRawModeFailed(code: EIO))
         }
+    }
+}
+
+private enum DiscoveryProbeError: Error, Equatable {
+    case commandFailed
+}
+
+private struct CaptureOnlyCommandRunner: CommandRunning {
+    let capture: @Sendable ([String], [String: String]?, URL?) async throws -> String
+
+    init(
+        capture: @escaping @Sendable ([String], [String: String]?, URL?) async throws -> String
+    ) {
+        self.capture = capture
+    }
+
+    func runCapture(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws -> String {
+        try await capture(command, env, cwd)
+    }
+
+    func runSimple(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws {
+        throw ToolingError.message("unexpected runSimple command: \(command)")
+    }
+
+    func runStreaming(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws -> StreamingCommandResult {
+        throw ToolingError.message("unexpected runStreaming command: \(command)")
+    }
+}
+
+private final class ControlledSignalSource: PrivateHeaderKitSignalSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var bufferedSignal: PrivateHeaderKitTerminationSignal?
+    private var waiter:
+        CheckedContinuation<PrivateHeaderKitTerminationSignal?, Never>?
+    private var finished = false
+
+    func next() async -> PrivateHeaderKitTerminationSignal? {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let bufferedSignal {
+                    self.bufferedSignal = nil
+                    lock.unlock()
+                    continuation.resume(returning: bufferedSignal)
+                } else if finished {
+                    lock.unlock()
+                    continuation.resume(returning: nil)
+                } else {
+                    precondition(waiter == nil, "signal source supports one waiter")
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            finish()
+        }
+    }
+
+    func send(_ signal: PrivateHeaderKitTerminationSignal) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        if let waiter {
+            self.waiter = nil
+            lock.unlock()
+            waiter.resume(returning: signal)
+        } else {
+            precondition(bufferedSignal == nil, "only one signal is expected")
+            bufferedSignal = signal
+            lock.unlock()
+        }
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        let value = finished
+        lock.unlock()
+        return value
+    }
+
+    private func finish() {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        bufferedSignal = nil
+        let waiter = waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume(returning: nil)
     }
 }
 

@@ -111,13 +111,13 @@ struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
     }
 }
 
-typealias PrivateHeaderKitGenerationRunner = (
+typealias PrivateHeaderKitGenerationRunner = @Sendable (
     PrivateHeaderKitGenerationRequest,
     @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
 ) async throws -> PrivateHeaderGeneration.Result
-typealias PrivateHeaderKitSimulatorResolver = (
+typealias PrivateHeaderKitSimulatorResolver = @Sendable (
     PrivateHeaderKitGenerateCommand
-) throws -> PrivateHeaderKitSimulatorResolution
+) async throws -> PrivateHeaderKitSimulatorResolution
 typealias PrivateHeaderKitOutputLogger = @Sendable (String) -> Void
 
 func runPrivateHeaderKitCommand(
@@ -163,31 +163,38 @@ func runPrivateHeaderKitCommand(
     }
 
     let exitCode: Int32
-    switch command {
-    case .interactiveGenerate:
-        exitCode = await runPrivateHeaderKitInteractiveGenerate(
-            invokedProgramName: args.first ?? "privateheaderkit",
-            currentExecutableURL: currentExecutableURL,
-            generationRunner: generationRunner,
-            simulatorResolver: simulatorResolver,
-            sourceProvider: interactiveSourceProvider,
-            outputBaseDirectoryProvider: interactiveOutputBaseDirectoryProvider,
-            screenClearer: interactiveScreenClearer,
-            inputReader: effectiveInputReader,
-            inputFinalizer: inputFinalizer,
-            outputLogger: outputLogger,
-            errorLogger: errorLogger
-        )
-    case .generate(let generate):
-        exitCode = await runPrivateHeaderKitGenerateCommand(
-            generate,
-            invokedProgramName: args.first ?? "privateheaderkit",
-            currentExecutableURL: currentExecutableURL,
-            generationRunner: generationRunner,
-            simulatorResolver: simulatorResolver,
-            outputLogger: outputLogger,
-            errorLogger: errorLogger
-        )
+    do {
+        switch command {
+        case .interactiveGenerate:
+            exitCode = await runPrivateHeaderKitInteractiveGenerate(
+                invokedProgramName: args.first ?? "privateheaderkit",
+                currentExecutableURL: currentExecutableURL,
+                generationRunner: generationRunner,
+                simulatorResolver: simulatorResolver,
+                sourceProvider: interactiveSourceProvider,
+                outputBaseDirectoryProvider: interactiveOutputBaseDirectoryProvider,
+                screenClearer: interactiveScreenClearer,
+                inputReader: effectiveInputReader,
+                inputFinalizer: inputFinalizer,
+                outputLogger: outputLogger,
+                errorLogger: errorLogger
+            )
+        case .generate(let generate):
+            exitCode = try await runPrivateHeaderKitGenerateCommand(
+                generate,
+                invokedProgramName: args.first ?? "privateheaderkit",
+                currentExecutableURL: currentExecutableURL,
+                generationRunner: generationRunner,
+                simulatorResolver: simulatorResolver,
+                outputLogger: outputLogger,
+                errorLogger: errorLogger
+            )
+        }
+    } catch is CancellationError {
+        exitCode = 130
+    } catch {
+        errorLogger("error: \(error)")
+        exitCode = 2
     }
     do {
         try await inputFinalizer()
@@ -209,13 +216,13 @@ func runPrivateHeaderKitGenerateCommand(
     resultScreenClearer: PrivateHeaderKitInteractiveScreenClearer? = nil,
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
     errorLogger: @escaping PrivateHeaderKitOutputLogger
-) async -> Int32 {
+) async throws -> Int32 {
     do {
         let publicExecutableURL = privateHeaderKitExecutableURL(
             currentExecutableURL: currentExecutableURL,
             fallbackProgramName: invokedProgramName
         )
-        try ensureSwiftPMBuildHelpersIfNeeded(
+        try await ensureSwiftPMBuildHelpersIfNeeded(
             publicExecutableURL: publicExecutableURL,
             includeSimulatorHelper: command.platform == .iOS && command.simulatorHelperPath == nil
         )
@@ -224,7 +231,11 @@ func runPrivateHeaderKitGenerateCommand(
         )
         let simulatorResolution: PrivateHeaderKitSimulatorResolution?
         if command.platform == .iOS {
-            simulatorResolution = try preResolvedSimulatorResolution ?? simulatorResolver(command)
+            if let preResolvedSimulatorResolution {
+                simulatorResolution = preResolvedSimulatorResolution
+            } else {
+                simulatorResolution = try await simulatorResolver(command)
+            }
             if let simulatorResolution {
                 outputLogger(
                     "selected simulator: \(simulatorResolution.deviceName) "
@@ -254,7 +265,12 @@ func runPrivateHeaderKitGenerateCommand(
             outputLogger: outputLogger
         )
         return 0
+    } catch is CancellationError {
+        throw CancellationError()
     } catch let error as PrivateHeaderGeneration.GenerationError {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
         renderPrivateHeaderKitGenerationError(
             error,
             command: command,
@@ -277,7 +293,7 @@ func runPrivateHeaderGeneration(
         output: request.output,
         options: request.options,
         rawDumpRunner: { invocation in
-            let processResult = try ProcessRunner().runStreaming(
+            let processResult = try await ProcessRunner().runStreaming(
                 invocation.command,
                 env: invocation.environment,
                 cwd: nil
@@ -402,11 +418,11 @@ func ensureSwiftPMBuildHelpersIfNeeded(
     includeSimulatorHelper: Bool,
     runner: CommandRunning = ProcessRunner(),
     simulatorTriple: String = defaultSwiftPMIOSSimulatorTriple()
-) throws {
+) async throws {
     guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
         return
     }
-    _ = try runner.runCapture(
+    _ = try await runner.runCapture(
         ["swift", "build", "-c", layout.configuration, "--product", "privateheaderkit-raw-helper"],
         env: nil,
         cwd: layout.repoRoot
@@ -414,12 +430,12 @@ func ensureSwiftPMBuildHelpersIfNeeded(
     guard includeSimulatorHelper else {
         return
     }
-    let sdkPath = try runner.runCapture(
+    let sdkPath = try await runner.runCapture(
         ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
         env: nil,
         cwd: nil
     ).trimmingCharacters(in: .whitespacesAndNewlines)
-    _ = try runner.runCapture(
+    _ = try await runner.runCapture(
         [
             "swift", "build", "-c", layout.configuration,
             "--sdk", sdkPath, "--triple", simulatorTriple,
@@ -504,14 +520,14 @@ private func currentHostSupportsNativeArm64Simulator() -> Bool {
 
 func resolvePrivateHeaderKitSimulator(
     for command: PrivateHeaderKitGenerateCommand
-) throws -> PrivateHeaderKitSimulatorResolution {
+) async throws -> PrivateHeaderKitSimulatorResolution {
     let runner = ProcessRunner()
-    let runtime = try Simctl.findRuntime(
+    let runtime = try await Simctl.findRuntime(
         version: command.version,
         build: command.build,
         runner: runner
     )
-    let device = try Simctl.resolveDevice(
+    let device = try await Simctl.resolveDevice(
         runtime: runtime,
         query: command.device,
         runner: runner
@@ -519,31 +535,34 @@ func resolvePrivateHeaderKitSimulator(
     return PrivateHeaderKitSimulatorResolution(runtime: runtime, device: device)
 }
 
-func discoverPrivateHeaderKitInteractiveSources() throws -> [PrivateHeaderKitInteractiveSource] {
-    let runner = ProcessRunner()
-    var sources = (try? Simctl.listRuntimes(runner: runner))?.map {
+func discoverPrivateHeaderKitInteractiveSources() async throws -> [PrivateHeaderKitInteractiveSource] {
+    try await discoverPrivateHeaderKitInteractiveSources(runner: ProcessRunner())
+}
+
+func discoverPrivateHeaderKitInteractiveSources(
+    runner: CommandRunning
+) async throws -> [PrivateHeaderKitInteractiveSource] {
+    var sources = try await Simctl.listRuntimes(runner: runner).map {
         PrivateHeaderKitInteractiveSource(
             platform: .iOS,
             version: $0.version,
             build: $0.build.isEmpty ? nil : $0.build,
             systemRoot: nil
         )
-    } ?? []
-    if let macOS = try? currentMacOSInteractiveSource(runner: runner) {
-        sources.append(macOS)
     }
+    sources.append(try await currentMacOSInteractiveSource(runner: runner))
     return sources
 }
 
 private func currentMacOSInteractiveSource(
     runner: CommandRunning
-) throws -> PrivateHeaderKitInteractiveSource {
-    let version = try runner.runCapture(
+) async throws -> PrivateHeaderKitInteractiveSource {
+    let version = try await runner.runCapture(
         ["/usr/bin/sw_vers", "-productVersion"],
         env: nil,
         cwd: nil
     ).trimmingCharacters(in: .whitespacesAndNewlines)
-    let build = try runner.runCapture(
+    let build = try await runner.runCapture(
         ["/usr/bin/sw_vers", "-buildVersion"],
         env: nil,
         cwd: nil

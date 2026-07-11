@@ -1,5 +1,5 @@
 {
-  "originHash" : "3fa4559cab2b1430399a505f0a3b94828c864349cae07271db5d4c3d5f83ea7d",
+  "originHash" : "c4c7b64dc78ba963ff27dabfd17afa99e34a8df6b5b79bd99ce28c5f705c5adb",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -104,8 +104,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-async-algorithms",
       "state" : {
-        "revision" : "6c050d5ef8e1aa6342528460db614e9770d7f804",
-        "version" : "1.1.1"
+        "revision" : "9d349bcc328ac3c31ce40e746b5882742a0d1272",
+        "version" : "1.1.3"
       }
     },
     {
@@ -217,6 +217,15 @@
       }
     },
     {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "a878e7f8f46cfc0e1125e565b5c08e7d5272dc9a",
+        "version" : "1.14.0"
+      }
+    },
+    {
       "identity" : "swift-memberwise-init-macro",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/gohanlon/swift-memberwise-init-macro",
@@ -253,12 +262,39 @@
       }
     },
     {
+      "identity" : "swift-service-lifecycle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swift-server/swift-service-lifecycle.git",
+      "state" : {
+        "revision" : "9829955b385e5bb88128b73f1b8389e9b9c3191a",
+        "version" : "2.11.0"
+      }
+    },
+    {
+      "identity" : "swift-subprocess",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-subprocess.git",
+      "state" : {
+        "revision" : "40243d063b41485e17501ccb9d434006bdf837a5",
+        "version" : "1.0.0-beta.1"
+      }
+    },
+    {
       "identity" : "swift-syntax",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax.git",
       "state" : {
         "revision" : "f99ae8aa18f0cf0d53481901f88a0991dc3bd4a2",
         "version" : "601.0.1"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system",
+      "state" : {
+        "revision" : "b5544ba79a70a0cb3563e75bf26dc198d6b40ed3",
+        "version" : "1.7.4"
       }
     },
     {

@@ -9,7 +9,8 @@ import Glibc
 #endif
 
 typealias PrivateHeaderKitInteractiveScreenClearer = () -> Void
-typealias PrivateHeaderKitInteractiveSourceProvider = () throws -> [PrivateHeaderKitInteractiveSource]
+typealias PrivateHeaderKitInteractiveSourceProvider = @Sendable () async throws
+    -> [PrivateHeaderKitInteractiveSource]
 
 struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let platform: PrivateHeaderKitGenerateCommand.Platform
@@ -67,7 +68,7 @@ func runPrivateHeaderKitInteractiveGenerate(
     errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async -> Int32 {
     do {
-        let sources = try sourceProvider()
+        let sources = try await sourceProvider()
         guard !sources.isEmpty else {
             errorLogger("error: no available generation sources found")
             return 2
@@ -153,7 +154,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                         outputLogger: outputLogger
                     )
                     try await inputFinalizer()
-                    return await runPrivateHeaderKitGenerateCommand(
+                    return try await runPrivateHeaderKitGenerateCommand(
                         command,
                         invokedProgramName: invokedProgramName,
                         currentExecutableURL: currentExecutableURL,
@@ -201,7 +202,9 @@ private func interactiveResumeDecision(
         fallbackProgramName: invokedProgramName
     )
     let hostHelperURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
-    let simulatorResolution = command.platform == .iOS ? try simulatorResolver(command) : nil
+    let simulatorResolution = command.platform == .iOS
+        ? try await simulatorResolver(command)
+        : nil
     let request = try makePrivateHeaderGenerationRequest(
         from: command,
         hostHelperExecutableURL: hostHelperURL,

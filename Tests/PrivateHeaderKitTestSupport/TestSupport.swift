@@ -1,7 +1,7 @@
 import Foundation
 import PrivateHeaderKitTooling
 
-public struct RecordedCommand: Equatable {
+public struct RecordedCommand: Equatable, Sendable {
     public let command: [String]
     public let env: [String: String]?
     public let cwd: URL?
@@ -13,15 +13,16 @@ public struct RecordedCommand: Equatable {
     }
 }
 
-public final class RecordingCommandRunner: CommandRunning {
-    public private(set) var captureCommands: [RecordedCommand] = []
-    public private(set) var simpleCommands: [RecordedCommand] = []
-    public private(set) var streamingCommands: [RecordedCommand] = []
+public actor RecordingCommandRunner: CommandRunning {
+    private var captureCommands: [RecordedCommand] = []
+    private var simpleCommands: [RecordedCommand] = []
+    private var streamingCommands: [RecordedCommand] = []
 
-    public var captureOutputs: [String: String] = [:]
+    private var captureOutputs: [String: String] = [:]
     private var captureOutputQueues: [String: [String]] = [:]
-    public var simpleHandler: (([String], [String: String]?, URL?) throws -> Void)?
-    public var streamingHandler: (([String], [String: String]?, URL?) throws -> StreamingCommandResult)?
+    private var simpleHandler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
+    private var streamingHandler:
+        (@Sendable ([String], [String: String]?, URL?) async throws -> StreamingCommandResult)?
 
     public init() {}
 
@@ -33,7 +34,36 @@ public final class RecordingCommandRunner: CommandRunning {
         captureOutputQueues[key(for: command)] = outputs
     }
 
-    public func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) throws -> String {
+    public func setSimpleHandler(
+        _ handler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
+    ) {
+        simpleHandler = handler
+    }
+
+    public func setStreamingHandler(
+        _ handler:
+            (@Sendable ([String], [String: String]?, URL?) async throws -> StreamingCommandResult)?
+    ) {
+        streamingHandler = handler
+    }
+
+    public func captureCommandSnapshot() -> [RecordedCommand] {
+        captureCommands
+    }
+
+    public func simpleCommandSnapshot() -> [RecordedCommand] {
+        simpleCommands
+    }
+
+    public func streamingCommandSnapshot() -> [RecordedCommand] {
+        streamingCommands
+    }
+
+    public func runCapture(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws -> String {
         captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
         let commandKey = key(for: command)
         if var outputs = captureOutputQueues[commandKey], !outputs.isEmpty {
@@ -47,15 +77,23 @@ public final class RecordingCommandRunner: CommandRunning {
         return output
     }
 
-    public func runSimple(_ command: [String], env: [String: String]?, cwd: URL?) throws {
+    public func runSimple(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws {
         simpleCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
-        try simpleHandler?(command, env, cwd)
+        try await simpleHandler?(command, env, cwd)
     }
 
-    public func runStreaming(_ command: [String], env: [String: String]?, cwd: URL?) throws -> StreamingCommandResult {
+    public func runStreaming(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws -> StreamingCommandResult {
         streamingCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
         if let streamingHandler {
-            return try streamingHandler(command, env, cwd)
+            return try await streamingHandler(command, env, cwd)
         }
         return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
     }

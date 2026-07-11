@@ -87,8 +87,8 @@ public enum Simctl {
         let devicetypes: [DeviceTypeInfo]?
     }
 
-    public static func listRuntimes(runner: CommandRunning) throws -> [RuntimeInfo] {
-        let output = try runner.runCapture(["xcrun", "simctl", "list", "runtimes", "-j"], env: nil, cwd: nil)
+    public static func listRuntimes(runner: CommandRunning) async throws -> [RuntimeInfo] {
+        let output = try await runner.runCapture(["xcrun", "simctl", "list", "runtimes", "-j"], env: nil, cwd: nil)
         let data = Data(output.utf8)
         let decoded = try JSONDecoder().decode(RuntimeList.self, from: data)
 
@@ -116,15 +116,15 @@ public enum Simctl {
         return results
     }
 
-    public static func findRuntime(version: String, runner: CommandRunning) throws -> RuntimeInfo {
-        for runtime in try listRuntimes(runner: runner) where runtime.version == version {
+    public static func findRuntime(version: String, runner: CommandRunning) async throws -> RuntimeInfo {
+        for runtime in try await listRuntimes(runner: runner) where runtime.version == version {
             return runtime
         }
         throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
     }
 
-    public static func findRuntime(version: String, build: String?, runner: CommandRunning) throws -> RuntimeInfo {
-        let matches = try listRuntimes(runner: runner).filter { $0.version == version }
+    public static func findRuntime(version: String, build: String?, runner: CommandRunning) async throws -> RuntimeInfo {
+        let matches = try await listRuntimes(runner: runner).filter { $0.version == version }
         guard !matches.isEmpty else {
             throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
         }
@@ -138,16 +138,16 @@ public enum Simctl {
         throw ToolingError.message("iOS runtime not found or unavailable: \(version) (\(build))")
     }
 
-    public static func latestRuntime(runner: CommandRunning) throws -> RuntimeInfo {
-        let runtimes = try listRuntimes(runner: runner)
+    public static func latestRuntime(runner: CommandRunning) async throws -> RuntimeInfo {
+        let runtimes = try await listRuntimes(runner: runner)
         guard let last = runtimes.last else {
             throw ToolingError.message("no available iOS runtimes found")
         }
         return last
     }
 
-    public static func listDevices(runtimeId: String, runner: CommandRunning) throws -> [DeviceInfo] {
-        let output = try runner.runCapture(["xcrun", "simctl", "list", "devices", "-j"], env: nil, cwd: nil)
+    public static func listDevices(runtimeId: String, runner: CommandRunning) async throws -> [DeviceInfo] {
+        let output = try await runner.runCapture(["xcrun", "simctl", "list", "devices", "-j"], env: nil, cwd: nil)
         let data = Data(output.utf8)
         let decoded = try JSONDecoder().decode(DevicesList.self, from: data)
         let devices = decoded.devices?[runtimeId] ?? []
@@ -184,23 +184,23 @@ public enum Simctl {
         "Dumping Device (iOS \(version))"
     }
 
-    public static func cloneDevice(base: DeviceInfo, runtimeId: String, cloneName: String, runner: CommandRunning) throws -> DeviceInfo {
+    public static func cloneDevice(base: DeviceInfo, runtimeId: String, cloneName: String, runner: CommandRunning) async throws -> DeviceInfo {
         print("Cloning simulator: \(base.name) -> \(cloneName)")
-        let output = try runner.runCapture(["xcrun", "simctl", "clone", base.udid, cloneName], env: nil, cwd: nil)
+        let output = try await runner.runCapture(["xcrun", "simctl", "clone", base.udid, cloneName], env: nil, cwd: nil)
 
         let udid = output.split(separator: "\n").reversed().first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }).map(String.init) ?? ""
         if !udid.isEmpty {
             return DeviceInfo(name: cloneName, udid: udid, state: "Shutdown")
         }
 
-        let refreshed = try listDevices(runtimeId: runtimeId, runner: runner)
+        let refreshed = try await listDevices(runtimeId: runtimeId, runner: runner)
         if let match = matchDevice(devices: refreshed, query: cloneName) {
             return match
         }
         throw ToolingError.message("failed to determine cloned simulator udid")
     }
 
-    public static func resolveDefaultDevice(runtime: RuntimeInfo, devices: [DeviceInfo], runner: CommandRunning) throws -> DeviceInfo {
+    public static func resolveDefaultDevice(runtime: RuntimeInfo, devices: [DeviceInfo], runner: CommandRunning) async throws -> DeviceInfo {
         let cloneName = defaultCloneName(version: runtime.version)
         if let clone = matchDevice(devices: devices, query: cloneName) {
             return clone
@@ -212,7 +212,7 @@ public enum Simctl {
         if !stateEquals(base.state, "Shutdown") {
             return base
         }
-        return try cloneDevice(base: base, runtimeId: runtime.identifier, cloneName: cloneName, runner: runner)
+        return try await cloneDevice(base: base, runtimeId: runtime.identifier, cloneName: cloneName, runner: runner)
     }
 
     public static func resolveDevice(
@@ -220,11 +220,11 @@ public enum Simctl {
         query: String?,
         runner: CommandRunning,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) throws -> DeviceInfo {
-        var devices = try listDevices(runtimeId: runtime.identifier, runner: runner)
+    ) async throws -> DeviceInfo {
+        var devices = try await listDevices(runtimeId: runtime.identifier, runner: runner)
         if devices.isEmpty {
-            try createDefaultDevice(runtime: runtime, runner: runner, environment: environment)
-            devices = try listDevices(runtimeId: runtime.identifier, runner: runner)
+            try await createDefaultDevice(runtime: runtime, runner: runner, environment: environment)
+            devices = try await listDevices(runtimeId: runtime.identifier, runner: runner)
         }
 
         let selected: DeviceInfo
@@ -234,20 +234,24 @@ public enum Simctl {
             }
             selected = match
         } else {
-            selected = try resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
+            selected = try await resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
         }
 
-        var booted = selected
-        try ensureDeviceBooted(&booted, runner: runner, force: false)
-        return booted
+        return try await ensureDeviceBooted(selected, runner: runner, force: false)
     }
 
-    public static func ensureDeviceBooted(_ device: inout DeviceInfo, runner: CommandRunning, force: Bool) throws {
-        if stateEquals(device.state, "Booted"), !force { return }
+    public static func ensureDeviceBooted(
+        _ device: DeviceInfo,
+        runner: CommandRunning,
+        force: Bool
+    ) async throws -> DeviceInfo {
+        if stateEquals(device.state, "Booted"), !force { return device }
         print("Booting simulator: \(device.name) (\(device.udid))")
-        try runner.runSimple(["xcrun", "simctl", "boot", device.udid], env: nil, cwd: nil)
-        try runner.runSimple(["xcrun", "simctl", "bootstatus", device.udid, "-b"], env: nil, cwd: nil)
-        device.state = "Booted"
+        try await runner.runSimple(["xcrun", "simctl", "boot", device.udid], env: nil, cwd: nil)
+        try await runner.runSimple(["xcrun", "simctl", "bootstatus", device.udid, "-b"], env: nil, cwd: nil)
+        var booted = device
+        booted.state = "Booted"
+        return booted
     }
 
     public static func createDefaultDevice(
@@ -255,8 +259,8 @@ public enum Simctl {
         version: String,
         runner: CommandRunning,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) throws {
-        try createDefaultDevice(
+    ) async throws {
+        try await createDefaultDevice(
             runtime: RuntimeInfo(version: version, build: "", identifier: runtimeId, runtimeRoot: ""),
             runner: runner,
             environment: environment
@@ -267,8 +271,8 @@ public enum Simctl {
         runtime: RuntimeInfo,
         runner: CommandRunning,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) throws {
-        let deviceTypes = try defaultDeviceTypeCandidates(for: runtime, runner: runner)
+    ) async throws {
+        let deviceTypes = try await defaultDeviceTypeCandidates(for: runtime, runner: runner)
 
         func matchesEnv(_ entry: DeviceTypeInfo, needle: String) -> Bool {
             if entry.identifier == needle || entry.name == needle { return true }
@@ -302,15 +306,15 @@ public enum Simctl {
 
         let createdName = "\(deviceName) (\(runtime.version))"
         print("Creating device: \(createdName)")
-        try runner.runSimple(["xcrun", "simctl", "create", createdName, deviceType, runtime.identifier], env: nil, cwd: nil)
+        try await runner.runSimple(["xcrun", "simctl", "create", createdName, deviceType, runtime.identifier], env: nil, cwd: nil)
     }
 
-    private static func defaultDeviceTypeCandidates(for runtime: RuntimeInfo, runner: CommandRunning) throws -> [DeviceTypeInfo] {
+    private static func defaultDeviceTypeCandidates(for runtime: RuntimeInfo, runner: CommandRunning) async throws -> [DeviceTypeInfo] {
         if !runtime.supportedDeviceTypes.isEmpty {
             return runtime.supportedDeviceTypes
         }
 
-        let output = try runner.runCapture(["xcrun", "simctl", "list", "devicetypes", "-j"], env: nil, cwd: nil)
+        let output = try await runner.runCapture(["xcrun", "simctl", "list", "devicetypes", "-j"], env: nil, cwd: nil)
         let data = Data(output.utf8)
         let decoded = try JSONDecoder().decode(DeviceTypesList.self, from: data)
         let deviceTypes = decoded.devicetypes ?? []
