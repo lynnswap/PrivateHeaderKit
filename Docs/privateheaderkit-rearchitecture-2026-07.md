@@ -325,12 +325,12 @@ Installed layout:
 
 ```text
 <prefix>/libexec/privateheaderkit/
-  versions/<version+commit>/
+  versions/<version+cohort-sha>/
     privateheaderkit
     privateheaderkit-raw-helper
     privateheaderkit-sim-helper
     release.json
-  current -> versions/<version+commit>
+  current -> versions/<version+cohort-sha>
 
 <prefix>/bin/privateheaderkit -> ../libexec/privateheaderkit/current/privateheaderkit
 ```
@@ -347,6 +347,8 @@ Install sequence:
 8. old direct-layout helper/binary は new cohort が active と確認できた後だけ削除する。
 
 Source install と release install は同じ layout/manifest semantics を使う。build failure を warning にして sibling/base URL の stale binary へ fallback しない。
+
+`cohort-sha` は git commit ではなく、sorted artifact name / SHA-256 / platform / architecture から算出する content identity とする。git commit は `release.json` の provenance metadata に別記録する。同じ HEAD でも debug/release、build setting、dirty source が異なる binary set を同じ immutable directory と誤認しない。
 
 Release pipeline は次を追加する。
 
