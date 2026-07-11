@@ -15,6 +15,10 @@ let package = Package(
     ],
     dependencies: [
         .package(
+            url: "https://github.com/apple/swift-argument-parser.git",
+            exact: "1.8.2"
+        ),
+        .package(
             url: "https://github.com/groue/GRDB.swift.git",
             from: "7.11.1"
         ),
@@ -79,6 +83,7 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitTooling",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .executableTarget(
@@ -154,6 +159,7 @@ let package = Package(
             name: "PrivateHeaderKitCLITests",
             dependencies: [
                 "PrivateHeaderKitCLI",
+                "PrivateHeaderKitCore",
                 "PrivateHeaderKitTooling",
             ]
         ),
