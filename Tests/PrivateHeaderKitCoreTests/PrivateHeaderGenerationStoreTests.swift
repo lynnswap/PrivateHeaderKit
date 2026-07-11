@@ -188,6 +188,59 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
+  @Test func controlledPreparedAbortFailsActiveTargetAndRetainsPendingRows() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-controlled-failure")
+    _ = try await fixture.store.beginRun(
+      id: runID,
+      plan: fixture.plan(targetIDs: ["framework:Foo", "framework:Bar"]),
+      at: fixture.date
+    )
+    try await fixture.store.beginTargetAttempt(
+      targetID: "framework:Foo",
+      displayName: "Foo",
+      kind: "framework",
+      in: runID,
+      at: fixture.date
+    )
+    try await fixture.store.recordTargetAttempt(
+      fixture.completedTarget("framework:Foo"),
+      in: runID
+    )
+    let generationID = PrivateHeaderGeneration.GenerationID(
+      rawValue: "generation-controlled-failure")
+    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    _ = try await fixture.store.preparePublication(
+      generationID: generationID,
+      runID: runID,
+      previousGenerationID: previousGenerationID,
+      planFingerprint: "fingerprint",
+      artifactChecksum: "checksum",
+      at: fixture.date
+    )
+
+    let action = try await fixture.store.recover(
+      using: .init(
+        currentGenerationID: previousGenerationID,
+        stablePathState: .managed,
+        markers: [:]
+      ),
+      at: fixture.date,
+      terminalReason: .failed(message: "generation move failed")
+    )
+
+    #expect(action == .discardGeneration(generationID))
+    let run = try await fixture.store.runSnapshot(runID)
+    #expect(run.status == .failed)
+    let targets = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0) })
+    #expect(targets["framework:Foo"]?.status == .failed)
+    #expect(targets["framework:Foo"]?.failureSummary == "generation move failed")
+    #expect(targets["framework:Bar"]?.status == .pending)
+    #expect(
+      try await fixture.store.publicationIntent(generationID: generationID)?.state == .aborted)
+  }
+
   @Test func pointerPublishedIntentCanNotMoveBackToPreviousCurrent() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }

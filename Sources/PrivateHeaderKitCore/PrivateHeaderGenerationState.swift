@@ -337,6 +337,11 @@ extension PrivateHeaderGeneration {
     case rolledForward(GenerationID)
   }
 
+  package enum RecoveryTerminalReason: Equatable, Sendable {
+    case interrupted
+    case failed(message: String)
+  }
+
   package enum StoreFaultPoint: Equatable, Sendable {
     case afterRunTargetWrite
     case afterPublicationIntentWrite

@@ -403,6 +403,54 @@ struct PrivateHeaderGenerationExecutorTests {
     }
   }
 
+  @Test func generationMoveFailureAbortsAsFailedAndPreservesPreviousCurrent() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old"),
+      runID: "run-001",
+      generationID: "generation-001"
+    ).run(.init(plan: try fixture.plan(.query("Foo"))))
+    let previousGenerationID = try #require(fixture.publisher().inspect().currentGenerationID)
+    let mutation = FileMutationRecorder()
+    let draftURL = fixture.outputBase
+      .appendingPathComponent(".privateheaderkit/\(fixture.sourceLabel)/staging", isDirectory: true)
+      .appendingPathComponent("generation-002.draft", isDirectory: true)
+
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "new"),
+        runID: "run-002",
+        generationID: "generation-002",
+        publicationFaultInjector: { point in
+          guard point == .afterPrepared else { return }
+          mutation.run {
+            try FileManager.default.removeItem(at: draftURL)
+          }
+        }
+      ).run(
+        .init(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      )
+      Issue.record("missing prepared generation unexpectedly moved and committed")
+    } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
+      #expect(failure.summary.status == .failed)
+      #expect(failure.summary.targetCounts.failed == 1)
+      #expect(failure.message.contains("rename"))
+    }
+
+    #expect(mutation.message == nil)
+    #expect(try fixture.publisher().inspect().currentGenerationID == previousGenerationID)
+    #expect(try fixture.readStableHeader() == "old")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let run = try await store.runSnapshot(.init(rawValue: "run-002"))
+    #expect(run.status == .failed)
+    #expect(run.targets.first?.status == .failed)
+    #expect(
+      try await store.publicationIntent(generationID: .init(rawValue: "generation-002"))?.state
+        == .aborted)
+  }
+
   @Test func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
@@ -576,6 +624,27 @@ private final class ExecutorProgressRecorder: @unchecked Sendable {
     lock.lock()
     storage.append(event)
     lock.unlock()
+  }
+}
+
+private final class FileMutationRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedMessage: String?
+
+  var message: String? {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedMessage
+  }
+
+  func run(_ operation: () throws -> Void) {
+    do {
+      try operation()
+    } catch {
+      lock.lock()
+      storedMessage = String(describing: error)
+      lock.unlock()
+    }
   }
 }
 

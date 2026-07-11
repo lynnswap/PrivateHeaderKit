@@ -566,7 +566,14 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         )
       }
     } else {
-      try await Self.recover(store: store, publisher: publisher, at: dateProvider())
+      try await Self.recover(
+        store: store,
+        publisher: publisher,
+        at: dateProvider(),
+        terminalReason: interruptionRequested
+          ? .interrupted
+          : .failed(message: String(describing: underlyingError))
+      )
     }
     var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
     do {
@@ -777,11 +784,16 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   fileprivate static func recover(
     store: GenerationStore,
     publisher: ArtifactPublisher,
-    at date: Date
+    at date: Date,
+    terminalReason: PrivateHeaderGeneration.RecoveryTerminalReason = .interrupted
   ) async throws {
     for _ in 0..<4 {
       let snapshot = try publisher.inspect()
-      let action = try await store.recover(using: snapshot, at: date)
+      let action = try await store.recover(
+        using: snapshot,
+        at: date,
+        terminalReason: terminalReason
+      )
       switch action {
       case .completeStablePointer:
         try publisher.ensureStablePointer()
