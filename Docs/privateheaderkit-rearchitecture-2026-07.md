@@ -73,7 +73,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - explicit public declaration line は Core 275、Tooling 85 に対し、`package` declaration は 0。
 - status は `TargetStatus`、`RunTargetStatus`、`PhaseStatus`、`ResumeTargetStatus` の 4 系統 26 case に重複し、CLI はさらに raw `String` へ変換している。
 - test は Swift Testing の 26 suite / 194 test（Core 101、CLI 32、RawDump 32、Tooling 15、Install 14）。
-- baseline `swift test` は product test 実行前の dependency planning で失敗する。固定 revision の `MachOSwiftSection` が `swift-dependencies` に存在しない traits を要求する解決結果になっており、統合 branch では upstream requirement と `Package.resolved` を一次情報で整合させてから product test を acceptance baseline に戻す。
+- clean worktree で `swift package resolve` 後に実行した baseline `swift test` は 194 test / 26 suite が成功する。既存 checkout の stale SwiftPM workspace cache では trait planning error を再現したため、acceptance は clean resolve 可能性と clean build の両方を確認する。
 
 ## 4. Owner map
 
