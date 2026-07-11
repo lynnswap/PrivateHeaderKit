@@ -195,14 +195,15 @@ DB path:
 
 Minimum schema:
 
-- `metadata(schemaVersion, toolVersion)`
+- `metadata(toolVersion)`
+- GRDB-managed `grdb_migrations(identifier)` as the only schema-version record
 - `runs(id, source identity, plan fingerprint, startedAt, endedAt, status)`
 - `runTargets(runID, targetID, status, failureSummary, artifactSet)`
 - `targets(targetID, lastSuccessfulRunID, status, artifactSet, updatedAt)`
 - `publicationIntents(generationID, runID, previousGenerationID, state, createdAt, completedAt)`
 - `runLogs(runID, kind, relativePath)`
 
-GRDB migration が schema version の唯一の owner となる。JSON file は migration/state decision に使わない。必要な human-readable report を残す場合は DB snapshot から生成する derived artifact とし、読み戻して制御フローを決めない。
+GRDB migration と `grdb_migrations` が schema version の唯一の owner となる。独自の `metadata.schemaVersion` は置かず、未知の migration identifier は newer schema として fail fast する。JSON file は migration/state decision に使わない。必要な human-readable report を残す場合は DB snapshot から生成する derived artifact とし、読み戻して制御フローを決めない。
 
 State transition:
 
