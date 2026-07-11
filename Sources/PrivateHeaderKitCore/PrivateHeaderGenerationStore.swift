@@ -422,7 +422,8 @@ package actor GenerationStore {
 
   package func recover(
     using publication: PrivateHeaderGeneration.PublicationSnapshot,
-    at date: Date
+    at date: Date,
+    terminalReason: PrivateHeaderGeneration.RecoveryTerminalReason = .interrupted
   ) throws -> PrivateHeaderGeneration.RecoveryAction {
     try databaseQueue.write { db in
       guard let intent = try Self.fetchLatestPublicationIntent(db) else {
@@ -458,7 +459,12 @@ package actor GenerationStore {
         if publication.currentGenerationID == intent.previousGenerationID,
           intent.state == .prepared
         {
-          try Self.abortIntent(db, intent: intent, at: date)
+          try Self.abortIntent(
+            db,
+            intent: intent,
+            terminalReason: terminalReason,
+            at: date
+          )
           return .discardGeneration(intent.generationID)
         }
         throw PrivateHeaderGeneration.StateError.corruptPublication(
@@ -504,7 +510,12 @@ package actor GenerationStore {
             "pointerPublished intent does not match current generation"
           )
         }
-        try Self.abortIntent(db, intent: intent, at: date)
+        try Self.abortIntent(
+          db,
+          intent: intent,
+          terminalReason: terminalReason,
+          at: date
+        )
         return .discardGeneration(intent.generationID)
       }
 
@@ -859,6 +870,7 @@ extension GenerationStore {
   fileprivate static func abortIntent(
     _ db: Database,
     intent: PrivateHeaderGeneration.PublicationIntent,
+    terminalReason: PrivateHeaderGeneration.RecoveryTerminalReason,
     at date: Date
   ) throws {
     try db.execute(
@@ -870,15 +882,46 @@ extension GenerationStore {
       ]
     )
     if try runStatus(db, id: intent.runID) == .running {
-      try interruptRunningTargets(db, runID: intent.runID, at: date)
-      try db.execute(
-        sql: "UPDATE runs SET status = ?, endedAt = ? WHERE id = ?",
-        arguments: [
-          PrivateHeaderGeneration.RunStatus.interrupted.rawValue,
-          date.timeIntervalSinceReferenceDate,
-          intent.runID.rawValue,
-        ]
-      )
+      switch terminalReason {
+      case .interrupted:
+        try interruptRunningTargets(db, runID: intent.runID, at: date)
+        try db.execute(
+          sql: "UPDATE runs SET status = ?, endedAt = ? WHERE id = ?",
+          arguments: [
+            PrivateHeaderGeneration.RunStatus.interrupted.rawValue,
+            date.timeIntervalSinceReferenceDate,
+            intent.runID.rawValue,
+          ]
+        )
+      case .failed(let message):
+        try db.execute(
+          sql: """
+            UPDATE runTargets
+            SET status = ?, failureSummary = COALESCE(failureSummary, ?), updatedAt = ?
+            WHERE runID = ? AND status IN (?, ?)
+            """,
+          arguments: [
+            PrivateHeaderGeneration.RunTargetStatus.failed.rawValue,
+            message,
+            date.timeIntervalSinceReferenceDate,
+            intent.runID.rawValue,
+            PrivateHeaderGeneration.RunTargetStatus.running.rawValue,
+            PrivateHeaderGeneration.RunTargetStatus.completed.rawValue,
+          ]
+        )
+        try db.execute(
+          sql: """
+            UPDATE runs
+            SET status = ?, endedAt = ?, terminalStatusOverride = NULL
+            WHERE id = ?
+            """,
+          arguments: [
+            PrivateHeaderGeneration.RunStatus.failed.rawValue,
+            date.timeIntervalSinceReferenceDate,
+            intent.runID.rawValue,
+          ]
+        )
+      }
     }
   }
 
