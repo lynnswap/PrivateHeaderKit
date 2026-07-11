@@ -216,10 +216,13 @@ Minimum schema:
 - `targets(targetID, lastSuccessfulRunID, status, artifactSet, updatedAt)`
 - `publicationIntents(generationID, runID, previousGenerationID, state, createdAt, completedAt)`
 - `runLogs(runID, kind, relativePath)`
+- monotonic `runOrdering` / `publicationOrdering` sequences for causal latest-state selection
 
 GRDB migration と `grdb_migrations` が schema version の唯一の owner となる。独自の `metadata.schemaVersion` は置かず、未知の migration identifier は newer schema として fail fast する。JSON file は migration/state decision に使わない。必要な human-readable report を残す場合は DB snapshot から生成する derived artifact とし、読み戻して制御フローを決めない。
 
 Plan fingerprint v2 は length-prefixed component encoding を使い、filesystem-only / loaded-shared-cache mode、inventory schema version、cache UUID、validated・deduplicated・sorted image paths の SHA-256 digest を含める。inventory JSON は helper wire payload に限り、durable state owner にはしない。
+
+`startedAt` / `createdAt` は report 用時刻であり、latest run / intent の因果順序には使わない。DB transaction 内で採番する monotonic sequence が順序の owner となり、wall clock rollback や同一 timestamp でも後から成立した transition を選ぶ。
 
 State transition:
 
@@ -231,6 +234,8 @@ publication: prepared -> pointerPublished -> committed
 ```
 
 `prepared`、target result、run update のように同時に成立すべき行は 1 `dbQueue.write` で更新する。raw dump 中に SQLite transaction を開いたままにしない。
+
+Task cancellation と、process crash 後に由来を確定できない startup recovery は run / active target を `.interrupted` へ収束させる。process 内で捕捉できた非 cancellation の filesystem / persistence failure は、同じ publication intent recovery を使っても `.failed` として記録し、typed infrastructure failure summary を返す。
 
 ## 8. Artifact publication contract
 
