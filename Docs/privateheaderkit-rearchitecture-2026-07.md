@@ -114,6 +114,7 @@ PrivateHeaderKitCLI (composition root)
 
 PrivateHeaderKitInstallCLI
   ├─> PrivateHeaderKitInstall ──> PrivateHeaderKitTooling
+  ├─> UnixSignals
   └─> ArgumentParser
 
 PrivateHeaderKitRawDumpHelper ──> PrivateHeaderKitRawDumpCore
@@ -126,7 +127,7 @@ Decisions:
 - manifest は `// swift-tools-version: 6.3` へ上げる。deployment baseline の macOS 14 / iOS 17 は維持する。
 - GRDB type は Core target 外へ出さない。
 - Core は Tooling を import しない。process port を要求し、CLI が concrete adapter を注入する。
-- Subprocess は Tooling の macOS process adapter、UnixSignals は CLI composition root だけに置き、simulator helper の iOS build graph へ入れない。
+- Subprocess は Tooling の macOS process adapter、UnixSignals は user-facing CLI / installer の composition root だけに置き、simulator helper の iOS build graph へ入れない。
 - Installer は public reusable library ではなく package-owned executable concern のままにする。
 - raw dump target graph は今回変更しない。
 
@@ -281,7 +282,7 @@ Recovery/fault-injection tests は各境界（intent 前、generation move 後�
 
 ## 10. Cancellation and subprocess contract
 
-- CLI process lifetime が root generation `Task` handle を所有する。
+- CLI / installer process lifetime が各 root operation `Task` handle を所有する。
 - `UnixSignals` から `SIGINT` / `SIGTERM` を受けたら root task を cancel する。
 - Tooling adapter は task cancellation を child process へ伝え、graceful termination を開始する。
 - child termination completion と output drain を await してから adapter result/throw を返す。
