@@ -320,16 +320,22 @@ Installed layout:
 
 Install sequence:
 
-1. install lock を取得する。
-2. 全 source artifact を build/resolve する。1 つでも失敗・欠損なら既存 install を変更せず終了する。
-3. temporary cohort directory に 3 binary と `release.json` を stage する。
-4. version、SHA-256、architecture/platform、executable permission、code signature policy を全 artifact で検証する。
-5. immutable `versions/<cohort>` へ publish する。
-6. `current` symlink を atomic switch する。
-7. stable `<prefix>/bin/privateheaderkit` symlink を作成/検証する。
-8. old direct-layout helper/binary は new cohort が active と確認できた後だけ削除する。
+1. `prefix` / `binDir` の既存 ancestor と symlink alias を canonicalize し、その identity から全 managed path と install lock を一度だけ導出する。
+2. install lock を取得し、未完の direct-layout migration intent があれば filesystem の実状態と complete cohort を検証して idempotent に roll-forward / rollback する。
+3. 全 source artifact を build/resolve する。1 つでも失敗・欠損なら既存 install を変更せず終了する。
+4. temporary cohort directory に 3 binary と `release.json` を stage する。
+5. version、SHA-256、architecture/platform、executable permission、code signature policy を全 artifact で検証する。
+6. immutable `versions/<cohort>` へ exclusive publish する。destination が既にある場合だけ、その complete manifest/content を検証して再利用する。
+7. direct-layout migration では legacy file identity と同一 parent の public-command backup を durable intent に保存する。
+8. `current` symlink を atomic switch する。
+9. stable `<prefix>/bin/privateheaderkit` symlink を作成/検証する。
+10. old direct-layout helper/binary は snapshot identity が一致し、new cohort が active と確認できた後だけ削除する。不一致や post-commit cleanup failure は warning とし、unknown file を削除しない。
 
 Source install と release install は同じ layout/manifest semantics を使う。build failure を warning にして sibling/base URL の stale binary へ fallback しない。
+
+Source install は build 前の `HEAD`、release tag/effective provenance、tracked diff、untracked input content を 1 source snapshot として fingerprint し、全 product build 後に同一性を再検証する。dirty checkout は許可するが、build 中に source snapshot が変化した cohort は install しない。
+
+Direct-layout migration は DB と filesystem を跨ぐ小さな transaction として扱う。intent write、complete cohort、atomic pointer、same-parent backup を recovery evidence とし、process kill 後の mixed direct/managed layout を単なる ambiguity として拒否せず、lock 取得直後に old complete layout または new complete cohort へ収束させる。intent 自体が malformed、またはどちらの complete state も証明できない場合だけ fail fast する。
 
 `cohort-sha` は git commit ではなく、sorted artifact name / SHA-256 / platform / architecture から算出する content identity とする。git commit は `release.json` の provenance metadata に別記録する。同じ HEAD でも debug/release、build setting、dirty source が異なる binary set を同じ immutable directory と誤認しない。
 
