@@ -211,7 +211,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         #expect(catalog.allTargetsIncludingNestedChildren.map(\.candidate.displayName) == ["Foo"])
     }
 
-    @Test func unreadableNestedContainerDoesNotAbortDiscovery() throws {
+    @Test func nestedContainerIOFailureIsSurfaced() throws {
         let root = try makeTemporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: root)
@@ -222,15 +222,19 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "System/Library/Frameworks/Foo.framework/PlugIns",
             isDirectory: true
         )
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: plugInsURL.path)
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: plugInsURL.path)
+        let fileManager = FailingContentsFileManager(failingPath: plugInsURL.path)
+
+        do {
+            _ = try PrivateHeaderGeneration.TargetDiscovery.discover(
+                in: root,
+                fileManager: fileManager
+            )
+            Issue.record("injected nested container I/O failure was swallowed")
+        } catch {
+            let error = error as NSError
+            #expect(error.domain == NSPOSIXErrorDomain)
+            #expect(error.code == Int(EACCES))
         }
-
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
-
-        let framework = try #require(catalog.targets.first { $0.candidate.displayName == "Foo" })
-        #expect(framework.childTargets.isEmpty)
     }
 
     @Test func resolverUsesDisplayNamesAndExactAliasesWithoutCategoryPartialSelection() throws {
@@ -392,6 +396,30 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "/usr/lib/libCacheOnly.dylib",
             "/usr/lib/libFilesystem.dylib",
         ])
+    }
+}
+
+private final class FailingContentsFileManager: FileManager, @unchecked Sendable {
+    private let failingPath: String
+
+    init(failingPath: String) {
+        self.failingPath = failingPath
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        if url.path == failingPath {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        }
+        return try super.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: mask
+        )
     }
 }
 
