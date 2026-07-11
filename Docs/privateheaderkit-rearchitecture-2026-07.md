@@ -238,6 +238,8 @@ Contract:
 - cancel 前に完了した target がある場合は、それらを含む generation の publication を recoverable critical section として完了させてから cancellation を caller へ返す。
 - publication atomicity は per-run とする。成功 target をまとめた 1 coherent snapshot を publish し、failed/interrupted target の last successful content は snapshot 内に保持する。成功 target が 0 の run は pointer を切り替えない。
 - pointer switch は temporary symlink を同一 parent directory で作成し、atomic rename/replace する。
+- current の symlink-to-symlink switch は same-filesystem `rename(2)` を使う。macOS の契約は crash 中も destination 名が存在することを保証する。
+- legacy real directory と stable symlink の初回切替は、異なる item type を atomic swap できる `renameatx_np(..., RENAME_SWAP)` を使う。volume が `RENAME_SWAP` を提供しない場合は元 tree を変更せず migration unsupported として fail fast し、逐次 remove/rename fallback を置かない。
 - generation marker の ID、artifact set checksum、plan fingerprint を publish 前に検証する。
 - raw staging に `.h` / `.swiftinterface` 以外の regular file、未許可 symlink、hidden payload があれば publish せず fail fast する。inventory と実際の published files を一致させる。
 - current/artifact inspection は「存在しない」と permission/path validation/I/O error を区別し、後者を stale artifact に読み替えない。
