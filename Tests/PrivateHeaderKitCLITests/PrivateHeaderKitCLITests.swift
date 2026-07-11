@@ -437,6 +437,18 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(source.isFinished)
     }
 
+    @Test func signalCoordinatorPrefersEarlyBufferedSignalOverFastOperation() async {
+        let source = ControlledSignalSource()
+        source.send(.interrupt)
+
+        let status = await coordinatePrivateHeaderKitOperation(
+            signalSource: source,
+            operation: { 0 }
+        )
+
+        #expect(status == 130)
+    }
+
     @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1021,7 +1033,6 @@ private final class ControlledSignalSource: PrivateHeaderKitSignalSource, @unche
             return
         }
         finished = true
-        bufferedSignal = nil
         let waiter = waiter
         self.waiter = nil
         lock.unlock()
