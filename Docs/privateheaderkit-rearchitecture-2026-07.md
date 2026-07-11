@@ -29,6 +29,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - destructive semantic reset と legacy migration を明示する `--fresh` を追加し、`--resume` とは相互排他にする。
 - default artifact lookup path `<output-base>/<source-label>/` を維持する。この path の実体は managed generation を指す symlink へ変更してよい。
 - state/log/staging は header tree の外に置く。
+- CLI の単一 `<output-base>` から artifact と `<output-base>/.state` を導出する。外部 library consumer がないため、artifact base と state base を独立指定する package API は削除する。
 - target discovery と raw header extraction の意味論は変更しない。
 
 ### 意図的に互換を切る契約
@@ -231,7 +232,7 @@ publication: prepared -> pointerPublished -> committed
 
 ## 8. Artifact publication contract
 
-Artifact base と state base が異なっても publication primitive が同一 volume で完結するよう、generation は artifact base 配下へ置く。
+Generation は単一 output base の artifact-managed area 配下へ置き、state は同じ base の `.state` 配下へ置く。cross-process lease identity はこの canonical output/source identity に結び付ける。
 
 ```text
 <artifact-base>/
