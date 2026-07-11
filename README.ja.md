@@ -19,12 +19,18 @@ privateheaderkit
 
 ## インストール
 
+Apple Silicon Mac では、version を焼き込んだ installer から最新の release
+cohort をインストールできます。
+
 ```bash
-swift run -c release privateheaderkit-install
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+sh install.sh
 ```
 
-デフォルトでは、user-facing command として単一の `privateheaderkit` バイナリを `~/.local/bin` にインストールします。
-raw dump 用の internal helper は `~/.local/libexec/privateheaderkit/` にインストールします。
+installer は対応する archive と `SHA256SUMS.txt` を取得し、展開前の checksum、
+3 binary の内容・architecture・platform・code signature を検証してから active
+cohort を切り替えます。デフォルトの user-facing command は
+`~/.local/bin/privateheaderkit` です。
 
 `~/.local/bin` が `PATH` に入っていない場合は追加してください:
 
@@ -33,20 +39,42 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-配置先を変更したい場合:
+prefix または command directory を変更する場合:
 
 ```bash
-swift run -c release privateheaderkit-install --prefix "$HOME/.local"
-# または
-swift run -c release privateheaderkit-install --bindir "$HOME/bin"
+sh install.sh --prefix "$HOME/.local"
+# または: $HOME を prefix、$HOME/bin を stable command directory にする
+sh install.sh --bindir "$HOME/bin"
 ```
 
-ビルド済みの installer を直接実行したい場合:
+checkout から全 artifact を build してインストールする場合:
 
 ```bash
-swift build -c release --product privateheaderkit-install
-"$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
+git clone https://github.com/lynnswap/PrivateHeaderKit.git
+cd PrivateHeaderKit
+swift run -c release privateheaderkit-install
 ```
+
+release install と source install は同じ immutable layout を使います。
+
+```text
+~/.local/bin/privateheaderkit
+  -> ../libexec/privateheaderkit/current/privateheaderkit
+~/.local/libexec/privateheaderkit/
+  current -> versions/<version+content-sha256>
+  versions/<version+content-sha256>/
+    privateheaderkit
+    privateheaderkit-raw-helper
+    privateheaderkit-sim-helper
+    release.json
+```
+
+public command は `privateheaderkit` だけです。raw dump helper は常に同じ検証済み
+cohort から解決します。更新時は最新の `install.sh` を再取得して実行するか、source
+checkout を更新して `swift run -c release privateheaderkit-install` を再実行します。
+build・download・validation・staging のどこかで失敗した場合、active な `current`
+pointer は変更されません。tag のない source checkout は commit を含む
+`0.0.0-dev.<short-commit>` version namespace を使います。
 
 ## Command Surface
 
