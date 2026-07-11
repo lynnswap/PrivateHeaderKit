@@ -26,6 +26,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - user-facing command は `privateheaderkit` だけとする。
 - 引数なしの interactive flow を維持する。
 - automation 用の `--platform`、`--version`、`--build`、`--system-root`、`--device`、`--out`、`--target`、`--resume` を維持する。
+- destructive semantic reset と legacy migration を明示する `--fresh` を追加し、`--resume` とは相互排他にする。
 - default artifact lookup path `<output-base>/<source-label>/` を維持する。この path の実体は managed generation を指す symlink へ変更してよい。
 - state/log/staging は header tree の外に置く。
 - target discovery と raw header extraction の意味論は変更しない。
@@ -34,8 +35,8 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 
 - README に consumer story がない `PrivateHeaderKitCore` library product は削除する。Core API は package 内 contract とする。
 - rewrite 途中の `manifest.json` / `runs/*/run.json` を resume の source of truth として読み続けない。
-- legacy JSON state がある場合、`--resume` は fail fast する。`--fresh` は新しい DB state で開始できるが、現在公開中の artifact を新 generation の publication 完了前に削除しない。
-- `<output-base>/<source-label>` が既存の通常 directory である場合、自動推測で symlink 化しない。明示的な fresh migration が選ばれたときだけ、同一 volume の managed legacy generation として取り込み、切替に失敗した場合は元の directory を保持する。
+- legacy JSON state がある場合、`--resume` は fail fast する。明示 `--fresh` は新しい DB state で開始できるが、現在公開中の artifact を新 generation の publication 完了前に削除しない。
+- `<output-base>/<source-label>` が既存の通常 directory である場合、自動推測で symlink 化しない。明示 `--fresh` migration が選ばれたときだけ、同一 volume の initial generation として取り込み、旧 tree 全体を retained backup として残す。切替に失敗した場合は元の directory を保持する。
 
 ### Non-goals
 
@@ -67,6 +68,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - process cancellation は child termination completion と domain の `.interrupted` を一貫して結び付けていない。
 - installer は build failure 後に stale sibling binary へ fallback し、3 binary を逐次上書きする。
 - README が示す consumer は CLI だけだが、Core の state/storage/executor implementation types まで public になっている。
+- 既存 tests と削除済み rewrite requirements は unknown file 保存を契約にしているため、legacy output を「追跡外なら削除可能」と推測できない。
 
 追加 baseline:
 
@@ -250,11 +252,15 @@ Contract:
 - `.fresh` でも live tree の cleanup は行わない。成功 target の旧 owned paths は次 generation 上で削除してから新 artifact を置く。
 - failed/interrupted target は current generation の last successful artifacts を保持し、attempt failure は DB に別記録する。
 - cancel 前に完了した target がある場合は、それらを含む generation の publication を recoverable critical section として完了させてから cancellation を caller へ返す。
+- publication atomicity は per-run とする。成功 target をまとめた 1 coherent snapshot を publish し、failed/interrupted target の last successful content は snapshot 内に保持する。成功 target が 0 の run は pointer を切り替えない。
 - pointer switch は temporary symlink を同一 parent directory で作成し、atomic rename/replace する。
 - generation marker の ID、artifact set checksum、plan fingerprint を publish 前に検証する。
 - artifact ownership は volume semantics に依存させない。各 path component を NFC、`en_US_POSIX` case-insensitive fold、NFC の順で portable key 化し、異なる component spelling、同一 leaf、file/descendant prefix の衝突を target 内・target 間・opaque 間で一括拒否する。同じ spelling の共有 directory prefix は許可する。
 - completed target の置換は prospective ownership、全 removal、全 source、全 destination を immutable mutation plan として検証してから draft を変更する。legacy opaque path は incoming path と byte-for-byte 同一の場合だけ target が claim でき、case/Unicode alias は claim とみなさない。
 - 同じ portable validator を apply、legacy inventory、generation prepare、persisted marker validation で使い、checksum/inventory mismatch より ownership collision を先に報告する。
+- raw staging に `.h` / `.swiftinterface` 以外の regular file、未許可 symlink、hidden payload があれば publish せず fail fast する。inventory と実際の published files を一致させる。
+- current/artifact inspection は「存在しない」と permission/path validation/I/O error を区別し、後者を stale artifact に読み替えない。
+- snapshot seed は APFS clone を correctness requirement にしない。clone が利用できなければ同一 volume staging へ通常 copy し、完了前の失敗は live pointer に影響させない。
 
 Publication order:
 
@@ -267,6 +273,10 @@ Publication order:
 7. lease 解放前に不要 staging を削除する。cleanup failure は log するが committed generation を rollback しない。
 
 DB と filesystem は 1 ACID transaction ではない。正しさは durable intent、immutable generation、atomic pointer、idempotent recovery の組合せで保証する。
+
+保証範囲は process crash / kill 後の論理 recovery と、reader が old/new の complete tree のどちらかだけを観測する atomic visibility までとする。file/DB の flush 境界は実装するが、hardware/volume が durable rename を保証しない power-loss まで分散 ACID として表明しない。
+
+Generation retention は current、previous committed 1 世代、未完 intent が参照する全世代を必ず保持する。追加の committed generation は新 commit 完了後に最大 3 世代まで GC できる。GC は marker と DB reference の双方を確認し、unknown path、current、prepared、pointerPublished generation を削除しない。
 
 ## 9. Startup recovery matrix
 
@@ -301,6 +311,7 @@ Recovery/fault-injection tests は各境界（intent 前、generation move 後�
 - `ArgumentParser` が option grammar、validation entry、help、version、exit mapping を所有する。
 - interactive wizard は引数なし invocation の application flow として残し、ArgumentParser に UI state を持たせない。
 - parser は validated `PrivateHeaderKitGenerateCommand` value を生成し、domain source/output/options への変換は 1 箇所に置く。
+- `--fresh` は legacy state/output migration と resume state reset を明示する。interactive flow は対象、backup path、unknown content の保持を表示して確認する。non-interactive migration は `--fresh` がない限り実行しない。
 - CLI は DB file/JSON schema を decode しない。`GenerationStore`/`Result` が返す snapshot だけで result screen を描画する。
 - `PrivateHeaderKitMain.swift` の parse、wizard、render、composition は責務ごとの file へ分割するが、新 target は作らない。
 
