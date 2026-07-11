@@ -334,6 +334,8 @@ Source install と release install は同じ layout/manifest semantics を使う
 
 同一 version / cohort identity の directory が既に存在しても、`release.json` の commit provenance が install request と異なる場合は暗黙再利用しない。既存 manifest の書換え、first-wins、provenance の読み替えは immutable cohort の意味を壊すため、provenance collision として fail fast する。release workflow は同一 version の tag target 不一致を build 前に拒否する。
 
+tag のない source install は固定 `0.0.0-dev` を共有せず、`0.0.0-dev.<short-commit>` を version identity とする。docs-only change や最適化で binary bytes が同じになった別 commit も異なる source snapshot として配置し、上記 provenance collision を通常の source update path にしない。
+
 Release pipeline は次を追加する。
 
 - `scripts/build-release.sh`
