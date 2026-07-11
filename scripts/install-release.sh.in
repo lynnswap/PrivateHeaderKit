@@ -1,0 +1,181 @@
+#!/usr/bin/env sh
+set -eu
+
+VERSION="__VERSION__"
+COMMIT="__COMMIT__"
+REPO="__REPO__"
+ARCHIVE="privateheaderkit-darwin-arm64.tar.gz"
+DEFAULT_BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+BASE_URL="${PRIVATEHEADERKIT_BASE_URL:-$DEFAULT_BASE_URL}"
+PREFIX="${PREFIX:-${HOME}/.local}"
+BINDIR="${BINDIR:-}"
+
+usage() {
+  cat <<'EOF'
+Usage: install.sh [--prefix <dir>] [--bindir <dir>]
+EOF
+}
+
+need_value() {
+  if [ -z "${2:-}" ]; then
+    echo "$1 requires a value." >&2
+    usage >&2
+    exit 1
+  fi
+}
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing required command: $1" >&2
+    exit 1
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prefix)
+      need_value "$1" "${2:-}"
+      PREFIX="$2"
+      BINDIR=""
+      shift 2
+      ;;
+    --bindir)
+      need_value "$1" "${2:-}"
+      BINDIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+need awk
+need curl
+need mktemp
+need shasum
+need tar
+need uname
+
+os="$(uname -s)"
+architecture="$(uname -m)"
+if [ "$os" != "Darwin" ]; then
+  echo "GitHub release archives support macOS arm64 only; build from source on ${os}/${architecture}." >&2
+  exit 1
+fi
+
+arm64_capable=0
+if [ "$architecture" = "arm64" ]; then
+  arm64_capable=1
+elif [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+  arm64_capable=1
+fi
+if [ "$arm64_capable" != "1" ]; then
+  echo "GitHub release archives support macOS arm64 only; build from source on ${os}/${architecture}." >&2
+  exit 1
+fi
+
+temporary_root="${TMPDIR:-/tmp}"
+temporary_directory="$(mktemp -d "${temporary_root%/}/privateheaderkit.XXXXXX")"
+cleanup() {
+  rm -rf "$temporary_directory"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+BASE_URL="${BASE_URL%/}"
+curl -fsSL -o "$temporary_directory/$ARCHIVE" "$BASE_URL/$ARCHIVE"
+curl -fsSL -o "$temporary_directory/SHA256SUMS.txt" "$BASE_URL/SHA256SUMS.txt"
+
+selected_count="$(awk -v asset="$ARCHIVE" '
+  NF == 2 && $2 == asset && length($1) == 64 && $1 !~ /[^0-9A-Fa-f]/ { count += 1 }
+  END { print count + 0 }
+' "$temporary_directory/SHA256SUMS.txt")"
+if [ "$selected_count" != "1" ]; then
+  echo "SHA256SUMS.txt must contain exactly one valid entry for $ARCHIVE." >&2
+  exit 1
+fi
+awk -v asset="$ARCHIVE" '
+  NF == 2 && $2 == asset && length($1) == 64 && $1 !~ /[^0-9A-Fa-f]/ { print }
+' "$temporary_directory/SHA256SUMS.txt" > "$temporary_directory/SHA256SUMS.selected"
+(
+  cd "$temporary_directory"
+  shasum -a 256 -c SHA256SUMS.selected
+)
+
+expected_entries="$(printf '%s\n' \
+  "bin/privateheaderkit-install" \
+  "cohort/privateheaderkit" \
+  "cohort/privateheaderkit-raw-helper" \
+  "cohort/privateheaderkit-sim-helper" \
+  "cohort/release.json")"
+actual_entries="$(tar -tzf "$temporary_directory/$ARCHIVE" | LC_ALL=C sort)"
+if [ "$actual_entries" != "$expected_entries" ]; then
+  echo "Release archive contains an unexpected path set." >&2
+  printf 'Expected:\n%s\n' "$expected_entries" >&2
+  printf 'Actual:\n%s\n' "$actual_entries" >&2
+  exit 1
+fi
+expected_entry_types="$(printf '%s\n' - - - - -)"
+actual_entry_types="$(tar -tvzf "$temporary_directory/$ARCHIVE" \
+  | awk '{ print substr($1, 1, 1) }')"
+if [ "$actual_entry_types" != "$expected_entry_types" ]; then
+  echo "Release archive entries must all be regular files." >&2
+  exit 1
+fi
+
+tar -C "$temporary_directory" -xzf "$temporary_directory/$ARCHIVE"
+for directory in "$temporary_directory/bin" "$temporary_directory/cohort"; do
+  if [ ! -d "$directory" ] || [ -L "$directory" ]; then
+    echo "Extracted path is not a real directory: $directory" >&2
+    exit 1
+  fi
+done
+for file in \
+  "$temporary_directory/bin/privateheaderkit-install" \
+  "$temporary_directory/cohort/privateheaderkit" \
+  "$temporary_directory/cohort/privateheaderkit-raw-helper" \
+  "$temporary_directory/cohort/privateheaderkit-sim-helper" \
+  "$temporary_directory/cohort/release.json"
+do
+  if [ ! -f "$file" ] || [ -L "$file" ]; then
+    echo "Extracted path is not a regular non-symlink file: $file" >&2
+    exit 1
+  fi
+done
+if [ ! -x "$temporary_directory/bin/privateheaderkit-install" ]; then
+  echo "Release installer is not executable." >&2
+  exit 1
+fi
+
+if [ -n "$BINDIR" ]; then
+  "$temporary_directory/bin/privateheaderkit-install" \
+    --release-dir "$temporary_directory/cohort" \
+    --expected-version "$VERSION" \
+    --expected-commit "$COMMIT" \
+    --bindir "$BINDIR"
+  installed_bin="$BINDIR"
+else
+  "$temporary_directory/bin/privateheaderkit-install" \
+    --release-dir "$temporary_directory/cohort" \
+    --expected-version "$VERSION" \
+    --expected-commit "$COMMIT" \
+    --prefix "$PREFIX"
+  installed_bin="$PREFIX/bin"
+fi
+
+echo "Installed PrivateHeaderKit $VERSION."
+case ":${PATH}:" in
+  *":${installed_bin}:"*) ;;
+  *)
+    echo "Add this directory to PATH:"
+    echo "  export PATH=\"${installed_bin}:\$PATH\""
+    ;;
+esac
