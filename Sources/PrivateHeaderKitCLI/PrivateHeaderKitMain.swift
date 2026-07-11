@@ -7,26 +7,15 @@ import Darwin
 import Glibc
 #endif
 
-private actor PrivateHeaderKitUnixSignalSource: PrivateHeaderKitSignalSource {
-    private let nextSignalTask: Task<PrivateHeaderKitTerminationSignal?, Never>
-
-    init(signals: UnixSignalsSequence) {
-        nextSignalTask = Task {
-            var iterator = signals.makeAsyncIterator()
-            guard let signal = await iterator.next() else { return nil }
-            if signal == .sigint { return .interrupt }
-            if signal == .sigterm { return .terminate }
-            preconditionFailure("received a Unix signal that was not registered")
-        }
-    }
+private struct PrivateHeaderKitUnixSignalSource: PrivateHeaderKitSignalSource {
+    let signals: UnixSignalsSequence
 
     func next() async -> PrivateHeaderKitTerminationSignal? {
-        let nextSignalTask = self.nextSignalTask
-        return await withTaskCancellationHandler {
-            await nextSignalTask.value
-        } onCancel: {
-            nextSignalTask.cancel()
-        }
+        var iterator = signals.makeAsyncIterator()
+        guard let signal = await iterator.next() else { return nil }
+        if signal == .sigint { return .interrupt }
+        if signal == .sigterm { return .terminate }
+        preconditionFailure("received a Unix signal that was not registered")
     }
 }
 

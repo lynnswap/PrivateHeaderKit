@@ -67,6 +67,13 @@ private final class AsyncEvent: @unchecked Sendable {
             }
         }
     }
+
+    var value: Bool {
+        lock.lock()
+        let value = isSignaled
+        lock.unlock()
+        return value
+    }
 }
 
 private func shellCommand(_ script: String) -> [String] {
@@ -151,6 +158,14 @@ private func temporaryDirectory() throws -> URL {
     return directory
 }
 
+private func writeExecutableScript(_ body: String, to url: URL) throws {
+    try Data("#!/bin/sh\n\(body)\n".utf8).write(to: url)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: url.path
+    )
+}
+
 private func canAcquireExclusiveLock(at path: String) -> Bool {
     let descriptor = path.withCString { open($0, O_RDWR) }
     guard descriptor >= 0 else { return false }
@@ -158,6 +173,148 @@ private func canAcquireExclusiveLock(at path: String) -> Bool {
     guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { return false }
     _ = flock(descriptor, LOCK_UN)
     return true
+}
+
+private func waitForProcessGroupLocks(parent: String, child: String) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(10))
+    while clock.now < deadline {
+        if FileManager.default.fileExists(atPath: parent),
+           FileManager.default.fileExists(atPath: child),
+           !canAcquireExclusiveLock(at: parent),
+           !canAcquireExclusiveLock(at: child)
+        {
+            return
+        }
+        await Task.yield()
+    }
+    throw ToolingError.message("process group did not acquire both test locks")
+}
+
+private func makePipeDescriptors() throws -> (read: Int32, write: Int32) {
+    var descriptors = [Int32](repeating: -1, count: 2)
+    guard pipe(&descriptors) == 0 else {
+        throw ToolingError.message("pipe failed (errno \(errno))")
+    }
+    return (read: descriptors[0], write: descriptors[1])
+}
+
+private func fillPipeLeavingGap(
+    readDescriptor: Int32,
+    writeDescriptor: Int32,
+    gapByteCount: Int
+) throws -> Int {
+    let originalFlags = fcntl(writeDescriptor, F_GETFL)
+    guard originalFlags >= 0,
+          fcntl(writeDescriptor, F_SETFL, originalFlags | O_NONBLOCK) == 0
+    else {
+        throw ToolingError.message("fcntl pipe failed (errno \(errno))")
+    }
+    defer { _ = fcntl(writeDescriptor, F_SETFL, originalFlags) }
+
+    let buffer = [UInt8](repeating: UInt8(ascii: "f"), count: 4 * 1024)
+    var filledByteCount = 0
+    while true {
+        let written = buffer.withUnsafeBytes { bytes in
+            Darwin.write(writeDescriptor, bytes.baseAddress, bytes.count)
+        }
+        if written > 0 {
+            filledByteCount += written
+            continue
+        }
+        if written < 0, errno == EINTR {
+            continue
+        }
+        guard written < 0, errno == EAGAIN else {
+            throw ToolingError.message("fill pipe failed (errno \(errno))")
+        }
+        break
+    }
+    guard filledByteCount > gapByteCount else {
+        throw ToolingError.message("pipe capacity is too small for cancellation test")
+    }
+
+    var remainingGap = gapByteCount
+    var drainBuffer = [UInt8](repeating: 0, count: gapByteCount)
+    while remainingGap > 0 {
+        let drained = drainBuffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(
+                readDescriptor,
+                bytes.baseAddress,
+                min(bytes.count, remainingGap)
+            )
+        }
+        if drained > 0 {
+            remainingGap -= drained
+        } else if drained < 0, errno == EINTR {
+            continue
+        } else {
+            throw ToolingError.message("drain pipe gap failed (errno \(errno))")
+        }
+    }
+    return filledByteCount
+}
+
+private final class PipeReadableByteProbe {
+    private let queueDescriptor: Int32
+
+    init(readDescriptor: Int32) throws {
+        queueDescriptor = kqueue()
+        guard queueDescriptor >= 0 else {
+            throw ToolingError.message("kqueue failed (errno \(errno))")
+        }
+        var event = kevent(
+            ident: UInt(readDescriptor),
+            filter: Int16(EVFILT_READ),
+            flags: UInt16(EV_ADD | EV_ENABLE),
+            fflags: 0,
+            data: 0,
+            udata: nil
+        )
+        guard kevent(queueDescriptor, &event, 1, nil, 0, nil) == 0 else {
+            let code = errno
+            _ = close(queueDescriptor)
+            throw ToolingError.message("register pipe kqueue failed (errno \(code))")
+        }
+    }
+
+    deinit {
+        _ = close(queueDescriptor)
+    }
+
+    func readableByteCount() throws -> Int {
+        var event = kevent()
+        var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+        let eventCount = kevent(
+            queueDescriptor,
+            nil,
+            0,
+            &event,
+            1,
+            &timeout
+        )
+        guard eventCount >= 0 else {
+            throw ToolingError.message("read pipe kqueue failed (errno \(errno))")
+        }
+        return eventCount == 0 ? 0 : Int(event.data)
+    }
+}
+
+private func drainPipeToEOF(_ descriptor: Int32) throws -> Int {
+    var totalByteCount = 0
+    var buffer = [UInt8](repeating: 0, count: 4 * 1024)
+    while true {
+        let readCount = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+        }
+        if readCount > 0 {
+            totalByteCount += readCount
+        } else if readCount == 0 {
+            return totalByteCount
+        } else if errno != EINTR {
+            throw ToolingError.message("drain pipe failed (errno \(errno))")
+        }
+    }
 }
 
 @Suite
@@ -271,6 +428,153 @@ struct StreamingProcessRunnerTests {
             cwd: nil
         )
         #expect(namedOutput.contains("PHK_NAMED_EXECUTABLE=present"))
+    }
+
+    @Test func bareExecutableUsesOnlyEffectivePATHWhileRelativePathUsesWorkingDirectory() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physicalRoot = root.appendingPathComponent("physical", isDirectory: true)
+        let workingDirectory = physicalRoot.appendingPathComponent("cwd", isDirectory: true)
+        let pathDirectory = physicalRoot.appendingPathComponent("path", isDirectory: true)
+        let directoryCandidateRoot = root.appendingPathComponent(
+            "directory-candidate",
+            isDirectory: true
+        )
+        let brokenCandidateRoot = root.appendingPathComponent(
+            "broken-candidate",
+            isDirectory: true
+        )
+        let workingDirectoryAlias = root.appendingPathComponent("cwd-alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: workingDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: pathDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: directoryCandidateRoot.appendingPathComponent(
+                "phk-path-probe",
+                isDirectory: true
+            ),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: brokenCandidateRoot,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: workingDirectoryAlias,
+            withDestinationURL: workingDirectory
+        )
+
+        let executableName = "phk-path-probe"
+        try writeExecutableScript(
+            "printf cwd-shadow",
+            to: workingDirectory.appendingPathComponent(executableName)
+        )
+        try writeExecutableScript(
+            "printf selected-path",
+            to: pathDirectory.appendingPathComponent(executableName)
+        )
+        try writeExecutableScript(
+            "printf relative-cwd",
+            to: workingDirectory.appendingPathComponent("relative-tool")
+        )
+        let brokenCandidate = brokenCandidateRoot.appendingPathComponent(executableName)
+        try Data("#!/privateheaderkit/missing-interpreter\n".utf8).write(
+            to: brokenCandidate
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: brokenCandidate.path
+        )
+
+        let namedOutput = try await ProcessRunner().runCapture(
+            [executableName],
+            env: ["PATH": "../path"],
+            cwd: workingDirectoryAlias
+        )
+        #expect(namedOutput == "selected-path")
+
+        let directoryShadowOutput = try await ProcessRunner().runCapture(
+            [executableName],
+            env: ["PATH": "\(directoryCandidateRoot.path):\(pathDirectory.path)"],
+            cwd: workingDirectoryAlias
+        )
+        #expect(directoryShadowOutput == "selected-path")
+
+        let brokenCandidatePATH = "\(brokenCandidateRoot.path):\(pathDirectory.path)"
+        let brokenCandidateCapture = try await ProcessRunner().runCapture(
+            [executableName],
+            env: ["PATH": brokenCandidatePATH],
+            cwd: workingDirectoryAlias
+        )
+        #expect(brokenCandidateCapture == "selected-path")
+
+        let brokenCandidateStreaming = try await ProcessRunner().runStreaming(
+            [executableName],
+            env: ["PATH": brokenCandidatePATH],
+            cwd: workingDirectoryAlias,
+            streamOutput: false,
+            passthrough: { _ in }
+        )
+        #expect(brokenCandidateStreaming.status == 0)
+        #expect(brokenCandidateStreaming.lastLines == ["selected-path"])
+
+        do {
+            _ = try await ProcessRunner().runCapture(
+                [executableName],
+                env: ["PATH": brokenCandidateRoot.path],
+                cwd: workingDirectoryAlias
+            )
+            Issue.record("expected all failed PATH candidates to preserve launch failure")
+        } catch let error as ToolingError {
+            guard case .processLaunchFailed(let command, _) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(command == [executableName])
+        }
+
+        let relativeOutput = try await ProcessRunner().runCapture(
+            ["./relative-tool"],
+            env: ["PATH": ""],
+            cwd: workingDirectoryAlias
+        )
+        #expect(relativeOutput == "relative-cwd")
+
+        do {
+            _ = try await ProcessRunner().runCapture(
+                [executableName],
+                env: ["PATH": ""],
+                cwd: workingDirectoryAlias
+            )
+            Issue.record("expected exact empty PATH to reject cwd executable")
+        } catch let error as ToolingError {
+            guard case .processLaunchFailed(let command, let underlying) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(command == [executableName])
+            #expect(underlying.contains("executable not found in PATH"))
+        }
+
+        do {
+            _ = try await ProcessRunner().runCapture(
+                ["true"],
+                env: ["PATH": ""],
+                cwd: nil
+            )
+            Issue.record("expected exact empty PATH to reject system fallback executable")
+        } catch let error as ToolingError {
+            guard case .processLaunchFailed(let command, _) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(command == ["true"])
+        }
     }
 
     @Test func nonzeroCaptureExitMapsToTypedCommandFailure() async throws {
@@ -396,6 +700,35 @@ struct StreamingProcessRunnerTests {
         ])
     }
 
+    @Test func collectorBoundsUnterminatedLineAndMarksDiscardedPrefix() throws {
+        let discardedByteCount = 37
+        let bytes = Array(
+            repeating: UInt8(ascii: "x"),
+            count: StreamingOutputCollector.maximumLineByteCount + discardedByteCount
+        )
+        var collector = StreamingOutputCollector()
+        for chunkStart in stride(from: 0, to: bytes.count, by: 997) {
+            collector.consume(Array(bytes[chunkStart..<min(chunkStart + 997, bytes.count)]))
+        }
+        collector.finish()
+
+        #expect(collector.lastLines.count == 1)
+        let line = try #require(collector.lastLines.first)
+        let marker = "[truncated \(discardedByteCount) bytes] "
+        #expect(line.hasPrefix(marker))
+        let retained = line.dropFirst(marker.count)
+        #expect(retained.utf8.count == StreamingOutputCollector.maximumLineByteCount)
+        #expect(retained.allSatisfy { $0 == "x" })
+    }
+
+    @Test func collectorReplacesInvalidAndIncompleteUTF8AtEOF() {
+        var collector = StreamingOutputCollector()
+        collector.consume([UInt8(ascii: "a"), 0x80, 0xF0, 0x9F])
+        collector.finish()
+
+        #expect(collector.lastLines == ["a��"])
+    }
+
     @Test func helperOutputPreservesExactBytesAndTailLines() async throws {
         let helper = try testHelperExecutableURL()
         let passthrough = LockedDataBox()
@@ -471,6 +804,131 @@ struct StreamingProcessRunnerTests {
         #expect(output.snapshot().range(of: readyMarker) != nil)
         #expect(canAcquireExclusiveLock(at: parentLock))
         #expect(canAcquireExclusiveLock(at: childLock))
+    }
+
+    @Test func captureCancellationAfterSpawnWaitsForWholeProcessGroupAndDrain() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parentLock = directory.appendingPathComponent("capture-parent.lock").path
+        let childLock = directory.appendingPathComponent("capture-child.lock").path
+        let helper = try testHelperExecutableURL()
+
+        let task = Task {
+            try await ProcessRunner().runCapture(
+                [helper.path, "process-group", parentLock, childLock],
+                env: nil,
+                cwd: nil
+            )
+        }
+        try await waitForProcessGroupLocks(parent: parentLock, child: childLock)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("expected capture cancellation")
+        } catch is CancellationError {
+            // Cancellation is returned only after the process group is gone and pipes drain.
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(canAcquireExclusiveLock(at: parentLock))
+        #expect(canAcquireExclusiveLock(at: childLock))
+    }
+
+    @Test func cancellationUnblocksStoppedPassthroughAndWaitsForProcessGroup() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parentLock = directory.appendingPathComponent("blocked-parent.lock").path
+        let childLock = directory.appendingPathComponent("blocked-child.lock").path
+        let helper = try testHelperExecutableURL()
+        let passthroughEntered = AsyncEvent()
+        let passthroughRelease = AsyncEvent()
+
+        let task = Task {
+            defer { passthroughEntered.signal() }
+            return try await ProcessRunner().runStreaming(
+                [helper.path, "process-group", parentLock, childLock],
+                streamOutput: true,
+                passthrough: { data in
+                    guard data.range(of: Data("READY\n".utf8)) != nil else { return }
+                    passthroughEntered.signal()
+                    try await withTaskCancellationHandler {
+                        await passthroughRelease.wait()
+                        try Task.checkCancellation()
+                    } onCancel: {
+                        passthroughRelease.signal()
+                    }
+                }
+            )
+        }
+        await passthroughEntered.wait()
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("expected blocked passthrough cancellation")
+        } catch is CancellationError {
+            // The async sink releases on cancellation; Subprocess then owns full teardown.
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(canAcquireExclusiveLock(at: parentLock))
+        #expect(canAcquireExclusiveLock(at: childLock))
+    }
+
+    @Test func dispatchWriterCancellationStopsBlockedPipeAndClosesOwnedDescriptor() async throws {
+        var descriptors = try makePipeDescriptors()
+        defer {
+            if descriptors.read >= 0 { _ = close(descriptors.read) }
+            if descriptors.write >= 0 { _ = close(descriptors.write) }
+        }
+        let gapByteCount = 4 * 1024
+        let pipeCapacity = try fillPipeLeavingGap(
+            readDescriptor: descriptors.read,
+            writeDescriptor: descriptors.write,
+            gapByteCount: gapByteCount
+        )
+        let writer = try CancellableStandardOutputWriter(
+            fileDescriptor: descriptors.write
+        )
+        let pipeProbe = try PipeReadableByteProbe(readDescriptor: descriptors.read)
+        let writeFinished = AsyncEvent()
+        let writeTask = Task {
+            defer { writeFinished.signal() }
+            try await writer.write(
+                Data(repeating: UInt8(ascii: "w"), count: gapByteCount * 2)
+            )
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        while try pipeProbe.readableByteCount() < pipeCapacity,
+              !writeFinished.value,
+              clock.now < deadline
+        {
+            await Task.yield()
+        }
+        #expect(try pipeProbe.readableByteCount() == pipeCapacity)
+        #expect(!writeFinished.value)
+
+        writeTask.cancel()
+        async let cleanup: Void = writer.finish()
+        do {
+            try await writeTask.value
+            Issue.record("expected blocked DispatchIO write cancellation")
+        } catch is CancellationError {
+            // close(.stop) resumes the one pending write continuation exactly once.
+        } catch {
+            Issue.record("unexpected writer error: \(error)")
+        }
+        await cleanup
+
+        _ = close(descriptors.write)
+        descriptors.write = -1
+        let drainedByteCount = try drainPipeToEOF(descriptors.read)
+        #expect(drainedByteCount == pipeCapacity)
     }
 }
 #endif

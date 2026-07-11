@@ -41,7 +41,14 @@ func coordinatePrivateHeaderKitOperation(
         switch first {
         case .operationFinished(let status):
             group.cancelAll()
-            await group.waitForAll()
+            // AsyncStream returns an already-buffered element even after waiter
+            // cancellation. Drain the structured signal child so an early SIGINT/SIGTERM
+            // cannot lose to a concurrently completing operation.
+            while let event = await group.next() {
+                if case .signalReceived(let signal) = event {
+                    return signal.exitCode
+                }
+            }
             return status
 
         case .signalReceived(let signal):
