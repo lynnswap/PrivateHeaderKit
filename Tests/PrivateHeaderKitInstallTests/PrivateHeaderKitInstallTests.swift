@@ -1,6 +1,10 @@
 import Foundation
 import Testing
 
+#if canImport(Darwin)
+import Darwin
+#endif
+
 @testable import PrivateHeaderKitInstall
 import PrivateHeaderKitTestSupport
 
@@ -70,15 +74,15 @@ struct InstallOptionTests {
         }
     }
 
-    @Test func layoutUsesVersionCohortDirectoriesAndStablePointers() {
-        let layout = resolveInstallLayout(prefix: "/prefix", bindir: nil)
+    @Test func layoutUsesVersionCohortDirectoriesAndStablePointers() throws {
+        let layout = try resolveInstallLayout(prefix: "/prefix", bindir: nil)
         #expect(layout.publicCommandURL.path == "/prefix/bin/privateheaderkit")
         #expect(layout.installRoot.path == "/prefix/libexec/privateheaderkit")
         #expect(layout.versionsDirectory.path == "/prefix/libexec/privateheaderkit/versions")
         #expect(layout.currentURL.path == "/prefix/libexec/privateheaderkit/current")
         #expect(layout.rawDumpHelperURL.path == "/prefix/libexec/privateheaderkit/privateheaderkit-raw-helper")
 
-        let custom = resolveInstallLayout(
+        let custom = try resolveInstallLayout(
             prefix: "/ignored",
             bindir: "/custom/bin"
         )
@@ -192,7 +196,7 @@ struct ReleaseManifestTests {
             [.posixPermissions: 0o644],
             ofItemAtPath: rawURL.path
         )
-        let layout = resolveInstallLayout(
+        let layout = try resolveInstallLayout(
             prefix: directories.root.appendingPathComponent("prefix").path,
             bindir: nil
         )
@@ -238,7 +242,7 @@ struct ReleaseManifestTests {
 struct VersionCohortInstallerTests {
     @Test func installsCompleteCohortAndPublishesStablePointers() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let cohort = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -265,7 +269,7 @@ struct VersionCohortInstallerTests {
 
     @Test func stagingFailureKeepsPreviousCohortActive() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -296,7 +300,7 @@ struct VersionCohortInstallerTests {
 
     @Test func activationFailureRestoresPreviousCurrentPointer() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -327,7 +331,7 @@ struct VersionCohortInstallerTests {
 
     @Test func hashMismatchNeverSwitchesCurrent() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -355,7 +359,7 @@ struct VersionCohortInstallerTests {
 
     @Test func sameBinaryCohortWithDifferentProvenanceFailsFast() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -388,7 +392,7 @@ struct VersionCohortInstallerTests {
 
     @Test func bakedReleaseBindingMismatchNeverSwitchesCurrent() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -429,7 +433,11 @@ struct VersionCohortInstallerTests {
 
     @Test func concurrentInstallIsRejected() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
+        try FileManager.default.createDirectory(
+            at: layout.installRoot,
+            withIntermediateDirectories: true
+        )
         let cohort = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -437,7 +445,7 @@ struct VersionCohortInstallerTests {
             marker: "cohort"
         )
         let lock = try InstallLock(at: layout.lockURL)
-        _ = lock
+        defer { lock.close() }
 
         #expect(throws: InstallError.self) {
             _ = try testInstaller(layout: layout).install(cohort)
@@ -447,7 +455,7 @@ struct VersionCohortInstallerTests {
 
     @Test func migratesKnownDirectLayoutOnlyAfterNewCohortIsActive() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.binDir,
             withIntermediateDirectories: true
@@ -475,7 +483,7 @@ struct VersionCohortInstallerTests {
 
     @Test func directLayoutActivationFaultRestoresLegacyPublicCommand() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.binDir,
             withIntermediateDirectories: true
@@ -521,7 +529,7 @@ struct VersionCohortInstallerTests {
 
     @Test func cleanupFailureKeepsActivatedCohortAndReturnsWarning() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.binDir,
             withIntermediateDirectories: true
@@ -558,7 +566,7 @@ struct VersionCohortInstallerTests {
 
     @Test func refusesUnknownPublicCommandAndLeavesItUntouched() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.binDir,
             withIntermediateDirectories: true
@@ -583,7 +591,7 @@ struct VersionCohortInstallerTests {
 
     @Test func partialLegacyLayoutWithSymlinkHelperIsNotMigrationAuthority() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.installRoot,
             withIntermediateDirectories: true
@@ -617,9 +625,30 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func unknownRootHelperSurvivesManagedCohortUpdate() throws {
+    @Test func helperOnlyLegacyLayoutFailsBeforePointerMutation() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
+        try writeExecutable("orphan-helper", to: layout.rawDumpHelperURL)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "d", count: 40),
+            marker: "new"
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try testInstaller(layout: layout).install(cohort)
+        }
+        #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
+        #expect(
+            try String(contentsOf: layout.rawDumpHelperURL, encoding: .utf8)
+                == "orphan-helper"
+        )
+    }
+
+    @Test func managedCohortRejectsRootHelperMixAsAmbiguous() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -640,9 +669,11 @@ struct VersionCohortInstallerTests {
             marker: "second"
         )
 
-        _ = try testInstaller(layout: layout).install(second)
+        #expect(throws: InstallError.self) {
+            _ = try testInstaller(layout: layout).install(second)
+        }
 
-        try assertActive(second.manifest, layout: layout, marker: "second")
+        try assertActive(first.manifest, layout: layout, marker: "first")
         #expect(
             try FileManager.default.destinationOfSymbolicLink(
                 atPath: layout.rawDumpHelperURL.path
@@ -650,9 +681,42 @@ struct VersionCohortInstallerTests {
         )
     }
 
+    @Test func legacyPermissionDriftFailsBeforePointerMutation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "f", count: 40),
+            marker: "new"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .cohortPublished {
+                    try FileManager.default.setAttributes(
+                        [.posixPermissions: 0o644],
+                        ofItemAtPath: layout.publicCommandURL.path
+                    )
+                }
+            }
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try installer.install(cohort)
+        }
+        #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+        #expect(
+            try String(contentsOf: layout.publicCommandURL, encoding: .utf8)
+                == "legacy-main"
+        )
+    }
+
     @Test func directLayoutAlongsideManagedCurrentIsRejectedAsAmbiguous() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -692,7 +756,7 @@ struct VersionCohortInstallerTests {
 
     @Test func refusesUnknownCurrentAndPublicSymlinkTargets() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.installRoot,
             withIntermediateDirectories: true
@@ -733,7 +797,7 @@ struct VersionCohortInstallerTests {
 
     @Test func refusesBrokenManagedCurrentCohort() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         try FileManager.default.createDirectory(
             at: layout.installRoot,
             withIntermediateDirectories: true
@@ -762,7 +826,7 @@ struct VersionCohortInstallerTests {
 
     @Test func installRootAndVersionsMustBeRealDirectories() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let external = directories.root.appendingPathComponent("external", isDirectory: true)
         try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
@@ -799,7 +863,7 @@ struct VersionCohortInstallerTests {
 
     @Test func sourceBuildFailurePreservesExistingCohortWithoutFallback() throws {
         let directories = try makeTemporaryTestDirectories()
-        let layout = testLayout(in: directories.root)
+        let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
             under: directories.root,
             version: "v1.0.0",
@@ -811,6 +875,22 @@ struct VersionCohortInstallerTests {
         let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
         try makePrivateHeaderKitRepoMarkers(in: repoRoot)
         let runner = RecordingCommandRunner()
+        runner.setCaptureOutput(
+            String(repeating: "a", count: 40) + "\n",
+            for: ["git", "rev-parse", "HEAD"]
+        )
+        runner.setCaptureOutput(
+            "",
+            for: ["git", "tag", "--points-at", "HEAD"]
+        )
+        runner.setCaptureOutput(
+            "",
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
+        )
+        runner.setCaptureOutput(
+            "",
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
         runner.simpleHandler = { _, _, _ in
             throw TestInstallFailure.injected
         }
@@ -839,6 +919,436 @@ struct VersionCohortInstallerTests {
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
         #expect(runner.simpleCommands.count == 1)
+    }
+
+    @Test func installLockIsHeldForTheLexicalOperationScope() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let installer = testInstaller(layout: layout)
+
+        _ = try installer.withInstallLock {
+            #expect(throws: InstallError.self) {
+                _ = try InstallLock(at: layout.lockURL)
+            }
+        }
+
+        let nextLock = try InstallLock(at: layout.lockURL)
+        nextLock.close()
+    }
+
+    @Test func installLockRejectsNonRegularDescriptor() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try FileManager.default.createDirectory(
+            at: layout.installRoot,
+            withIntermediateDirectories: true
+        )
+#if canImport(Darwin)
+        let result = layout.lockURL.path.withCString { path in
+            Darwin.mkfifo(path, mode_t(0o600))
+        }
+        #expect(result == 0)
+        #expect(throws: InstallError.self) {
+            _ = try InstallLock(at: layout.lockURL)
+        }
+#endif
+    }
+
+    @Test func canonicalBindirAliasUsesOneLayoutAndLockIdentity() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let realPrefix = directories.root.appendingPathComponent("real-prefix", isDirectory: true)
+        let realBin = realPrefix.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: realBin, withIntermediateDirectories: true)
+        let aliasBin = directories.root.appendingPathComponent("command-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: aliasBin, withDestinationURL: realBin)
+
+        let aliased = try resolveInstallLayout(prefix: nil, bindir: aliasBin.path)
+        let canonical = try resolveInstallLayout(prefix: nil, bindir: realBin.path)
+        #expect(aliased == canonical)
+        #expect(aliased.lockURL == canonical.lockURL)
+
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "a", count: 40),
+            marker: "alias"
+        )
+        _ = try testInstaller(layout: aliased).install(cohort)
+        #expect(
+            try String(
+                contentsOf: aliasBin.appendingPathComponent("privateheaderkit"),
+                encoding: .utf8
+            ) == "alias-privateheaderkit"
+        )
+    }
+
+    @Test func canonicalLayoutRejectsNonDirectoryAncestorBeforeMutation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let blocker = directories.root.appendingPathComponent("blocker")
+        try Data("not a directory".utf8).write(to: blocker)
+        let requestedPrefix = blocker.appendingPathComponent("prefix", isDirectory: true)
+
+        #expect(throws: InstallError.self) {
+            _ = try resolveInstallLayout(prefix: requestedPrefix.path, bindir: nil)
+        }
+        #expect(try Data(contentsOf: blocker) == Data("not a directory".utf8))
+    }
+
+    @Test func defaultPrefixRejectsManagedLibexecSymlinkBeforeMutation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let prefix = directories.root.appendingPathComponent("prefix", isDirectory: true)
+        let external = directories.root.appendingPathComponent("external", isDirectory: true)
+        try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: prefix.appendingPathComponent("libexec", isDirectory: true),
+            withDestinationURL: external
+        )
+        let layout = try resolveInstallLayout(prefix: prefix.path, bindir: nil)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "c", count: 40),
+            marker: "managed-ancestor"
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try testInstaller(layout: layout).install(cohort)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test func defaultPrefixRejectsBinSymlinkBeforeInstallMutation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let prefix = directories.root.appendingPathComponent("prefix", isDirectory: true)
+        let external = directories.root.appendingPathComponent("external", isDirectory: true)
+        try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: prefix.appendingPathComponent("bin", isDirectory: true),
+            withDestinationURL: external
+        )
+        let layout = try resolveInstallLayout(prefix: prefix.path, bindir: nil)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "d", count: 40),
+            marker: "default-bin"
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try testInstaller(layout: layout).install(cohort)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+        if case .absent = try fileSystemItemKind(
+            at: layout.installRoot,
+            fileManager: .default
+        ) {
+            // Expected: the unsafe command directory is rejected before lock creation.
+        } else {
+            Issue.record("install root was mutated before rejecting the default bin symlink")
+        }
+    }
+
+    @Test func managedAncestorsAreRevalidatedAfterInstallRootCreation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let external = directories.root.appendingPathComponent("external", isDirectory: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        let libexecDirectory = layout.prefix.appendingPathComponent(
+            "libexec",
+            isDirectory: true
+        )
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "e", count: 40),
+            marker: "post-create"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                guard point == .installRootCreated else {
+                    return
+                }
+                try FileManager.default.removeItem(at: libexecDirectory)
+                try FileManager.default.createSymbolicLink(
+                    at: libexecDirectory,
+                    withDestinationURL: external
+                )
+            }
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try installer.install(cohort)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test func exclusiveCohortPublishNeverReplacesRacedDestination() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "b", count: 40),
+            marker: "exclusive"
+        )
+        let finalDirectory = layout.cohortDirectory(for: cohort.manifest)
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .beforeCohortPublish {
+                    try FileManager.default.createDirectory(
+                        at: finalDirectory,
+                        withIntermediateDirectories: false
+                    )
+                }
+            }
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try installer.install(cohort)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: finalDirectory.path).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
+    }
+
+    @Test func changedLegacyHelperIsLeftUntouchedAfterCommit() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "c", count: 40),
+            marker: "new"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .legacyCleanupStarted {
+                    try FileManager.default.removeItem(at: layout.rawDumpHelperURL)
+                    try writeExecutable("replacement-raw", to: layout.rawDumpHelperURL)
+                }
+            }
+        )
+
+        let result = try installer.install(cohort)
+
+        try assertActive(cohort.manifest, layout: layout, marker: "new")
+        #expect(result.cleanupWarnings.count == 1)
+        #expect(
+            try String(contentsOf: layout.rawDumpHelperURL, encoding: .utf8)
+                == "replacement-raw"
+        )
+        #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+    }
+
+    @Test func publicFirstRestorationPreservesAValidCommandAtEachFailure() throws {
+        for restorationFault in [
+            InstallFaultPoint.publicRestorationStarted,
+            InstallFaultPoint.currentRestorationStarted,
+        ] {
+            let directories = try makeTemporaryTestDirectories()
+            let layout = try testLayout(in: directories.root)
+            try writeLegacyLayout(layout: layout)
+            let cohort = try makeTestCohort(
+                under: directories.root,
+                version: "v2.0.0",
+                commit: String(repeating: "d", count: 40),
+                marker: "new"
+            )
+            let installer = testInstaller(
+                layout: layout,
+                faultInjector: { point in
+                    if point == .stableCommandSwitched {
+                        throw TestInstallFailure.activation
+                    }
+                    if point == restorationFault {
+                        throw TestInstallFailure.restoration
+                    }
+                }
+            )
+
+            #expect(throws: InstallError.self) {
+                _ = try installer.install(cohort)
+            }
+            let publicContents = try String(
+                contentsOf: layout.publicCommandURL,
+                encoding: .utf8
+            )
+            if restorationFault == .publicRestorationStarted {
+                #expect(publicContents == "new-privateheaderkit")
+            } else {
+                #expect(publicContents == "legacy-main")
+            }
+
+            try testInstaller(layout: layout).withInstallLock {}
+            try assertActive(cohort.manifest, layout: layout, marker: "new")
+            #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+        }
+    }
+
+    @Test func restorationNeverOverwritesAReplacedRegularFile() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let first = try makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "1", count: 40),
+            marker: "first"
+        )
+        _ = try testInstaller(layout: layout).install(first)
+        let second = try makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "2", count: 40),
+            marker: "second"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .stableCommandSwitched {
+                    try FileManager.default.removeItem(at: layout.publicCommandURL)
+                    try writeExecutable("replacement", to: layout.publicCommandURL)
+                    throw TestInstallFailure.activation
+                }
+            }
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try installer.install(second)
+        }
+        #expect(
+            try String(contentsOf: layout.publicCommandURL, encoding: .utf8)
+                == "replacement"
+        )
+    }
+
+    @Test func restorationNeverPublishesANonExecutableLegacyBackup() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        let cohort = try makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "3", count: 40),
+            marker: "new"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                guard point == .stableCommandSwitched else {
+                    return
+                }
+                let backupName = try #require(
+                    FileManager.default.contentsOfDirectory(atPath: layout.binDir.path)
+                        .first(where: { $0.hasPrefix(".legacy-public-") })
+                )
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o644],
+                    ofItemAtPath: layout.binDir.appendingPathComponent(backupName).path
+                )
+                throw TestInstallFailure.activation
+            }
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try installer.install(cohort)
+        }
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: layout.publicCommandURL.path
+            ) == "../libexec/privateheaderkit/current/privateheaderkit"
+        )
+        #expect(
+            try String(contentsOf: layout.publicCommandURL, encoding: .utf8)
+                == "new-privateheaderkit"
+        )
+        #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+    }
+
+    @Test func reopenRecoversEveryDurableLegacyMigrationPhase() throws {
+        enum Phase: CaseIterable {
+            case intentPersisted
+            case currentSwitched
+            case publicSwitched
+            case cleanupStarted
+        }
+
+        for phase in Phase.allCases {
+            let directories = try makeTemporaryTestDirectories()
+            let layout = try testLayout(in: directories.root)
+            try writeLegacyLayout(layout: layout)
+            let cohort = try makeTestCohort(
+                under: directories.root,
+                version: "v2.0.0",
+                commit: String(repeating: "e", count: 40),
+                marker: "recovered"
+            )
+            let interrupted = testInstaller(
+                layout: layout,
+                faultInjector: { point in
+                    if point == .migrationIntentPersisted {
+                        throw TestInstallFailure.injected
+                    }
+                }
+            )
+            #expect(throws: TestInstallFailure.self) {
+                _ = try interrupted.install(cohort)
+            }
+            #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+            let backupNames = try FileManager.default.contentsOfDirectory(
+                atPath: layout.binDir.path
+            ).filter { $0.hasPrefix(".legacy-public-") }
+            #expect(backupNames.count == 1)
+
+            if phase != .intentPersisted {
+                try FileManager.default.createSymbolicLink(
+                    atPath: layout.currentURL.path,
+                    withDestinationPath: "versions/\(cohort.manifest.cohort)"
+                )
+            }
+            if phase == .publicSwitched || phase == .cleanupStarted {
+                try FileManager.default.removeItem(at: layout.publicCommandURL)
+                try FileManager.default.createSymbolicLink(
+                    atPath: layout.publicCommandURL.path,
+                    withDestinationPath: "../libexec/privateheaderkit/current/privateheaderkit"
+                )
+            }
+            if phase == .cleanupStarted {
+                try FileManager.default.removeItem(at: layout.rawDumpHelperURL)
+            }
+
+            try testInstaller(layout: layout).withInstallLock {}
+
+            try assertActive(cohort.manifest, layout: layout, marker: "recovered")
+            #expect(!FileManager.default.fileExists(atPath: layout.rawDumpHelperURL.path))
+            #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
+            #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+            let binEntries = try FileManager.default.contentsOfDirectory(
+                atPath: layout.binDir.path
+            )
+            #expect(binEntries == ["privateheaderkit"])
+        }
+    }
+
+    @Test func corruptLegacyMigrationIntentFailsBeforePointerMutation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try FileManager.default.createDirectory(
+            at: layout.installRoot,
+            withIntermediateDirectories: true
+        )
+        try Data("{}".utf8).write(to: layout.legacyMigrationIntentURL)
+
+        #expect(throws: InstallError.self) {
+            try testInstaller(layout: layout).withInstallLock {}
+        }
+        #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.publicCommandURL.path))
     }
 }
 
@@ -972,14 +1482,138 @@ struct SourceBuildResolutionTests {
             )
         }
     }
+
+    @Test func sourceSnapshotIncludesTrackedUntrackedAndReleaseProvenance() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let untrackedPath = "Sources/Untracked.swift"
+        let untrackedURL = repoRoot.appendingPathComponent(untrackedPath)
+        try writeExecutable("first", to: untrackedURL)
+        let runner = RecordingCommandRunner()
+        let head = String(repeating: "a", count: 40) + "\n"
+        runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
+        runner.setCaptureOutputs(
+            ["v1.0.0\n", "v1.0.1\n"],
+            for: ["git", "tag", "--points-at", "HEAD"]
+        )
+        runner.setCaptureOutputs(
+            ["tracked-first", "tracked-second"],
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
+        )
+        runner.setCaptureOutputs(
+            [untrackedPath + "\0", untrackedPath + "\0"],
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
+
+        let first = try captureSourceSnapshot(
+            repoRoot: repoRoot,
+            environment: [:],
+            runner: runner,
+            fileManager: .default
+        )
+        try Data("second".utf8).write(to: untrackedURL)
+        let second = try captureSourceSnapshot(
+            repoRoot: repoRoot,
+            environment: [:],
+            runner: runner,
+            fileManager: .default
+        )
+
+        #expect(first.head == second.head)
+        #expect(first.dirtyInputFingerprint != second.dirtyInputFingerprint)
+        #expect(first.releaseTags == ["v1.0.0"])
+        #expect(second.releaseTags == ["v1.0.1"])
+        #expect(first.effectiveVersion == "v1.0.0")
+        #expect(second.effectiveVersion == "v1.0.1")
+    }
+
+    @Test func sourceMutationDuringProductBuildFailsBeforeCohortCreation() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let untrackedPath = "Sources/BuildInput.swift"
+        let untrackedURL = repoRoot.appendingPathComponent(untrackedPath)
+        try writeExecutable("before", to: untrackedURL)
+
+        let hostBin = directories.root.appendingPathComponent("host-bin", isDirectory: true)
+        let simulatorBin = directories.root.appendingPathComponent("sim-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: simulatorBin, withIntermediateDirectories: true)
+        try writeExecutable(
+            "public",
+            to: hostBin.appendingPathComponent("privateheaderkit")
+        )
+        try writeExecutable(
+            "raw",
+            to: hostBin.appendingPathComponent("privateheaderkit-raw-helper")
+        )
+        try writeExecutable(
+            "sim",
+            to: simulatorBin.appendingPathComponent("privateheaderkit-sim-helper")
+        )
+
+        let runner = RecordingCommandRunner()
+        let head = String(repeating: "b", count: 40) + "\n"
+        runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
+        runner.setCaptureOutputs(["", ""], for: ["git", "tag", "--points-at", "HEAD"])
+        runner.setCaptureOutputs(
+            ["", ""],
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
+        )
+        runner.setCaptureOutputs(
+            [untrackedPath + "\0", untrackedPath + "\0"],
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
+        let sdk = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        let triple = "arm64-apple-ios-simulator"
+        runner.setCaptureOutput(
+            sdk + "\n",
+            for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
+        )
+        runner.setCaptureOutput(
+            hostBin.path + "\n",
+            for: ["swift", "build", "-c", "release", "--show-bin-path"]
+        )
+        runner.setCaptureOutput(
+            simulatorBin.path + "\n",
+            for: [
+                "swift", "build", "-c", "release",
+                "--sdk", sdk,
+                "--triple", triple,
+                "--show-bin-path",
+            ]
+        )
+        var changedSource = false
+        runner.simpleHandler = { _, _, _ in
+            if !changedSource {
+                changedSource = true
+                try Data("after".utf8).write(to: untrackedURL)
+            }
+        }
+
+        #expect(throws: InstallError.self) {
+            _ = try buildSourceCohort(
+                repoRoot: repoRoot,
+                configuration: .release,
+                environment: [:],
+                runner: runner,
+                fileManager: .default,
+                inspectArtifact: testArtifactInspector,
+                simulatorHelperTriple: triple
+            )
+        }
+    }
 }
 
 private enum TestInstallFailure: Error {
     case injected
+    case activation
+    case restoration
 }
 
-private func testLayout(in root: URL) -> InstallLayout {
-    resolveInstallLayout(
+private func testLayout(in root: URL) throws -> InstallLayout {
+    try resolveInstallLayout(
         prefix: root.appendingPathComponent("prefix", isDirectory: true).path,
         bindir: nil
     )
@@ -1062,6 +1696,20 @@ private func writeExecutable(_ contents: String, to url: URL) throws {
         [.posixPermissions: 0o755],
         ofItemAtPath: url.path
     )
+}
+
+private func writeLegacyLayout(layout: InstallLayout) throws {
+    try FileManager.default.createDirectory(
+        at: layout.binDir,
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: layout.installRoot,
+        withIntermediateDirectories: true
+    )
+    try writeExecutable("legacy-main", to: layout.publicCommandURL)
+    try writeExecutable("legacy-raw", to: layout.rawDumpHelperURL)
+    try writeExecutable("legacy-sim", to: layout.simulatorHelperURL)
 }
 
 private func activePublicCommandContents(

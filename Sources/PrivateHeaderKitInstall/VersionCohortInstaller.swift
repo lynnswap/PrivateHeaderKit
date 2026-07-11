@@ -5,131 +5,6 @@ import PrivateHeaderKitTooling
 import Darwin
 #endif
 
-private enum FileSystemItemKind {
-    case absent
-    case regularFile
-    case directory
-    case symbolicLink(String)
-    case other
-}
-
-private func fileSystemItemKind(
-    at url: URL,
-    fileManager: FileManager
-) throws -> FileSystemItemKind {
-#if canImport(Darwin)
-    var metadata = stat()
-    let result = url.path.withCString { path in
-        Darwin.lstat(path, &metadata)
-    }
-    if result != 0 {
-        let failure = errno
-        if failure == ENOENT {
-            return .absent
-        }
-        throw InstallError.message(
-            "failed to inspect install path at \(url.path): errno \(failure)"
-        )
-    }
-
-    switch metadata.st_mode & mode_t(S_IFMT) {
-    case mode_t(S_IFREG):
-        return .regularFile
-    case mode_t(S_IFDIR):
-        return .directory
-    case mode_t(S_IFLNK):
-        do {
-            return .symbolicLink(
-                try fileManager.destinationOfSymbolicLink(atPath: url.path)
-            )
-        } catch {
-            throw InstallError.message(
-                "failed to read symbolic link at \(url.path): \(error)"
-            )
-        }
-    default:
-        return .other
-    }
-#else
-    throw InstallError.message(
-        "install path inspection is unavailable on this platform: \(url.path)"
-    )
-#endif
-}
-
-struct InstallLayout: Equatable, Sendable {
-    let prefix: URL
-    let binDir: URL
-    let installRoot: URL
-
-    var versionsDirectory: URL {
-        installRoot.appendingPathComponent("versions", isDirectory: true)
-    }
-
-    var currentURL: URL {
-        installRoot.appendingPathComponent("current", isDirectory: false)
-    }
-
-    var lockURL: URL {
-        installRoot.appendingPathComponent("install.lock", isDirectory: false)
-    }
-
-    var publicCommandURL: URL {
-        binDir.appendingPathComponent(InstallArtifactName.publicCommand.rawValue, isDirectory: false)
-    }
-
-    var rawDumpHelperURL: URL {
-        installRoot.appendingPathComponent(InstallArtifactName.rawDumpHelper.rawValue, isDirectory: false)
-    }
-
-    var simulatorHelperURL: URL {
-        installRoot.appendingPathComponent(InstallArtifactName.simulatorHelper.rawValue, isDirectory: false)
-    }
-
-    func cohortDirectory(for manifest: ReleaseManifest) -> URL {
-        versionsDirectory.appendingPathComponent(manifest.cohort, isDirectory: true)
-    }
-
-    func installedArtifactURL(
-        _ artifact: InstallArtifactName,
-        manifest: ReleaseManifest
-    ) -> URL {
-        cohortDirectory(for: manifest)
-            .appendingPathComponent(artifact.rawValue, isDirectory: false)
-    }
-}
-
-func resolveInstallLayout(prefix: String?, bindir: String?) -> InstallLayout {
-    let resolvedPrefix: URL
-    let resolvedBinDir: URL
-    if let bindir {
-        resolvedBinDir = URL(
-            fileURLWithPath: PathUtils.expandTilde(bindir),
-            isDirectory: true
-        ).standardizedFileURL
-        resolvedPrefix = resolvedBinDir.deletingLastPathComponent()
-    } else {
-        let prefix = prefix ?? "~/.local"
-        resolvedPrefix = URL(
-            fileURLWithPath: PathUtils.expandTilde(prefix),
-            isDirectory: true
-        ).standardizedFileURL
-        resolvedBinDir = resolvedPrefix.appendingPathComponent("bin", isDirectory: true)
-    }
-    return InstallLayout(
-        prefix: resolvedPrefix,
-        binDir: resolvedBinDir,
-        installRoot: resolvedPrefix.appendingPathComponent(
-            "libexec/privateheaderkit",
-            isDirectory: true
-        )
-    )
-}
-
-func resolveBinDir(prefix: String?, bindir: String?) -> URL {
-    resolveInstallLayout(prefix: prefix, bindir: bindir).binDir
-}
-
 struct ReleaseCohort {
     let manifest: ReleaseManifest
     let artifactURLs: [InstallArtifactName: URL]
@@ -203,13 +78,18 @@ struct ReleaseCohort {
 }
 
 enum InstallFaultPoint: Equatable, Sendable {
+    case installRootCreated
     case lockAcquired
     case preflightComplete
     case artifactStaged(InstallArtifactName)
     case stagingValidated
+    case beforeCohortPublish
     case cohortPublished
+    case migrationIntentPersisted
     case currentSwitched
     case stableCommandSwitched
+    case publicRestorationStarted
+    case currentRestorationStarted
     case legacyCleanupStarted
 }
 
@@ -221,78 +101,6 @@ struct InstallResult: Equatable, Sendable {
     let publicCommandURL: URL
     let reusedExistingCohort: Bool
     let cleanupWarnings: [String]
-}
-
-final class InstallLock {
-#if canImport(Darwin)
-    private let descriptor: Int32
-
-    init(
-        at url: URL,
-        fileManager: FileManager = .default
-    ) throws {
-        let installRoot = url.deletingLastPathComponent()
-        switch try fileSystemItemKind(at: installRoot, fileManager: fileManager) {
-        case .absent:
-            try fileManager.createDirectory(
-                at: installRoot,
-                withIntermediateDirectories: true
-            )
-        case .directory:
-            break
-        case .symbolicLink:
-            throw InstallError.message(
-                "install root must not be a symbolic link: \(installRoot.path)"
-            )
-        case .regularFile, .other:
-            throw InstallError.message(
-                "install root is not a real directory: \(installRoot.path)"
-            )
-        }
-        guard case .directory = try fileSystemItemKind(
-            at: installRoot,
-            fileManager: fileManager
-        ) else {
-            throw InstallError.message(
-                "install root is not a real directory: \(installRoot.path)"
-            )
-        }
-        let descriptor = open(
-            url.path,
-            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
-            mode_t(0o600)
-        )
-        guard descriptor >= 0 else {
-            throw InstallError.message(
-                "failed to open install lock at \(url.path): errno \(errno)"
-            )
-        }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            let lockErrno = errno
-            _ = close(descriptor)
-            if lockErrno == EWOULDBLOCK || lockErrno == EAGAIN {
-                throw InstallError.message(
-                    "another PrivateHeaderKit installation is already running for \(url.deletingLastPathComponent().path)"
-                )
-            }
-            throw InstallError.message(
-                "failed to acquire install lock at \(url.path): errno \(lockErrno)"
-            )
-        }
-        self.descriptor = descriptor
-    }
-
-    deinit {
-        _ = flock(descriptor, LOCK_UN)
-        _ = close(descriptor)
-    }
-#else
-    init(at url: URL, fileManager: FileManager = .default) throws {
-        throw InstallError.message(
-            "install locking is unavailable on this platform: \(url.path)"
-        )
-    }
-#endif
 }
 
 struct VersionCohortInstaller {
@@ -319,11 +127,20 @@ struct VersionCohortInstaller {
     func withInstallLock<Result>(
         _ operation: () throws -> Result
     ) throws -> Result {
-        try validateOwnedDirectoryIfPresent(layout.installRoot, label: "install root")
+        try validateManagedInstallRootPath(requireInstallRoot: false)
+        try validateOwnedDirectoryIfPresent(layout.binDir, label: "command directory")
+        try fileManager.createDirectory(
+            at: layout.installRoot,
+            withIntermediateDirectories: true
+        )
+        try faultInjector(.installRootCreated)
+        try validateManagedInstallRootPath(requireInstallRoot: true)
         let lock = try InstallLock(at: layout.lockURL, fileManager: fileManager)
-        _ = lock
-        try validateOwnedDirectoryIfPresent(layout.installRoot, label: "install root")
+        defer { lock.close() }
+        try validateManagedInstallRootPath(requireInstallRoot: true)
         try validateOwnedDirectoryIfPresent(layout.versionsDirectory, label: "versions path")
+        try validateOwnedDirectoryIfPresent(layout.binDir, label: "command directory")
+        try recoverInterruptedLegacyMigration()
         try faultInjector(.lockAcquired)
         return try operation()
     }
@@ -340,8 +157,19 @@ struct VersionCohortInstaller {
         try validateOwnedDirectoryIfPresent(layout.installRoot, label: "install root")
         try validateOwnedDirectoryIfPresent(layout.versionsDirectory, label: "versions path")
         let currentBeforeInstall = try currentPathSnapshot()
-        let hadLegacyDirectLayout = try isLegacyDirectLayout()
-        if hadLegacyDirectLayout,
+        let legacyLayout: LegacyLayoutSnapshot?
+        switch try classifyLegacyDirectLayout(current: currentBeforeInstall) {
+        case .absent:
+            legacyLayout = nil
+        case .complete(let snapshot):
+            legacyLayout = snapshot
+        case .malformed(let reason):
+            throw InstallError.message(
+                "\(reason); expected three executable regular legacy binaries or no legacy layout"
+            )
+        }
+        let hadLegacyDirectLayout = legacyLayout != nil
+        if legacyLayout != nil,
            case .symbolicLink = currentBeforeInstall
         {
             throw InstallError.message(
@@ -364,6 +192,10 @@ struct VersionCohortInstaller {
         try fileManager.createDirectory(
             at: layout.binDir,
             withIntermediateDirectories: true
+        )
+        try validateOwnedDirectoryIfPresent(
+            layout.binDir,
+            label: "command directory"
         )
 
         let stagingDirectory = layout.versionsDirectory.appendingPathComponent(
@@ -422,13 +254,14 @@ struct VersionCohortInstaller {
             )
             reusedExistingCohort = true
         } else {
+            try faultInjector(.beforeCohortPublish)
             do {
-                try atomicRename(source: stagingDirectory, destination: finalDirectory)
+                try publishCohortExclusively(
+                    source: stagingDirectory,
+                    destination: finalDirectory
+                )
                 shouldRemoveStaging = false
-            } catch {
-                guard try pathExists(finalDirectory) else {
-                    throw error
-                }
+            } catch let error as POSIXRenameError where error.code == EEXIST {
                 try validateDirectory(
                     finalDirectory,
                     expectedManifest: cohort.manifest
@@ -442,7 +275,21 @@ struct VersionCohortInstaller {
         let previousPublicCommand = try publicCommandPathSnapshot(
             allowLegacyDirectLayout: hadLegacyDirectLayout
         )
-        var legacyPublicBackup: URL?
+        let migrationIntent: LegacyMigrationIntent?
+        if let legacyLayout {
+            guard case .regularFile = previousPublicCommand else {
+                throw InstallError.message(
+                    "legacy migration lost ownership of the public command before activation"
+                )
+            }
+            migrationIntent = try prepareLegacyMigration(
+                targetManifest: cohort.manifest,
+                legacyLayout: legacyLayout
+            )
+            try faultInjector(.migrationIntentPersisted)
+        } else {
+            migrationIntent = nil
+        }
 
         do {
             try atomicReplaceSymlink(
@@ -451,13 +298,12 @@ struct VersionCohortInstaller {
             )
             try faultInjector(.currentSwitched)
 
-            if case .regularFile = previousPublicCommand {
-                let backup = layout.installRoot.appendingPathComponent(
-                    ".legacy-public-\(UUID().uuidString)",
-                    isDirectory: false
+            if let migrationIntent {
+                try requireLegacyIdentity(
+                    migrationIntent.legacyLayout.publicCommand,
+                    at: layout.publicCommandURL,
+                    label: "legacy public command"
                 )
-                try fileManager.copyItem(at: layout.publicCommandURL, to: backup)
-                legacyPublicBackup = backup
             }
             try atomicReplaceSymlink(
                 at: layout.publicCommandURL,
@@ -469,7 +315,7 @@ struct VersionCohortInstaller {
             let restorationError = restoreAfterActivationFailure(
                 previousCurrent: previousCurrent,
                 previousPublicCommand: previousPublicCommand,
-                legacyPublicBackup: legacyPublicBackup
+                migrationIntent: migrationIntent
             )
             if let restorationError {
                 throw InstallError.message(
@@ -480,22 +326,15 @@ struct VersionCohortInstaller {
         }
 
         var cleanupWarnings: [String] = []
-        if let legacyPublicBackup {
-            do {
-                try fileManager.removeItem(at: legacyPublicBackup)
-            } catch {
-                cleanupWarnings.append(
-                    "failed to remove legacy public-command backup at \(legacyPublicBackup.path): \(error)"
-                )
-            }
-        }
-        if hadLegacyDirectLayout {
+        if let migrationIntent {
             do {
                 try faultInjector(.legacyCleanupStarted)
-                try cleanupLegacyDirectLayout()
+                cleanupWarnings.append(
+                    contentsOf: try finalizeLegacyMigration(migrationIntent)
+                )
             } catch {
                 cleanupWarnings.append(
-                    "new cohort is active, but legacy helper cleanup failed: \(error)"
+                    "new cohort is active, but legacy cleanup did not finish: \(error)"
                 )
             }
         }
@@ -518,7 +357,7 @@ struct VersionCohortInstaller {
     }
 }
 
-private extension VersionCohortInstaller {
+extension VersionCohortInstaller {
     enum ManagedPathSnapshot {
         case absent
         case symbolicLink(String)
@@ -672,22 +511,6 @@ private extension VersionCohortInstaller {
         }
     }
 
-    func isLegacyDirectLayout() throws -> Bool {
-        for url in [
-            layout.publicCommandURL,
-            layout.rawDumpHelperURL,
-            layout.simulatorHelperURL,
-        ] {
-            guard case .regularFile = try fileSystemItemKind(
-                at: url,
-                fileManager: fileManager
-            ) else {
-                return false
-            }
-        }
-        return true
-    }
-
     func isManagedCurrentDestination(_ destination: String) -> Bool {
         guard destination.hasPrefix("versions/") else {
             return false
@@ -733,26 +556,6 @@ private extension VersionCohortInstaller {
         try preflight(cohort)
     }
 
-    func validateOwnedDirectoryIfPresent(
-        _ url: URL,
-        label: String
-    ) throws {
-        switch try fileSystemItemKind(at: url, fileManager: fileManager) {
-        case .absent:
-            return
-        case .directory:
-            return
-        case .symbolicLink:
-            throw InstallError.message(
-                "\(label) must not be a symbolic link: \(url.path)"
-            )
-        case .regularFile, .other:
-            throw InstallError.message(
-                "\(label) is not a real directory: \(url.path)"
-            )
-        }
-    }
-
     func verifyActiveCohort(_ manifest: ReleaseManifest) throws {
         let expectedCurrent = "versions/\(manifest.cohort)"
         let currentDestination = try fileManager.destinationOfSymbolicLink(
@@ -773,154 +576,18 @@ private extension VersionCohortInstaller {
             )
         }
 
-        let resolvedPublic = layout.publicCommandURL.resolvingSymlinksInPath().standardizedFileURL
         let expectedPublic = layout.installedArtifactURL(
             .publicCommand,
             manifest: manifest
-        ).standardizedFileURL
-        guard resolvedPublic.path == expectedPublic.path else {
+        )
+        guard try pathsReferenceSameFile(layout.publicCommandURL, expectedPublic) else {
             throw InstallError.message(
-                "public command does not resolve to the active cohort: \(resolvedPublic.path)"
+                "public command does not resolve to the active cohort: \(layout.publicCommandURL.path)"
             )
         }
         try validateDirectory(
             layout.cohortDirectory(for: manifest),
             expectedManifest: manifest
         )
-    }
-
-    func cleanupLegacyDirectLayout() throws {
-        let helpers = [layout.rawDumpHelperURL, layout.simulatorHelperURL]
-        for url in helpers {
-            guard case .regularFile = try fileSystemItemKind(
-                at: url,
-                fileManager: fileManager
-            ) else {
-                throw InstallError.message(
-                    "legacy helper changed before cleanup; refusing to remove: \(url.path)"
-                )
-            }
-        }
-        for url in helpers {
-            try fileManager.removeItem(at: url)
-        }
-    }
-
-    func restoreAfterActivationFailure(
-        previousCurrent: ManagedPathSnapshot,
-        previousPublicCommand: ManagedPathSnapshot,
-        legacyPublicBackup: URL?
-    ) -> Error? {
-        do {
-            try restore(
-                previousCurrent,
-                at: layout.currentURL,
-                regularFileBackup: nil
-            )
-            try restore(
-                previousPublicCommand,
-                at: layout.publicCommandURL,
-                regularFileBackup: legacyPublicBackup
-            )
-            return nil
-        } catch {
-            return error
-        }
-    }
-
-    func restore(
-        _ snapshot: ManagedPathSnapshot,
-        at url: URL,
-        regularFileBackup: URL?
-    ) throws {
-        switch snapshot {
-        case .absent:
-            switch try fileSystemItemKind(at: url, fileManager: fileManager) {
-            case .absent:
-                return
-            case .symbolicLink(let destination)
-                where isManagedCurrentDestination(destination)
-                    || destination == "../libexec/privateheaderkit/current/privateheaderkit":
-                try fileManager.removeItem(at: url)
-            case .regularFile, .directory, .symbolicLink, .other:
-                throw InstallError.message(
-                    "refusing to remove an unexpected path while restoring: \(url.path)"
-                )
-            }
-        case .symbolicLink(let destination):
-            try atomicReplaceSymlink(at: url, destination: destination)
-        case .regularFile:
-            guard let regularFileBackup else {
-                // The regular file has not been replaced yet.
-                return
-            }
-            try atomicRename(source: regularFileBackup, destination: url)
-        }
-    }
-
-    func atomicReplaceSymlink(
-        at url: URL,
-        destination: String
-    ) throws {
-#if canImport(Darwin)
-        try fileManager.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let temporaryURL = url.deletingLastPathComponent().appendingPathComponent(
-            ".\(url.lastPathComponent).tmp-\(UUID().uuidString)",
-            isDirectory: false
-        )
-        let symlinkResult = destination.withCString { destinationPointer in
-            temporaryURL.path.withCString { pathPointer in
-                Darwin.symlink(destinationPointer, pathPointer)
-            }
-        }
-        guard symlinkResult == 0 else {
-            throw InstallError.message(
-                "failed to create temporary symlink at \(temporaryURL.path): errno \(errno)"
-            )
-        }
-        do {
-            try atomicRename(source: temporaryURL, destination: url)
-        } catch {
-            do {
-                try fileManager.removeItem(at: temporaryURL)
-            } catch let cleanupError {
-                outputLogger(
-                    "warning: failed to remove temporary symlink at \(temporaryURL.path): \(cleanupError)"
-                )
-            }
-            throw error
-        }
-#else
-        throw InstallError.message(
-            "atomic symlink publication is unavailable on this platform"
-        )
-#endif
-    }
-
-    func atomicRename(source: URL, destination: URL) throws {
-#if canImport(Darwin)
-        let result = source.path.withCString { sourcePointer in
-            destination.path.withCString { destinationPointer in
-                Darwin.rename(sourcePointer, destinationPointer)
-            }
-        }
-        guard result == 0 else {
-            throw InstallError.message(
-                "atomic rename failed from \(source.path) to \(destination.path): errno \(errno)"
-            )
-        }
-#else
-        throw InstallError.message("atomic rename is unavailable on this platform")
-#endif
-    }
-
-    func pathExists(_ url: URL) throws -> Bool {
-        if case .absent = try fileSystemItemKind(at: url, fileManager: fileManager) {
-            return false
-        }
-        return true
     }
 }
