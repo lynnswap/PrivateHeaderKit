@@ -5,7 +5,7 @@ import PrivateHeaderKitTooling
 import Darwin
 #endif
 
-struct ReleaseCohort {
+struct ReleaseCohort: Sendable {
     let manifest: ReleaseManifest
     let artifactURLs: [InstallArtifactName: URL]
 
@@ -93,7 +93,7 @@ enum InstallFaultPoint: Equatable, Sendable {
     case legacyCleanupStarted
 }
 
-typealias InstallFaultInjector = (InstallFaultPoint) throws -> Void
+typealias InstallFaultInjector = @Sendable (InstallFaultPoint) throws -> Void
 
 struct InstallResult: Equatable, Sendable {
     let cohort: String
@@ -108,14 +108,14 @@ struct VersionCohortInstaller {
     let fileManager: FileManager
     let inspectArtifact: ReleaseArtifactInspector
     let faultInjector: InstallFaultInjector
-    let outputLogger: (String) -> Void
+    let outputLogger: @Sendable (String) -> Void
 
     init(
         layout: InstallLayout,
         fileManager: FileManager = .default,
         inspectArtifact: @escaping ReleaseArtifactInspector,
         faultInjector: @escaping InstallFaultInjector = { _ in },
-        outputLogger: @escaping (String) -> Void = { print($0) }
+        outputLogger: @escaping @Sendable (String) -> Void = { print($0) }
     ) {
         self.layout = layout
         self.fileManager = fileManager
@@ -125,38 +125,43 @@ struct VersionCohortInstaller {
     }
 
     func withInstallLock<Result>(
-        _ operation: () throws -> Result
-    ) throws -> Result {
+        _ operation: () async throws -> Result
+    ) async throws -> Result {
+        try Task.checkCancellation()
         try validateManagedInstallRootPath(requireInstallRoot: false)
         try validateOwnedDirectoryIfPresent(layout.binDir, label: "command directory")
+        try Task.checkCancellation()
         try fileManager.createDirectory(
             at: layout.installRoot,
             withIntermediateDirectories: true
         )
         try faultInjector(.installRootCreated)
         try validateManagedInstallRootPath(requireInstallRoot: true)
+        try Task.checkCancellation()
         let lock = try InstallLock(at: layout.lockURL, fileManager: fileManager)
         defer { lock.close() }
         try validateManagedInstallRootPath(requireInstallRoot: true)
         try validateOwnedDirectoryIfPresent(layout.versionsDirectory, label: "versions path")
         try validateOwnedDirectoryIfPresent(layout.binDir, label: "command directory")
-        try recoverInterruptedLegacyMigration()
+        try await recoverInterruptedLegacyMigration()
+        try Task.checkCancellation()
         try faultInjector(.lockAcquired)
-        return try operation()
+        return try await operation()
     }
 
-    func install(_ cohort: ReleaseCohort) throws -> InstallResult {
-        try withInstallLock {
-            try installLocked(cohort)
+    func install(_ cohort: ReleaseCohort) async throws -> InstallResult {
+        try await withInstallLock {
+            try await installLocked(cohort)
         }
     }
 
-    func installLocked(_ cohort: ReleaseCohort) throws -> InstallResult {
-        try preflight(cohort)
+    func installLocked(_ cohort: ReleaseCohort) async throws -> InstallResult {
+        try Task.checkCancellation()
+        try await preflight(cohort)
         try faultInjector(.preflightComplete)
         try validateOwnedDirectoryIfPresent(layout.installRoot, label: "install root")
         try validateOwnedDirectoryIfPresent(layout.versionsDirectory, label: "versions path")
-        let currentBeforeInstall = try currentPathSnapshot()
+        let currentBeforeInstall = try await currentPathSnapshot()
         let legacyLayout: LegacyLayoutSnapshot?
         switch try classifyLegacyDirectLayout(current: currentBeforeInstall) {
         case .absent:
@@ -239,7 +244,7 @@ struct VersionCohortInstaller {
             ),
             options: [.atomic]
         )
-        try validateDirectory(
+        try await validateDirectory(
             stagingDirectory,
             expectedManifest: cohort.manifest
         )
@@ -248,12 +253,13 @@ struct VersionCohortInstaller {
         let finalDirectory = layout.cohortDirectory(for: cohort.manifest)
         var reusedExistingCohort = false
         if try pathExists(finalDirectory) {
-            try validateDirectory(
+            try await validateDirectory(
                 finalDirectory,
                 expectedManifest: cohort.manifest
             )
             reusedExistingCohort = true
         } else {
+            try Task.checkCancellation()
             try faultInjector(.beforeCohortPublish)
             do {
                 try publishCohortExclusively(
@@ -262,7 +268,7 @@ struct VersionCohortInstaller {
                 )
                 shouldRemoveStaging = false
             } catch let error as POSIXRenameError where error.code == EEXIST {
-                try validateDirectory(
+                try await validateDirectory(
                     finalDirectory,
                     expectedManifest: cohort.manifest
                 )
@@ -271,7 +277,7 @@ struct VersionCohortInstaller {
         }
         try faultInjector(.cohortPublished)
 
-        let previousCurrent = try currentPathSnapshot()
+        let previousCurrent = try await currentPathSnapshot()
         let previousPublicCommand = try publicCommandPathSnapshot(
             allowLegacyDirectLayout: hadLegacyDirectLayout
         )
@@ -282,6 +288,7 @@ struct VersionCohortInstaller {
                     "legacy migration lost ownership of the public command before activation"
                 )
             }
+            try Task.checkCancellation()
             migrationIntent = try prepareLegacyMigration(
                 targetManifest: cohort.manifest,
                 legacyLayout: legacyLayout
@@ -292,6 +299,7 @@ struct VersionCohortInstaller {
         }
 
         do {
+            try Task.checkCancellation()
             try atomicReplaceSymlink(
                 at: layout.currentURL,
                 destination: "versions/\(cohort.manifest.cohort)"
@@ -305,12 +313,25 @@ struct VersionCohortInstaller {
                     label: "legacy public command"
                 )
             }
+            try Task.checkCancellation()
             try atomicReplaceSymlink(
                 at: layout.publicCommandURL,
                 destination: "../libexec/privateheaderkit/current/privateheaderkit"
             )
             try faultInjector(.stableCommandSwitched)
-            try verifyActiveCohort(cohort.manifest)
+            try await verifyActiveCohort(cohort.manifest)
+            try Task.checkCancellation()
+        } catch let cancellation as CancellationError {
+            if let restorationError = restoreAfterActivationFailure(
+                previousCurrent: previousCurrent,
+                previousPublicCommand: previousPublicCommand,
+                migrationIntent: migrationIntent
+            ) {
+                logInstallDiagnostic(
+                    "warning: installation cancellation rollback failed: \(restorationError)"
+                )
+            }
+            throw cancellation
         } catch {
             let restorationError = restoreAfterActivationFailure(
                 previousCurrent: previousCurrent,
@@ -364,12 +385,14 @@ extension VersionCohortInstaller {
         case regularFile
     }
 
-    func preflight(_ cohort: ReleaseCohort) throws {
+    func preflight(_ cohort: ReleaseCohort) async throws {
+        try Task.checkCancellation()
         try cohort.manifest.validate()
         for artifact in InstallArtifactName.allCases {
             let sourceURL = try sourceURL(for: artifact, in: cohort)
             let expected = try cohort.manifest.artifact(named: artifact)
-            let actual = try inspectArtifact(artifact, sourceURL)
+            let actual = try await inspectArtifact(artifact, sourceURL)
+            try Task.checkCancellation()
             try validate(
                 actual,
                 expected: expected,
@@ -393,7 +416,7 @@ extension VersionCohortInstaller {
     func validateDirectory(
         _ directory: URL,
         expectedManifest: ReleaseManifest
-    ) throws {
+    ) async throws {
         let installed = try ReleaseCohort.read(
             from: directory,
             fileManager: fileManager
@@ -410,7 +433,7 @@ extension VersionCohortInstaller {
                 "immutable cohort already exists with different contents: \(directory.path)"
             )
         }
-        try preflight(installed)
+        try await preflight(installed)
     }
 
     func validate(
@@ -458,14 +481,14 @@ extension VersionCohortInstaller {
         }
     }
 
-    func currentPathSnapshot() throws -> ManagedPathSnapshot {
+    func currentPathSnapshot() async throws -> ManagedPathSnapshot {
         let snapshot = try managedPathSnapshot(
             at: layout.currentURL,
             allowRegularFile: false,
             allowedSymbolicLink: isManagedCurrentDestination
         )
         if case .symbolicLink(let destination) = snapshot {
-            try validateManagedCurrentCohort(destination: destination)
+            try await validateManagedCurrentCohort(destination: destination)
         }
         return snapshot
     }
@@ -530,7 +553,7 @@ extension VersionCohortInstaller {
         }
     }
 
-    func validateManagedCurrentCohort(destination: String) throws {
+    func validateManagedCurrentCohort(destination: String) async throws {
         let cohortIdentifier = String(destination.dropFirst("versions/".count))
         let cohortDirectory = layout.versionsDirectory.appendingPathComponent(
             cohortIdentifier,
@@ -553,10 +576,10 @@ extension VersionCohortInstaller {
                 "current pointer cohort does not match its release manifest: \(destination)"
             )
         }
-        try preflight(cohort)
+        try await preflight(cohort)
     }
 
-    func verifyActiveCohort(_ manifest: ReleaseManifest) throws {
+    func verifyActiveCohort(_ manifest: ReleaseManifest) async throws {
         let expectedCurrent = "versions/\(manifest.cohort)"
         let currentDestination = try fileManager.destinationOfSymbolicLink(
             atPath: layout.currentURL.path
@@ -585,9 +608,13 @@ extension VersionCohortInstaller {
                 "public command does not resolve to the active cohort: \(layout.publicCommandURL.path)"
             )
         }
-        try validateDirectory(
+        try await validateDirectory(
             layout.cohortDirectory(for: manifest),
             expectedManifest: manifest
         )
     }
+}
+
+private func logInstallDiagnostic(_ message: String) {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
 }

@@ -28,24 +28,26 @@ func captureSourceSnapshot(
     environment: [String: String],
     runner: CommandRunning,
     fileManager: FileManager
-) throws -> SourceSnapshot {
-    let head = try gitHead(repoRoot: repoRoot, runner: runner).lowercased()
+) async throws -> SourceSnapshot {
+    try Task.checkCancellation()
+    let head = try await gitHead(repoRoot: repoRoot, runner: runner).lowercased()
     let effectiveCommit = try effectiveSourceCommit(
         environment: environment,
         head: head
     ).lowercased()
-    let tagOutput = try runner.runCapture(
+    let tagOutput = try await runner.runCapture(
         ["git", "tag", "--points-at", "HEAD"],
         env: nil,
         cwd: repoRoot
     )
+    try Task.checkCancellation()
     let releaseTags = sourceReleaseTags(from: tagOutput)
     let effectiveVersion = try sourceVersion(
         environment: environment,
         commit: effectiveCommit,
         releaseTags: releaseTags
     )
-    let dirtyInputFingerprint = try sourceDirtyInputFingerprint(
+    let dirtyInputFingerprint = try await sourceDirtyInputFingerprint(
         repoRoot: repoRoot,
         runner: runner,
         fileManager: fileManager
@@ -63,10 +65,10 @@ func sourceCommit(
     repoRoot: URL,
     environment: [String: String],
     runner: CommandRunning
-) throws -> String {
+) async throws -> String {
     try effectiveSourceCommit(
         environment: environment,
-        head: gitHead(repoRoot: repoRoot, runner: runner)
+        head: try await gitHead(repoRoot: repoRoot, runner: runner)
     )
 }
 
@@ -75,12 +77,13 @@ func sourceVersion(
     environment: [String: String],
     runner: CommandRunning,
     commit: String
-) throws -> String {
-    let output = try runner.runCapture(
+) async throws -> String {
+    let output = try await runner.runCapture(
         ["git", "tag", "--points-at", "HEAD"],
         env: nil,
         cwd: repoRoot
     )
+    try Task.checkCancellation()
     return try sourceVersion(
         environment: environment,
         commit: commit,
@@ -91,12 +94,13 @@ func sourceVersion(
 private func gitHead(
     repoRoot: URL,
     runner: CommandRunning
-) throws -> String {
-    let output = try runner.runCapture(
+) async throws -> String {
+    let output = try await runner.runCapture(
         ["git", "rev-parse", "HEAD"],
         env: nil,
         cwd: repoRoot
     )
+    try Task.checkCancellation()
     guard let value = output
         .split(whereSeparator: \Character.isWhitespace)
         .map(String.init)
@@ -130,17 +134,19 @@ private func sourceDirtyInputFingerprint(
     repoRoot: URL,
     runner: CommandRunning,
     fileManager: FileManager
-) throws -> String {
-    let trackedDiff = try runner.runCapture(
+) async throws -> String {
+    let trackedDiff = try await runner.runCapture(
         ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"],
         env: nil,
         cwd: repoRoot
     )
-    let untrackedOutput = try runner.runCapture(
+    try Task.checkCancellation()
+    let untrackedOutput = try await runner.runCapture(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         env: nil,
         cwd: repoRoot
     )
+    try Task.checkCancellation()
     let untrackedPaths = untrackedOutput
         .split(separator: "\0", omittingEmptySubsequences: true)
         .map(String.init)
