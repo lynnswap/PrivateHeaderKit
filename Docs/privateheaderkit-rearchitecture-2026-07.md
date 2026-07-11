@@ -107,7 +107,8 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 ```text
 PrivateHeaderKitCLI (composition root)
   ├─> PrivateHeaderKitCore ──> GRDB
-  ├─> PrivateHeaderKitTooling ──> Subprocess, UnixSignals
+  ├─> PrivateHeaderKitTooling ──> Subprocess
+  ├─> UnixSignals
   └─> ArgumentParser
 
 PrivateHeaderKitInstallCLI
@@ -124,7 +125,7 @@ Decisions:
 - manifest は `// swift-tools-version: 6.3` へ上げる。deployment baseline の macOS 14 / iOS 17 は維持する。
 - GRDB type は Core target 外へ出さない。
 - Core は Tooling を import しない。process port を要求し、CLI が concrete adapter を注入する。
-- Subprocess / UnixSignals は macOS process path だけに置き、simulator helper の iOS build graph へ入れない。
+- Subprocess は Tooling の macOS process adapter、UnixSignals は CLI composition root だけに置き、simulator helper の iOS build graph へ入れない。
 - Installer は public reusable library ではなく package-owned executable concern のままにする。
 - raw dump target graph は今回変更しない。
 
