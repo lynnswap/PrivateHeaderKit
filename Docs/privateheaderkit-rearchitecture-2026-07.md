@@ -351,6 +351,8 @@ Source install と release install は同じ layout/manifest semantics を使う
 
 `cohort-sha` は git commit ではなく、sorted artifact name / SHA-256 / platform / architecture から算出する content identity とする。git commit は `release.json` の provenance metadata に別記録する。同じ HEAD でも debug/release、build setting、dirty source が異なる binary set を同じ immutable directory と誤認しない。
 
+同一 version / cohort identity の directory が既に存在しても、`release.json` の commit provenance が install request と異なる場合は暗黙再利用しない。既存 manifest の書換え、first-wins、provenance の読み替えは immutable cohort の意味を壊すため、provenance collision として fail fast する。release workflow は同一 version の tag target 不一致を build 前に拒否する。
+
 Release pipeline は次を追加する。
 
 - `scripts/build-release.sh`
