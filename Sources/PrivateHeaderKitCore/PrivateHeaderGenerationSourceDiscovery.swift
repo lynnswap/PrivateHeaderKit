@@ -1,13 +1,13 @@
 import Foundation
 
-public extension PrivateHeaderGeneration {
+package extension PrivateHeaderGeneration {
     struct SourceCandidate: Hashable, Sendable {
-        public let source: Source
-        public let runtimeName: String
-        public let runtimeIdentifier: String?
-        public let runtimeRoot: String?
+        package let source: Source
+        package let runtimeName: String
+        package let runtimeIdentifier: String?
+        package let runtimeRoot: String?
 
-        public init(
+        package init(
             source: Source,
             runtimeName: String? = nil,
             runtimeIdentifier: String? = nil,
@@ -21,13 +21,13 @@ public extension PrivateHeaderGeneration {
     }
 
     enum SourceDiscovery {
-        public static func iOSRuntimeSourceCandidates(
+        package static func iOSRuntimeSourceCandidates(
             fromSimctlListRuntimesJSON json: String
         ) throws -> [SourceCandidate] {
             try iOSRuntimeSourceCandidates(fromSimctlListRuntimesJSON: Data(json.utf8))
         }
 
-        public static func iOSRuntimeSourceCandidates(
+        package static func iOSRuntimeSourceCandidates(
             fromSimctlListRuntimesJSON data: Data
         ) throws -> [SourceCandidate] {
             let decoded = try JSONDecoder().decode(SimctlRuntimeList.self, from: data)
@@ -51,13 +51,13 @@ public extension PrivateHeaderGeneration {
             return deduplicatedBySource(sortedIOSRuntimeSourceCandidates(candidates))
         }
 
-        public static func sortedIOSRuntimeSourceCandidates(
+        package static func sortedIOSRuntimeSourceCandidates(
             _ candidates: [SourceCandidate]
         ) -> [SourceCandidate] {
             candidates.sorted(by: SourceCandidateOrdering.isOrderedBefore)
         }
 
-        public static func latestIOSRuntimeSourceCandidate(
+        package static func latestIOSRuntimeSourceCandidate(
             from candidates: [SourceCandidate]
         ) -> SourceCandidate? {
             sortedIOSRuntimeSourceCandidates(candidates).last

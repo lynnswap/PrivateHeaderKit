@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -8,13 +8,16 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
-        .library(name: "PrivateHeaderKitCore", targets: ["PrivateHeaderKitCore"]),
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
         .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstallCLI"]),
         .executable(name: "privateheaderkit-raw-helper", targets: ["PrivateHeaderKitRawDumpHelper"]),
         .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
     ],
     dependencies: [
+        .package(
+            url: "https://github.com/groue/GRDB.swift.git",
+            from: "7.11.1"
+        ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
             from: "0.46.100"
@@ -60,7 +63,9 @@ let package = Package(
         ),
         .target(
             name: "PrivateHeaderKitCore",
-            dependencies: []
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
         .target(
             name: "PrivateHeaderKitInstall",
@@ -123,6 +128,7 @@ let package = Package(
             name: "PrivateHeaderKitCoreTests",
             dependencies: [
                 "PrivateHeaderKitCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
         .testTarget(

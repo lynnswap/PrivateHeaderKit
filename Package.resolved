@@ -1,5 +1,5 @@
 {
-  "originHash" : "d32991a571bfb863e46c19a01505c1a36bdc067634f94f77c4ca009ebaa13486",
+  "originHash" : "da4ebfef3f683738609604fa5e00b1f0ca38f4a6715be43c3ae5fa0fd588afec",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "b82281eb8a6ffcb312941c3d06584182837f4ca9",
         "version" : "0.7.1"
+      }
+    },
+    {
+      "identity" : "grdb.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/groue/GRDB.swift.git",
+      "state" : {
+        "revision" : "b83108d10f42680d78f23fe4d4d80fc88dab3212",
+        "version" : "7.11.1"
       }
     },
     {

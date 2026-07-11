@@ -1,1434 +1,1309 @@
+import CryptoKit
 import Foundation
 
-public extension PrivateHeaderGeneration {
-    static func availableResumeSummary(
-        source: Source,
-        output: Output,
-        options: Options = Options()
-    ) throws -> ResumeSummary? {
-        let plan = makePlan(
-            source: source,
-            output: output,
-            options: options
-        )
-        return try GenerationExecutor.availableResumeSummary(for: plan)
+extension PrivateHeaderGeneration {
+  package static func availableResumeSummary(
+    source: Source,
+    output: Output,
+    options: Options = Options()
+  ) async throws -> ResumeSummary? {
+    let plan = makePlan(source: source, output: output, options: options)
+    return try await GenerationExecutor.availableResumeSummary(for: plan)
+  }
+
+  package struct GenerationExecutor: Sendable {
+    private struct DeliberateFault: Error, @unchecked Sendable {
+      let underlying: any Error
     }
+
+    package typealias RawDumpRunner =
+      @Sendable (
+        PrivateHeaderGeneration.RawDumping.Invocation
+      ) async throws -> PrivateHeaderGeneration.RawDumping.Result
+    package typealias ProgressReporter =
+      @Sendable (
+        PrivateHeaderGeneration.ProgressEvent
+      ) -> Void
+    package typealias PublicationFaultInjector =
+      @Sendable (
+        PrivateHeaderGeneration.PublicationFaultPoint
+      ) throws -> Void
+
+    package struct Configuration: Sendable {
+      package let plan: Plan
+      package let progressReporter: ProgressReporter?
+
+      package init(plan: Plan, progressReporter: ProgressReporter? = nil) {
+        self.plan = plan
+        self.progressReporter = progressReporter
+      }
+    }
+
+    private let rawDumpRunner: RawDumpRunner
+    private let runIDGenerator: @Sendable () -> String
+    private let generationIDGenerator: @Sendable () -> String
+    private let dateProvider: @Sendable () -> Date
+    private let storeFaultInjector: GenerationStore.FaultInjector
+    private let publicationFaultInjector: PublicationFaultInjector
+
+    package init(
+      rawDumpRunner: @escaping RawDumpRunner,
+      runIDGenerator: @escaping @Sendable () -> String = {
+        "run-\(UUID().uuidString.lowercased())"
+      },
+      generationIDGenerator: @escaping @Sendable () -> String = {
+        "generation-\(UUID().uuidString.lowercased())"
+      },
+      dateProvider: @escaping @Sendable () -> Date = { Date() },
+      storeFaultInjector: @escaping GenerationStore.FaultInjector = { _ in },
+      publicationFaultInjector: @escaping PublicationFaultInjector = { _ in }
+    ) {
+      self.rawDumpRunner = rawDumpRunner
+      self.runIDGenerator = runIDGenerator
+      self.generationIDGenerator = generationIDGenerator
+      self.dateProvider = dateProvider
+      self.storeFaultInjector = storeFaultInjector
+      self.publicationFaultInjector = publicationFaultInjector
+    }
+
+    package func run(_ configuration: Configuration) async throws -> Result {
+      let plan = configuration.plan
+      let options = plan.options
+      guard let systemRoot = options.systemRoot else {
+        throw GenerationError.missingExecutionConfiguration("systemRoot")
+      }
+      guard let helperURLs = options.helperURLs else {
+        throw GenerationError.missingExecutionConfiguration("helperURLs")
+      }
+      guard let executionMode = options.executionMode else {
+        throw GenerationError.missingExecutionConfiguration("executionMode")
+      }
+
+      let catalog = try TargetDiscovery.discover(
+        in: systemRoot,
+        includeNestedChildren: options.includeNestedChildren
+      )
+      let selectedTargets = try Self.selectedExecutionTargets(
+        request: options.targetRequest,
+        catalog: catalog
+      )
+      guard !selectedTargets.isEmpty else {
+        throw GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
+      }
+
+      let publisher = try ArtifactPublisher(
+        artifactBaseDirectory: plan.output.baseDirectory,
+        sourceLabel: plan.source.label.directoryName
+      )
+      try publisher.prepareForLease()
+      return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
+        let stateDirectory = Self.canonicalStateDirectory(
+          outputBase: publisher.artifactBaseDirectory,
+          sourceLabel: plan.source.label.directoryName
+        )
+        let databaseURL = stateDirectory.appendingPathComponent(
+          "generation.sqlite",
+          isDirectory: false
+        )
+        let hadDatabase = try Self.regularFileExists(databaseURL)
+        if try Self.legacyStateExists(in: stateDirectory),
+          !hadDatabase,
+          !options.resumeBehavior.isFresh
+        {
+          throw GenerationError.legacyStateRequiresFresh(path: stateDirectory.path)
+        }
+        let injectedStoreFault = storeFaultInjector
+        let store = try GenerationStore(
+          databaseURL: databaseURL,
+          toolVersion: options.toolVersion,
+          faultInjector: { point in
+            do {
+              try injectedStoreFault(point)
+            } catch {
+              throw DeliberateFault(underlying: error)
+            }
+          }
+        )
+        return try await runWithLease(
+          plan: plan,
+          stateDirectory: stateDirectory,
+          databaseURL: databaseURL,
+          selectedTargets: selectedTargets,
+          store: store,
+          publisher: publisher,
+          helperURLs: helperURLs,
+          executionMode: executionMode,
+          progressReporter: configuration.progressReporter
+        )
+      }
+    }
+  }
 }
 
 extension PrivateHeaderGeneration.GenerationExecutor {
-    static func availableResumeSummary(
-        for plan: PrivateHeaderGeneration.Plan
-    ) throws -> PrivateHeaderGeneration.ResumeSummary? {
-        let options = plan.options
+  fileprivate struct TargetExecution {
+    let result: PrivateHeaderGeneration.TargetAttemptResult
+    let completedFiles: [PrivateHeaderGeneration.ArtifactPath: URL]
+  }
 
-        guard let systemRoot = options.systemRoot else {
-            throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("systemRoot")
-        }
-        guard let executionMode = options.executionMode else {
-            throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
-        }
+  fileprivate struct StagedArtifacts {
+    let files: [PrivateHeaderGeneration.ArtifactPath: URL]
+  }
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
-            in: systemRoot,
-            includeNestedChildren: options.includeNestedChildren
-        )
-        let selectedTargets = try Self.selectedExecutionTargets(
-            request: options.targetRequest,
-            catalog: catalog
-        )
-        guard !selectedTargets.isEmpty else {
-            throw PrivateHeaderGeneration.GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
-        }
+  fileprivate func cancellationRequested() -> Bool {
+    Task.isCancelled
+  }
 
-        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
-        guard let manifest = try repository.readManifest() else {
-            return nil
-        }
+  fileprivate func latchCancellation(
+    _ wasCancelled: Bool,
+    runID: PrivateHeaderGeneration.RunID,
+    store: GenerationStore
+  ) async throws -> Bool {
+    guard !wasCancelled, cancellationRequested() else { return wasCancelled }
+    try await store.requestInterruption(runID, at: dateProvider())
+    return true
+  }
 
-        let latestRun = try repository.readLatestRun(from: manifest)
-        let runPlan = Self.runPlanRecord(
-            plan: plan,
-            selectedTargets: selectedTargets,
-            executionMode: executionMode,
-            helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
-                for: executionMode
-            )
-        )
-        let compatibility = PrivateHeaderGeneration.evaluateResumeCompatibility(
-            plan: runPlan,
-            manifest: manifest,
-            latestRun: latestRun
-        )
-        guard compatibility.isCompatible else {
-            return nil
-        }
+  fileprivate func runWithLease(
+    plan: PrivateHeaderGeneration.Plan,
+    stateDirectory: URL,
+    databaseURL: URL,
+    selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
+    store: GenerationStore,
+    publisher: ArtifactPublisher,
+    helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    progressReporter: ProgressReporter?
+  ) async throws -> PrivateHeaderGeneration.Result {
+    try await Self.recover(store: store, publisher: publisher, at: dateProvider())
+    try publisher.cleanupStaging()
+    try Self.cleanupStateStaging(in: stateDirectory)
+    let publication = try publisher.inspect()
 
-        let artifactStore = PrivateHeaderGeneration.ArtifactStore(
-            artifactRoot: plan.artifactDirectory
-        )
-        let artifactExists: PrivateHeaderGeneration.ArtifactExistence = { artifact in
-            (try? artifactStore.contains(artifact)) == true
-        }
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
-            plan: runPlan,
-            manifest: manifest,
-            latestRun: latestRun,
-            artifactExists: artifactExists
-        )
-        return summary.isUnfinished ? summary : nil
-    }
-}
-
-public extension PrivateHeaderGeneration {
-    struct GenerationExecutor: Sendable {
-        public typealias RawDumpRunner = @Sendable (
-            PrivateHeaderGeneration.RawDumping.Invocation
-        ) async throws -> PrivateHeaderGeneration.RawDumping.Result
-        public typealias ProgressReporter = @Sendable (
-            PrivateHeaderGeneration.ProgressEvent
-        ) -> Void
-
-        public struct Configuration: Sendable {
-            public let plan: Plan
-            public let progressReporter: ProgressReporter?
-
-            public init(
-                plan: Plan,
-                progressReporter: ProgressReporter? = nil
-            ) {
-                self.plan = plan
-                self.progressReporter = progressReporter
-            }
-        }
-
-        public let rawDumpRunner: RawDumpRunner
-        private let runIDGenerator: @Sendable () -> String
-        private let dateProvider: @Sendable () -> Date
-
-        public init(
-            rawDumpRunner: @escaping RawDumpRunner = GenerationExecutor.liveRawDumpRunner,
-            runIDGenerator: @escaping @Sendable () -> String = {
-                "run-\(UUID().uuidString.lowercased())"
-            },
-            dateProvider: @escaping @Sendable () -> Date = { Date() }
-        ) {
-            self.rawDumpRunner = rawDumpRunner
-            self.runIDGenerator = runIDGenerator
-            self.dateProvider = dateProvider
-        }
-
-        public func run(_ configuration: Configuration) async throws -> Result {
-            let plan = configuration.plan
-            let options = plan.options
-
-            guard let systemRoot = options.systemRoot else {
-                throw GenerationError.missingExecutionConfiguration("systemRoot")
-            }
-            guard let helperURLs = options.helperURLs else {
-                throw GenerationError.missingExecutionConfiguration("helperURLs")
-            }
-            guard let executionMode = options.executionMode else {
-                throw GenerationError.missingExecutionConfiguration("executionMode")
-            }
-
-            let catalog = try TargetDiscovery.discover(
-                in: systemRoot,
-                includeNestedChildren: options.includeNestedChildren
-            )
-            let selectedTargets = try Self.selectedExecutionTargets(
-                request: options.targetRequest,
-                catalog: catalog
-            )
-            guard !selectedTargets.isEmpty else {
-                throw GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
-            }
-
-            let repository = RunRepository(plan: plan)
-            let artifactStore = ArtifactStore(artifactRoot: plan.artifactDirectory)
-            return try await repository.withExclusiveLock {
-                try await runWithLockedState(
-                    plan: plan,
-                    options: options,
-                    selectedTargets: selectedTargets,
-                    repository: repository,
-                    artifactStore: artifactStore,
-                    helperURLs: helperURLs,
-                    executionMode: executionMode,
-                    progressReporter: configuration.progressReporter
-                )
-            }
-        }
-    }
-}
-
-private extension PrivateHeaderGeneration.GenerationExecutor {
-    struct TargetExecutionResult {
-        let runTarget: PrivateHeaderGeneration.RunTargetRecord
-        let manifestTarget: PrivateHeaderGeneration.TargetRecord
+    if publication.stablePathState == .legacyDirectory,
+      !plan.options.resumeBehavior.isFresh
+    {
+      throw PrivateHeaderGeneration.GenerationError.legacyArtifactsRequireFresh(
+        path: publisher.stableURL.path
+      )
     }
 
-    func runWithLockedState(
-        plan: PrivateHeaderGeneration.Plan,
-        options: PrivateHeaderGeneration.Options,
-        selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
-        repository: PrivateHeaderGeneration.RunRepository,
-        artifactStore: PrivateHeaderGeneration.ArtifactStore,
-        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
-        progressReporter: PrivateHeaderGeneration.GenerationExecutor.ProgressReporter?
-    ) async throws -> PrivateHeaderGeneration.Result {
-        let existingManifest = try repository.readManifest()
-        let latestRun = try existingManifest.flatMap { try repository.readLatestRun(from: $0) }
-        let runPlan = Self.runPlanRecord(
-            plan: plan,
-            selectedTargets: selectedTargets,
-            executionMode: executionMode,
-            helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
-                for: executionMode
-            )
-        )
+    let targetIDs = selectedTargets.map(\.candidate.identifier)
+    let fingerprint = Self.planFingerprint(
+      plan,
+      canonicalOutputBase: publisher.artifactBaseDirectory,
+      executionMode: executionMode
+    )
+    let resumeSummary: PrivateHeaderGeneration.ResumeSummary?
+    if plan.options.resumeBehavior.isFresh {
+      resumeSummary = nil
+    } else {
+      resumeSummary = try await store.resumeSummary(
+        planFingerprint: fingerprint,
+        selectedTargetIDs: targetIDs,
+        currentArtifactsByTarget: publication.currentMarker?.artifactsByTarget ?? [:],
+        at: dateProvider()
+      )
+      if let resumeSummary,
+        resumeSummary.isUnfinished,
+        !plan.options.resumeBehavior.resumeRequested
+      {
+        throw PrivateHeaderGeneration.GenerationError.resumeRequired(resumeSummary)
+      }
+    }
 
-        let resumeSummary = try Self.resumeSummary(
-            for: options.resumeBehavior,
-            runPlan: runPlan,
-            manifest: existingManifest,
-            latestRun: latestRun,
-            artifactStore: artifactStore
-        )
-        let targetIDsToRun = Self.targetIDsToRun(
-            resumeBehavior: options.resumeBehavior,
-            selectedTargets: selectedTargets,
-            resumeSummary: resumeSummary
-        )
-        let targetsToRun = selectedTargets.filter { targetIDsToRun.contains($0.candidate.identifier) }
+    let targetIDsToRun: Set<String>
+    if let resumeSummary {
+      targetIDsToRun = Set(resumeSummary.targets.filter(\.shouldRun).map(\.targetID))
+    } else {
+      targetIDsToRun = Set(targetIDs)
+    }
 
-        try repository.prepareStateDirectory()
-        let runID = runIDGenerator()
-        let runDirectories = try repository.prepareRunDirectories(for: runID)
-        try FileManager.default.createDirectory(
-            at: plan.artifactDirectory,
-            withIntermediateDirectories: true
-        )
+    let runID = try PrivateHeaderGeneration.RunID(runIDGenerator())
+    let generationID = try PrivateHeaderGeneration.GenerationID(generationIDGenerator())
+    let runPlan = PrivateHeaderGeneration.RunPlan(
+      sourceIdentity: Self.sourceIdentity(plan.source),
+      fingerprint: fingerprint,
+      targetIDs: targetIDs,
+      toolVersion: plan.options.toolVersion
+    )
+    _ = try await store.beginRun(id: runID, plan: runPlan, at: dateProvider())
+    progressReporter?(.runStarted(runID: runID, totalTargetCount: targetIDsToRun.count))
 
-        var targetRecords = existingManifest?.targets ?? []
-        if case .fresh = options.resumeBehavior {
-            targetRecords = targetRecords.filter { record in
-                !selectedTargets.contains { $0.candidate.identifier == record.id }
-            }
+    do {
+      for target in selectedTargets where !targetIDsToRun.contains(target.candidate.identifier) {
+        try await store.markSkipped(
+          targetID: target.candidate.identifier,
+          in: runID,
+          at: dateProvider()
+        )
+      }
+
+      if targetIDsToRun.isEmpty {
+        let wasCancelled = cancellationRequested()
+        if wasCancelled {
+          try await store.requestInterruption(runID, at: dateProvider())
         }
-
-        let startedAt = dateProvider()
-        var runRecord = PrivateHeaderGeneration.RunRecord(
-            runID: runID,
-            schemaVersion: 1,
-            toolVersion: options.toolVersion,
-            plan: runPlan,
-            startedAt: startedAt,
-            endedAt: nil,
-            status: .running,
-            targetResults: [],
-            attemptedArtifacts: [],
-            logs: []
+        let snapshot = try await store.finishRunWithoutPublication(
+          runID,
+          at: dateProvider(),
+          shouldInterrupt: { cancellationRequested() }
         )
-        try repository.writeRun(runRecord)
-        try repository.writeManifest(
-            Self.manifest(
-                plan: plan,
-                runPlan: runPlan,
-                runID: runID,
-                targetRecords: targetRecords,
-                updatedAt: startedAt
-            )
+        let summary = PrivateHeaderGeneration.RunSummary(
+          runID: runID,
+          status: snapshot.status,
+          targetCounts: snapshot.counts,
+          artifactDirectory: publisher.stableURL,
+          stateDatabaseURL: databaseURL
         )
-        progressReporter?(.runStarted(
-            runID: runID,
-            totalTargetCount: targetsToRun.count
-        ))
-
-        let previousTargetRecords = Self.targetsByID(existingManifest?.targets ?? [])
-        let previousCommitFailedAttempts = Self.commitFailedAttemptedArtifactsByTargetID(latestRun)
-        var generatedTargetIDs: [String] = []
-
-        for (offset, target) in targetsToRun.enumerated() {
-            let targetIndex = offset + 1
-            progressReporter?(.targetStarted(
-                index: targetIndex,
-                total: targetsToRun.count,
-                displayName: target.candidate.displayName
-            ))
-            let targetResult = try await executeTarget(
-                target,
-                runID: runID,
-                runDirectories: runDirectories,
-                plan: plan,
-                helperURLs: helperURLs,
-                executionMode: executionMode,
-                rawDumpingOptions: options.rawDumpingOptions,
-                artifactStore: artifactStore,
-                previousTarget: previousTargetRecords[target.candidate.identifier],
-                previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
-                cleanupBeforeRun: Self.shouldCleanupBeforeRun(
-                    targetID: target.candidate.identifier,
-                    resumeBehavior: options.resumeBehavior,
-                    previousTarget: previousTargetRecords[target.candidate.identifier]
-                )
-            )
-            progressReporter?(.targetFinished(
-                index: targetIndex,
-                total: targetsToRun.count,
-                displayName: target.candidate.displayName,
-                status: targetResult.runTarget.status
-            ))
-
-            runRecord = Self.runRecordByAppending(
-                targetResult.runTarget,
-                to: runRecord,
-                status: .running,
-                endedAt: nil
-            )
-            targetRecords = Self.upserting(targetResult.manifestTarget, in: targetRecords)
-            try repository.writeRun(runRecord)
-            try repository.writeManifest(
-                Self.manifest(
-                    plan: plan,
-                    runPlan: runPlan,
-                    runID: runID,
-                    targetRecords: targetRecords,
-                    updatedAt: dateProvider()
-                )
-            )
-
-            if targetResult.runTarget.status == .completed {
-                generatedTargetIDs.append(target.candidate.identifier)
-            }
+        progressReporter?(.runFinished(summary))
+        if snapshot.status == .interrupted {
+          throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+            .init(summary: summary)
+          )
         }
-
-        let skippedTargetRecords = Self.skippedRunTargets(
-            selectedTargets: selectedTargets,
-            targetIDsToRun: targetIDsToRun
-        )
-        for skipped in skippedTargetRecords {
-            runRecord = Self.runRecordByAppending(
-                skipped,
-                to: runRecord,
-                status: .running,
-                endedAt: nil
-            )
-        }
-
-        let finalStatus = Self.finalRunStatus(for: runRecord.targetResults)
-        let endedAt = dateProvider()
-        runRecord = PrivateHeaderGeneration.RunRecord(
-            runID: runRecord.runID,
-            schemaVersion: runRecord.schemaVersion,
-            toolVersion: runRecord.toolVersion,
-            plan: runRecord.plan,
-            startedAt: runRecord.startedAt,
-            endedAt: endedAt,
-            status: finalStatus,
-            targetResults: runRecord.targetResults,
-            attemptedArtifacts: runRecord.targetResults.flatMap(\.attemptedArtifacts),
-            logs: runRecord.logs
-        )
-        try repository.writeRun(runRecord)
-        try repository.writeManifest(
-            Self.manifest(
-                plan: plan,
-                runPlan: runPlan,
-                runID: runID,
-                targetRecords: targetRecords,
-                updatedAt: endedAt
-            )
-        )
-        progressReporter?(.runFinished(
-            runID: runID,
-            status: finalStatus
-        ))
-        try repository.pruneRunHistory(from: repository.listRunSummaries())
-
-        let failedTargetIDs = runRecord.targetResults
-            .filter { !$0.status.isSuccessfulOrSkipped }
-            .map(\.targetID)
-        if !failedTargetIDs.isEmpty {
-            throw PrivateHeaderGeneration.GenerationError.runFailed(
-                runID: runID,
-                failedTargetIDs: failedTargetIDs
-            )
-        }
-
         return PrivateHeaderGeneration.Result(
-            plan: plan,
-            generatedTargets: generatedTargetIDs.map(PrivateHeaderGeneration.Target.generated(identifier:)),
-            runID: runID,
-            manifestURL: repository.manifestURL,
-            runRecordURL: try repository.runRecordURL(for: runID)
+          plan: plan,
+          artifactDirectory: publisher.stableURL,
+          generatedTargets: [],
+          runID: runID,
+          stateDatabaseURL: databaseURL,
+          targetCounts: snapshot.counts
         )
-    }
+      }
 
-    func executeTarget(
-        _ target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-        runID: String,
-        runDirectories: PrivateHeaderGeneration.RunDirectories,
-        plan: PrivateHeaderGeneration.Plan,
-        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
-        rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options,
-        artifactStore: PrivateHeaderGeneration.ArtifactStore,
-        previousTarget: PrivateHeaderGeneration.TargetRecord?,
-        previousCommitFailedAttempts: [PrivateHeaderGeneration.ArtifactPath],
-        cleanupBeforeRun: Bool
-    ) async throws -> TargetExecutionResult {
-        let fileManager = FileManager.default
+      var draft = try publisher.beginDraft(
+        generationID: generationID,
+        allowLegacyMigration: plan.options.resumeBehavior.isFresh
+      )
+      let runStagingDirectory =
+        stateDirectory
+        .appendingPathComponent("staging", isDirectory: true)
+        .appendingPathComponent(runID.rawValue, isDirectory: true)
+      try Self.ensureEmptyDirectory(runStagingDirectory)
+
+      var generatedTargetIDs: [String] = []
+      var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+      var wasCancelled = false
+      var executedIndex = 0
+
+      for target in selectedTargets where targetIDsToRun.contains(target.candidate.identifier) {
+        executedIndex += 1
         let targetID = target.candidate.identifier
-        let targetStagingDirectory = runDirectories.stagingDirectory
-            .appendingPathComponent(Self.safeTargetDirectoryName(targetID), isDirectory: true)
+        try await store.beginTargetAttempt(
+          targetID: targetID,
+          displayName: target.candidate.displayName,
+          kind: target.candidate.kind.rawValue,
+          in: runID,
+          at: dateProvider()
+        )
+        progressReporter?(
+          .targetStarted(
+            index: executedIndex,
+            total: targetIDsToRun.count,
+            displayName: target.candidate.displayName
+          ))
 
-        if fileManager.fileExists(atPath: targetStagingDirectory.path) {
-            try fileManager.removeItem(at: targetStagingDirectory)
+        if cancellationRequested() {
+          let result = Self.interruptedResult(target: target, at: dateProvider())
+          try await store.recordTargetAttempt(result, in: runID)
+          try await store.requestInterruption(runID, at: dateProvider())
+          progressReporter?(
+            .targetFinished(
+              index: executedIndex,
+              total: targetIDsToRun.count,
+              displayName: target.candidate.displayName,
+              status: .interrupted
+            ))
+          wasCancelled = true
+          break
         }
-        try fileManager.createDirectory(
-            at: targetStagingDirectory,
-            withIntermediateDirectories: true
+
+        let targetStagingDirectory = runStagingDirectory.appendingPathComponent(
+          Self.safeTargetDirectoryName(targetID),
+          isDirectory: true
+        )
+        try Self.ensureEmptyDirectory(targetStagingDirectory)
+        let execution = try await executeTarget(
+          target,
+          plan: plan,
+          helperURLs: helperURLs,
+          executionMode: executionMode,
+          stagingDirectory: targetStagingDirectory,
+          publisher: publisher
         )
 
-        var preservedArtifacts = previousTarget?.artifacts ?? []
-        if cleanupBeforeRun {
-            do {
-                try artifactStore.cleanupManagedArtifacts(
-                    PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
-                        manifestArtifacts: preservedArtifacts,
-                        attemptedArtifacts: previousCommitFailedAttempts
-                    )
-                )
-                preservedArtifacts = []
-            } catch {
-                return failedTargetResult(
-                    target: target,
-                    runID: runID,
-                    status: .commitFailed,
-                    phases: [
-                        PrivateHeaderGeneration.PhaseRecord(
-                            name: "cleanup",
-                            status: .failed,
-                            failureSummary: "cleanup failed: \(error)"
-                        ),
-                    ],
-                    artifacts: preservedArtifacts,
-                    attemptedArtifacts: [],
-                    failureSummary: "cleanup failed: \(error)"
-                )
-            }
-        }
-
-        let inputPath = Self.inputPath(for: target, executionMode: executionMode)
-        let artifactRoot = try Self.artifactRoot(
-            for: target,
-            layout: plan.options.layout
-        )
-        let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            PrivateHeaderGeneration.RawDumping.Request(
-                helperURLs: helperURLs,
-                executionMode: executionMode,
-                inputPath: inputPath,
-                stagingOutputDirectory: targetStagingDirectory,
-                options: rawDumpingOptions
-            )
-        )
-
-        let rawResult: PrivateHeaderGeneration.RawDumping.Result
-        do {
-            rawResult = try await rawDumpRunner(invocation)
-        } catch {
-            let failureSummary = String(describing: error)
-            return failedTargetResult(
-                target: target,
-                runID: runID,
-                status: .failed,
-                phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: invocation.phaseLabel,
-                        status: .failed,
-                        failureSummary: failureSummary
-                    ),
-                ],
-                artifacts: preservedArtifacts,
-                attemptedArtifacts: [],
-                failureSummary: failureSummary
-            )
-        }
-
-        let staged = try Self.collectStagedArtifacts(
-            for: target,
-            in: targetStagingDirectory,
-            runtimeRoot: plan.options.systemRoot?.path ?? "",
-            artifactRoot: artifactRoot
-        )
-        let attemptedArtifacts = staged.artifacts
-
-        guard !attemptedArtifacts.isEmpty, let stagedSourceDirectory = staged.sourceDirectory else {
-            let failureSummary = rawResult.succeeded
-                ? "raw dump produced no header artifacts"
-                : rawResult.failureSummary ?? "raw dump exited with status \(rawResult.terminationStatus)"
-            return failedTargetResult(
-                target: target,
-                runID: runID,
-                status: .failed,
-                phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: invocation.phaseLabel,
-                        status: .failed,
-                        failureSummary: failureSummary
-                    ),
-                ],
-                artifacts: preservedArtifacts,
-                attemptedArtifacts: [],
-                failureSummary: failureSummary
-            )
-        }
-
-        let rawDumpPhase: PrivateHeaderGeneration.PhaseRecord
-        let targetStatus: PrivateHeaderGeneration.RunTargetStatus
-        let targetFailureSummary: String?
-        if rawResult.succeeded {
-            rawDumpPhase = PrivateHeaderGeneration.PhaseRecord(
-                name: invocation.phaseLabel,
-                status: .completed
-            )
-            targetStatus = .completed
-            targetFailureSummary = nil
-        } else {
-            let failureSummary = rawResult.failureSummary
-                ?? "raw dump exited with status \(rawResult.terminationStatus)"
-            rawDumpPhase = PrivateHeaderGeneration.PhaseRecord(
-                name: invocation.phaseLabel,
-                status: .failed,
-                failureSummary: failureSummary
-            )
-            targetStatus = .partial
-            targetFailureSummary = failureSummary
-        }
-
-        do {
-            try artifactStore.cleanupManagedArtifacts(
-                PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
-                    manifestArtifacts: preservedArtifacts,
-                    attemptedArtifacts: previousCommitFailedAttempts
-                )
-            )
-        } catch {
-            let failureSummary = "cleanup failed: \(error)"
-            return failedTargetResult(
-                target: target,
-                runID: runID,
-                status: .commitFailed,
-                phases: [
-                    rawDumpPhase,
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: "cleanup",
-                        status: .failed,
-                        failureSummary: failureSummary
-                    ),
-                ],
-                artifacts: preservedArtifacts,
-                attemptedArtifacts: attemptedArtifacts,
-                failureSummary: failureSummary
-            )
-        }
-
-        do {
-            try Self.commit(
-                stagedSourceDirectory: stagedSourceDirectory,
-                artifactRoot: artifactRoot,
-                artifactDirectory: plan.artifactDirectory
-            )
-        } catch {
-            let failureSummary = "commit failed: \(error)"
-            return failedTargetResult(
-                target: target,
-                runID: runID,
-                status: .commitFailed,
-                phases: [
-                    rawDumpPhase,
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: "commit",
-                        status: .failed,
-                        failureSummary: failureSummary
-                    ),
-                ],
-                artifacts: [],
-                attemptedArtifacts: attemptedArtifacts,
-                failureSummary: failureSummary
-            )
-        }
-
-        let phases = [
-            rawDumpPhase,
-            PrivateHeaderGeneration.PhaseRecord(
-                name: "commit",
-                status: .completed
-            ),
-        ]
-        let manifestTarget = PrivateHeaderGeneration.TargetRecord(
-            id: targetID,
-            displayName: target.candidate.displayName,
-            kind: target.candidate.kind.rawValue,
-            status: PrivateHeaderGeneration.TargetStatus(runStatus: targetStatus),
-            phases: phases,
-            artifacts: attemptedArtifacts,
-            lastRunID: runID,
-            updatedAt: dateProvider(),
-            failureSummary: targetFailureSummary
-        )
-        let runTarget = PrivateHeaderGeneration.RunTargetRecord(
+        if execution.result.status == .completed {
+          draft = try publisher.applyCompletedTarget(
             targetID: targetID,
-            status: targetStatus,
-            phases: phases,
-            artifacts: attemptedArtifacts,
-            attemptedArtifacts: attemptedArtifacts,
-            failureSummary: targetFailureSummary
-        )
-        return TargetExecutionResult(runTarget: runTarget, manifestTarget: manifestTarget)
-    }
+            files: execution.completedFiles,
+            to: draft
+          )
+          generatedTargetIDs.append(targetID)
+        }
 
-    func failedTargetResult(
-        target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-        runID: String,
-        status: PrivateHeaderGeneration.RunTargetStatus,
-        phases: [PrivateHeaderGeneration.PhaseRecord],
-        artifacts: [PrivateHeaderGeneration.ArtifactPath],
-        attemptedArtifacts: [PrivateHeaderGeneration.ArtifactPath],
-        failureSummary: String
-    ) -> TargetExecutionResult {
-        let manifestTarget = PrivateHeaderGeneration.TargetRecord(
-            id: target.candidate.identifier,
+        try await store.recordTargetAttempt(execution.result, in: runID)
+        progressReporter?(
+          .targetFinished(
+            index: executedIndex,
+            total: targetIDsToRun.count,
             displayName: target.candidate.displayName,
-            kind: target.candidate.kind.rawValue,
-            status: PrivateHeaderGeneration.TargetStatus(runStatus: status),
-            phases: phases,
-            artifacts: artifacts,
-            lastRunID: runID,
-            updatedAt: dateProvider(),
-            failureSummary: failureSummary
+            status: execution.result.status
+          ))
+        if cancellationRequested(), execution.result.status != .interrupted {
+          try await store.requestInterruption(runID, at: dateProvider())
+          wasCancelled = true
+        }
+        if execution.result.status == .interrupted {
+          try await store.requestInterruption(runID, at: dateProvider())
+          wasCancelled = true
+        }
+        if wasCancelled { break }
+      }
+
+      if cancellationRequested() {
+        wasCancelled = true
+      }
+      if wasCancelled {
+        try await store.requestInterruption(runID, at: dateProvider())
+      }
+
+      let finalSnapshot: PrivateHeaderGeneration.RunSnapshot
+      if generatedTargetIDs.isEmpty {
+        finalSnapshot = try await store.finishRunWithoutPublication(
+          runID,
+          at: dateProvider(),
+          shouldInterrupt: { cancellationRequested() }
         )
-        let runTarget = PrivateHeaderGeneration.RunTargetRecord(
-            targetID: target.candidate.identifier,
-            status: status,
-            phases: phases,
-            artifacts: [],
-            attemptedArtifacts: attemptedArtifacts,
-            failureSummary: failureSummary
+        wasCancelled = finalSnapshot.status == .interrupted
+        do {
+          try publisher.discardDraft(draft)
+        } catch {
+          warnings.append(
+            await surfacePostCommitWarning(
+              runID: runID,
+              kind: "cleanup-warning",
+              relativePath:
+                ".privateheaderkit/\(plan.source.label.directoryName)/staging/\(generationID.rawValue).draft",
+              error: error,
+              store: store,
+              progressReporter: progressReporter
+            ))
+        }
+      } else {
+        let prepared = try publisher.prepareGeneration(draft, planFingerprint: fingerprint)
+        let previousGenerationID = publication.currentGenerationID
+        _ = try await store.preparePublication(
+          generationID: generationID,
+          runID: runID,
+          previousGenerationID: previousGenerationID,
+          planFingerprint: fingerprint,
+          artifactChecksum: prepared.marker.artifactChecksum,
+          at: dateProvider()
         )
-        return TargetExecutionResult(runTarget: runTarget, manifestTarget: manifestTarget)
+        try injectPublicationFault(.afterPrepared)
+        wasCancelled = try await latchCancellation(
+          wasCancelled,
+          runID: runID,
+          store: store
+        )
+        try publisher.movePreparedGeneration(prepared)
+        try injectPublicationFault(.afterGenerationMove)
+        wasCancelled = try await latchCancellation(
+          wasCancelled,
+          runID: runID,
+          store: store
+        )
+        try publisher.switchCurrent(to: generationID)
+        try injectPublicationFault(.afterCurrentPointerSwitch)
+        wasCancelled = try await latchCancellation(
+          wasCancelled,
+          runID: runID,
+          store: store
+        )
+        try publisher.ensureStablePointer()
+        try injectPublicationFault(.afterStablePointerSwitch)
+        wasCancelled = try await latchCancellation(
+          wasCancelled,
+          runID: runID,
+          store: store
+        )
+        try await store.markPointerPublished(generationID)
+        try injectPublicationFault(.beforeCommitted)
+        wasCancelled = try await latchCancellation(
+          wasCancelled,
+          runID: runID,
+          store: store
+        )
+        finalSnapshot = try await store.completePublication(
+          generationID,
+          at: dateProvider(),
+          shouldInterrupt: { cancellationRequested() }
+        )
+        wasCancelled = finalSnapshot.status == .interrupted
+        var protected: Set<PrivateHeaderGeneration.GenerationID> = [generationID]
+        if let previousGenerationID { protected.insert(previousGenerationID) }
+        do {
+          try publisher.retainGenerations(
+            protected: protected,
+            maximumCount: max(3, protected.count)
+          )
+        } catch {
+          warnings.append(
+            await surfacePostCommitWarning(
+              runID: runID,
+              kind: "retention-warning",
+              relativePath: ".privateheaderkit/\(plan.source.label.directoryName)/generations",
+              error: error,
+              store: store,
+              progressReporter: progressReporter
+            ))
+        }
+        try publisher.validateCommittedCurrent(generationID)
+      }
+
+      do {
+        try FileManager.default.removeItem(at: runStagingDirectory)
+      } catch {
+        warnings.append(
+          await surfacePostCommitWarning(
+            runID: runID,
+            kind: "cleanup-warning",
+            relativePath: "staging/\(runID.rawValue)",
+            error: error,
+            store: store,
+            progressReporter: progressReporter
+          ))
+      }
+      let summary = PrivateHeaderGeneration.RunSummary(
+        runID: runID,
+        status: finalSnapshot.status,
+        targetCounts: finalSnapshot.counts,
+        artifactDirectory: publisher.stableURL,
+        stateDatabaseURL: databaseURL,
+        warnings: warnings
+      )
+      progressReporter?(.runFinished(summary))
+      if wasCancelled {
+        throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+          .init(summary: summary)
+        )
+      }
+
+      let failedTargetIDs = finalSnapshot.targets
+        .filter { !$0.status.isSuccessfulOrSkipped }
+        .map(\.targetID)
+      if !failedTargetIDs.isEmpty {
+        throw PrivateHeaderGeneration.GenerationError.runFailed(
+          .init(summary: summary, failedTargetIDs: failedTargetIDs)
+        )
+      }
+
+      return PrivateHeaderGeneration.Result(
+        plan: plan,
+        artifactDirectory: publisher.stableURL,
+        generatedTargets: generatedTargetIDs.map(
+          PrivateHeaderGeneration.Target.generated(identifier:)),
+        runID: runID,
+        stateDatabaseURL: databaseURL,
+        targetCounts: finalSnapshot.counts,
+        warnings: warnings
+      )
+    } catch let fault as DeliberateFault {
+      throw fault.underlying
+    } catch let error as PrivateHeaderGeneration.GenerationError {
+      throw error
+    } catch {
+      try await convergeInfrastructureFailure(
+        error,
+        runID: runID,
+        generationID: generationID,
+        databaseURL: databaseURL,
+        stateDirectory: stateDirectory,
+        store: store,
+        publisher: publisher,
+        progressReporter: progressReporter
+      )
     }
+  }
+
+  fileprivate func injectPublicationFault(
+    _ point: PrivateHeaderGeneration.PublicationFaultPoint
+  ) throws {
+    do {
+      try publicationFaultInjector(point)
+    } catch {
+      throw DeliberateFault(underlying: error)
+    }
+  }
+
+  fileprivate func convergeInfrastructureFailure(
+    _ underlyingError: any Error,
+    runID: PrivateHeaderGeneration.RunID,
+    generationID: PrivateHeaderGeneration.GenerationID,
+    databaseURL: URL,
+    stateDirectory: URL,
+    store: GenerationStore,
+    publisher: ArtifactPublisher,
+    progressReporter: ProgressReporter?
+  ) async throws -> Never {
+    let interruptionRequested = cancellationRequested()
+    if interruptionRequested {
+      try await store.requestInterruption(runID, at: dateProvider())
+    }
+    if try await store.publicationIntent(generationID: generationID) == nil {
+      if interruptionRequested {
+        _ = try await store.finishRunWithoutPublication(
+          runID,
+          at: dateProvider(),
+          shouldInterrupt: { true }
+        )
+      } else {
+        _ = try await store.failRun(
+          runID,
+          message: String(describing: underlyingError),
+          at: dateProvider()
+        )
+      }
+    } else {
+      try await Self.recover(store: store, publisher: publisher, at: dateProvider())
+    }
+    var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+    do {
+      try publisher.cleanupStaging()
+    } catch {
+      warnings.append(
+        await surfacePostCommitWarning(
+          runID: runID,
+          kind: "cleanup-warning",
+          relativePath: ".privateheaderkit/\(publisher.sourceLabel)/staging",
+          error: error,
+          store: store,
+          progressReporter: progressReporter
+        ))
+    }
+    do {
+      try Self.cleanupStateStaging(in: stateDirectory)
+    } catch {
+      warnings.append(
+        await surfacePostCommitWarning(
+          runID: runID,
+          kind: "cleanup-warning",
+          relativePath: "staging",
+          error: error,
+          store: store,
+          progressReporter: progressReporter
+        ))
+    }
+    let snapshot = try await store.runSnapshot(runID)
+    guard snapshot.status != .running else {
+      throw PrivateHeaderGeneration.StateError.corruptPublication(
+        "in-process failure recovery left run \(runID.rawValue) running"
+      )
+    }
+    let summary = PrivateHeaderGeneration.RunSummary(
+      runID: runID,
+      status: snapshot.status,
+      targetCounts: snapshot.counts,
+      artifactDirectory: publisher.stableURL,
+      stateDatabaseURL: databaseURL,
+      warnings: warnings
+    )
+    progressReporter?(.runFinished(summary))
+    if interruptionRequested {
+      throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+        .init(summary: summary)
+      )
+    }
+    throw PrivateHeaderGeneration.GenerationError.infrastructureFailed(
+      .init(summary: summary, message: String(describing: underlyingError))
+    )
+  }
+
+  fileprivate func surfacePostCommitWarning(
+    runID: PrivateHeaderGeneration.RunID,
+    kind: String,
+    relativePath: String,
+    error: any Error,
+    store: GenerationStore,
+    progressReporter: ProgressReporter?
+  ) async -> PrivateHeaderGeneration.GenerationWarning {
+    let primaryMessage = String(describing: error)
+    let message: String
+    do {
+      try await store.recordRunLog(
+        runID: runID,
+        kind: kind,
+        relativePath: relativePath,
+        message: primaryMessage
+      )
+      message = primaryMessage
+    } catch {
+      message = "\(primaryMessage); additionally failed to persist warning: \(error)"
+    }
+    let warning = PrivateHeaderGeneration.GenerationWarning(
+      kind: kind,
+      relativePath: relativePath,
+      message: message
+    )
+    progressReporter?(.warning(warning))
+    return warning
+  }
+
+  fileprivate func executeTarget(
+    _ target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    plan: PrivateHeaderGeneration.Plan,
+    helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    stagingDirectory: URL,
+    publisher: ArtifactPublisher
+  ) async throws -> TargetExecution {
+    let now = dateProvider()
+    let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
+      PrivateHeaderGeneration.RawDumping.Request(
+        helperURLs: helperURLs,
+        executionMode: executionMode,
+        inputPath: Self.inputPath(for: target, executionMode: executionMode),
+        stagingOutputDirectory: stagingDirectory,
+        options: plan.options.rawDumpingOptions
+      )
+    )
+
+    let rawResult: PrivateHeaderGeneration.RawDumping.Result
+    do {
+      rawResult = try await rawDumpRunner(invocation)
+    } catch is CancellationError {
+      return TargetExecution(
+        result: Self.interruptedResult(target: target, at: dateProvider()),
+        completedFiles: [:]
+      )
+    } catch {
+      return Self.failedExecution(
+        target: target,
+        status: cancellationRequested() ? .interrupted : .failed,
+        summary: String(describing: error),
+        at: now
+      )
+    }
+
+    if cancellationRequested() {
+      return TargetExecution(
+        result: Self.interruptedResult(target: target, at: dateProvider()),
+        completedFiles: [:]
+      )
+    }
+    let artifactRoot = try Self.artifactRoot(for: target, layout: plan.options.layout)
+    let staged = try Self.collectStagedArtifacts(
+      for: target,
+      in: stagingDirectory,
+      runtimeRoot: plan.options.systemRoot?.path ?? "",
+      artifactRoot: artifactRoot
+    )
+    try publisher.validateRawStaging(
+      root: stagingDirectory,
+      expectedSourceFiles: Set(staged.files.values)
+    )
+    guard !staged.files.isEmpty else {
+      return Self.failedExecution(
+        target: target,
+        status: .failed,
+        summary: rawResult.succeeded
+          ? "raw dump produced no header artifacts"
+          : rawResult.failureSummary
+            ?? "raw dump exited with status \(rawResult.terminationStatus)",
+        at: dateProvider()
+      )
+    }
+    if rawResult.succeeded {
+      return TargetExecution(
+        result: PrivateHeaderGeneration.TargetAttemptResult(
+          targetID: target.candidate.identifier,
+          displayName: target.candidate.displayName,
+          kind: target.candidate.kind.rawValue,
+          status: .completed,
+          artifacts: staged.files.keys.sorted { $0.rawValue < $1.rawValue },
+          completedAt: dateProvider()
+        ),
+        completedFiles: staged.files
+      )
+    }
+    return Self.failedExecution(
+      target: target,
+      status: .partial,
+      summary: rawResult.failureSummary
+        ?? "raw dump exited with status \(rawResult.terminationStatus)",
+      artifacts: staged.files.keys.sorted { $0.rawValue < $1.rawValue },
+      at: dateProvider()
+    )
+  }
+
+  fileprivate static func failedExecution(
+    target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    status: PrivateHeaderGeneration.RunTargetStatus,
+    summary: String,
+    artifacts: [PrivateHeaderGeneration.ArtifactPath] = [],
+    at date: Date
+  ) -> TargetExecution {
+    TargetExecution(
+      result: PrivateHeaderGeneration.TargetAttemptResult(
+        targetID: target.candidate.identifier,
+        displayName: target.candidate.displayName,
+        kind: target.candidate.kind.rawValue,
+        status: status,
+        artifacts: artifacts,
+        failureSummary: summary,
+        completedAt: date
+      ),
+      completedFiles: [:]
+    )
+  }
+
+  fileprivate static func interruptedResult(
+    target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    at date: Date
+  ) -> PrivateHeaderGeneration.TargetAttemptResult {
+    PrivateHeaderGeneration.TargetAttemptResult(
+      targetID: target.candidate.identifier,
+      displayName: target.candidate.displayName,
+      kind: target.candidate.kind.rawValue,
+      status: .interrupted,
+      failureSummary: "cancelled",
+      completedAt: date
+    )
+  }
 }
 
-private extension PrivateHeaderGeneration.GenerationExecutor {
-    static func selectedExecutionTargets(
-        request: PrivateHeaderGeneration.TargetRequest,
-        catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
-    ) throws -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
-        switch request {
-        case .frameworks:
-            return Self.deduplicated(
-                catalog.targets.flatMap { target -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-                    guard target.candidate.kind == .framework || target.candidate.kind == .privateFramework else {
-                        return []
-                    }
-                    return [target] + target.childTargets
-                }
-            )
-        case .system:
-            return Self.deduplicated(
-                catalog.targets.flatMap { target -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-                    guard target.candidate.kind != .usrLibDylib else {
-                        return []
-                    }
-                    return [target] + target.childTargets
-                }
-            )
-        case .allAvailable:
-            return Self.deduplicated(catalog.allTargetsIncludingNestedChildren)
-        case .identifiers(let targetIDs):
-            let requestedTargetIDs = Self.deduplicatedTargetIDs(targetIDs)
-            let targets = catalog.allTargetsIncludingNestedChildren
-            let selected = requestedTargetIDs.compactMap { targetID in
-                targets.first { $0.candidate.identifier == targetID }
-            }
-            if selected.count != requestedTargetIDs.count {
-                let selectedIDs = Set(selected.map(\.candidate.identifier))
-                let missing = requestedTargetIDs.filter { !selectedIDs.contains($0) }.sorted()
-                throw PrivateHeaderGeneration.GenerationError.unknownSelectedTargets(missing)
-            }
-            return Self.deduplicated(selected)
-        case .query(let query):
-            let targetQuery = try PrivateHeaderGeneration.TargetQuery(commaSeparated: query)
-            switch catalog.resolver.resolve(targetQuery) {
-            case .selected(.allAvailable):
-                return Self.deduplicated(catalog.allTargetsIncludingNestedChildren)
-            case .selected(.targets(let candidates)):
-                let selected = candidates.flatMap { candidate in
-                    Self.expandTarget(
-                        identifier: candidate.identifier,
-                        catalog: catalog
-                    )
-                }
-                return Self.deduplicated(selected)
-            case .needsDisambiguation, .failed, .unresolved:
-                throw PrivateHeaderGeneration.GenerationError.unresolvedTargetQuery(query)
-            }
-        }
+extension PrivateHeaderGeneration.GenerationExecutor {
+  fileprivate static func recover(
+    store: GenerationStore,
+    publisher: ArtifactPublisher,
+    at date: Date
+  ) async throws {
+    for _ in 0..<4 {
+      let snapshot = try publisher.inspect()
+      let action = try await store.recover(using: snapshot, at: date)
+      switch action {
+      case .completeStablePointer:
+        try publisher.ensureStablePointer()
+        continue
+      case .discardGeneration(let generationID):
+        try publisher.discardGeneration(generationID)
+        continue
+      case .none, .recognized, .rolledForward:
+        return
+      }
     }
+    throw PrivateHeaderGeneration.StateError.corruptPublication("recovery did not converge")
+  }
 
-    static func expandTarget(
-        identifier: String,
-        catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
-    ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
-        for target in catalog.targets where target.candidate.identifier == identifier {
-            return [target] + target.childTargets
-        }
-        return catalog.allTargetsIncludingNestedChildren.filter {
-            $0.candidate.identifier == identifier
-        }
+  fileprivate static func availableResumeSummary(
+    for plan: PrivateHeaderGeneration.Plan
+  ) async throws -> PrivateHeaderGeneration.ResumeSummary? {
+    guard let systemRoot = plan.options.systemRoot else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("systemRoot")
     }
-
-    static func deduplicated(
-        _ targets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget]
-    ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
-        var seen: Set<String> = []
-        var deduplicated: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] = []
-        for target in targets where seen.insert(target.candidate.identifier).inserted {
-            deduplicated.append(target)
-        }
-        return deduplicated
+    guard let executionMode = plan.options.executionMode else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
     }
-
-    static func deduplicatedTargetIDs(_ targetIDs: [String]) -> [String] {
-        var seen: Set<String> = []
-        var deduplicated: [String] = []
-        for targetID in targetIDs where seen.insert(targetID).inserted {
-            deduplicated.append(targetID)
-        }
-        return deduplicated
+    let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+      in: systemRoot,
+      includeNestedChildren: plan.options.includeNestedChildren
+    )
+    let selectedTargets = try selectedExecutionTargets(
+      request: plan.options.targetRequest,
+      catalog: catalog
+    )
+    let publisher = try ArtifactPublisher(
+      artifactBaseDirectory: plan.output.baseDirectory,
+      sourceLabel: plan.source.label.directoryName
+    )
+    try publisher.prepareForLease()
+    return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
+      let stateDirectory = canonicalStateDirectory(
+        outputBase: publisher.artifactBaseDirectory,
+        sourceLabel: plan.source.label.directoryName
+      )
+      let databaseURL = stateDirectory.appendingPathComponent(
+        "generation.sqlite",
+        isDirectory: false
+      )
+      let hadDatabase = try regularFileExists(databaseURL)
+      if try legacyStateExists(in: stateDirectory),
+        !hadDatabase,
+        !plan.options.resumeBehavior.isFresh
+      {
+        throw PrivateHeaderGeneration.GenerationError.legacyStateRequiresFresh(
+          path: stateDirectory.path
+        )
+      }
+      let store = try GenerationStore(
+        databaseURL: databaseURL,
+        toolVersion: plan.options.toolVersion
+      )
+      try await recover(store: store, publisher: publisher, at: Date())
+      try publisher.cleanupStaging()
+      try cleanupStateStaging(in: stateDirectory)
+      let publication = try publisher.inspect()
+      if publication.stablePathState == .legacyDirectory,
+        !plan.options.resumeBehavior.isFresh
+      {
+        throw PrivateHeaderGeneration.GenerationError.legacyArtifactsRequireFresh(
+          path: publisher.stableURL.path
+        )
+      }
+      guard !plan.options.resumeBehavior.isFresh else { return nil }
+      let summary = try await store.resumeSummary(
+        planFingerprint: planFingerprint(
+          plan,
+          canonicalOutputBase: publisher.artifactBaseDirectory,
+          executionMode: executionMode
+        ),
+        selectedTargetIDs: selectedTargets.map(\.candidate.identifier),
+        currentArtifactsByTarget: publication.currentMarker?.artifactsByTarget ?? [:],
+        at: Date()
+      )
+      return summary?.isUnfinished == true ? summary : nil
     }
+  }
 }
 
-private extension PrivateHeaderGeneration.GenerationExecutor {
-    static func resumeSummary(
-        for behavior: PrivateHeaderGeneration.ResumeBehavior,
-        runPlan: PrivateHeaderGeneration.RunPlanRecord,
-        manifest: PrivateHeaderGeneration.Manifest?,
-        latestRun: PrivateHeaderGeneration.RunRecord?,
-        artifactStore: PrivateHeaderGeneration.ArtifactStore
-    ) throws -> PrivateHeaderGeneration.ResumeSummary? {
-        guard let manifest else {
-            return nil
-        }
-
-        if case .fresh = behavior {
-            return nil
-        }
-
-        let artifactExists: PrivateHeaderGeneration.ArtifactExistence = { artifact in
-            (try? artifactStore.contains(artifact)) == true
-        }
-
-        switch PrivateHeaderGeneration.nonInteractiveResumeDecision(
-            plan: runPlan,
-            manifest: manifest,
-            latestRun: latestRun,
-            resumeRequested: behavior.resumeRequested,
-            artifactExists: artifactExists
-        ) {
-        case .proceed:
-            return PrivateHeaderGeneration.makeResumeSummary(
-                plan: runPlan,
-                manifest: manifest,
-                latestRun: latestRun,
-                artifactExists: artifactExists
-            )
-        case .resume(let summary):
-            return summary
-        case .resumeRequired(let summary):
-            throw PrivateHeaderGeneration.GenerationError.resumeRequired(summary)
-        case .incompatible(let reasons):
-            throw PrivateHeaderGeneration.GenerationError.incompatibleResume(reasons)
-        }
-    }
-
-    static func targetIDsToRun(
-        resumeBehavior: PrivateHeaderGeneration.ResumeBehavior,
-        selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
-        resumeSummary: PrivateHeaderGeneration.ResumeSummary?
-    ) -> Set<String> {
-        if case .fresh = resumeBehavior {
-            return Set(selectedTargets.map(\.candidate.identifier))
-        }
-        guard let resumeSummary else {
-            return Set(selectedTargets.map(\.candidate.identifier))
-        }
-        return Set(resumeSummary.targetIDsToRun)
-    }
-
-    static func shouldCleanupBeforeRun(
-        targetID: String,
-        resumeBehavior: PrivateHeaderGeneration.ResumeBehavior,
-        previousTarget: PrivateHeaderGeneration.TargetRecord?
-    ) -> Bool {
-        if case .fresh = resumeBehavior {
-            return true
-        }
-        return previousTarget?.id == targetID && previousTarget?.status == .commitFailed
-    }
-
-    static func skippedRunTargets(
-        selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
-        targetIDsToRun: Set<String>
-    ) -> [PrivateHeaderGeneration.RunTargetRecord] {
-        selectedTargets
-            .filter { !targetIDsToRun.contains($0.candidate.identifier) }
-            .map { target in
-                PrivateHeaderGeneration.RunTargetRecord(
-                    targetID: target.candidate.identifier,
-                    status: .skipped,
-                    phases: [
-                        PrivateHeaderGeneration.PhaseRecord(
-                            name: "raw-header-dump",
-                            status: .skipped
-                        ),
-                    ],
-                    artifacts: [],
-                    attemptedArtifacts: [],
-                    failureSummary: nil
-                )
-            }
-    }
-}
-
-private extension PrivateHeaderGeneration.GenerationExecutor {
-    struct StagedArtifacts {
-        let sourceDirectory: URL?
-        let artifacts: [PrivateHeaderGeneration.ArtifactPath]
-    }
-
-    static func collectStagedArtifacts(
-        for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-        in targetStagingDirectory: URL,
-        runtimeRoot: String,
-        artifactRoot: PrivateHeaderGeneration.ArtifactPath
-    ) throws -> StagedArtifacts {
-        var firstExistingDirectory: URL?
-        var firstArtifacts: [PrivateHeaderGeneration.ArtifactPath] = []
-
-        let candidates = stagedSourceDirectoryCandidates(
-            for: target,
-            in: targetStagingDirectory,
-            runtimeRoot: runtimeRoot
-        )
-
-        for candidate in candidates where isDirectory(candidate) {
-            let artifacts = try artifactPaths(
-                under: candidate,
-                artifactRoot: artifactRoot
-            )
-            if firstExistingDirectory == nil {
-                firstExistingDirectory = candidate
-                firstArtifacts = artifacts
-            }
-            if !artifacts.isEmpty {
-                return StagedArtifacts(
-                    sourceDirectory: candidate,
-                    artifacts: artifacts
-                )
-            }
-        }
-
-        return StagedArtifacts(
-            sourceDirectory: firstExistingDirectory,
-            artifacts: firstArtifacts
-        )
-    }
-
-    static func stagedSourceDirectoryCandidates(
-        for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-        in targetStagingDirectory: URL,
-        runtimeRoot: String
-    ) -> [URL] {
-        let runtimeInputPath = target.runtimeInputPath
-        let trimmedRuntimePath = runtimeInputPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if runtimeInputPath.hasPrefix("/usr/lib/") {
-            let name = URL(fileURLWithPath: runtimeInputPath).lastPathComponent
-            return stageUsrLibRoots(
-                stageDirectory: targetStagingDirectory,
-                runtimeRoot: runtimeRoot
-            )
-            .map { $0.appendingPathComponent(name, isDirectory: true) }
-        }
-
-        let systemLibraryRelativePath = String(runtimeInputPath.dropFirst("/System/Library/".count))
-        var candidates = stageSystemLibraryRoots(
-            stageDirectory: targetStagingDirectory,
-            runtimeRoot: runtimeRoot
-        )
-        .map { appendRelativePath(systemLibraryRelativePath, to: $0) }
-        candidates.append(appendRelativePath(trimmedRuntimePath, to: targetStagingDirectory))
-        return candidates
-    }
-
-    static func artifactPaths(
-        under sourceDirectory: URL,
-        artifactRoot: PrivateHeaderGeneration.ArtifactPath
-    ) throws -> [PrivateHeaderGeneration.ArtifactPath] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: sourceDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
+extension PrivateHeaderGeneration.GenerationExecutor {
+  fileprivate static func selectedExecutionTargets(
+    request: PrivateHeaderGeneration.TargetRequest,
+    catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
+  ) throws -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
+    switch request {
+    case .frameworks:
+      return deduplicated(
+        catalog.targets.flatMap {
+          target -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
+          guard target.candidate.kind == .framework || target.candidate.kind == .privateFramework
+          else {
             return []
+          }
+          return [target] + target.childTargets
         }
-
-        let sourcePath = sourceDirectory.standardizedFileURL.path
-        var artifacts: [PrivateHeaderGeneration.ArtifactPath] = []
-        for case let url as URL in enumerator {
-            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
-            if values.isDirectory == true {
-                continue
-            }
-            guard url.pathExtension == "h" || url.pathExtension == "swiftinterface" else {
-                continue
-            }
-
-            let path = url.standardizedFileURL.path
-            let relativePath = path.hasPrefix(sourcePath + "/")
-                ? String(path.dropFirst(sourcePath.count + 1))
-                : url.lastPathComponent
-            artifacts.append(
-                try PrivateHeaderGeneration.ArtifactPath(
-                    artifactRoot.rawValue + "/" + relativePath
-                )
-            )
+      )
+    case .system:
+      return deduplicated(
+        catalog.targets.flatMap {
+          target -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
+          guard target.candidate.kind != .usrLibDylib else { return [] }
+          return [target] + target.childTargets
         }
-
-        return artifacts.sorted { $0.rawValue < $1.rawValue }
-    }
-
-    static func commit(
-        stagedSourceDirectory: URL,
-        artifactRoot: PrivateHeaderGeneration.ArtifactPath,
-        artifactDirectory: URL
-    ) throws {
-        let destination = appendRelativePath(artifactRoot.rawValue, to: artifactDirectory)
-        try mergeDirectoryContents(
-            from: stagedSourceDirectory,
-            to: destination
+      )
+    case .allAvailable:
+      return deduplicated(catalog.allTargetsIncludingNestedChildren)
+    case .identifiers(let targetIDs):
+      let requested = deduplicatedTargetIDs(targetIDs)
+      let all = catalog.allTargetsIncludingNestedChildren
+      let selected = requested.compactMap { id in all.first { $0.candidate.identifier == id } }
+      if selected.count != requested.count {
+        let found = Set(selected.map(\.candidate.identifier))
+        throw PrivateHeaderGeneration.GenerationError.unknownSelectedTargets(
+          requested.filter { !found.contains($0) }.sorted()
         )
+      }
+      return deduplicated(selected)
+    case .query(let query):
+      let targetQuery = try PrivateHeaderGeneration.TargetQuery(commaSeparated: query)
+      switch catalog.resolver.resolve(targetQuery) {
+      case .selected(.allAvailable):
+        return deduplicated(catalog.allTargetsIncludingNestedChildren)
+      case .selected(.targets(let candidates)):
+        return deduplicated(
+          candidates.flatMap { candidate in
+            expandTarget(identifier: candidate.identifier, catalog: catalog)
+          })
+      case .needsDisambiguation, .failed, .unresolved:
+        throw PrivateHeaderGeneration.GenerationError.unresolvedTargetQuery(query)
+      }
     }
+  }
 
-    static func artifactRoot(
-        for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-        layout: PrivateHeaderGeneration.Layout
-    ) throws -> PrivateHeaderGeneration.ArtifactPath {
-        switch layout {
-        case .headers:
-            return target.artifactRoot
-        case .bundle:
-            return try bundleArtifactRoot(for: target.source)
-        }
+  fileprivate static func expandTarget(
+    identifier: String,
+    catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
+  ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
+    for target in catalog.targets where target.candidate.identifier == identifier {
+      return [target] + target.childTargets
     }
+    return catalog.allTargetsIncludingNestedChildren.filter {
+      $0.candidate.identifier == identifier
+    }
+  }
 
-    static func bundleArtifactRoot(
-        for source: PrivateHeaderGeneration.TargetDiscovery.SourceMetadata
-    ) throws -> PrivateHeaderGeneration.ArtifactPath {
-        switch source {
-        case .framework(let framework):
-            return try PrivateHeaderGeneration.ArtifactPath(
-                framework.systemLibraryRelativePath
-            )
-        case .systemLibraryBundle(let bundle):
-            return try PrivateHeaderGeneration.ArtifactPath(
-                artifactRootForBundleLayout(systemLibraryRelativePath: bundle.relativePath)
-            )
-        case .usrLibDylib(let dylib):
-            return try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(dylib.name)")
-        }
-    }
+  fileprivate static func deduplicated(
+    _ targets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget]
+  ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
+    var seen: Set<String> = []
+    return targets.filter { seen.insert($0.candidate.identifier).inserted }
+  }
 
-    static func artifactRootForBundleLayout(systemLibraryRelativePath: String) -> String {
-        let firstComponent = systemLibraryRelativePath.split(separator: "/", maxSplits: 1).first
-        if firstComponent == "Frameworks" || firstComponent == "PrivateFrameworks" {
-            return systemLibraryRelativePath
-        }
-        return "SystemLibrary/\(systemLibraryRelativePath)"
-    }
+  fileprivate static func deduplicatedTargetIDs(_ targetIDs: [String]) -> [String] {
+    var seen: Set<String> = []
+    return targetIDs.filter { seen.insert($0).inserted }
+  }
 }
 
-private extension PrivateHeaderGeneration.GenerationExecutor {
-    static func manifest(
-        plan: PrivateHeaderGeneration.Plan,
-        runPlan: PrivateHeaderGeneration.RunPlanRecord,
-        runID: String,
-        targetRecords: [PrivateHeaderGeneration.TargetRecord],
-        updatedAt: Date
-    ) -> PrivateHeaderGeneration.Manifest {
-        PrivateHeaderGeneration.Manifest(
-            schemaVersion: 1,
-            toolVersion: plan.options.toolVersion,
-            source: runPlan.source,
-            output: runPlan.output,
-            layout: plan.options.layout,
-            latestRunID: runID,
-            targets: targetRecords,
-            updatedAt: updatedAt
+extension PrivateHeaderGeneration.GenerationExecutor {
+  fileprivate static func collectStagedArtifacts(
+    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    in targetStagingDirectory: URL,
+    runtimeRoot: String,
+    artifactRoot: PrivateHeaderGeneration.ArtifactPath
+  ) throws -> StagedArtifacts {
+    let candidates = stagedSourceDirectoryCandidates(
+      for: target,
+      in: targetStagingDirectory,
+      runtimeRoot: runtimeRoot
+    )
+    for candidate in candidates where try directoryExists(candidate) {
+      let files = try artifactFiles(under: candidate, artifactRoot: artifactRoot)
+      if !files.isEmpty { return StagedArtifacts(files: files) }
+    }
+    return StagedArtifacts(files: [:])
+  }
+
+  fileprivate static func artifactFiles(
+    under sourceDirectory: URL,
+    artifactRoot: PrivateHeaderGeneration.ArtifactPath
+  ) throws -> [PrivateHeaderGeneration.ArtifactPath: URL] {
+    var enumerationFailure: (URL, any Error)?
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: sourceDirectory,
+        includingPropertiesForKeys: nil,
+        options: [],
+        errorHandler: { url, error in
+          enumerationFailure = (url, error)
+          return false
+        }
+      )
+    else {
+      throw ArtifactPublisher.PublisherError.unexpectedItem(
+        path: sourceDirectory.path,
+        description: "could not enumerate raw staging"
+      )
+    }
+    let sourcePath = sourceDirectory.standardizedFileURL.path
+    var result: [PrivateHeaderGeneration.ArtifactPath: URL] = [:]
+    for case let url as URL in enumerator {
+      let kind = try publisherItemKind(at: url)
+      if kind == .directory { continue }
+      guard kind == .regular, url.pathExtension == "h" || url.pathExtension == "swiftinterface"
+      else {
+        continue
+      }
+      let path = url.standardizedFileURL.path
+      guard path.hasPrefix(sourcePath + "/") else {
+        throw ArtifactPublisher.PublisherError.invalidManagedPath(path)
+      }
+      let relative = String(path.dropFirst(sourcePath.count + 1))
+      let artifact = try PrivateHeaderGeneration.ArtifactPath(
+        artifactRoot.rawValue + "/" + relative
+      )
+      guard result.updateValue(url, forKey: artifact) == nil else {
+        throw ArtifactPublisher.PublisherError.artifactCollision(
+          path: artifact.rawValue,
+          owners: [targetIDForDiagnostic(sourceDirectory)]
         )
+      }
     }
+    if let (url, error) = enumerationFailure {
+      throw ArtifactPublisher.PublisherError.unexpectedItem(
+        path: url.path,
+        description: "raw staging enumeration failed: \(error)"
+      )
+    }
+    return result
+  }
 
-    static func runPlanRecord(
-        plan: PrivateHeaderGeneration.Plan,
-        selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
-        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
-        helperEnvironment: [String: String]
-    ) -> PrivateHeaderGeneration.RunPlanRecord {
-        PrivateHeaderGeneration.RunPlanRecord(
-            source: PrivateHeaderGeneration.SourceRecord(source: plan.source),
-            output: PrivateHeaderGeneration.OutputRecord(
-                plan: plan,
-                baseDirectory: plan.options.outputBaseDirectory ?? plan.output.artifactBaseDirectory
-            ),
-            layout: plan.options.layout,
-            targetIDs: selectedTargets.map(\.candidate.identifier),
-            execution: Self.executionRecord(
-                for: executionMode,
-                helperEnvironment: helperEnvironment
-            )
+  fileprivate static func targetIDForDiagnostic(_ sourceDirectory: URL) -> String {
+    sourceDirectory.lastPathComponent
+  }
+
+  fileprivate static func stagedSourceDirectoryCandidates(
+    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    in targetStagingDirectory: URL,
+    runtimeRoot: String
+  ) -> [URL] {
+    let runtimeInputPath = target.runtimeInputPath
+    let trimmed = runtimeInputPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    if runtimeInputPath.hasPrefix("/usr/lib/") {
+      let name = URL(fileURLWithPath: runtimeInputPath).lastPathComponent
+      return stageUsrLibRoots(stageDirectory: targetStagingDirectory, runtimeRoot: runtimeRoot)
+        .map { $0.appendingPathComponent(name, isDirectory: true) }
+    }
+    let relative = String(runtimeInputPath.dropFirst("/System/Library/".count))
+    var candidates = stageSystemLibraryRoots(
+      stageDirectory: targetStagingDirectory,
+      runtimeRoot: runtimeRoot
+    ).map { appendRelativePath(relative, to: $0) }
+    candidates.append(appendRelativePath(trimmed, to: targetStagingDirectory))
+    return candidates
+  }
+
+  fileprivate static func artifactRoot(
+    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    layout: PrivateHeaderGeneration.Layout
+  ) throws -> PrivateHeaderGeneration.ArtifactPath {
+    switch layout {
+    case .headers:
+      target.artifactRoot
+    case .bundle:
+      try bundleArtifactRoot(for: target.source)
+    }
+  }
+
+  fileprivate static func bundleArtifactRoot(
+    for source: PrivateHeaderGeneration.TargetDiscovery.SourceMetadata
+  ) throws -> PrivateHeaderGeneration.ArtifactPath {
+    switch source {
+    case .framework(let framework):
+      try PrivateHeaderGeneration.ArtifactPath(framework.systemLibraryRelativePath)
+    case .systemLibraryBundle(let bundle):
+      try PrivateHeaderGeneration.ArtifactPath(
+        artifactRootForBundleLayout(systemLibraryRelativePath: bundle.relativePath)
+      )
+    case .usrLibDylib(let dylib):
+      try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(dylib.name)")
+    }
+  }
+
+  fileprivate static func artifactRootForBundleLayout(systemLibraryRelativePath: String) -> String {
+    let first = systemLibraryRelativePath.split(separator: "/", maxSplits: 1).first
+    if first == "Frameworks" || first == "PrivateFrameworks" { return systemLibraryRelativePath }
+    return "SystemLibrary/\(systemLibraryRelativePath)"
+  }
+
+  fileprivate static func inputPath(
+    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
+  ) -> String {
+    switch executionMode {
+    case .host: target.inputPath
+    case .simulator: target.runtimeInputPath
+    }
+  }
+
+  fileprivate static func stageSystemLibraryRoots(stageDirectory: URL, runtimeRoot: String) -> [URL]
+  {
+    var roots = [
+      stageDirectory.appendingPathComponent("System/Library", isDirectory: true),
+      stageDirectory.appendingPathComponent(
+        "System/Cryptexes/OS/System/Library", isDirectory: true),
+      stageDirectory.appendingPathComponent(
+        "System/Volumes/Preboot/Cryptexes/OS/System/Library", isDirectory: true),
+    ]
+    if runtimeRoot.hasPrefix("/") {
+      let base = appendRelativePath(String(runtimeRoot.dropFirst()), to: stageDirectory)
+      roots.append(base.appendingPathComponent("System/Library", isDirectory: true))
+      roots.append(
+        base.appendingPathComponent("System/Cryptexes/OS/System/Library", isDirectory: true))
+      roots.append(
+        base.appendingPathComponent(
+          "System/Volumes/Preboot/Cryptexes/OS/System/Library", isDirectory: true))
+    }
+    return uniquedByPath(roots)
+  }
+
+  fileprivate static func stageUsrLibRoots(stageDirectory: URL, runtimeRoot: String) -> [URL] {
+    var roots = [stageDirectory.appendingPathComponent("usr/lib", isDirectory: true)]
+    if runtimeRoot.hasPrefix("/") {
+      roots.append(
+        appendRelativePath(String(runtimeRoot.dropFirst()), to: stageDirectory)
+          .appendingPathComponent("usr/lib", isDirectory: true)
+      )
+    }
+    return uniquedByPath(roots)
+  }
+
+  fileprivate static func appendRelativePath(_ relativePath: String, to base: URL) -> URL {
+    var url = base
+    for component in relativePath.split(separator: "/") {
+      url.appendPathComponent(String(component), isDirectory: true)
+    }
+    return url
+  }
+
+  fileprivate static func uniquedByPath(_ urls: [URL]) -> [URL] {
+    var seen: Set<String> = []
+    return urls.filter { seen.insert($0.path).inserted }
+  }
+}
+
+extension PrivateHeaderGeneration.GenerationExecutor {
+  fileprivate static func sourceIdentity(_ source: PrivateHeaderGeneration.Source) -> String {
+    [source.platform.rawValue, source.version, source.build ?? ""].joined(separator: "|")
+  }
+
+  fileprivate static func planFingerprint(
+    _ plan: PrivateHeaderGeneration.Plan,
+    canonicalOutputBase: URL,
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
+  ) -> String {
+    var components = [
+      sourceIdentity(plan.source),
+      canonicalOutputBase.path,
+      plan.options.layout.rawValue,
+      plan.options.systemRoot?.standardizedFileURL.path ?? "",
+      plan.options.toolVersion,
+      String(plan.options.includeNestedChildren),
+      String(plan.options.rawDumpingOptions.skipExisting),
+      String(plan.options.rawDumpingOptions.useSharedCache),
+      String(plan.options.rawDumpingOptions.verbose),
+      String(plan.options.rawDumpingOptions.preferRuntimeMetadata),
+      plan.options.helperURLs?.host.standardizedFileURL.path ?? "",
+      plan.options.helperURLs?.simulator.standardizedFileURL.path ?? "",
+    ]
+    switch executionMode {
+    case .host:
+      components.append("host")
+    case .simulator(let deviceUDID, let runtimeRoot):
+      components += ["simulator", deviceUDID, runtimeRoot]
+    }
+    for key in plan.options.rawDumpingOptions.helperEnvironment.keys.sorted() {
+      components.append("env:\(key)=\(plan.options.rawDumpingOptions.helperEnvironment[key] ?? "")")
+    }
+    let digest = SHA256.hash(data: Data(components.joined(separator: "\n").utf8))
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  fileprivate static func safeTargetDirectoryName(_ targetID: String) -> String {
+    var result = ""
+    for byte in targetID.utf8 {
+      let alphaNumeric =
+        (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
+      let punctuation = byte == 45 || byte == 46 || byte == 95
+      if alphaNumeric || punctuation {
+        result.append(Character(UnicodeScalar(byte)))
+      } else {
+        result += String(format: "%%%02X", byte)
+      }
+    }
+    return result
+  }
+
+  fileprivate static func ensureEmptyDirectory(_ url: URL) throws {
+    do {
+      try ManagedFileSystem.ensureRealDirectory(url.deletingLastPathComponent())
+      if let kind = try ManagedFileSystem.itemKind(at: url) {
+        guard kind == .directory else {
+          throw ManagedFileSystem.Failure.unexpectedKind(
+            path: url.path,
+            expected: "directory or missing",
+            actual: kind
+          )
+        }
+        try FileManager.default.removeItem(at: url)
+      }
+      try ManagedFileSystem.ensureRealDirectory(url)
+    } catch let error as ManagedFileSystem.Failure {
+      throw stateFileSystemError(error)
+    }
+  }
+
+  fileprivate static func cleanupStateStaging(in stateDirectory: URL) throws {
+    let stagingDirectory = stateDirectory.appendingPathComponent("staging", isDirectory: true)
+    do {
+      try ManagedFileSystem.ensureRealDirectory(stagingDirectory)
+    } catch let error as ManagedFileSystem.Failure {
+      throw stateFileSystemError(error)
+    }
+    let entries = try FileManager.default.contentsOfDirectory(
+      at: stagingDirectory,
+      includingPropertiesForKeys: nil,
+      options: []
+    )
+    for entry in entries {
+      let kind: ManagedFileSystem.ItemKind?
+      do {
+        kind = try ManagedFileSystem.itemKind(at: entry)
+      } catch let error as ManagedFileSystem.Failure {
+        throw stateFileSystemError(error)
+      }
+      guard kind == .directory else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "state staging entry is a symlink, missing, or non-directory: \(entry.path)"
         )
+      }
+      _ = try PrivateHeaderGeneration.RunID(entry.lastPathComponent)
+      try FileManager.default.removeItem(at: entry)
     }
+  }
 
-    static func executionRecord(
-        for executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
-        helperEnvironment: [String: String]
-    ) -> PrivateHeaderGeneration.ExecutionRecord {
-        switch executionMode {
-        case .host:
-            return PrivateHeaderGeneration.ExecutionRecord(
-                mode: "host",
-                runtimeIdentifier: nil,
-                deviceName: nil,
-                deviceUDID: nil,
-                clonePolicy: nil,
-                helperEnvironment: helperEnvironment
-            )
-        case .simulator(let deviceUDID, _):
-            return PrivateHeaderGeneration.ExecutionRecord(
-                mode: "simulator",
-                runtimeIdentifier: nil,
-                deviceName: nil,
-                deviceUDID: deviceUDID,
-                clonePolicy: nil,
-                helperEnvironment: helperEnvironment
-            )
-        }
+  fileprivate static func directoryExists(_ url: URL) throws -> Bool {
+    try publisherItemKind(at: url) == .directory
+  }
+
+  fileprivate static func pathExists(_ url: URL) throws -> Bool {
+    do {
+      return try ManagedFileSystem.itemKind(at: url) != nil
+    } catch let error as ManagedFileSystem.Failure {
+      throw stateFileSystemError(error)
     }
+  }
 
-    static func runRecordByAppending(
-        _ target: PrivateHeaderGeneration.RunTargetRecord,
-        to run: PrivateHeaderGeneration.RunRecord,
-        status: PrivateHeaderGeneration.RunTargetStatus,
-        endedAt: Date?
-    ) -> PrivateHeaderGeneration.RunRecord {
-        PrivateHeaderGeneration.RunRecord(
-            runID: run.runID,
-            schemaVersion: run.schemaVersion,
-            toolVersion: run.toolVersion,
-            plan: run.plan,
-            startedAt: run.startedAt,
-            endedAt: endedAt,
-            status: status,
-            targetResults: run.targetResults + [target],
-            attemptedArtifacts: run.attemptedArtifacts + target.attemptedArtifacts,
-            logs: run.logs
+  fileprivate static func regularFileExists(_ url: URL) throws -> Bool {
+    do {
+      return try ManagedFileSystem.requireRegularFileOrMissing(url)
+    } catch let error as ManagedFileSystem.Failure {
+      throw stateFileSystemError(error)
+    }
+  }
+
+  fileprivate static func canonicalStateDirectory(outputBase: URL, sourceLabel: String) -> URL {
+    outputBase
+      .appendingPathComponent(".state", isDirectory: true)
+      .appendingPathComponent(sourceLabel, isDirectory: true)
+  }
+
+  fileprivate static func legacyStateExists(in stateDirectory: URL) throws -> Bool {
+    try pathExists(stateDirectory.appendingPathComponent("manifest.json"))
+      || pathExists(stateDirectory.appendingPathComponent("runs", isDirectory: true))
+  }
+
+  fileprivate static func publisherItemKind(at url: URL) throws -> ManagedFileSystem.ItemKind? {
+    do {
+      return try ManagedFileSystem.itemKind(at: url)
+    } catch let error as ManagedFileSystem.Failure {
+      switch error {
+      case .invalidPath(let path):
+        throw ArtifactPublisher.PublisherError.invalidManagedPath(path)
+      case .unexpectedKind(let path, let expected, let actual):
+        throw ArtifactPublisher.PublisherError.unexpectedItem(
+          path: path,
+          description: "expected \(expected), found \(actual.rawValue)"
         )
-    }
-
-    static func finalRunStatus(
-        for targetResults: [PrivateHeaderGeneration.RunTargetRecord]
-    ) -> PrivateHeaderGeneration.RunTargetStatus {
-        let executableResults = targetResults.filter { $0.status != .skipped }
-        guard !executableResults.isEmpty else {
-            return .completed
-        }
-        if executableResults.allSatisfy({ $0.status == .completed }) {
-            return .completed
-        }
-        if executableResults.contains(where: { $0.status == .commitFailed }) {
-            return .commitFailed
-        }
-        if executableResults.contains(where: { $0.status == .interrupted }) {
-            return .interrupted
-        }
-        if executableResults.contains(where: { $0.status == .partial || $0.status == .completed }) {
-            return .partial
-        }
-        return .failed
-    }
-
-    static func upserting(
-        _ record: PrivateHeaderGeneration.TargetRecord,
-        in records: [PrivateHeaderGeneration.TargetRecord]
-    ) -> [PrivateHeaderGeneration.TargetRecord] {
-        var records = records
-        if let index = records.firstIndex(where: { $0.id == record.id }) {
-            records[index] = record
-        } else {
-            records.append(record)
-        }
-        return records
-    }
-
-    static func targetsByID(
-        _ targets: [PrivateHeaderGeneration.TargetRecord]
-    ) -> [String: PrivateHeaderGeneration.TargetRecord] {
-        var targetsByID: [String: PrivateHeaderGeneration.TargetRecord] = [:]
-        for target in targets {
-            targetsByID[target.id] = target
-        }
-        return targetsByID
-    }
-
-    static func commitFailedAttemptedArtifactsByTargetID(
-        _ run: PrivateHeaderGeneration.RunRecord?
-    ) -> [String: [PrivateHeaderGeneration.ArtifactPath]] {
-        guard let run else {
-            return [:]
-        }
-        var result: [String: [PrivateHeaderGeneration.ArtifactPath]] = [:]
-        for target in run.targetResults where target.status == .commitFailed {
-            result[target.targetID] = target.attemptedArtifacts
-        }
-        return result
-    }
-}
-
-public extension PrivateHeaderGeneration.GenerationExecutor {
-    static func liveRawDumpRunner(
-        invocation: PrivateHeaderGeneration.RawDumping.Invocation
-    ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
-        let process = Process()
-        let outputPipe = Pipe()
-        let outputCapture = RawDumpOutputCapture()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = invocation.command
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-        if !invocation.environment.isEmpty {
-            var environment = ProcessInfo.processInfo.environment
-            invocation.environment.forEach { key, value in
-                environment[key] = value
-            }
-            process.environment = environment
-        }
-
-        outputPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty {
-                outputCapture.append(data)
-            }
-        }
-        defer {
-            outputPipe.fileHandleForReading.readabilityHandler = nil
-        }
-
-        try process.run()
-        process.waitUntilExit()
-        outputPipe.fileHandleForReading.readabilityHandler = nil
-        outputCapture.append(outputPipe.fileHandleForReading.readDataToEndOfFile())
-        let wasKilled = process.terminationReason == .uncaughtSignal
-        let terminationStatus = process.terminationStatus
-        let failureSummary = Self.rawDumpFailureSummary(
-            terminationStatus: terminationStatus,
-            wasKilled: wasKilled,
-            outputLines: outputCapture.lines()
+      case .posix(let operation, let path, let code):
+        throw ArtifactPublisher.PublisherError.posix(
+          operation: operation,
+          path: path,
+          errno: code
         )
-        return PrivateHeaderGeneration.RawDumping.Result(
-            terminationStatus: terminationStatus,
-            wasKilled: wasKilled,
-            failureSummary: failureSummary
-        )
+      }
     }
+  }
 
-    static func rawDumpFailureSummary(
-        terminationStatus: Int32,
-        wasKilled: Bool,
-        outputLines: [String]
-    ) -> String? {
-        guard terminationStatus != 0 || wasKilled else {
-            return nil
-        }
-
-        let statusLine: String
-        if wasKilled {
-            if let signalName = rawDumpSignalName(terminationStatus) {
-                statusLine = "raw dump terminated by signal \(terminationStatus): \(signalName)"
-            } else {
-                statusLine = "raw dump terminated by signal \(terminationStatus)"
-            }
-        } else {
-            statusLine = "raw dump exited with status \(terminationStatus)"
-        }
-
-        let capturedLines = outputLines.suffix(8)
-        guard !capturedLines.isEmpty else {
-            return statusLine
-        }
-        return ([statusLine] + capturedLines).joined(separator: "\n")
-    }
-
-    private static func rawDumpSignalName(_ signal: Int32) -> String? {
-        switch signal {
-        case 5:
-            return "Trace/BPT trap"
-        case 9:
-            return "Killed"
-        case 10:
-            return "Bus error"
-        case 11:
-            return "Segmentation fault"
-        case 15:
-            return "Terminated"
-        default:
-            return nil
-        }
-    }
+  fileprivate static func stateFileSystemError(
+    _ error: ManagedFileSystem.Failure
+  ) -> PrivateHeaderGeneration.StateError {
+    .corruptPublication(error.description)
+  }
 }
 
-private final class RawDumpOutputCapture: @unchecked Sendable {
-    private let lock = NSLock()
-    private let maximumByteCount = 16 * 1024
-    private var buffer = Data()
+extension PrivateHeaderGeneration.ResumeBehavior {
+  fileprivate var isFresh: Bool {
+    if case .fresh = self { return true }
+    return false
+  }
 
-    func append(_ data: Data) {
-        guard !data.isEmpty else {
-            return
-        }
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-
-        buffer.append(data)
-        if buffer.count > maximumByteCount {
-            buffer.removeFirst(buffer.count - maximumByteCount)
-        }
+  fileprivate var resumeRequested: Bool {
+    switch self {
+    case .resume: true
+    case .fresh: false
+    case .requireExplicitResume(let requested): requested
     }
-
-    func lines() -> [String] {
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-
-        return String(decoding: buffer, as: UTF8.self)
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-}
-
-private extension PrivateHeaderGeneration.ResumeBehavior {
-    var resumeRequested: Bool {
-        switch self {
-        case .resume:
-            return true
-        case .fresh:
-            return false
-        case .requireExplicitResume(let resumeRequested):
-            return resumeRequested
-        }
-    }
-}
-
-private extension PrivateHeaderGeneration.RawDumping.Options {
-    func recordedHelperEnvironment(
-        for executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
-    ) -> [String: String] {
-        var environment = helperEnvironment
-        if case .simulator(_, let runtimeRoot) = executionMode {
-            environment["PH_RUNTIME_ROOT"] = runtimeRoot
-            environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = runtimeRoot
-            environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] = runtimeRoot
-        }
-        return environment
-    }
-}
-
-private extension PrivateHeaderGeneration.TargetStatus {
-    init(runStatus: PrivateHeaderGeneration.RunTargetStatus) {
-        switch runStatus {
-        case .completed, .skipped, .running, .pending:
-            self = .completed
-        case .partial:
-            self = .partial
-        case .failed:
-            self = .failed
-        case .interrupted:
-            self = .interrupted
-        case .commitFailed:
-            self = .commitFailed
-        }
-    }
-}
-
-private extension PrivateHeaderGeneration.RunTargetStatus {
-    var isSuccessfulOrSkipped: Bool {
-        self == .completed || self == .skipped
-    }
-}
-
-private extension PrivateHeaderGeneration.GenerationExecutor {
-    static func inputPath(
-        for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
-    ) -> String {
-        switch executionMode {
-        case .host:
-            return target.inputPath
-        case .simulator:
-            return target.runtimeInputPath
-        }
-    }
-
-    static func safeTargetDirectoryName(_ targetID: String) -> String {
-        var result = ""
-        for byte in targetID.utf8 {
-            let isAlphaNumeric = (byte >= 48 && byte <= 57)
-                || (byte >= 65 && byte <= 90)
-                || (byte >= 97 && byte <= 122)
-            let isSafePunctuation = byte == 45 || byte == 46 || byte == 95
-            if isAlphaNumeric || isSafePunctuation {
-                result.append(Character(UnicodeScalar(byte)))
-            } else {
-                result += String(format: "%%%02X", byte)
-            }
-        }
-        return result
-    }
-
-    static func stageSystemLibraryRoots(
-        stageDirectory: URL,
-        runtimeRoot: String
-    ) -> [URL] {
-        var roots: [URL] = [
-            stageDirectory.appendingPathComponent("System/Library", isDirectory: true),
-            stageDirectory.appendingPathComponent(
-                "System/Cryptexes/OS/System/Library",
-                isDirectory: true
-            ),
-            stageDirectory.appendingPathComponent(
-                "System/Volumes/Preboot/Cryptexes/OS/System/Library",
-                isDirectory: true
-            ),
-        ]
-
-        if runtimeRoot.hasPrefix("/") {
-            let base = appendRelativePath(
-                String(runtimeRoot.dropFirst()),
-                to: stageDirectory
-            )
-            roots.append(base.appendingPathComponent("System/Library", isDirectory: true))
-            roots.append(
-                base.appendingPathComponent(
-                    "System/Cryptexes/OS/System/Library",
-                    isDirectory: true
-                )
-            )
-            roots.append(
-                base.appendingPathComponent(
-                    "System/Volumes/Preboot/Cryptexes/OS/System/Library",
-                    isDirectory: true
-                )
-            )
-        }
-
-        return roots.uniquedByPath()
-    }
-
-    static func stageUsrLibRoots(
-        stageDirectory: URL,
-        runtimeRoot: String
-    ) -> [URL] {
-        var roots: [URL] = [
-            stageDirectory
-                .appendingPathComponent("usr", isDirectory: true)
-                .appendingPathComponent("lib", isDirectory: true),
-        ]
-
-        if runtimeRoot.hasPrefix("/") {
-            let base = appendRelativePath(
-                String(runtimeRoot.dropFirst()),
-                to: stageDirectory
-            )
-            roots.append(
-                base
-                    .appendingPathComponent("usr", isDirectory: true)
-                    .appendingPathComponent("lib", isDirectory: true)
-            )
-        }
-
-        return roots.uniquedByPath()
-    }
-
-    static func appendRelativePath(_ relativePath: String, to base: URL) -> URL {
-        var url = base
-        for component in relativePath.split(separator: "/", omittingEmptySubsequences: false) {
-            url.appendPathComponent(String(component), isDirectory: true)
-        }
-        return url
-    }
-
-    static func mergeDirectoryContents(
-        from source: URL,
-        to destination: URL
-    ) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-        let entries = try fileManager.contentsOfDirectory(
-            at: source,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: []
-        )
-
-        for entry in entries {
-            let destinationEntry = destination.appendingPathComponent(
-                entry.lastPathComponent,
-                isDirectory: false
-            )
-            if isDirectory(entry) {
-                try mergeDirectoryContents(from: entry, to: destinationEntry)
-            } else {
-                if fileManager.fileExists(atPath: destinationEntry.path) {
-                    try fileManager.removeItem(at: destinationEntry)
-                }
-                try fileManager.createDirectory(
-                    at: destinationEntry.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try fileManager.moveItem(at: entry, to: destinationEntry)
-            }
-        }
-    }
-
-    static func isDirectory(_ url: URL) -> Bool {
-        var isDirectory = ObjCBool(false)
-        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            && isDirectory.boolValue
-    }
-}
-
-private extension Array where Element == URL {
-    func uniquedByPath() -> [URL] {
-        var seen: Set<String> = []
-        var result: [URL] = []
-        for url in self where seen.insert(url.path).inserted {
-            result.append(url)
-        }
-        return result
-    }
+  }
 }

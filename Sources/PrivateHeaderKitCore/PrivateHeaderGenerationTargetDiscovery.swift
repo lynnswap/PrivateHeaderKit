@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 extension PrivateHeaderGeneration {
     enum TargetDiscovery {
         static func discover(
@@ -8,7 +14,7 @@ extension PrivateHeaderGeneration {
             fileManager: FileManager = .default
         ) throws -> Catalog {
             let root = systemRoot.standardizedFileURL
-            guard isDirectory(root, fileManager: fileManager) else {
+            guard try isDirectory(root, fileManager: fileManager) else {
                 throw Error.missingSystemRoot(root.path)
             }
 
@@ -159,6 +165,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
     enum Error: Swift.Error, Equatable, CustomStringConvertible, Sendable {
         case missingSystemRoot(String)
         case pathOutsideSystemLibrary(path: String, systemLibraryRoot: String)
+        case enumerationFailed(path: String, message: String)
 
         var description: String {
             switch self {
@@ -166,6 +173,8 @@ extension PrivateHeaderGeneration.TargetDiscovery {
                 "system root does not exist or is not a directory: \(path)"
             case .pathOutsideSystemLibrary(let path, let systemLibraryRoot):
                 "target path is outside System/Library: \(path) is not under \(systemLibraryRoot)"
+            case .enumerationFailed(let path, let message):
+                "could not enumerate \(path): \(message)"
             }
         }
     }
@@ -182,18 +191,19 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             .appendingPathComponent("System", isDirectory: true)
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent(location.systemLibraryDirectoryName, isDirectory: true)
-        guard isDirectory(frameworksDirectory, fileManager: fileManager) else {
+        guard try isDirectory(frameworksDirectory, fileManager: fileManager) else {
             return []
         }
 
-        let bundleNames = try fileManager.contentsOfDirectory(
+        let bundleNames = try contentsOfDirectoryIfPresent(
             at: frameworksDirectory,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            fileManager: fileManager
         )
         .filter { entry in
-            entry.pathExtension.lowercased() == "framework"
-                && isDirectory(entry, fileManager: fileManager)
+            guard entry.pathExtension.lowercased() == "framework" else { return false }
+            return try isDirectory(entry, fileManager: fileManager)
         }
         .map(\.lastPathComponent)
         .sorted()
@@ -242,7 +252,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         let systemLibraryDirectory = systemRoot
             .appendingPathComponent("System", isDirectory: true)
             .appendingPathComponent("Library", isDirectory: true)
-        guard isDirectory(systemLibraryDirectory, fileManager: fileManager) else {
+        guard try isDirectory(systemLibraryDirectory, fileManager: fileManager) else {
             return []
         }
 
@@ -251,12 +261,20 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             systemLibraryDirectory.appendingPathComponent("PrivateFrameworks", isDirectory: true).standardizedFileURL.path,
         ]
 
+        var enumerationFailure: (URL, any Swift.Error)?
         guard let enumerator = fileManager.enumerator(
             at: systemLibraryDirectory,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            errorHandler: { url, error in
+                enumerationFailure = (url, error)
+                return false
+            }
         ) else {
-            return []
+            throw Error.enumerationFailed(
+                path: systemLibraryDirectory.path,
+                message: "FileManager returned no enumerator"
+            )
         }
 
         var targets: [DiscoveredTarget] = []
@@ -267,7 +285,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 continue
             }
 
-            guard isDirectory(url, fileManager: fileManager) else {
+            guard try isDirectory(url, fileManager: fileManager) else {
                 continue
             }
             guard let bundleKind = BundleKind(pathExtension: url.pathExtension) else {
@@ -294,6 +312,9 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             )
             enumerator.skipDescendants()
         }
+        if let (url, error) = enumerationFailure {
+            throw Error.enumerationFailed(path: url.path, message: String(describing: error))
+        }
 
         return targets.sorted { $0.source.runtimeInputPath < $1.source.runtimeInputPath }
     }
@@ -305,24 +326,28 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         let usrLibDirectory = systemRoot
             .appendingPathComponent("usr", isDirectory: true)
             .appendingPathComponent("lib", isDirectory: true)
-        guard isDirectory(usrLibDirectory, fileManager: fileManager) else {
+        guard try isDirectory(usrLibDirectory, fileManager: fileManager) else {
             return []
         }
 
-        let dylibNames = try fileManager.contentsOfDirectory(
+        let dylibEntries = try contentsOfDirectoryIfPresent(
             at: usrLibDirectory,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            fileManager: fileManager
         )
-        .filter { entry in
+        var dylibNames: [String] = []
+        for entry in dylibEntries {
             guard entry.pathExtension.lowercased() == "dylib" else {
-                return false
+                continue
             }
-            let values = try? entry.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            return values?.isRegularFile == true || values?.isSymbolicLink == true
+            let attributes = try fileManager.attributesOfItem(atPath: entry.path)
+            let type = attributes[.type] as? FileAttributeType
+            if type == .typeRegular || type == .typeSymbolicLink {
+                dylibNames.append(entry.lastPathComponent)
+            }
         }
-        .map(\.lastPathComponent)
-        .sorted()
+        dylibNames.sort()
 
         return try dylibNames.map { name in
             let source = UsrLibDylibSource(name: name)
@@ -351,32 +376,30 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         systemRoot: URL,
         fileManager: FileManager
     ) throws -> [DiscoveredTarget] {
-        guard isDirectory(parentURL, fileManager: fileManager) else {
+        guard try isDirectory(parentURL, fileManager: fileManager) else {
             return []
         }
 
         var targets: [DiscoveredTarget] = []
         for container in nestedBundleContainers {
             let containerURL = parentURL.appendingPathComponent(container.directoryName, isDirectory: true)
-            guard isDirectory(containerURL, fileManager: fileManager) else {
+            guard try isDirectory(containerURL, fileManager: fileManager) else {
                 continue
             }
 
-            let entries: [URL]
-            do {
-                entries = try fileManager.contentsOfDirectory(
-                    at: containerURL,
-                    includingPropertiesForKeys: [.isDirectoryKey],
-                    options: [.skipsHiddenFiles]
-                )
-                .filter { entry in
-                    entry.pathExtension.lowercased() == container.bundleKind.rawValue
-                        && isDirectory(entry, fileManager: fileManager)
+            let entries = try contentsOfDirectoryIfPresent(
+                at: containerURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles],
+                fileManager: fileManager
+            )
+            .filter { entry in
+                guard entry.pathExtension.lowercased() == container.bundleKind.rawValue else {
+                    return false
                 }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            } catch {
-                continue
+                return try isDirectory(entry, fileManager: fileManager)
             }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
 
             for entry in entries {
                 let childRelativePath = [
@@ -519,10 +542,46 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     static func isDirectory(
         _ url: URL,
         fileManager: FileManager
-    ) -> Bool {
-        var isDirectory = ObjCBool(false)
-        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            && isDirectory.boolValue
+    ) throws -> Bool {
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: url.path)
+            return attributes[.type] as? FileAttributeType == .typeDirectory
+        } catch where isMissingFileError(error) {
+            return false
+        }
+    }
+
+    static func contentsOfDirectoryIfPresent(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey],
+        options: FileManager.DirectoryEnumerationOptions,
+        fileManager: FileManager
+    ) throws -> [URL] {
+        do {
+            return try fileManager.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: keys,
+                options: options
+            )
+        } catch where isMissingFileError(error) {
+            return []
+        }
+    }
+
+    static func isMissingFileError(_ error: any Swift.Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain,
+           error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError
+        {
+            return true
+        }
+        if error.domain == NSPOSIXErrorDomain, error.code == Int(ENOENT) {
+            return true
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return isMissingFileError(underlying)
+        }
+        return false
     }
 }
 
