@@ -156,7 +156,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                         outputLogger: outputLogger
                     )
                     try await inputFinalizer()
-                    return await runPrivateHeaderKitPreparedGeneration(
+                    return try await runPrivateHeaderKitPreparedGeneration(
                         preparedGeneration,
                         request: request,
                         targetQuery: command.targetQuery,

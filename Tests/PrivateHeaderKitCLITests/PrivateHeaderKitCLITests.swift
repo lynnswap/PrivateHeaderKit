@@ -456,6 +456,147 @@ struct PrivateHeaderKitCLIExecutionTests {
         }
     }
 
+    @Test func cancelledCoreInterruptionReturns130InsteadOfGenericFailure() async {
+        let generationStarted = EventCounter()
+        let cancellationObserved = EventCounter()
+        let output = ThreadSafeStrings()
+        let task = Task {
+            await runPrivateHeaderKitCommand(
+                [
+                    "privateheaderkit",
+                    "--platform", "macOS",
+                    "--version", "16.0",
+                    "--system-root", "/SystemRoot",
+                    "--out", "/tmp/cancelled-core",
+                    "--target", "all",
+                ],
+                currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+                generationRunner: { request, _ in
+                    generationStarted.signal()
+                    await withTaskCancellationHandler {
+                        await cancellationObserved.wait(until: 1)
+                    } onCancel: {
+                        cancellationObserved.signal()
+                    }
+                    let summary = summaryFixture(
+                        for: request,
+                        status: .interrupted,
+                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, interrupted: 1)
+                    )
+                    throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+                        PrivateHeaderGeneration.RunInterruption(summary: summary)
+                    )
+                },
+                outputLogger: output.append,
+                errorLogger: output.append
+            )
+        }
+
+        await generationStarted.wait(until: 1)
+        task.cancel()
+        #expect(await task.value == 130)
+        #expect(!output.text.contains("Generation interrupted"))
+        #expect(!output.text.contains("error:"))
+    }
+
+    @Test func sourceDiscoveryDistinguishesAvailabilityFailureAndCancellation() async throws {
+        let availableRunner = CaptureOnlyCommandRunner { command, _, _ in
+            switch command {
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]:
+                return #"{"runtimes":[]}"#
+            case ["/usr/bin/sw_vers", "-productVersion"]:
+                return "16.0\n"
+            case ["/usr/bin/sw_vers", "-buildVersion"]:
+                return "24A1\n"
+            default:
+                throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+        let sources = try await discoverPrivateHeaderKitInteractiveSources(
+            runner: availableRunner
+        )
+        #expect(sources == [
+            PrivateHeaderKitInteractiveSource(
+                platform: .macOS,
+                version: "16.0",
+                build: "24A1",
+                systemRoot: "/"
+            ),
+        ])
+
+        let failingRunner = CaptureOnlyCommandRunner { _, _, _ in
+            throw DiscoveryProbeError.commandFailed
+        }
+        do {
+            _ = try await discoverPrivateHeaderKitInteractiveSources(runner: failingRunner)
+            Issue.record("expected discovery command failure")
+        } catch let error as DiscoveryProbeError {
+            #expect(error == .commandFailed)
+        } catch {
+            Issue.record("unexpected discovery error: \(error)")
+        }
+
+        let cancellingRunner = CaptureOnlyCommandRunner { _, _, _ in
+            throw CancellationError()
+        }
+        do {
+            _ = try await discoverPrivateHeaderKitInteractiveSources(runner: cancellingRunner)
+            Issue.record("expected discovery cancellation")
+        } catch is CancellationError {
+            // Cancellation remains distinct from source unavailability.
+        } catch {
+            Issue.record("unexpected cancellation error: \(error)")
+        }
+    }
+
+    @Test func signalCoordinatorWaitsForOperationCleanupBeforeReturningSignalStatus() async {
+        let cases: [(PrivateHeaderKitTerminationSignal, Int32)] = [
+            (.interrupt, 130),
+            (.terminate, 143),
+        ]
+        for (signal, expectedStatus) in cases {
+            let source = ControlledSignalSource()
+            let operationStarted = EventCounter()
+            let cancellationObserved = EventCounter()
+            let cleanupGate = EventCounter()
+            let completion = ThreadSafeBool()
+            let task = Task {
+                let status = await coordinatePrivateHeaderKitOperation(
+                    signalSource: source,
+                    operation: {
+                        operationStarted.signal()
+                        return await withTaskCancellationHandler {
+                            await cleanupGate.wait(until: 1)
+                            return 0
+                        } onCancel: {
+                            cancellationObserved.signal()
+                        }
+                    }
+                )
+                completion.setTrue()
+                return status
+            }
+
+            await operationStarted.wait(until: 1)
+            source.send(signal)
+            await cancellationObserved.wait(until: 1)
+            #expect(!completion.value)
+            cleanupGate.signal()
+            #expect(await task.value == expectedStatus)
+            #expect(completion.value)
+        }
+    }
+
+    @Test func signalCoordinatorCancelsItsSignalWaiterAfterNormalCompletion() async {
+        let source = ControlledSignalSource()
+        let status = await coordinatePrivateHeaderKitOperation(
+            signalSource: source,
+            operation: { 7 }
+        )
+        #expect(status == 7)
+        #expect(source.isFinished)
+    }
+
     @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1028,19 +1169,19 @@ struct PrivateHeaderKitHelperLookupTests {
             "--sdk", sdkPath,
             "--triple", simulatorTriple,
         ]
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "build log\n\(fixture.hostBinDirectory.path)\n",
             for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "\n\(sdkPath)\n",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "\n\(fixture.simulatorBinDirectory(triple: simulatorTriple).path)\n",
             for: simulatorCommand + ["--show-bin-path"]
         )
-        configureCLIIdentity(
+        await configureCLIIdentity(
             runner,
             fixture: fixture,
             simulatorSDKPath: sdkPath,
@@ -1064,22 +1205,24 @@ struct PrivateHeaderKitHelperLookupTests {
         )
         #expect(plan.helperURLs.host.path.contains("/prepared-tools/v1/"))
         #expect(plan.toolCompatibilityIdentity.hasPrefix("phk-tool-v1:swiftpm:"))
-        #expect(!runner.captureCommands.contains { $0.command.contains("--product") })
+        #expect(!(await runner.captureCommandSnapshot()).contains {
+            $0.command.contains("--product")
+        })
 
         let buildRunner = RecordingCommandRunner()
         let rawBuild = swiftPMHostCommand(configuration: "debug")
             + ["--product", "privateheaderkit-raw-helper"]
         let simulatorBuild = simulatorCommand + ["--product", "privateheaderkit-sim-helper"]
-        buildRunner.setCaptureOutput("", for: rawBuild)
-        buildRunner.setCaptureOutput("", for: simulatorBuild)
-        configureCLIIdentity(
+        await buildRunner.setCaptureOutput("", for: rawBuild)
+        await buildRunner.setCaptureOutput("", for: simulatorBuild)
+        await configureCLIIdentity(
             buildRunner,
             fixture: fixture,
             simulatorSDKPath: sdkPath,
             simulatorTriple: simulatorTriple
         )
         try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-        let productCommands = buildRunner.captureCommands
+        let productCommands = await buildRunner.captureCommandSnapshot()
             .map(\.command)
             .filter { $0.contains("--product") }
         #expect(productCommands == [rawBuild, simulatorBuild])
@@ -1098,8 +1241,8 @@ struct PrivateHeaderKitHelperLookupTests {
             + ["--product", "privateheaderkit-raw-helper"]
         let hostBinQuery = swiftPMHostCommand(configuration: "release")
             + ["--show-bin-path"]
-        runner.setCaptureOutput("\(fixture.hostBinDirectory.path)\n", for: hostBinQuery)
-        configureCLIIdentity(runner, fixture: fixture)
+        await runner.setCaptureOutput("\(fixture.hostBinDirectory.path)\n", for: hostBinQuery)
+        await configureCLIIdentity(runner, fixture: fixture)
 
         let plan = try await resolvePrivateHeaderKitHelperPlan(
             publicExecutableURL: fixture.publicExecutable,
@@ -1113,15 +1256,17 @@ struct PrivateHeaderKitHelperLookupTests {
             plan.helperURLs.host.lastPathComponent == "privateheaderkit-raw-helper"
         )
         #expect(plan.helperURLs.simulator.lastPathComponent == "privateheaderkit-sim-helper")
-        #expect(!runner.captureCommands.contains { $0.command.first == "xcrun"
+        #expect(!(await runner.captureCommandSnapshot()).contains { $0.command.first == "xcrun"
             && $0.command.contains("iphonesimulator") })
-        #expect(!runner.captureCommands.contains { $0.command.contains("--product") })
+        #expect(!(await runner.captureCommandSnapshot()).contains {
+            $0.command.contains("--product")
+        })
 
         let buildRunner = RecordingCommandRunner()
-        buildRunner.setCaptureOutput("", for: rawBuild)
-        configureCLIIdentity(buildRunner, fixture: fixture)
+        await buildRunner.setCaptureOutput("", for: rawBuild)
+        await configureCLIIdentity(buildRunner, fixture: fixture)
         try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-        #expect(buildRunner.captureCommands.filter {
+        #expect((await buildRunner.captureCommandSnapshot()).filter {
             $0.command.contains("--product")
         }.map(\.command) == [rawBuild])
         #expect(try Data(contentsOf: plan.helperURLs.simulator) == Data("custom".utf8))
@@ -1133,11 +1278,11 @@ struct PrivateHeaderKitHelperLookupTests {
         let resolverRunner = RecordingCommandRunner()
         let hostBinQuery = swiftPMHostCommand(configuration: "debug")
             + ["--show-bin-path"]
-        resolverRunner.setCaptureOutput(
+        await resolverRunner.setCaptureOutput(
             "\(fixture.hostBinDirectory.path)\n",
             for: hostBinQuery
         )
-        configureCLIIdentity(resolverRunner, fixture: fixture)
+        await configureCLIIdentity(resolverRunner, fixture: fixture)
         let plan = try await resolvePrivateHeaderKitHelperPlan(
             publicExecutableURL: fixture.publicExecutable,
             simulatorHelperPath: nil,
@@ -1148,23 +1293,25 @@ struct PrivateHeaderKitHelperLookupTests {
         try Data("mutated".utf8).write(to: fixture.source)
 
         let buildRunner = RecordingCommandRunner()
-        configureCLIIdentity(buildRunner, fixture: fixture)
+        await configureCLIIdentity(buildRunner, fixture: fixture)
 
         await #expect(throws: ToolingError.self) {
             try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
         }
-        #expect(!buildRunner.captureCommands.contains { $0.command.contains("--product") })
+        #expect(!(await buildRunner.captureCommandSnapshot()).contains {
+            $0.command.contains("--product")
+        })
     }
 
     @Test func sourceMutationDuringHelperBuildFailsBeforeGeneration() async throws {
         let fixture = try makeCLIIdentityFixture(configuration: "debug")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let resolverRunner = RecordingCommandRunner()
-        resolverRunner.setCaptureOutput(
+        await resolverRunner.setCaptureOutput(
             "\(fixture.hostBinDirectory.path)\n",
             for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
         )
-        configureCLIIdentity(resolverRunner, fixture: fixture)
+        await configureCLIIdentity(resolverRunner, fixture: fixture)
         let plan = try await resolvePrivateHeaderKitHelperPlan(
             publicExecutableURL: fixture.publicExecutable,
             simulatorHelperPath: nil,
@@ -1176,8 +1323,8 @@ struct PrivateHeaderKitHelperLookupTests {
         let rawBuild = swiftPMHostCommand(configuration: "debug")
             + ["--product", "privateheaderkit-raw-helper"]
         let recordingRunner = RecordingCommandRunner()
-        recordingRunner.setCaptureOutput("", for: rawBuild)
-        configureCLIIdentity(recordingRunner, fixture: fixture)
+        await recordingRunner.setCaptureOutput("", for: rawBuild)
+        await configureCLIIdentity(recordingRunner, fixture: fixture)
         let mutatingRunner = MutatingCaptureRunner(
             base: recordingRunner,
             command: rawBuild,
@@ -1189,7 +1336,9 @@ struct PrivateHeaderKitHelperLookupTests {
         await #expect(throws: ToolingError.self) {
             try await executePrivateHeaderKitHelperBuilds(plan, runner: mutatingRunner)
         }
-        #expect(recordingRunner.captureCommands.contains { $0.command == rawBuild })
+        #expect((await recordingRunner.captureCommandSnapshot()).contains {
+            $0.command == rawBuild
+        })
     }
 
     @Test func installedHelperMutationAfterResumeInspectionFails() async throws {
@@ -1216,7 +1365,7 @@ struct PrivateHeaderKitHelperLookupTests {
 
     @Test func emptySwiftPMBinPathFailsWithoutLayoutFallback() async {
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             " \n\t\n",
             for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
         )
@@ -1333,28 +1482,28 @@ private func configureCLIIdentity(
     fixture: CLIIdentityFixture,
     simulatorSDKPath: String? = nil,
     simulatorTriple: String? = nil
-) {
-    runner.setCaptureOutput(
+) async {
+    await runner.setCaptureOutput(
         fixture.packageDescription,
         for: ["swift", "package", "describe", "--type", "json"]
     )
-    runner.setCaptureOutput(
+    await runner.setCaptureOutput(
         #"{"targets":[{"name":"RawHelper","dependencies":[]},{"name":"SimulatorHelper","dependencies":[]},{"name":"RawCore","dependencies":[]},{"name":"Runtime","dependencies":[]}]}"#,
         for: ["swift", "package", "dump-package"]
     )
-    runner.setCaptureOutput("/usr/bin/swift", for: ["which", "swift"])
-    runner.setCaptureOutput("Swift test", for: ["swift", "--version"])
-    runner.setCaptureOutput("Xcode test", for: ["xcodebuild", "-version"])
-    runner.setCaptureOutput(
+    await runner.setCaptureOutput("/usr/bin/swift", for: ["which", "swift"])
+    await runner.setCaptureOutput("Swift test", for: ["swift", "--version"])
+    await runner.setCaptureOutput("Xcode test", for: ["xcodebuild", "-version"])
+    await runner.setCaptureOutput(
         #"{"compilerVersion":"Swift test","target":{"triple":"arm64-apple-macosx"}}"#,
         for: ["swift", "-print-target-info"]
     )
-    runner.setCaptureOutput(
+    await runner.setCaptureOutput(
         "TEST_MACOS_SDK",
         for: ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"]
     )
     if let simulatorSDKPath, let simulatorTriple {
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             #"{"compilerVersion":"Swift test","target":{"triple":"arm64-apple-ios-simulator"}}"#,
             for: [
                 "swift", "-sdk", simulatorSDKPath,
@@ -1362,7 +1511,7 @@ private func configureCLIIdentity(
                 "-print-target-info",
             ]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "TEST_SIMULATOR_SDK",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-build-version"]
         )
@@ -1401,15 +1550,15 @@ private func testPrivateHeaderKitHelperResolver(
     )
 }
 
-private final class MutatingCaptureRunner: CommandRunning {
+private actor MutatingCaptureRunner: CommandRunning {
     private let base: RecordingCommandRunner
     private let command: [String]
-    private let mutation: () throws -> Void
+    private let mutation: @Sendable () throws -> Void
 
     init(
         base: RecordingCommandRunner,
         command: [String],
-        mutation: @escaping () throws -> Void
+        mutation: @escaping @Sendable () throws -> Void
     ) {
         self.base = base
         self.command = command
@@ -1420,8 +1569,8 @@ private final class MutatingCaptureRunner: CommandRunning {
         _ command: [String],
         env: [String: String]?,
         cwd: URL?
-    ) throws -> String {
-        let output = try base.runCapture(command, env: env, cwd: cwd)
+    ) async throws -> String {
+        let output = try await base.runCapture(command, env: env, cwd: cwd)
         if command == self.command {
             try mutation()
         }
@@ -1432,16 +1581,16 @@ private final class MutatingCaptureRunner: CommandRunning {
         _ command: [String],
         env: [String: String]?,
         cwd: URL?
-    ) throws {
-        try base.runSimple(command, env: env, cwd: cwd)
+    ) async throws {
+        try await base.runSimple(command, env: env, cwd: cwd)
     }
 
     func runStreaming(
         _ command: [String],
         env: [String: String]?,
         cwd: URL?
-    ) throws -> StreamingCommandResult {
-        try base.runStreaming(command, env: env, cwd: cwd)
+    ) async throws -> StreamingCommandResult {
+        try await base.runStreaming(command, env: env, cwd: cwd)
     }
 }
 
@@ -1830,6 +1979,112 @@ struct PrivateHeaderKitAsyncInputTests {
         } catch let error as PrivateHeaderKitInputError {
             #expect(error == .terminalRawModeFailed(code: EIO))
         }
+    }
+}
+
+private enum DiscoveryProbeError: Error, Equatable {
+    case commandFailed
+}
+
+private struct CaptureOnlyCommandRunner: CommandRunning {
+    let capture: @Sendable ([String], [String: String]?, URL?) async throws -> String
+
+    init(
+        capture: @escaping @Sendable ([String], [String: String]?, URL?) async throws -> String
+    ) {
+        self.capture = capture
+    }
+
+    func runCapture(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws -> String {
+        try await capture(command, env, cwd)
+    }
+
+    func runSimple(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws {
+        throw ToolingError.message("unexpected runSimple command: \(command)")
+    }
+
+    func runStreaming(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws -> StreamingCommandResult {
+        throw ToolingError.message("unexpected runStreaming command: \(command)")
+    }
+}
+
+private final class ControlledSignalSource: PrivateHeaderKitSignalSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var bufferedSignal: PrivateHeaderKitTerminationSignal?
+    private var waiter:
+        CheckedContinuation<PrivateHeaderKitTerminationSignal?, Never>?
+    private var finished = false
+
+    func next() async -> PrivateHeaderKitTerminationSignal? {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let bufferedSignal {
+                    self.bufferedSignal = nil
+                    lock.unlock()
+                    continuation.resume(returning: bufferedSignal)
+                } else if finished {
+                    lock.unlock()
+                    continuation.resume(returning: nil)
+                } else {
+                    precondition(waiter == nil, "signal source supports one waiter")
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            finish()
+        }
+    }
+
+    func send(_ signal: PrivateHeaderKitTerminationSignal) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        if let waiter {
+            self.waiter = nil
+            lock.unlock()
+            waiter.resume(returning: signal)
+        } else {
+            precondition(bufferedSignal == nil, "only one signal is expected")
+            bufferedSignal = signal
+            lock.unlock()
+        }
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        let value = finished
+        lock.unlock()
+        return value
+    }
+
+    private func finish() {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        bufferedSignal = nil
+        let waiter = waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume(returning: nil)
     }
 }
 

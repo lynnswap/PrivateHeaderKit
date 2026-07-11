@@ -16,7 +16,15 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/apple/swift-argument-parser.git",
-            exact: "1.8.2"
+            from: "1.8.2"
+        ),
+        .package(
+            url: "https://github.com/swiftlang/swift-subprocess.git",
+            exact: "1.0.0-beta.1"
+        ),
+        .package(
+            url: "https://github.com/swift-server/swift-service-lifecycle.git",
+            from: "2.11.0"
         ),
         .package(
             url: "https://github.com/groue/GRDB.swift.git",
@@ -69,7 +77,13 @@ let package = Package(
         ),
         .target(
             name: "PrivateHeaderKitTooling",
-            dependencies: []
+            dependencies: [
+                .product(
+                    name: "Subprocess",
+                    package: "swift-subprocess",
+                    condition: .when(platforms: [.macOS])
+                ),
+            ]
         ),
         .target(
             name: "PrivateHeaderKitCore",
@@ -90,6 +104,11 @@ let package = Package(
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitTooling",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(
+                    name: "UnixSignals",
+                    package: "swift-service-lifecycle",
+                    condition: .when(platforms: [.macOS])
+                ),
             ]
         ),
         .executableTarget(
