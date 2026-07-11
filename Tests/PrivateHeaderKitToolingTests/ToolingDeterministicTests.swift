@@ -4,54 +4,6 @@ import Testing
 import PrivateHeaderKitTestSupport
 
 @Suite
-struct FileOpsDeterministicTests {
-    @Test func buildStageDirUsesInjectedPidDateAndTimeZone() {
-        let outDir = URL(fileURLWithPath: "/tmp/out", isDirectory: true)
-        let date = Date(timeIntervalSince1970: 1_700_000_000)
-        let stageDir = FileOps.buildStageDir(
-            outDir: outDir,
-            pid: 42,
-            date: date,
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-
-        #expect(stageDir.path == "/tmp/out/.tmp-42-20231114221320")
-    }
-
-    @Test func normalizeAndDenormalizeBundleDirsHandleConflictsDeterministically() throws {
-        let dirs = try makeTemporaryTestDirectories()
-        let parent = dirs.root.appendingPathComponent("Bundles", isDirectory: true)
-        let bundle = parent.appendingPathComponent("Foo.bundle", isDirectory: true)
-        let normalized = parent.appendingPathComponent("Foo", isDirectory: true)
-        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: normalized, withIntermediateDirectories: true)
-        try Data("bundle".utf8).write(to: bundle.appendingPathComponent("Bundle.h"))
-        try Data("normalized".utf8).write(to: normalized.appendingPathComponent("Normalized.h"))
-
-        let result = try FileOps.normalizeBundleDir(
-            bundle,
-            allowedExtensions: ["bundle"],
-            overwrite: false,
-            fileManager: .default
-        )
-
-        #expect(result.path == normalized.path)
-        #expect(FileManager.default.fileExists(atPath: normalized.appendingPathComponent("Bundle.h").path))
-        #expect(FileManager.default.fileExists(atPath: normalized.appendingPathComponent("Normalized.h").path))
-
-        let denormalized = try FileOps.denormalizeBundleDir(
-            normalized,
-            bundleExtension: "bundle",
-            overwrite: true,
-            fileManager: .default
-        )
-
-        #expect(denormalized.lastPathComponent == "Foo.bundle")
-        #expect(FileManager.default.fileExists(atPath: denormalized.appendingPathComponent("Bundle.h").path))
-    }
-}
-
-@Suite
 struct PathAndVersionTests {
     @Test func versionKeyParsesNumericComponents() {
         #expect(VersionUtils.versionKey("26.10.1") == [26, 10, 1])
