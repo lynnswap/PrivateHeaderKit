@@ -19,14 +19,4 @@ public enum PathUtils {
         return nil
     }
 
-    public static func ensureDirectory(_ url: URL, fileManager: FileManager = .default) throws {
-        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
-    }
-
-    public static func removeIfExists(_ url: URL, fileManager: FileManager = .default) {
-        if fileManager.fileExists(atPath: url.path) || url.hasDirectoryPath {
-            try? fileManager.removeItem(at: url)
-        }
-    }
 }
-
