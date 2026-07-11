@@ -254,6 +254,8 @@ Contract:
 - cancel 前に完了した target がある場合は、それらを含む generation の publication を recoverable critical section として完了させてから cancellation を caller へ返す。
 - publication atomicity は per-run とする。成功 target をまとめた 1 coherent snapshot を publish し、failed/interrupted target の last successful content は snapshot 内に保持する。成功 target が 0 の run は pointer を切り替えない。
 - pointer switch は temporary symlink を同一 parent directory で作成し、atomic rename/replace する。
+- current の symlink-to-symlink switch は same-filesystem `rename(2)` を使う。macOS の契約は crash 中も destination 名が存在することを保証する。
+- legacy real directory と stable symlink の初回切替は、異なる item type を atomic swap できる `renameatx_np(..., RENAME_SWAP)` を使う。volume が `RENAME_SWAP` を提供しない場合は元 tree を変更せず migration unsupported として fail fast し、逐次 remove/rename fallback を置かない。
 - generation marker の ID、artifact set checksum、plan fingerprint を publish 前に検証する。
 - artifact ownership は volume semantics に依存させない。各 path component を NFC、`en_US_POSIX` case-insensitive fold、NFC の順で portable key 化し、異なる component spelling、同一 leaf、file/descendant prefix の衝突を target 内・target 間・opaque 間で一括拒否する。同じ spelling の共有 directory prefix は許可する。
 - completed target の置換は prospective ownership、全 removal、全 source、全 destination を immutable mutation plan として検証してから draft を変更する。legacy opaque path は incoming path と byte-for-byte 同一の場合だけ target が claim でき、case/Unicode alias は claim とみなさない。
