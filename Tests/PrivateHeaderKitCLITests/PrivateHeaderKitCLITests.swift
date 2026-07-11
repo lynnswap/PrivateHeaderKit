@@ -1,1444 +1,1236 @@
 import Foundation
 import Testing
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 import PrivateHeaderKitCore
 import PrivateHeaderKitTooling
 @testable import PrivateHeaderKitCLI
 
 @Suite
-struct PrivateHeaderKitCLIParsingTests {
-    @Test func noArgumentsStartInteractiveGeneration() throws {
+struct PrivateHeaderKitCLIArgumentTests {
+    @Test func noArgumentsAndHiddenGenerateStartInteractiveMode() throws {
         #expect(try parsePrivateHeaderKitCommand(["privateheaderkit"]) == .interactiveGenerate)
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "generate"]) == .interactiveGenerate)
-    }
-
-    @Test func helpFlagsResolveToPublicHelp() throws {
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "--help"]) == .help)
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "help"]) == .help)
-    }
-
-    @Test func installSubcommandIsNotPartOfPublicCLI() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "install",
-                "--bindir",
-                "/tmp/bin",
-                "--dry-run",
-            ])
-            Issue.record("expected install to be rejected by the public CLI")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .unknownCommand("install"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func generateParsesExplicitIOSInputContract() throws {
         #expect(
-            try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "SwiftUI,UIKit",
-            ])
-            == .generate(
+            try parsePrivateHeaderKitCommand(["privateheaderkit", "generate"])
+                == .interactiveGenerate
+        )
+    }
+
+    @Test func rootAcceptsDirectGenerationOptionsAndSourceVersion() throws {
+        let parsed = try parsePrivateHeaderKitCommand([
+            "privateheaderkit",
+            "--platform", "iOS",
+            "--version", "27.0",
+            "--build", "24A123",
+            "--out", "/tmp/headers",
+            "--target", "SwiftUI,UIKit",
+            "--device", "SIM-001",
+            "--sim-helper", "/tmp/sim-helper",
+            "--resume",
+        ])
+        #expect(
+            parsed == .generate(
                 PrivateHeaderKitGenerateCommand(
                     platform: .iOS,
                     version: "27.0",
-                    build: "24A5355q",
-                    systemRoot: "/tmp/RuntimeRoot",
-                    outputBaseDirectory: "/tmp/PrivateHeaderKit",
+                    build: "24A123",
+                    systemRoot: nil,
+                    outputBaseDirectory: "/tmp/headers",
                     targetQuery: "SwiftUI,UIKit",
-                    resume: false,
-                    device: nil,
-                    simulatorHelperPath: nil
+                    continuationMode: .resume,
+                    device: "SIM-001",
+                    simulatorHelperPath: "/tmp/sim-helper"
                 )
             )
         )
     }
 
-    @Test func generateParsesMacOSInputWithoutBuildAndExplicitResume() throws {
-        let command = try parsePrivateHeaderKitCommand([
+    @Test func hiddenGenerateUsesTheSameTypedMapping() throws {
+        let root = try parsePrivateHeaderKitCommand([
             "privateheaderkit",
-            "--platform=macOS",
-            "--version=16.0",
-            "--system-root",
-            "/",
-            "--out",
-            "/tmp/PrivateHeaderKit",
-            "--target",
-            "AppKit,Foundation",
-            "--resume",
+            "--platform", "macOS",
+            "--version", "16.0",
+            "--system-root", "/",
+            "--out", "/tmp/headers",
+            "--target", "all",
+            "--fresh",
         ])
+        let alias = try parsePrivateHeaderKitCommand([
+            "privateheaderkit", "generate",
+            "--platform", "macOS",
+            "--version", "16.0",
+            "--system-root", "/",
+            "--out", "/tmp/headers",
+            "--target", "all",
+            "--fresh",
+        ])
+        #expect(root == alias)
+    }
 
+    @Test func rootHelpHasNoSubcommandPlaceholderAndHidesGenerate() async {
+        let output = ThreadSafeStrings()
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit", "--help"],
+            currentExecutableURL: nil,
+            outputLogger: output.append,
+            errorLogger: errors.append
+        )
+        #expect(status == 0)
+        #expect(output.text.contains("USAGE: privateheaderkit [<options>]"))
+        #expect(!output.text.contains("<subcommand>"))
+        #expect(!output.text.contains("SUBCOMMANDS:"))
+        #expect(errors.text.isEmpty)
+    }
+
+    @Test func continuationFlagsAreMutuallyExclusive() async {
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "macOS",
+                "--version", "16.0",
+                "--system-root", "/",
+                "--out", "/tmp/headers",
+                "--target", "all",
+                "--resume", "--fresh",
+            ],
+            currentExecutableURL: nil,
+            outputLogger: { _ in },
+            errorLogger: errors.append
+        )
+        #expect(status != 0)
+        #expect(errors.text.contains("--resume"))
+        #expect(errors.text.contains("--fresh"))
+        #expect(errors.text.contains("already been set"))
+    }
+
+    @Test func partialDirectOptionsFailInsteadOfFallingBackToInteractiveMode() async {
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit", "--version", "27.0"],
+            currentExecutableURL: nil,
+            outputLogger: { _ in },
+            errorLogger: errors.append
+        )
+        #expect(status != 0)
+        #expect(errors.text.contains("--platform"))
+    }
+
+    @Test func legacyExecutableNamesAsFirstArgumentKeepMigrationGuidance() async {
+        for name in ["privateheaderkit-dump", "headerdump", "headerdump-sim"] {
+            let errors = ThreadSafeStrings()
+            let status = await runPrivateHeaderKitCommand(
+                ["privateheaderkit", name],
+                currentExecutableURL: nil,
+                outputLogger: { _ in },
+                errorLogger: errors.append
+            )
+            #expect(status == 1)
+            #expect(errors.text.contains("\(name) is no longer a user-facing command"))
+            #expect(errors.text.contains("use privateheaderkit instead"))
+        }
+    }
+
+    @Test func emptyDeviceAndSimulatorHelperValuesFailFast() async {
+        for option in ["--device", "--sim-helper"] {
+            let errors = ThreadSafeStrings()
+            let status = await runPrivateHeaderKitCommand(
+                [
+                    "privateheaderkit",
+                    "--platform", "iOS",
+                    "--version", "27.0",
+                    "--out", "/tmp/headers",
+                    "--target", "all",
+                    option, "",
+                ],
+                currentExecutableURL: nil,
+                outputLogger: { _ in },
+                errorLogger: errors.append
+            )
+            #expect(status != 0)
+            #expect(errors.text.contains("must not be empty"))
+            #expect(errors.text.contains(option))
+        }
+    }
+}
+
+@Suite
+struct PrivateHeaderKitCLIExecutionTests {
+    @Test func directRunMapsFreshModeAndRendersTypedResultAndWarnings() async throws {
+        let requestBox = ThreadSafeRequestBox()
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "macOS",
+                "--version", "16.0",
+                "--system-root", "/SystemRoot",
+                "--out", "/tmp/PrivateHeaderKit",
+                "--target", "AppKit,Foundation",
+                "--fresh",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationRunner: { request, progress in
+                requestBox.set(request)
+                progress(.runStarted(
+                    runID: PrivateHeaderGeneration.RunID(rawValue: "run-typed"),
+                    totalTargetCount: 3
+                ))
+                return resultFixture(
+                    for: request,
+                    counts: PrivateHeaderGeneration.TargetCounts(
+                        total: 3,
+                        skipped: 1,
+                        completed: 2
+                    ),
+                    warnings: [
+                        PrivateHeaderGeneration.GenerationWarning(
+                            kind: "opaque-path",
+                            relativePath: "Frameworks/AppKit/Headers/Generated.h",
+                            message: "preserved unowned artifact"
+                        ),
+                    ]
+                )
+            },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == 0)
+        let request = try #require(requestBox.value)
+        #expect(request.options.resumeBehavior == .fresh)
+        #expect(request.options.targetRequest == .query("AppKit,Foundation"))
+        #expect(request.options.executionMode == .host)
+        #expect(request.options.helperURLs?.host.path == "/cohort/privateheaderkit-raw-helper")
+        #expect(output.text.contains("Generated  2"))
+        #expect(output.text.contains("Skipped    1"))
+        #expect(output.text.contains("opaque-path"))
+        #expect(output.text.contains("generation.sqlite"))
+        #expect(!output.text.contains("manifest.json"))
+        #expect(!output.text.contains("run.json"))
+    }
+
+    @Test func runFailureUsesTypedSummaryWithoutReadingStateFiles() async {
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "macOS",
+                "--version", "16.0",
+                "--system-root", "/SystemRoot",
+                "--out", "/does/not/exist",
+                "--target", "AppKit",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationRunner: { request, _ in
+                let summary = summaryFixture(
+                    for: request,
+                    status: .failed,
+                    counts: PrivateHeaderGeneration.TargetCounts(total: 2, completed: 1, failed: 1)
+                )
+                throw PrivateHeaderGeneration.GenerationError.runFailed(
+                    PrivateHeaderGeneration.RunFailure(
+                        summary: summary,
+                        failedTargetIDs: ["framework:AppKit.framework"]
+                    )
+                )
+            },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == 2)
+        #expect(output.text.contains("Generation completed with failures"))
+        #expect(output.text.contains("framework:AppKit.framework"))
+        #expect(output.text.contains("/does/not/exist/.state/macOS16.0/generation.sqlite"))
+    }
+
+    @Test func interruptionAndInfrastructureErrorsRenderTheirTypedSummaries() async {
+        for kind in [FailureKind.interrupted, .infrastructure] {
+            let output = ThreadSafeStrings()
+            let status = await runPrivateHeaderKitCommand(
+                [
+                    "privateheaderkit",
+                    "--platform", "macOS",
+                    "--version", "16.0",
+                    "--system-root", "/SystemRoot",
+                    "--out", "/tmp/typed-error",
+                    "--target", "all",
+                ],
+                currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+                generationRunner: { request, _ in
+                    let summary = summaryFixture(
+                        for: request,
+                        status: kind == .interrupted ? .interrupted : .failed,
+                        counts: PrivateHeaderGeneration.TargetCounts(
+                            total: 1,
+                            failed: kind == .infrastructure ? 1 : 0,
+                            interrupted: kind == .interrupted ? 1 : 0
+                        )
+                    )
+                    if kind == .interrupted {
+                        throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+                            PrivateHeaderGeneration.RunInterruption(summary: summary)
+                        )
+                    }
+                    throw PrivateHeaderGeneration.GenerationError.infrastructureFailed(
+                        PrivateHeaderGeneration.RunInfrastructureFailure(
+                            summary: summary,
+                            message: "database transaction could not commit"
+                        )
+                    )
+                },
+                outputLogger: output.append,
+                errorLogger: output.append
+            )
+            #expect(status == 2)
+            if kind == .interrupted {
+                #expect(output.text.contains("Generation interrupted"))
+            } else {
+                #expect(output.text.contains("database transaction could not commit"))
+            }
+        }
+    }
+
+    @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let framework = root.appendingPathComponent(
+            "System/Library/Frameworks/Foo.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: framework,
+            withIntermediateDirectories: true
+        )
+        let outputBase = root.appendingPathComponent("Output", isDirectory: true)
+        let input = ScriptedInput(["1", "1"])
+        let requestBox = ThreadSafeRequestBox()
+        let output = ThreadSafeStrings()
+
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationRunner: { request, _ in
+                requestBox.set(request)
+                return resultFixture(
+                    for: request,
+                    counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                )
+            },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .macOS,
+                        version: "16.0",
+                        build: nil,
+                        systemRoot: root.path
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { outputBase.path },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == 0)
+        #expect(requestBox.value?.options.resumeBehavior == .fresh)
+        #expect(output.text.contains("Step 1 of 3"))
+        #expect(output.text.contains("Generation completed"))
+    }
+
+    @Test func interactiveConfirmsLegacyJSONStateMigration() async throws {
+        try await assertInteractiveLegacyMigration(kind: .jsonState)
+    }
+
+    @Test func interactiveConfirmsLegacyArtifactTreeMigration() async throws {
+        try await assertInteractiveLegacyMigration(kind: .artifactTree)
+    }
+}
+
+@Suite
+struct PrivateHeaderKitHelperLookupTests {
+    @Test func installedPublicSymlinkResolvesHelpersFromActiveCohort() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cohort = root.appendingPathComponent(
+            "libexec/privateheaderkit/versions/cohort-a",
+            isDirectory: true
+        )
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: cohort, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for executable in [
+            "privateheaderkit",
+            "privateheaderkit-raw-helper",
+            "privateheaderkit-sim-helper",
+        ] {
+            try Data().write(to: cohort.appendingPathComponent(executable))
+        }
+        let current = root.appendingPathComponent("libexec/privateheaderkit/current")
+        try FileManager.default.createSymbolicLink(at: current, withDestinationURL: cohort)
+        let publicExecutable = bin.appendingPathComponent("privateheaderkit")
+        try FileManager.default.createSymbolicLink(
+            at: publicExecutable,
+            withDestinationURL: current.appendingPathComponent("privateheaderkit")
+        )
+
+        let raw = defaultRawDumpHelperURL(publicExecutableURL: publicExecutable)
+        let simulator = defaultSimulatorHelperURL(hostExecutableURL: raw)
+        #expect(raw.standardizedFileURL == cohort.appendingPathComponent("privateheaderkit-raw-helper"))
         #expect(
-            command == .generate(
-                PrivateHeaderKitGenerateCommand(
+            simulator.standardizedFileURL
+                == cohort.appendingPathComponent("privateheaderkit-sim-helper")
+        )
+    }
+
+    @Test func SwiftPMHelpersUseExplicitBuildProductLayouts() {
+        let host = URL(fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit")
+        let raw = defaultRawDumpHelperURL(publicExecutableURL: host)
+        let simulator = swiftPMBuildSimulatorHelperURL(
+            hostBuildExecutableURL: raw,
+            simulatorTriple: "arm64-apple-ios-simulator"
+        )
+        #expect(raw.path == "/repo/.build/arm64-apple-macosx/debug/privateheaderkit-raw-helper")
+        #expect(
+            simulator?.path
+                == "/repo/.build/arm64-apple-ios-simulator/debug/privateheaderkit-sim-helper"
+        )
+    }
+}
+
+@Suite
+struct PrivateHeaderKitAsyncInputTests {
+    @Test func systemRawModeRoutesControlCThroughTheInputLifecycle() throws {
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else {
+            throw PrivateHeaderKitInputError.terminalReadFailed(code: errno)
+        }
+        defer {
+            _ = close(master)
+            _ = close(slave)
+        }
+        var original = termios()
+        #expect(tcgetattr(slave, &original) == 0)
+        let restore = try PrivateHeaderKitSystemTerminalModeController()
+            .enterRawMode(fileDescriptor: slave)
+        var raw = termios()
+        #expect(tcgetattr(slave, &raw) == 0)
+        #expect(raw.c_lflag & tcflag_t(ISIG) == 0)
+        #expect(raw.c_lflag & tcflag_t(ICANON) == 0)
+        #expect(raw.c_lflag & tcflag_t(ECHO) == 0)
+        try restore()
+        var restored = termios()
+        #expect(tcgetattr(slave, &restored) == 0)
+        let managedFlags = tcflag_t(ISIG | ICANON | ECHO)
+        #expect(restored.c_lflag & managedFlags == original.c_lflag & managedFlags)
+    }
+
+    @Test func rawModeTransitionDiscardsPrePromptPartialInput() throws {
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else {
+            throw PrivateHeaderKitInputError.terminalReadFailed(code: errno)
+        }
+        defer {
+            _ = close(master)
+            _ = close(slave)
+        }
+        try writeAll("preflight", to: master)
+        #expect(tcflush(slave, TCOFLUSH) == 0)
+        let restore = try PrivateHeaderKitSystemTerminalModeController()
+            .enterRawMode(fileDescriptor: slave)
+        var descriptor = pollfd(fd: slave, events: Int16(POLLIN), revents: 0)
+        #expect(poll(&descriptor, 1, 0) == 0)
+        try restore()
+    }
+
+    @Test func onePersistentSourceReadsMultiplePipedLinesAndEOF() async throws {
+        let descriptors = try makePipe()
+        let originalStatusFlags = fcntl(descriptors.read, F_GETFL)
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in false }
+        )
+        #expect(fcntl(descriptors.read, F_GETFL) & O_NONBLOCK != 0)
+        try writeAll("first\nsecond\n", to: descriptors.write)
+        _ = close(descriptors.write)
+
+        #expect(try await input.readLine() == "first")
+        #expect(try await input.readLine() == "second")
+        #expect(try await input.readLine() == nil)
+        try input.cancel()
+        #expect(fcntl(descriptors.read, F_GETFL) == originalStatusFlags)
+        _ = close(descriptors.read)
+    }
+
+    @Test func controlDTerminatesAfterDeliveringBufferedInput() async throws {
+        let descriptors = try makePipe()
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in false }
+        )
+        _ = close(descriptors.read)
+        try writeBytes(Array("partial".utf8) + [4] + Array("ignored".utf8), to: descriptors.write)
+        _ = close(descriptors.write)
+
+        #expect(try await input.readLine() == "partial")
+        #expect(try await input.readLine() == nil)
+        try input.finish()
+    }
+
+    @Test func controlCOverridesEveryBufferedLineInTheSameChunk() async throws {
+        let descriptors = try makePipe()
+        let generationCalled = ThreadSafeBool()
+        let probe = TerminalProbe()
+        let promptInput = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in true },
+            terminalModeController: ProbeTerminalController(probe: probe),
+            echoWriter: { _ in }
+        )
+        let commandTask = Task {
+            await runPrivateHeaderKitCommand(
+                ["privateheaderkit"],
+                currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+                generationRunner: { request, _ in
+                    generationCalled.setTrue()
+                    return resultFixture(
+                        for: request,
+                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                    )
+                },
+                interactiveSourceProvider: {
+                    [
+                        PrivateHeaderKitInteractiveSource(
+                            platform: .macOS,
+                            version: "16.0",
+                            build: nil,
+                            systemRoot: "/"
+                        ),
+                    ]
+                },
+                interactiveScreenClearer: {},
+                inputReader: { try await promptInput.readLine() },
+                outputLogger: { _ in },
+                errorLogger: { _ in }
+            )
+        }
+        await probe.waitForEnter(1)
+        try writeBytes(Array("1\n1\n".utf8) + [3], to: descriptors.write)
+        let status = await commandTask.value
+        #expect(status == 130)
+        #expect(!generationCalled.value)
+        try promptInput.finish()
+        _ = close(descriptors.read)
+        _ = close(descriptors.write)
+    }
+
+    @Test func cancellationRestoresTerminalExactlyOnce() async throws {
+        let descriptors = try makePipe()
+        let probe = TerminalProbe()
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in true },
+            terminalModeController: ProbeTerminalController(probe: probe)
+        )
+        _ = close(descriptors.read)
+        let task = Task { try await input.readLine() }
+        await probe.waitForEnter(1)
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+        #expect(probe.restoreCount == 1)
+        _ = close(descriptors.write)
+    }
+
+    @Test func rawModeAndManualEchoAreScopedToEachPromptRead() async throws {
+        let descriptors = try makePipe()
+        let probe = TerminalProbe()
+        let echo = ThreadSafeData()
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in true },
+            terminalModeController: ProbeTerminalController(probe: probe),
+            echoWriter: echo.append
+        )
+
+        let firstRead = Task { try await input.readLine() }
+        await probe.waitForEnter(1)
+        try writeAll("1\n", to: descriptors.write)
+        #expect(try await firstRead.value == "1")
+        #expect(probe.enterCount == 1)
+        #expect(probe.restoreCount == 1)
+        #expect(echo.text == "1\n")
+
+        try input.finish()
+        _ = close(descriptors.read)
+        _ = close(descriptors.write)
+    }
+
+    @Test func oneRawReadSnapshotAppliesToEveryLineInItsChunk() async throws {
+        let descriptors = try makePipe()
+        let probe = TerminalProbe()
+        let echo = ThreadSafeData()
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in true },
+            terminalModeController: ProbeTerminalController(probe: probe),
+            echoWriter: echo.append
+        )
+        _ = close(descriptors.read)
+
+        let firstRead = Task { try await input.readLine() }
+        await probe.waitForEnter(1)
+        try writeAll("1\n2\n", to: descriptors.write)
+        #expect(try await firstRead.value == "1")
+        await echo.wait(until: "1\n2\n")
+        #expect(echo.text == "1\n2\n")
+
+        let secondRead = Task { try await input.readLine() }
+        await probe.waitForEnter(2)
+        try writeAll("3\n", to: descriptors.write)
+        #expect(try await secondRead.value == "3")
+        #expect(echo.text == "1\n2\n3\n")
+        try input.finish()
+        _ = close(descriptors.write)
+    }
+
+    @Test func terminalPromptDiscardsInputCompletedBeforePromptStart() async throws {
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else {
+            throw PrivateHeaderKitInputError.terminalReadFailed(code: errno)
+        }
+        defer {
+            _ = close(master)
+            _ = close(slave)
+        }
+        let controller = SignalingSystemTerminalController()
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: slave,
+            terminalModeController: controller,
+            echoWriter: { _ in }
+        )
+        try writeAll("stale\n", to: master)
+        #expect(tcflush(slave, TCOFLUSH) == 0)
+
+        let readTask = Task { try await input.readLine() }
+        await controller.waitForEnter()
+        try writeAll("fresh\n", to: master)
+        #expect(try await readTask.value == "fresh")
+        try input.finish()
+    }
+
+    @Test func canonicalChunkNeverUsesManualEcho() throws {
+        let descriptors = try makePipe()
+        defer {
+            _ = close(descriptors.read)
+            _ = close(descriptors.write)
+        }
+        let ownedRead = dup(descriptors.read)
+        let originalStatusFlags = fcntl(ownedRead, F_GETFL)
+        #expect(fcntl(ownedRead, F_SETFL, originalStatusFlags | O_NONBLOCK) == 0)
+        let coordinator = PrivateHeaderKitInputCoordinator()
+        let lifecycle = PrivateHeaderKitInputLifecycle(
+            coordinator: coordinator,
+            readFileDescriptor: ownedRead,
+            originalStatusFlags: originalStatusFlags,
+            usesTerminalMode: true,
+            terminalModeController: ProbeTerminalController(probe: TerminalProbe())
+        )
+        let echo = ThreadSafeData()
+        let buffer = PrivateHeaderKitInputBuffer(
+            coordinator: coordinator,
+            echoWriter: echo.append
+        )
+        buffer.consume(
+            Array("preflight\n".utf8)[...],
+            wasReadInRawMode: false,
+            lifecycle: lifecycle
+        )
+        #expect(echo.text.isEmpty)
+        try lifecycle.finishEOF()
+    }
+
+    @Test func escapeDiscardsTheRestOfItsInputChunk() async throws {
+        let descriptors = try makePipe()
+        defer {
+            _ = close(descriptors.read)
+            _ = close(descriptors.write)
+        }
+        let ownedRead = dup(descriptors.read)
+        let originalStatusFlags = fcntl(ownedRead, F_GETFL)
+        #expect(fcntl(ownedRead, F_SETFL, originalStatusFlags | O_NONBLOCK) == 0)
+        let coordinator = PrivateHeaderKitInputCoordinator()
+        let lifecycle = PrivateHeaderKitInputLifecycle(
+            coordinator: coordinator,
+            readFileDescriptor: ownedRead,
+            originalStatusFlags: originalStatusFlags,
+            usesTerminalMode: false,
+            terminalModeController: ProbeTerminalController(probe: TerminalProbe())
+        )
+        let buffer = PrivateHeaderKitInputBuffer(
+            coordinator: coordinator,
+            echoWriter: { _ in }
+        )
+
+        buffer.consume(
+            ([UInt8(27)] + Array("1\n".utf8))[...],
+            wasReadInRawMode: false,
+            lifecycle: lifecycle
+        )
+        #expect(try await coordinator.next() == "\u{001B}")
+        buffer.consume(
+            Array("2\n".utf8)[...],
+            wasReadInRawMode: false,
+            lifecycle: lifecycle
+        )
+        #expect(try await coordinator.next() == "2")
+        try lifecycle.finishEOF()
+    }
+
+    @Test func EOFWaitsForInFlightTerminalRestorationBeforeClosingFD() async throws {
+        let descriptors = try makePipe()
+        defer {
+            _ = close(descriptors.read)
+            _ = close(descriptors.write)
+        }
+        let ownedRead = dup(descriptors.read)
+        let originalStatusFlags = fcntl(ownedRead, F_GETFL)
+        #expect(fcntl(ownedRead, F_SETFL, originalStatusFlags | O_NONBLOCK) == 0)
+        let controller = BlockingTerminalController()
+        let lifecycle = PrivateHeaderKitInputLifecycle(
+            coordinator: PrivateHeaderKitInputCoordinator(),
+            readFileDescriptor: ownedRead,
+            originalStatusFlags: originalStatusFlags,
+            usesTerminalMode: true,
+            terminalModeController: controller
+        )
+        try lifecycle.beginReading()
+        let restoreTask = Task.detached { try lifecycle.endReading() }
+        await controller.waitForRestoreStart()
+        let stopProbe = CompletionProbe()
+        let stopTask = Task.detached {
+            stopProbe.markStarted()
+            try lifecycle.finishEOF()
+            stopProbe.markCompleted()
+        }
+        await stopProbe.waitForStart()
+        controller.allowRestore()
+
+        try await restoreTask.value
+        try await stopTask.value
+        #expect(stopProbe.completed)
+        #expect(controller.restoredWhileFileDescriptorWasOpen)
+    }
+
+    @Test func EOFRestoresTerminalAndRestoreFailureIsSurfaced() async throws {
+        let descriptors = try makePipe()
+        let probe = TerminalProbe(restoreError: .terminalRestoreFailed(code: EIO))
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in true },
+            terminalModeController: ProbeTerminalController(probe: probe)
+        )
+        _ = close(descriptors.read)
+        let readTask = Task { try await input.readLine() }
+        await probe.waitForEnter(1)
+        _ = close(descriptors.write)
+        do {
+            _ = try await readTask.value
+            Issue.record("expected restore failure")
+        } catch let error as PrivateHeaderKitInputError {
+            #expect(error == .terminalRestoreFailed(code: EIO))
+        }
+        #expect(probe.restoreCount == 1)
+        do {
+            try input.cancel()
+            Issue.record("expected retained restore failure")
+        } catch let error as PrivateHeaderKitInputError {
+            #expect(error == .terminalRestoreFailed(code: EIO))
+        }
+    }
+
+    @Test func rawModeSetupFailureIsNotSilentlyTreatedAsEOF() async throws {
+        let descriptors = try makePipe()
+        defer {
+            _ = close(descriptors.read)
+            _ = close(descriptors.write)
+        }
+        let input = try PrivateHeaderKitAsyncInput(
+            fileDescriptor: descriptors.read,
+            isTerminal: { _ in true },
+            terminalModeController: FailingTerminalController()
+        )
+        do {
+            _ = try await input.readLine()
+            Issue.record("expected setup failure")
+        } catch let error as PrivateHeaderKitInputError {
+            #expect(error == .terminalRawModeFailed(code: EIO))
+        }
+    }
+}
+
+private enum FailureKind {
+    case interrupted
+    case infrastructure
+}
+
+private enum LegacyInputKind {
+    case jsonState
+    case artifactTree
+}
+
+private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let systemRoot = root.appendingPathComponent("SystemRoot", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: systemRoot.appendingPathComponent(
+            "System/Library/Frameworks/Foo.framework",
+            isDirectory: true
+        ),
+        withIntermediateDirectories: true
+    )
+    let outputBase = root.appendingPathComponent("Output", isDirectory: true)
+    let detectedURL: URL
+    switch kind {
+    case .jsonState:
+        detectedURL = outputBase.appendingPathComponent(
+            ".state/macOS16.0/manifest.json",
+            isDirectory: false
+        )
+    case .artifactTree:
+        detectedURL = outputBase.appendingPathComponent(
+            "macOS16.0/Unknown.txt",
+            isDirectory: false
+        )
+    }
+    try FileManager.default.createDirectory(
+        at: detectedURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data("legacy".utf8).write(to: detectedURL)
+
+    let input = ScriptedInput(["1", "1", "1"])
+    let output = ThreadSafeStrings()
+    let requestBox = ThreadSafeRequestBox()
+    let status = await runPrivateHeaderKitCommand(
+        ["privateheaderkit"],
+        currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+        generationRunner: { request, _ in
+            requestBox.set(request)
+            return resultFixture(
+                for: request,
+                counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+            )
+        },
+        interactiveSourceProvider: {
+            [
+                PrivateHeaderKitInteractiveSource(
                     platform: .macOS,
                     version: "16.0",
                     build: nil,
-                    systemRoot: "/",
-                    outputBaseDirectory: "/tmp/PrivateHeaderKit",
-                    targetQuery: "AppKit,Foundation",
-                    resume: true,
-                    device: nil,
-                    simulatorHelperPath: nil
-                )
+                    systemRoot: systemRoot.path
+                ),
+            ]
+        },
+        interactiveOutputBaseDirectoryProvider: { outputBase.path },
+        interactiveScreenClearer: {},
+        inputReader: { try await input.readLine() },
+        outputLogger: output.append,
+        errorLogger: output.append
+    )
+
+    #expect(status == 0)
+    #expect(requestBox.value?.options.resumeBehavior == .fresh)
+    #expect(output.text.contains("Migrate and start fresh"))
+    #expect(output.text.contains("[2] Back"))
+    #expect(output.text.contains(outputBase.path))
+    switch kind {
+    case .jsonState:
+        #expect(output.text.contains("Legacy state files will remain in place"))
+        #expect(output.text.contains("generation.sqlite"))
+        #expect(output.text.contains("source of truth"))
+        #expect(!output.text.contains("legacy-backups"))
+    case .artifactTree:
+        #expect(output.text.contains("artifact tree and unknown regular files will be preserved"))
+        #expect(
+            output.text.contains(
+                outputBase.appendingPathComponent(
+                    ".privateheaderkit/macOS16.0/legacy-backups",
+                    isDirectory: true
+                ).path + "/"
             )
         )
     }
-
-    @Test func generateParsesIOSInputWithoutSystemRootAndOptionalSimulatorFlags() throws {
-        #expect(
-            try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "SwiftUI,UIKit",
-                "--device",
-                "SIM-001",
-                "--sim-helper",
-                "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper",
-            ])
-            == .generate(
-                PrivateHeaderKitGenerateCommand(
-                    platform: .iOS,
-                    version: "27.0",
-                    build: "24A5355q",
-                    systemRoot: nil,
-                    outputBaseDirectory: "/tmp/PrivateHeaderKit",
-                    targetQuery: "SwiftUI,UIKit",
-                    resume: false,
-                    device: "SIM-001",
-                    simulatorHelperPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper"
-                )
-            )
-        )
-    }
-
-    @Test func generateInputComputesUserFacingLabelsAndHiddenStateDirectory() throws {
-        let command = try parsePrivateHeaderKitCommand([
-            "privateheaderkit",
-            "--platform",
-            "iOS",
-            "--version",
-            "27.0",
-            "--build",
-            "24A5355q",
-            "--system-root",
-            "/tmp/RuntimeRoot",
-            "--out",
-            "/tmp/PrivateHeaderKit",
-            "--target",
-            "SwiftUI,UIKit",
-        ])
-
-        guard case .generate(let generateCommand) = command else {
-            Issue.record("expected generate command")
-            return
-        }
-
-        #expect(generateCommand.sourceDisplayName == "iOS 27.0 (24A5355q)")
-        #expect(generateCommand.sourceDirectoryName == "iOS27.0(24A5355q)")
-        #expect(generateCommand.artifactDirectory.path == "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)")
-        #expect(generateCommand.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)")
-    }
-
-    @Test func publicHelpDoesNotExposeHiddenCommands() throws {
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "--help"]) == .help)
-
-        let usage = privateHeaderKitUsageText()
-        #expect(usage.contains("--platform <iOS|macOS>"))
-        #expect(usage.contains("--target <query>"))
-        #expect(!usage.contains("__raw-dump"))
-        #expect(!usage.contains("install"))
-        #expect(!usage.contains("generate "))
-    }
-
-    @Test func hiddenGenerateHelpIsParsedAndDoesNotExposeInternalRawDump() throws {
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit", "generate", "--help"]) == .generateHelp)
-
-        let usage = privateHeaderKitGenerateUsageText()
-        #expect(usage.contains("--platform <iOS|macOS>"))
-        #expect(usage.contains("--target <query>"))
-        #expect(usage.contains("--device <name-or-udid>"))
-        #expect(usage.contains("--sim-helper <path>"))
-        #expect(!usage.contains("__raw-dump"))
-        #expect(!usage.contains("privateheaderkit generate"))
-    }
-
-    @Test func rawDumpHelperSubcommandIsNotPublicCLI() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "__raw-dump",
-                "-o",
-                "/tmp/out",
-                "/tmp/input",
-            ])
-            Issue.record("expected hidden raw dump helper entrypoint to be rejected by public CLI")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .unknownCommand("__raw-dump"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func publicHelpDoesNotListHiddenRawDumpCommand() {
-        let usage = privateHeaderKitUsageText()
-        #expect(!usage.contains("__raw-dump"))
-        #expect(!usage.contains("install"))
-    }
-
-    @Test func generateRejectsMissingRequiredTargetQuery() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-            ])
-            Issue.record("expected missing target query to be rejected")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .missingRequiredOption("--target"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func generateRejectsMissingMacOSSystemRoot() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "macOS",
-                "--version",
-                "16.0",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "AppKit",
-            ])
-            Issue.record("expected missing macOS system root to be rejected")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .missingRequiredOption("--system-root"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func generateRejectsQualityOption() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "SwiftUI,UIKit",
-                "--quality",
-                "fast",
-            ])
-            Issue.record("expected quality option to be rejected")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .unknownOption("--quality"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func generateRejectsEmptyCommaSeparatedTargetEntries() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "SwiftUI,",
-            ])
-            Issue.record("expected empty target query entry to be rejected")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .invalidTargetQuery("SwiftUI,"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func generateRejectsValuedOptionFollowedByAnotherFlag() throws {
-        do {
-            _ = try parsePrivateHeaderKitCommand([
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "--resume",
-            ])
-            Issue.record("expected target missing value to be rejected")
-        } catch let error as PrivateHeaderKitCLIError {
-            #expect(error == .missingValue("--target"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func validGenerateRunInvokesGenerationRunnerWithCoreRequestAndPrintsSuccessOutput() async throws {
-        let publicCommandURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
-        let rawDumpHelperURL = URL(
-            fileURLWithPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-raw-helper",
-            isDirectory: false
-        )
-        let simulatorHelperURL = URL(
-            fileURLWithPath: "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper",
-            isDirectory: false
-        )
-        let recorder = GenerationRequestRecorder()
-        var outputMessages: [String] = []
-        var loggedMessages: [String] = []
-        let exitCode = await runPrivateHeaderKitCommand(
-            [
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "SwiftUI,UIKit",
-                "--resume",
-            ],
-            currentExecutableURL: publicCommandURL,
-            generationRunner: { request, progress in
-                recorder.request = request
-                progress(.runStarted(runID: "run-test", totalTargetCount: 2))
-                progress(.targetStarted(index: 1, total: 2, displayName: "SwiftUI.framework"))
-                progress(.targetFinished(
-                    index: 1,
-                    total: 2,
-                    displayName: "SwiftUI.framework",
-                    status: .completed
-                ))
-                progress(.targetStarted(index: 2, total: 2, displayName: "UIKit.framework"))
-                progress(.targetFinished(
-                    index: 2,
-                    total: 2,
-                    displayName: "UIKit.framework",
-                    status: .completed
-                ))
-                progress(.runFinished(runID: "run-test", status: .completed))
-                return PrivateHeaderKitGenerationSummary(
-                    sourceDisplayName: request.sourceDisplayName,
-                    artifactDirectory: URL(
-                        fileURLWithPath: "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
-                        isDirectory: true
-                    ),
-                    manifestURL: URL(
-                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
-                        isDirectory: false
-                    ),
-                    runRecordURL: URL(
-                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
-                        isDirectory: false
-                    ),
-                    runID: "run-test",
-                    generatedTargetCount: 2,
-                    skippedTargetCount: 1
-                )
-            },
-            simulatorResolver: { command in
-                #expect(command.device == nil)
-                return simulatorResolution()
-            },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(loggedMessages.isEmpty)
-        #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
-        #expect(request.sourceDirectoryName == "iOS27.0(24A5355q)")
-        #expect(request.artifactBaseDirectory.path == "/tmp/PrivateHeaderKit")
-        #expect(request.stateBaseDirectory.path == "/tmp/PrivateHeaderKit/.state")
-        #expect(request.systemRoot?.path == "/tmp/RuntimeRoot")
-        #expect(request.targetQuery == "SwiftUI,UIKit")
-        #expect(request.resumeRequested == true)
-        #expect(request.hostHelperURL == rawDumpHelperURL)
-        #expect(request.simulatorHelperURL == simulatorHelperURL)
-        #expect(!request.usesHostExecution)
-        #expect(request.simulatorDeviceUDID == "SIM-001")
-        #expect(request.simulatorRuntimeRoot == "/tmp/RuntimeRoot")
-        #expect(request.usesSharedCache)
-        #expect(request.prefersRuntimeMetadata)
-        #expect(request.helperEnvironment == ["PH_RUNTIME_ROOT": "/tmp/RuntimeRoot"])
-        #expect(outputMessages == [
-            "selected simulator: iPhone 17 (SIM-001)",
-            "",
-            "Generation started",
-            "  Run       run-test",
-            "  Targets   2",
-            "",
-            "[1/2] SwiftUI.framework",
-            "  completed",
-            "[2/2] UIKit.framework",
-            "  completed",
-            "",
-            "Generation finished: completed",
-            "PrivateHeaderKit",
-            "",
-            "Generation completed",
-            "",
-            "Source",
-            "  iOS 27.0 (24A5355q)",
-            "",
-            "Targets",
-            "  SwiftUI, UIKit",
-            "",
-            "Result",
-            "  Generated 2",
-            "  Failed    0",
-            "  Skipped   1",
-            "",
-            "Output",
-            "  Headers   /tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
-            "  State     /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)",
-            "",
-            "Run",
-            "  ID        run-test",
-            "  Manifest  .state/iOS27.0(24A5355q)/manifest.json",
-            "  Record    .state/iOS27.0(24A5355q)/runs/run-test/run.json",
-        ])
-    }
-
-    @Test func noArgumentRunStartsInteractiveGenerationFlow() async throws {
-        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
-        let recorder = GenerationRequestRecorder()
-        var inputs = [
-            "1",
-            "2",
-            "SwiftUI,UIKit",
-        ]
-        let defaultOutputBaseDirectory = FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent("PrivateHeaderKit", isDirectory: true)
-            .path
-        var outputMessages: [String] = []
-        var loggedMessages: [String] = []
-        var screenClearCount = 0
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: helperURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { command in
-                #expect(command.platform == .iOS)
-                #expect(command.version == "27.0")
-                #expect(command.build == "24A5355q")
-                return simulatorResolution()
-            },
-            interactiveSourceProvider: {
-                [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: "24A5355q",
-                        systemRoot: nil
-                    ),
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .macOS,
-                        version: "26.5.1",
-                        build: "25F80",
-                        systemRoot: "/"
-                    ),
-                ]
-            },
-            interactiveScreenClearer: { screenClearCount += 1 },
-            inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
-            },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(loggedMessages.isEmpty)
-        #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
-        #expect(request.artifactBaseDirectory.path == defaultOutputBaseDirectory)
-        #expect(request.targetQuery == "SwiftUI,UIKit")
-        #expect(request.startsFresh)
-        #expect(request.resumeRequested == nil)
-        #expect(screenClearCount == 4)
-        #expect(!outputMessages.contains("Continue previous run? (y/n):"))
-        #expect(!outputMessages.contains("Output directory: \(defaultOutputBaseDirectory)"))
-        #expect(outputMessages.prefix(25) == [
-            "PrivateHeaderKit",
-            "Generate private headers from an installed runtime or this Mac.",
-            "",
-            "Step 1 of 3: Source",
-            "Choose where PrivateHeaderKit reads system binaries from.",
-            "iOS sources are Simulator runtimes. macOS is this Mac's system.",
-            "",
-            "Available sources:",
-            "  iOS Simulator Runtimes",
-            "    [1] iOS 27.0 (24A5355q)",
-            "",
-            "  macOS",
-            "    [2] macOS 26.5.1 (25F80)",
-            "",
-            "Select source:",
-            "PrivateHeaderKit",
-            "",
-            "Step 2 of 3: Targets",
-            "Source: iOS 27.0 (24A5355q)",
-            "",
-            "  [1] All targets",
-            "      Generate every discoverable target.",
-            "  [2] Specific targets",
-            "      Enter target names separated by commas.",
-            "Select targets:",
-        ])
-        #expect(outputMessages.contains("Enter targets separated by commas."))
-        #expect(outputMessages.contains("  SwiftUI,UIKit"))
-        #expect(outputMessages.contains("  SpringBoardServices"))
-        #expect(outputMessages.contains("Targets:"))
-    }
-
-    @Test func noArgumentRunCanSelectAllTargetsWithoutTargetInput() async throws {
-        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
-        let recorder = GenerationRequestRecorder()
-        var inputs = [
-            "1",
-            "1",
-        ]
-        var outputMessages: [String] = []
-        var loggedMessages: [String] = []
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: helperURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            interactiveSourceProvider: {
-                [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: "24A5355q",
-                        systemRoot: nil
-                    ),
-                ]
-            },
-            interactiveScreenClearer: {},
-            inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
-            },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(loggedMessages.isEmpty)
-        #expect(request.targetQuery == "all")
-        #expect(request.startsFresh)
-        #expect(outputMessages.contains("      Generate every discoverable target."))
-        #expect(!outputMessages.contains("Enter targets separated by commas."))
-    }
-
-    @Test func noArgumentRunOffersContinueWhenAllExpandsPreviousSpecificTargetState() async throws {
-        let root = try makeCLITestTemporaryDirectory()
-        defer {
-            try? FileManager.default.removeItem(at: root)
-        }
-        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        let outputDirectory = root.appendingPathComponent("Output", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: runtimeRoot.appendingPathComponent("System/Library/Frameworks/Foo.framework", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: runtimeRoot.appendingPathComponent("System/Library/Frameworks/Bar.framework", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try writeCompletedSubsetGenerationState(
-            outputBaseDirectory: outputDirectory,
-            runtimeRoot: runtimeRoot
-        )
-
-        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
-        let recorder = GenerationRequestRecorder()
-        var inputs = [
-            "1",
-            "1",
-            "1",
-        ]
-        var outputMessages: [String] = []
-        var loggedMessages: [String] = []
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: helperURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { _ in simulatorResolution(resolvedRuntimeRoot: runtimeRoot.path) },
-            interactiveSourceProvider: {
-                [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: "24A5355q",
-                        systemRoot: nil
-                    ),
-                ]
-            },
-            interactiveOutputBaseDirectoryProvider: { outputDirectory.path },
-            interactiveScreenClearer: {},
-            inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
-            },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(loggedMessages.isEmpty)
-        #expect(request.targetQuery == "all")
-        #expect(!request.startsFresh)
-        #expect(outputMessages.contains("Step 3 of 3: Continue or restart"))
-        #expect(outputMessages.contains("Existing generation state was found."))
-        #expect(outputMessages.contains("Targets: all"))
-        #expect(outputMessages.contains("Remaining: 1 of 2"))
-        #expect(outputMessages.contains("  [1] Continue"))
-        #expect(outputMessages.contains("  [2] Restart"))
-    }
-
-    @Test func interactiveEscapeReturnsFromTargetModeToSourceSelection() async throws {
-        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
-        let recorder = GenerationRequestRecorder()
-        var inputs = [
-            "1",
-            "\u{001B}",
-            "1",
-            "1",
-        ]
-        var outputMessages: [String] = []
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: helperURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            interactiveSourceProvider: {
-                [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: "24A5355q",
-                        systemRoot: nil
-                    ),
-                ]
-            },
-            interactiveScreenClearer: {},
-            inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
-            },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { _ in }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(request.targetQuery == "all")
-        #expect(outputMessages.filter { $0 == "Available sources:" }.count == 2)
-    }
-
-    @Test func interactiveEscapeReturnsFromSpecificTargetsToTargetMode() async throws {
-        let helperURL = URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false)
-        let recorder = GenerationRequestRecorder()
-        var inputs = [
-            "1",
-            "2",
-            "\u{001B}",
-            "1",
-        ]
-        var outputMessages: [String] = []
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: helperURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            interactiveSourceProvider: {
-                [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: "24A5355q",
-                        systemRoot: nil
-                    ),
-                ]
-            },
-            interactiveScreenClearer: {},
-            inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
-            },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { _ in }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(request.targetQuery == "all")
-        #expect(outputMessages.contains("Step 2 of 3: Specific targets"))
-        #expect(outputMessages.filter { $0 == "Step 2 of 3: Targets" }.count == 2)
-    }
-
-    @Test func iOSGenerateDefaultsSimulatorHelperToInstallLayoutForCustomBindir() async throws {
-        let publicCommandURL = URL(fileURLWithPath: "/opt/phk/privateheaderkit", isDirectory: false)
-        let recorder = GenerationRequestRecorder()
-        let exitCode = await runPrivateHeaderKitCommand(
-            validGenerateArguments(),
-            currentExecutableURL: publicCommandURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            outputLogger: { _ in },
-            errorLogger: { _ in }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(request.hostHelperURL?.path == "/opt/libexec/privateheaderkit/privateheaderkit-raw-helper")
-        #expect(request.simulatorHelperURL?.path == "/opt/libexec/privateheaderkit/privateheaderkit-sim-helper")
-    }
-
-    @Test func helperDefaultsSupportSwiftPMBuildProducts() {
-        let publicCommandURL = URL(
-            fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit",
-            isDirectory: false
-        )
-        let rawHelperURL = defaultRawDumpHelperURL(publicExecutableURL: publicCommandURL)
-
-        #expect(rawHelperURL.path == "/repo/.build/arm64-apple-macosx/debug/privateheaderkit-raw-helper")
-        #expect(
-            swiftPMBuildSimulatorHelperURL(
-                hostBuildExecutableURL: rawHelperURL,
-                simulatorTriple: "arm64-apple-ios-simulator"
-            )?.path == "/repo/.build/arm64-apple-ios-simulator/debug/privateheaderkit-sim-helper"
-        )
-    }
-
-    @Test func swiftPMBuildHelpersBuildMissingSourceTreeProducts() throws {
-        let publicCommandURL = URL(
-            fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit",
-            isDirectory: false
-        )
-        let runner = RecordingCommandRunner()
-
-        try ensureSwiftPMBuildHelpersIfNeeded(
-            publicExecutableURL: publicCommandURL,
-            includeSimulatorHelper: true,
-            runner: runner,
-            simulatorTriple: "arm64-apple-ios-simulator"
-        )
-
-        #expect(runner.commands == [
-            RecordedCommand(
-                command: [
-                    "swift",
-                    "build",
-                    "-c",
-                    "debug",
-                    "--product",
-                    "privateheaderkit-raw-helper",
-                ],
-                cwd: "/repo"
-            ),
-            RecordedCommand(
-                command: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
-                cwd: nil
-            ),
-            RecordedCommand(
-                command: [
-                    "swift",
-                    "build",
-                    "-c",
-                    "debug",
-                    "--sdk",
-                    "/SDK/iPhoneSimulator",
-                    "--triple",
-                    "arm64-apple-ios-simulator",
-                    "--product",
-                    "privateheaderkit-sim-helper",
-                ],
-                cwd: "/repo"
-            ),
-        ])
-    }
-
-    @Test func iOSGenerateWithoutSystemRootUsesResolvedRuntimeRootAndExplicitSimulatorHelper() async throws {
-        let recorder = GenerationRequestRecorder()
-        let simulatorHelper = "/tmp/privateheaderkit-sim-helper"
-        let exitCode = await runPrivateHeaderKitCommand(
-            [
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "SwiftUI",
-                "--device",
-                "iPhone 17",
-                "--sim-helper",
-                simulatorHelper,
-            ],
-            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false),
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { command in
-                #expect(command.device == "iPhone 17")
-                return simulatorResolution(resolvedRuntimeRoot: "/Resolved/RuntimeRoot")
-            },
-            outputLogger: { _ in },
-            errorLogger: { _ in }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(request.systemRoot?.path == "/Resolved/RuntimeRoot")
-        #expect(request.simulatorRuntimeRoot == "/Resolved/RuntimeRoot")
-        #expect(request.simulatorHelperURL?.path == simulatorHelper)
-    }
-
-    @Test func macOSGenerateUsesHostExecutionAndDoesNotResolveSimulator() async throws {
-        let publicCommandURL = URL(fileURLWithPath: "/tmp/phk/bin/privateheaderkit", isDirectory: false)
-        let rawDumpHelperURL = URL(
-            fileURLWithPath: "/tmp/phk/libexec/privateheaderkit/privateheaderkit-raw-helper",
-            isDirectory: false
-        )
-        let recorder = GenerationRequestRecorder()
-        let exitCode = await runPrivateHeaderKitCommand(
-            [
-                "privateheaderkit",
-                "--platform",
-                "macOS",
-                "--version",
-                "16.0",
-                "--system-root",
-                "/",
-                "--out",
-                "/tmp/PrivateHeaderKit",
-                "--target",
-                "AppKit",
-            ],
-            currentExecutableURL: publicCommandURL,
-            generationRunner: { request, _ in
-                recorder.request = request
-                return summaryFixture(for: request)
-            },
-            simulatorResolver: { _ in
-                Issue.record("macOS generation should not resolve a simulator")
-                return simulatorResolution()
-            },
-            outputLogger: { _ in },
-            errorLogger: { _ in }
-        )
-
-        let request = try #require(recorder.request)
-        #expect(exitCode == 0)
-        #expect(request.systemRoot?.path == "/")
-        #expect(request.hostHelperURL == rawDumpHelperURL)
-        #expect(request.usesHostExecution)
-        #expect(request.simulatorDeviceUDID == nil)
-    }
-
-    @Test func generateResumeRequiredErrorReturnsGuidance() async throws {
-        var outputMessages: [String] = []
-        var loggedMessages: [String] = []
-        let exitCode = await runPrivateHeaderKitCommand(
-            validGenerateArguments(),
-            currentExecutableURL: URL(fileURLWithPath: "/tmp/privateheaderkit-test-helper", isDirectory: false),
-            generationRunner: { _, _ in
-                throw PrivateHeaderGeneration.GenerationError.resumeRequired(
-                    try resumeSummaryFixture(latestRunID: "run-previous")
-                )
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            outputLogger: { outputMessages.append($0) },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        #expect(exitCode == 2)
-        #expect(outputMessages == [
-            "selected simulator: iPhone 17 (SIM-001)",
-        ])
-        #expect(loggedMessages == [
-            "error: existing generation state is unfinished; explicit resume is required for run-previous",
-            "rerun with `--resume` to continue the unfinished generation state",
-        ])
-    }
-
-    @Test func generateRunFailedPrintsFailedTargetDetailsFromManifest() async throws {
-        let outputDirectory = try makeCLITestTemporaryDirectory()
-        defer {
-            try? FileManager.default.removeItem(at: outputDirectory)
-        }
-        var loggedMessages: [String] = []
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            [
-                "privateheaderkit",
-                "--platform",
-                "iOS",
-                "--version",
-                "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
-                "--out",
-                outputDirectory.path,
-                "--target",
-                "SwiftUI,UIKit",
-            ],
-            currentExecutableURL: URL(fileURLWithPath: "/tmp/privateheaderkit", isDirectory: false),
-            generationRunner: { request, _ in
-                try writeFailedGenerationManifest(
-                    for: request,
-                    runID: "run-failed"
-                )
-                throw PrivateHeaderGeneration.GenerationError.runFailed(
-                    runID: "run-failed",
-                    failedTargetIDs: [
-                        "framework:SwiftUI.framework",
-                        "framework:UIKit.framework",
-                    ]
-                )
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            outputLogger: { _ in },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        #expect(exitCode == 2)
-        #expect(loggedMessages == [
-            "PrivateHeaderKit",
-            "",
-            "Generation completed with failures",
-            "",
-            "Source",
-            "  iOS 27.0 (24A5355q)",
-            "",
-            "Targets",
-            "  SwiftUI, UIKit",
-            "",
-            "Result",
-            "  Generated 0",
-            "  Failed    2",
-            "  Skipped   0",
-            "",
-            "Failed targets",
-            "  [1] SwiftUI.framework",
-            "      raw dump exited with status 10",
-            "      Child process terminated with signal 10: Bus error",
-            "      MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds",
-            "",
-            "  [2] UIKit.framework",
-            "      no failure summary recorded",
-            "",
-            "Output",
-            "  Headers   \(outputDirectory.path)/iOS27.0(24A5355q)",
-            "  State     \(outputDirectory.path)/.state/iOS27.0(24A5355q)",
-            "",
-            "Run",
-            "  ID        run-failed",
-            "  Manifest  .state/iOS27.0(24A5355q)/manifest.json",
-            "  Record    .state/iOS27.0(24A5355q)/runs/run-failed/run.json",
-        ])
-    }
-
-    @Test func interruptedInteractiveRunDoesNotClearProgressBeforeResult() async throws {
-        let outputDirectory = try makeCLITestTemporaryDirectory()
-        defer {
-            try? FileManager.default.removeItem(at: outputDirectory)
-        }
-        var inputs = [
-            "1",
-            "1",
-        ]
-        var screenClearCount = 0
-        var loggedMessages: [String] = []
-
-        let exitCode = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: URL(fileURLWithPath: "/tmp/privateheaderkit", isDirectory: false),
-            generationRunner: { request, _ in
-                try writeFailedGenerationManifest(
-                    for: request,
-                    runID: "run-interrupted",
-                    targetStatus: .interrupted
-                )
-                throw PrivateHeaderGeneration.GenerationError.runFailed(
-                    runID: "run-interrupted",
-                    failedTargetIDs: [
-                        "framework:SwiftUI.framework",
-                        "framework:UIKit.framework",
-                    ]
-                )
-            },
-            simulatorResolver: { _ in simulatorResolution() },
-            interactiveSourceProvider: {
-                [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: "24A5355q",
-                        systemRoot: nil
-                    ),
-                ]
-            },
-            interactiveOutputBaseDirectoryProvider: { outputDirectory.path },
-            interactiveScreenClearer: { screenClearCount += 1 },
-            inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
-            },
-            outputLogger: { _ in },
-            errorLogger: { loggedMessages.append($0) }
-        )
-
-        #expect(exitCode == 2)
-        #expect(screenClearCount == 2)
-        #expect(loggedMessages.contains("Generation interrupted"))
-        #expect(loggedMessages.contains("  Failed    0"))
-        #expect(loggedMessages.contains("  Interrupted 2"))
-    }
-
-    @Test func legacyExecutableNamesAreRejectedAsPublicSubcommands() {
-        for legacyCommand in ["privateheaderkit-dump", "headerdump", "headerdump-sim"] {
-            do {
-                _ = try parsePrivateHeaderKitCommand(["privateheaderkit", legacyCommand])
-                Issue.record("expected \(legacyCommand) to be rejected")
-            } catch let error as PrivateHeaderKitCLIError {
-                #expect(error == .legacyCommand(legacyCommand))
-            } catch {
-                Issue.record("unexpected error: \(error)")
-            }
-        }
-    }
-
-    @Test func legacyExecutableNamesAreRejectedWhenInvokedDirectly() {
-        for legacyCommand in ["privateheaderkit-dump", "headerdump", "headerdump-sim"] {
-            do {
-                _ = try parsePrivateHeaderKitCommand(["/usr/local/bin/\(legacyCommand)"])
-                Issue.record("expected \(legacyCommand) invocation to be rejected")
-            } catch let error as PrivateHeaderKitCLIError {
-                #expect(error == .legacyCommand(legacyCommand))
-            } catch {
-                Issue.record("unexpected error: \(error)")
-            }
-        }
-    }
+    #expect(FileManager.default.fileExists(atPath: detectedURL.path))
 }
 
-private final class GenerationRequestRecorder {
-    var request: PrivateHeaderKitGenerationRequest?
-}
-
-private struct RecordedCommand: Equatable {
-    let command: [String]
-    let cwd: String?
-}
-
-private final class RecordingCommandRunner: CommandRunning {
-    var commands: [RecordedCommand] = []
-
-    func runCapture(_ command: [String], env _: [String: String]?, cwd: URL?) throws -> String {
-        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
-        if command == ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"] {
-            return "/SDK/iPhoneSimulator\n"
-        }
-        return ""
-    }
-
-    func runSimple(_ command: [String], env _: [String: String]?, cwd: URL?) throws {
-        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
-    }
-
-    func runStreaming(_ command: [String], env _: [String: String]?, cwd: URL?) throws -> StreamingCommandResult {
-        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
-        return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
-    }
-
-    func runStreaming(
-        _ command: [String],
-        env _: [String: String]?,
-        cwd: URL?,
-        streamOutput _: Bool,
-        onLaunch _: ((Int32) -> Void)?,
-        onCleanup _: ((Int32) -> Void)?
-    ) throws -> StreamingCommandResult {
-        commands.append(RecordedCommand(command: command, cwd: cwd?.path))
-        return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
-    }
-}
-
-private func simulatorResolution(
-    resolvedRuntimeRoot: String = "/tmp/RuntimeRoot"
-) -> PrivateHeaderKitSimulatorResolution {
-    PrivateHeaderKitSimulatorResolution(
-        runtimeVersion: "27.0",
-        runtimeBuild: "24A5355q",
-        runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
-        resolvedRuntimeRoot: resolvedRuntimeRoot,
-        deviceName: "iPhone 17",
-        deviceUDID: "SIM-001"
+private func resultFixture(
+    for request: PrivateHeaderKitGenerationRequest,
+    counts: PrivateHeaderGeneration.TargetCounts,
+    warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+) -> PrivateHeaderGeneration.Result {
+    let plan = PrivateHeaderGeneration.makePlan(
+        source: request.source,
+        output: request.output,
+        options: request.options
+    )
+    return PrivateHeaderGeneration.Result(
+        plan: plan,
+        artifactDirectory: plan.artifactDirectory,
+        generatedTargets: (0..<counts.completed).map {
+            PrivateHeaderGeneration.Target.generated(identifier: "target-\($0)")
+        },
+        runID: PrivateHeaderGeneration.RunID(rawValue: "run-typed"),
+        stateDatabaseURL: plan.databaseURL,
+        targetCounts: counts,
+        warnings: warnings
     )
 }
 
 private func summaryFixture(
-    for request: PrivateHeaderKitGenerationRequest
-) -> PrivateHeaderKitGenerationSummary {
-    PrivateHeaderKitGenerationSummary(
-        sourceDisplayName: request.sourceDisplayName,
-        artifactDirectory: request.artifactBaseDirectory.appendingPathComponent(
-            request.sourceDirectoryName,
-            isDirectory: true
-        ),
-        manifestURL: request.stateBaseDirectory
-            .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
-            .appendingPathComponent("manifest.json", isDirectory: false),
-        runRecordURL: request.stateBaseDirectory
-            .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
-            .appendingPathComponent("runs/run-test/run.json", isDirectory: false),
-        runID: "run-test",
-        generatedTargetCount: 1,
-        skippedTargetCount: nil
-    )
-}
-
-private func validGenerateArguments() -> [String] {
-    [
-        "privateheaderkit",
-        "--platform",
-        "iOS",
-        "--version",
-        "27.0",
-        "--build",
-        "24A5355q",
-        "--system-root",
-        "/tmp/RuntimeRoot",
-        "--out",
-        "/tmp/PrivateHeaderKit",
-        "--target",
-        "SwiftUI,UIKit",
-    ]
-}
-
-private func resumeSummaryFixture(
-    latestRunID: String
-) throws -> PrivateHeaderGeneration.ResumeSummary {
-    let source = try PrivateHeaderGeneration.Source(
-        platform: .iOS,
-        version: "27.0",
-        build: "24A5355q"
-    )
-    let outputBaseDirectory = URL(
-        fileURLWithPath: "/tmp/PrivateHeaderKit",
-        isDirectory: true
-    )
-    let directoryName = source.label.directoryName
-    return PrivateHeaderGeneration.ResumeSummary(
-        source: PrivateHeaderGeneration.SourceRecord(source: source),
-        output: PrivateHeaderGeneration.OutputRecord(
-            baseDirectory: outputBaseDirectory.path,
-            artifactDirectory: outputBaseDirectory.appendingPathComponent(
-                directoryName,
-                isDirectory: true
-            ).path,
-            stateDirectory: outputBaseDirectory.appendingPathComponent(
-                ".state/\(directoryName)",
-                isDirectory: true
-            ).path
-        ),
-        layout: .headers,
-        latestRunID: latestRunID,
-        startedAt: Date(timeIntervalSince1970: 100),
-        updatedAt: Date(timeIntervalSince1970: 200),
-        counts: PrivateHeaderGeneration.ResumeTargetCounts(
-            total: 1,
-            completed: 0,
-            partial: 1,
-            failed: 0,
-            interrupted: 0,
-            commitFailed: 0,
-            stale: 0,
-            pending: 0
-        ),
-        targets: [
-            PrivateHeaderGeneration.ResumeTargetDecision(
-                targetID: "SwiftUI.framework",
-                status: .partial
-            ),
-        ]
-    )
-}
-
-private func makeCLITestTemporaryDirectory() throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("PrivateHeaderKitCLITests-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
-}
-
-private func writeCompletedSubsetGenerationState(
-    outputBaseDirectory: URL,
-    runtimeRoot: URL
-) throws {
-    let source = try PrivateHeaderGeneration.Source(
-        platform: .iOS,
-        version: "27.0",
-        build: "24A5355q"
-    )
-    let sourceDirectoryName = source.label.directoryName
-    let artifactDirectory = outputBaseDirectory.appendingPathComponent(
-        sourceDirectoryName,
-        isDirectory: true
-    )
-    let stateDirectory = outputBaseDirectory
-        .appendingPathComponent(".state", isDirectory: true)
-        .appendingPathComponent(sourceDirectoryName, isDirectory: true)
-    let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
-    try FileManager.default.createDirectory(
-        at: artifactDirectory.appendingPathComponent("Frameworks/Foo", isDirectory: true),
-        withIntermediateDirectories: true
-    )
-    try Data("foo".utf8).write(
-        to: artifactDirectory.appendingPathComponent(artifact.rawValue, isDirectory: false)
-    )
-
-    let sourceRecord = PrivateHeaderGeneration.SourceRecord(source: source)
-    let outputRecord = PrivateHeaderGeneration.OutputRecord(
-        baseDirectory: outputBaseDirectory.path,
-        artifactDirectory: artifactDirectory.path,
-        stateDirectory: stateDirectory.path
-    )
-    let executionRecord = PrivateHeaderGeneration.ExecutionRecord(
-        mode: "simulator",
-        runtimeIdentifier: nil,
-        deviceName: nil,
-        deviceUDID: "SIM-001",
-        clonePolicy: nil,
-        helperEnvironment: [
-            "PH_RUNTIME_ROOT": runtimeRoot.path,
-            "SIMCTL_CHILD_PH_RUNTIME_ROOT": runtimeRoot.path,
-            "SIMCTL_CHILD_DYLD_ROOT_PATH": runtimeRoot.path,
-        ]
-    )
-    let runPlan = PrivateHeaderGeneration.RunPlanRecord(
-        source: sourceRecord,
-        output: outputRecord,
-        layout: .headers,
-        targetIDs: ["framework:Foo.framework"],
-        execution: executionRecord
-    )
-    let runID = "run-prev"
-    let updatedAt = Date(timeIntervalSince1970: 1_000)
-    let target = PrivateHeaderGeneration.TargetRecord(
-        id: "framework:Foo.framework",
-        displayName: "Foo",
-        kind: "framework",
-        status: .completed,
-        phases: [
-            PrivateHeaderGeneration.PhaseRecord(name: "raw-header-dump", status: .completed),
-        ],
-        artifacts: [artifact],
-        lastRunID: runID,
-        updatedAt: updatedAt,
-        failureSummary: nil
-    )
-    let manifest = PrivateHeaderGeneration.Manifest(
-        schemaVersion: 1,
-        toolVersion: "0.1.0",
-        source: sourceRecord,
-        output: outputRecord,
-        layout: .headers,
-        latestRunID: runID,
-        targets: [target],
-        updatedAt: updatedAt
-    )
-    let run = PrivateHeaderGeneration.RunRecord(
-        runID: runID,
-        schemaVersion: 1,
-        toolVersion: "0.1.0",
-        plan: runPlan,
-        startedAt: updatedAt,
-        endedAt: updatedAt,
-        status: .completed,
-        targetResults: [
-            PrivateHeaderGeneration.RunTargetRecord(
-                targetID: target.id,
-                status: .completed,
-                phases: target.phases,
-                artifacts: target.artifacts,
-                attemptedArtifacts: target.artifacts,
-                failureSummary: nil
-            ),
-        ],
-        attemptedArtifacts: target.artifacts,
-        logs: []
-    )
-
-    let repository = PrivateHeaderGeneration.RunRepository(stateDirectory: stateDirectory)
-    try repository.writeManifest(manifest)
-    try repository.writeRun(run)
-}
-
-private func writeFailedGenerationManifest(
     for request: PrivateHeaderKitGenerationRequest,
-    runID: String,
-    targetStatus: PrivateHeaderGeneration.TargetStatus = .failed
-) throws {
-    let manifestDirectory = request.stateBaseDirectory
-        .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
-    try FileManager.default.createDirectory(at: manifestDirectory, withIntermediateDirectories: true)
+    status: PrivateHeaderGeneration.RunStatus,
+    counts: PrivateHeaderGeneration.TargetCounts
+) -> PrivateHeaderGeneration.RunSummary {
+    let plan = PrivateHeaderGeneration.makePlan(
+        source: request.source,
+        output: request.output,
+        options: request.options
+    )
+    return PrivateHeaderGeneration.RunSummary(
+        runID: PrivateHeaderGeneration.RunID(rawValue: "run-error"),
+        status: status,
+        targetCounts: counts,
+        artifactDirectory: plan.artifactDirectory,
+        stateDatabaseURL: plan.databaseURL
+    )
+}
 
-    let manifest = PrivateHeaderGeneration.Manifest(
-        schemaVersion: 1,
-        toolVersion: "0.1.0",
-        source: PrivateHeaderGeneration.SourceRecord(source: request.source),
-        output: PrivateHeaderGeneration.OutputRecord(
-            baseDirectory: request.artifactBaseDirectory.path,
-            artifactDirectory: request.artifactBaseDirectory
-                .appendingPathComponent(request.sourceDirectoryName, isDirectory: true)
-                .path,
-            stateDirectory: manifestDirectory.path
-        ),
-        layout: .headers,
-        latestRunID: runID,
-        targets: [
-            PrivateHeaderGeneration.TargetRecord(
-                id: "framework:SwiftUI.framework",
-                displayName: "SwiftUI.framework",
-                kind: "framework",
-                status: targetStatus,
-                phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: "raw-header-dump",
-                        status: .failed,
-                        failureSummary: """
-                        raw dump exited with status 10
-                        Child process terminated with signal 10: Bus error
-                        MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds
-                        """
-                    ),
-                ],
-                artifacts: [],
-                lastRunID: runID,
-                updatedAt: Date(timeIntervalSince1970: 1_000),
-                failureSummary: """
-                raw dump exited with status 10
-                Child process terminated with signal 10: Bus error
-                MachOObjCSection/_FileIOProtocol+.swift:52: Fatal error: offsetOutOfBounds
-                """
-            ),
-            PrivateHeaderGeneration.TargetRecord(
-                id: "framework:UIKit.framework",
-                displayName: "UIKit.framework",
-                kind: "framework",
-                status: targetStatus,
-                phases: [
-                    PrivateHeaderGeneration.PhaseRecord(
-                        name: "raw-header-dump",
-                        status: .failed
-                    ),
-                ],
-                artifacts: [],
-                lastRunID: runID,
-                updatedAt: Date(timeIntervalSince1970: 1_000),
-                failureSummary: nil
-            ),
-        ],
-        updatedAt: Date(timeIntervalSince1970: 1_000)
-    )
-    let data = try PrivateHeaderGeneration.StateJSON.encode(manifest)
-    try data.write(
-        to: manifestDirectory.appendingPathComponent("manifest.json", isDirectory: false),
-        options: [.atomic]
-    )
+private final class ThreadSafeStrings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    var text: String {
+        lock.lock()
+        let text = values.joined(separator: "\n")
+        lock.unlock()
+        return text
+    }
+}
+
+private final class ThreadSafeRequestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: PrivateHeaderKitGenerationRequest?
+
+    func set(_ request: PrivateHeaderKitGenerationRequest) {
+        lock.lock()
+        storage = request
+        lock.unlock()
+    }
+
+    var value: PrivateHeaderKitGenerationRequest? {
+        lock.lock()
+        let value = storage
+        lock.unlock()
+        return value
+    }
+}
+
+private actor ScriptedInput {
+    private var lines: ArraySlice<String>
+
+    init(_ lines: [String]) {
+        self.lines = lines[...]
+    }
+
+    func readLine() throws -> String? {
+        guard let line = lines.first else { return nil }
+        lines = lines.dropFirst()
+        return line
+    }
+}
+
+private final class TerminalProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let enterEvents = EventCounter()
+    private var enters = 0
+    private var restores = 0
+    private let restoreError: PrivateHeaderKitInputError?
+
+    init(restoreError: PrivateHeaderKitInputError? = nil) {
+        self.restoreError = restoreError
+    }
+
+    func enter() {
+        lock.lock()
+        enters += 1
+        lock.unlock()
+        enterEvents.signal()
+    }
+
+    func restore() throws {
+        lock.lock()
+        restores += 1
+        let error = restoreError
+        lock.unlock()
+        if let error { throw error }
+    }
+
+    var restoreCount: Int {
+        lock.lock()
+        let value = restores
+        lock.unlock()
+        return value
+    }
+
+    var enterCount: Int {
+        lock.lock()
+        let value = enters
+        lock.unlock()
+        return value
+    }
+
+    func waitForEnter(_ count: Int) async {
+        await enterEvents.wait(until: count)
+    }
+}
+
+private struct ProbeTerminalController: PrivateHeaderKitTerminalModeControlling {
+    let probe: TerminalProbe
+
+    func enterRawMode(fileDescriptor _: Int32) throws -> PrivateHeaderKitTerminalRestoration {
+        probe.enter()
+        return { try probe.restore() }
+    }
+}
+
+private final class SignalingSystemTerminalController: PrivateHeaderKitTerminalModeControlling,
+    @unchecked Sendable
+{
+    private let enterEvents = EventCounter()
+
+    func enterRawMode(fileDescriptor: Int32) throws -> PrivateHeaderKitTerminalRestoration {
+        let restoration = try PrivateHeaderKitSystemTerminalModeController().enterRawMode(
+            fileDescriptor: fileDescriptor
+        )
+        enterEvents.signal()
+        return restoration
+    }
+
+    func waitForEnter() async {
+        await enterEvents.wait(until: 1)
+    }
+}
+
+private final class ThreadSafeData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+    private var waiters: [(String, CheckedContinuation<Void, Never>)] = []
+
+    func append(_ data: Data) {
+        lock.lock()
+        storage.append(data)
+        let text = String(decoding: storage, as: UTF8.self)
+        let ready = waiters.filter { $0.0 == text }
+        waiters.removeAll { $0.0 == text }
+        lock.unlock()
+        for (_, continuation) in ready {
+            continuation.resume()
+        }
+    }
+
+    var text: String {
+        lock.lock()
+        let value = String(decoding: storage, as: UTF8.self)
+        lock.unlock()
+        return value
+    }
+
+    func wait(until expected: String) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if String(decoding: storage, as: UTF8.self) == expected {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append((expected, continuation))
+                lock.unlock()
+            }
+        }
+    }
+}
+
+private final class CompletionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startEvents = EventCounter()
+    private var didComplete = false
+
+    func markStarted() {
+        startEvents.signal()
+    }
+
+    func markCompleted() {
+        lock.lock()
+        didComplete = true
+        lock.unlock()
+    }
+
+    var completed: Bool {
+        lock.lock()
+        let value = didComplete
+        lock.unlock()
+        return value
+    }
+
+    func waitForStart() async {
+        await startEvents.wait(until: 1)
+    }
+}
+
+private final class EventCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    func signal() {
+        lock.lock()
+        count += 1
+        let ready = waiters.filter { $0.0 <= count }
+        waiters.removeAll { $0.0 <= count }
+        lock.unlock()
+        for (_, continuation) in ready {
+            continuation.resume()
+        }
+    }
+
+    func wait(until expectedCount: Int) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if count >= expectedCount {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append((expectedCount, continuation))
+                lock.unlock()
+            }
+        }
+    }
+}
+
+private final class ThreadSafeBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = false
+
+    func setTrue() {
+        lock.lock()
+        storage = true
+        lock.unlock()
+    }
+
+    var value: Bool {
+        lock.lock()
+        let value = storage
+        lock.unlock()
+        return value
+    }
+}
+
+private struct FailingTerminalController: PrivateHeaderKitTerminalModeControlling {
+    func enterRawMode(fileDescriptor _: Int32) throws -> PrivateHeaderKitTerminalRestoration {
+        throw PrivateHeaderKitInputError.terminalRawModeFailed(code: EIO)
+    }
+}
+
+private final class BlockingTerminalController: PrivateHeaderKitTerminalModeControlling,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let restoreGate = DispatchSemaphore(value: 0)
+    private let restoreStartEvents = EventCounter()
+    private var enters = 0
+    private var restoredWithOpenFD = false
+
+    func enterRawMode(fileDescriptor: Int32) throws -> PrivateHeaderKitTerminalRestoration {
+        lock.lock()
+        enters += 1
+        let shouldBlock = enters == 1
+        lock.unlock()
+        return { [self] in
+            restoreStartEvents.signal()
+            if shouldBlock {
+                restoreGate.wait()
+            }
+            let wasOpen = fcntl(fileDescriptor, F_GETFD) >= 0
+            lock.lock()
+            restoredWithOpenFD = wasOpen
+            lock.unlock()
+            if !wasOpen {
+                throw PrivateHeaderKitInputError.terminalRestoreFailed(code: EBADF)
+            }
+        }
+    }
+
+    func allowRestore() {
+        restoreGate.signal()
+    }
+
+    var restoredWhileFileDescriptorWasOpen: Bool {
+        lock.lock()
+        let value = restoredWithOpenFD
+        lock.unlock()
+        return value
+    }
+
+    func waitForRestoreStart() async {
+        await restoreStartEvents.wait(until: 1)
+    }
+}
+
+private func temporaryDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PrivateHeaderKitCLI-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func makePipe() throws -> (read: Int32, write: Int32) {
+    var descriptors = [Int32](repeating: 0, count: 2)
+    guard pipe(&descriptors) == 0 else {
+        throw PrivateHeaderKitInputError.readFailed(code: errno)
+    }
+    return (descriptors[0], descriptors[1])
+}
+
+private func writeAll(_ string: String, to fileDescriptor: Int32) throws {
+    try writeBytes(Array(string.utf8), to: fileDescriptor)
+}
+
+private func writeBytes(_ bytes: [UInt8], to fileDescriptor: Int32) throws {
+    let data = Data(bytes)
+    let written = data.withUnsafeBytes { buffer in
+        write(fileDescriptor, buffer.baseAddress, buffer.count)
+    }
+    guard written == data.count else {
+        throw PrivateHeaderKitInputError.readFailed(code: errno)
+    }
 }
