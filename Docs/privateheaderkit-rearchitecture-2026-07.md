@@ -1,7 +1,7 @@
 # PrivateHeaderKit rearchitecture contract (2026-07)
 
-Status: approved  
-Design gate: 2026-07-11  
+Status: approved
+Design gate: 2026-07-11
 Baseline: `c8ce3eca9eac4e6678ab6b198ceafded0a1bd70b`
 
 この文書を今回の移行における唯一の設計 source of truth とする。実装中に契約変更が必要になった場合は、先にこの文書を更新してからコードを変更する。
