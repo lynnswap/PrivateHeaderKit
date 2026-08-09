@@ -488,8 +488,8 @@ private func makeOutput(
 ) -> PrivateHeaderGeneration.OutputRecord {
     PrivateHeaderGeneration.OutputRecord(
         baseDirectory: baseDirectory,
-        artifactDirectory: "\(baseDirectory)/iOS27.0(24A5355q)",
-        stateDirectory: "\(baseDirectory)/.state/iOS27.0(24A5355q)"
+        artifactDirectory: "\(baseDirectory)/ios-v1-27.0-b1-24~415355~71",
+        stateDirectory: "\(baseDirectory)/.state/ios-v1-27.0-b1-24~415355~71"
     )
 }
 

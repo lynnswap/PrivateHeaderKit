@@ -33,7 +33,7 @@ struct PrivateHeaderKitGenerationRequest: Sendable {
     }
 
     var sourceDirectoryName: String {
-        source.label.directoryName
+        source.storageIdentifier
     }
 
     var artifactBaseDirectory: URL {
@@ -180,9 +180,7 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
         case macOS = "macOS"
     }
 
-    let platform: Platform
-    let version: String
-    let build: String?
+    let source: PrivateHeaderGeneration.Source
     let systemRoot: String?
     let outputBaseDirectory: String
     let targetQuery: String
@@ -190,12 +188,48 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     let device: String?
     let simulatorHelperPath: String?
 
+    init(
+        platform: Platform,
+        version: String,
+        build: String?,
+        systemRoot: String?,
+        outputBaseDirectory: String,
+        targetQuery: String,
+        resume: Bool,
+        device: String?,
+        simulatorHelperPath: String?
+    ) throws {
+        source = try PrivateHeaderGeneration.Source(
+            platform: platform.corePlatform,
+            version: version,
+            build: build
+        )
+        self.systemRoot = systemRoot
+        self.outputBaseDirectory = outputBaseDirectory
+        self.targetQuery = targetQuery
+        self.resume = resume
+        self.device = device
+        self.simulatorHelperPath = simulatorHelperPath
+    }
+
+    var platform: Platform {
+        switch source.platform {
+        case .iOS:
+            .iOS
+        case .macOS:
+            .macOS
+        }
+    }
+
+    var version: String { source.version }
+    var build: String? { source.build }
+
     var sourceDisplayName: String {
-        sourceLabel(separator: " ")
+        source.label.displayName
     }
 
     var sourceDirectoryName: String {
-        sourceLabel(separator: "")
+        source.storageIdentifier
     }
 
     var artifactDirectory: URL {
@@ -211,15 +245,6 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
 
     var manifestPath: String {
         stateDirectory.appendingPathComponent("manifest.json", isDirectory: false).path
-    }
-
-    private func sourceLabel(separator: String) -> String {
-        let baseName = "\(platform.rawValue)\(separator)\(version)"
-        if let build {
-            let buildSeparator = separator.isEmpty ? "" : " "
-            return "\(baseName)\(buildSeparator)(\(build))"
-        }
-        return baseName
     }
 }
 
@@ -320,7 +345,6 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
     case unexpectedArgument(String)
     case invalidPlatform(String)
     case emptyOptionValue(String)
-    case invalidSourceComponent(option: String, value: String)
     case invalidTargetQuery(String)
     case missingSimulatorResolution
 
@@ -346,8 +370,6 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
             return "invalid platform: \(value); expected iOS or macOS"
         case .emptyOptionValue(let option):
             return "empty value for option: \(option)"
-        case .invalidSourceComponent(let option, let value):
-            return "\(option) is not safe as a source label path component: \(value)"
         case .invalidTargetQuery(let value):
             return "target query must be a comma-separated list without empty entries: \(value)"
         case .missingSimulatorResolution:
@@ -576,7 +598,7 @@ private func runPrivateHeaderKitInteractiveSelection(
     errorLogger: (String) -> Void
 ) async throws -> Int32 {
     do {
-        let command = PrivateHeaderKitGenerateCommand(
+        let command = try PrivateHeaderKitGenerateCommand(
             platform: source.platform,
             version: source.version,
             build: source.build,
@@ -1407,11 +1429,7 @@ private func makePrivateHeaderGenerationRequest(
     simulatorResolution: PrivateHeaderKitSimulatorResolution?,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil
 ) throws -> PrivateHeaderKitGenerationRequest {
-    let source = try PrivateHeaderGeneration.Source(
-        platform: command.platform.corePlatform,
-        version: command.version,
-        build: command.build
-    )
+    let source = command.source
     let outputBaseDirectory = URL(
         fileURLWithPath: command.outputBaseDirectory,
         isDirectory: true
@@ -1827,7 +1845,6 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
                 try readOptionValue(option: option, inlineValue: inlineValue, args: args, index: &index),
                 option: option
             )
-            try validateSourcePathComponent(value, option: option)
             version = value
         case "--build":
             try markOptionSeen(option, in: &seenOptions)
@@ -1835,7 +1852,6 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
                 try readOptionValue(option: option, inlineValue: inlineValue, args: args, index: &index),
                 option: option
             )
-            try validateSourcePathComponent(value, option: option)
             build = value
         case "--system-root":
             try markOptionSeen(option, in: &seenOptions)
@@ -1898,7 +1914,7 @@ private func parsePrivateHeaderKitGenerateCommand(_ args: [String]) throws -> Pr
     }
 
     return .generate(
-        PrivateHeaderKitGenerateCommand(
+        try PrivateHeaderKitGenerateCommand(
             platform: platform,
             version: version,
             build: build,
@@ -1954,12 +1970,6 @@ private func nonEmptyOptionValue(_ value: String, option: String) throws -> Stri
         throw PrivateHeaderKitCLIError.emptyOptionValue(option)
     }
     return value
-}
-
-private func validateSourcePathComponent(_ value: String, option: String) throws {
-    guard value != ".", value != "..", !value.contains("/"), !value.contains("\0") else {
-        throw PrivateHeaderKitCLIError.invalidSourceComponent(option: option, value: value)
-    }
 }
 
 private func validateTargetQuery(_ value: String) throws {

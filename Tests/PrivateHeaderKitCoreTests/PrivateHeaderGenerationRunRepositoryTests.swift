@@ -74,7 +74,7 @@ struct PrivateHeaderGenerationRunRepositoryTests {
         }
         let stateBaseDirectory = root.appendingPathComponent(".state", isDirectory: true)
         let stateDirectory = stateBaseDirectory
-            .appendingPathComponent("iOS27.0(24A5355q)", isDirectory: true)
+            .appendingPathComponent("ios-v1-27.0-b1-24~415355~71", isDirectory: true)
         let repository = PrivateHeaderGeneration.RunRepository(stateDirectory: stateDirectory)
         let expectedLockURL = stateDirectory.appendingPathComponent("generation.lock", isDirectory: false)
 

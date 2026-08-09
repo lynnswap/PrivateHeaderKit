@@ -173,7 +173,7 @@ public extension PrivateHeaderGeneration {
             self.version = source.version
             self.build = source.build
             self.displayName = source.label.displayName
-            self.directoryName = source.label.directoryName
+            self.directoryName = source.storageIdentifier
         }
 
         public init(from decoder: Decoder) throws {

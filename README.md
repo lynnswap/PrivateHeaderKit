@@ -73,14 +73,18 @@ Default output is planned under:
 
 ```text
 ~/PrivateHeaderKit/
-  iOS27.0(24A5355q)/
+  ios-v1-27.0-b1-24~415355~71/
   .state/
-    iOS27.0(24A5355q)/
+    ios-v1-27.0-b1-24~415355~71/
       manifest.json
       runs/
 ```
 
-For custom output, `--out` and `PH_OUT_DIR` are treated as an output base directory. Generated headers live under `<output-base>/<source-label>/`; state lives under `<output-base>/.state/<source-label>/`.
+For custom output, `--out` and `PH_OUT_DIR` are treated as an output base
+directory. Generated headers live under `<output-base>/<source-storage-id>/`;
+state lives under `<output-base>/.state/<source-storage-id>/`. The storage ID
+is versioned and owned by PrivateHeaderKit; consumers must not construct it
+from the displayed source label.
 
 ## Notes
 

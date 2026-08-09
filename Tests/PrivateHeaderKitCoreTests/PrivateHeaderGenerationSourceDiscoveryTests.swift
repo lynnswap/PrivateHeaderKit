@@ -32,7 +32,7 @@ struct PrivateHeaderGenerationSourceDiscoveryTests {
         #expect(candidate.source.version == "27.0")
         #expect(candidate.source.build == "24A5355q")
         #expect(candidate.source.label.displayName == "iOS 27.0 (24A5355q)")
-        #expect(candidate.source.label.directoryName == "iOS27.0(24A5355q)")
+        #expect(candidate.source.storageIdentifier == "ios-v1-27.0-b1-24~415355~71")
         #expect(candidate.runtimeName == "iOS 27.0")
         #expect(candidate.runtimeIdentifier == "com.apple.CoreSimulator.SimRuntime.iOS-27-0")
         #expect(candidate.runtimeRoot == "/runtimes/iOS-27.0")

@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 public enum PrivateHeaderGeneration {
     public static func makePlan(
         source: Source,
@@ -54,10 +60,23 @@ public extension PrivateHeaderGeneration {
         public let build: String?
 
         public init(platform: Platform, version: String, build: String? = nil) throws {
-            try Self.validatePathComponent(version, field: "version")
-            let build = build.flatMap { $0.isEmpty ? nil : $0 }
-            if let build {
-                try Self.validatePathComponent(build, field: "build")
+            let version = version.precomposedStringWithCanonicalMapping
+            guard !version.isEmpty else {
+                throw ValidationError.emptyComponent(field: "version")
+            }
+            let build = build
+                .map(\.precomposedStringWithCanonicalMapping)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let storageIdentifier = Self.makeStorageIdentifier(
+                platform: platform,
+                version: version,
+                build: build
+            )
+            guard storageIdentifier.utf8.count <= Int(NAME_MAX) else {
+                throw ValidationError.storageIdentifierTooLong(
+                    actualUTF8Count: storageIdentifier.utf8.count,
+                    maximumUTF8Count: Int(NAME_MAX)
+                )
             }
             self.platform = platform
             self.version = version
@@ -68,13 +87,47 @@ public extension PrivateHeaderGeneration {
             Label(platform: platform, version: version, build: build)
         }
 
-        private static func validatePathComponent(_ value: String, field: String) throws {
-            guard !value.isEmpty else {
-                throw ValidationError.emptyComponent(field: field)
+        public var storageIdentifier: String {
+            Self.makeStorageIdentifier(platform: platform, version: version, build: build)
+        }
+
+        private static func makeStorageIdentifier(
+            platform: Platform,
+            version: String,
+            build: String?
+        ) -> String {
+            let platformName: String
+            switch platform {
+            case .iOS:
+                platformName = "ios"
+            case .macOS:
+                platformName = "macos"
             }
-            guard value != ".", value != "..", !value.contains("/"), !value.contains("\0") else {
-                throw ValidationError.invalidPathComponent(field: field, value: value)
+
+            let version = encodeStorageField(version)
+            guard let build else {
+                return "\(platformName)-v1-\(version)-b0"
             }
+            return "\(platformName)-v1-\(version)-b1-\(encodeStorageField(build))"
+        }
+
+        private static func encodeStorageField(_ value: String) -> String {
+            let hexDigits = Array("0123456789abcdef")
+            var result = ""
+            result.reserveCapacity(value.utf8.count * 3)
+            for byte in value.utf8 {
+                switch byte {
+                case 0x2e:
+                    result.append(".")
+                case 0x30...0x39:
+                    result.append(hexDigits[Int(byte) - 0x30])
+                default:
+                    result.append("~")
+                    result.append(hexDigits[Int(byte >> 4)])
+                    result.append(hexDigits[Int(byte & 0x0f)])
+                }
+            }
+            return result
         }
     }
 }
@@ -82,14 +135,15 @@ public extension PrivateHeaderGeneration {
 public extension PrivateHeaderGeneration.Source {
     enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
         case emptyComponent(field: String)
-        case invalidPathComponent(field: String, value: String)
+        case storageIdentifierTooLong(actualUTF8Count: Int, maximumUTF8Count: Int)
 
         public var description: String {
             switch self {
             case .emptyComponent(let field):
                 "\(field) must not be empty"
-            case .invalidPathComponent(let field, let value):
-                "\(field) is not safe as a path component: \(value)"
+            case .storageIdentifierTooLong(let actualUTF8Count, let maximumUTF8Count):
+                "source storage identifier is \(actualUTF8Count) UTF-8 bytes; "
+                    + "the maximum is \(maximumUTF8Count)"
             }
         }
     }
@@ -105,17 +159,13 @@ public extension PrivateHeaderGeneration.Source {
 
     struct Label: CustomStringConvertible, Hashable, Sendable {
         public let displayName: String
-        public let directoryName: String
 
         init(platform: Platform, version: String, build: String?) {
             let baseName = "\(platform.displayName) \(version)"
-            let directoryBaseName = "\(platform.displayName)\(version)"
             if let build {
                 self.displayName = "\(baseName) (\(build))"
-                self.directoryName = "\(directoryBaseName)(\(build))"
             } else {
                 self.displayName = baseName
-                self.directoryName = directoryBaseName
             }
         }
 
@@ -244,15 +294,14 @@ public extension PrivateHeaderGeneration {
             output: Output,
             options: Options = Options()
         ) {
-            let label = source.label
             self.source = source
             self.output = output
             self.artifactDirectory = output.artifactBaseDirectory.appendingPathComponent(
-                label.directoryName,
+                source.storageIdentifier,
                 isDirectory: true
             )
             self.stateDirectory = output.stateBaseDirectory.appendingPathComponent(
-                label.directoryName,
+                source.storageIdentifier,
                 isDirectory: true
             )
             self.target = .allAvailable

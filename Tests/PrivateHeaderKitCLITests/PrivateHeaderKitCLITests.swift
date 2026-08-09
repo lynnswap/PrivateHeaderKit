@@ -52,7 +52,7 @@ struct PrivateHeaderKitCLIParsingTests {
                 "SwiftUI,UIKit",
             ])
             == .generate(
-                PrivateHeaderKitGenerateCommand(
+                try PrivateHeaderKitGenerateCommand(
                     platform: .iOS,
                     version: "27.0",
                     build: "24A5355q",
@@ -83,7 +83,7 @@ struct PrivateHeaderKitCLIParsingTests {
 
         #expect(
             command == .generate(
-                PrivateHeaderKitGenerateCommand(
+                try PrivateHeaderKitGenerateCommand(
                     platform: .macOS,
                     version: "16.0",
                     build: nil,
@@ -118,7 +118,7 @@ struct PrivateHeaderKitCLIParsingTests {
                 "/opt/privateheaderkit/libexec/privateheaderkit/privateheaderkit-sim-helper",
             ])
             == .generate(
-                PrivateHeaderKitGenerateCommand(
+                try PrivateHeaderKitGenerateCommand(
                     platform: .iOS,
                     version: "27.0",
                     build: "24A5355q",
@@ -156,9 +156,15 @@ struct PrivateHeaderKitCLIParsingTests {
         }
 
         #expect(generateCommand.sourceDisplayName == "iOS 27.0 (24A5355q)")
-        #expect(generateCommand.sourceDirectoryName == "iOS27.0(24A5355q)")
-        #expect(generateCommand.artifactDirectory.path == "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)")
-        #expect(generateCommand.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)")
+        #expect(generateCommand.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
+        #expect(
+            generateCommand.artifactDirectory.path
+                == "/tmp/PrivateHeaderKit/ios-v1-27.0-b1-24~415355~71"
+        )
+        #expect(
+            generateCommand.stateDirectory.path
+                == "/tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71"
+        )
     }
 
     @Test func publicHelpDoesNotExposeHiddenCommands() throws {
@@ -380,15 +386,15 @@ struct PrivateHeaderKitCLIParsingTests {
                 return PrivateHeaderKitGenerationSummary(
                     sourceDisplayName: request.sourceDisplayName,
                     artifactDirectory: URL(
-                        fileURLWithPath: "/tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
+                        fileURLWithPath: "/tmp/PrivateHeaderKit/ios-v1-27.0-b1-24~415355~71",
                         isDirectory: true
                     ),
                     manifestURL: URL(
-                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/manifest.json",
+                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71/manifest.json",
                         isDirectory: false
                     ),
                     runRecordURL: URL(
-                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)/runs/run-test/run.json",
+                        fileURLWithPath: "/tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71/runs/run-test/run.json",
                         isDirectory: false
                     ),
                     runID: "run-test",
@@ -408,7 +414,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(exitCode == 0)
         #expect(loggedMessages.isEmpty)
         #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
-        #expect(request.sourceDirectoryName == "iOS27.0(24A5355q)")
+        #expect(request.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
         #expect(request.artifactBaseDirectory.path == "/tmp/PrivateHeaderKit")
         #expect(request.stateBaseDirectory.path == "/tmp/PrivateHeaderKit/.state")
         #expect(request.systemRoot?.path == "/tmp/RuntimeRoot")
@@ -451,13 +457,13 @@ struct PrivateHeaderKitCLIParsingTests {
             "  Skipped   1",
             "",
             "Output",
-            "  Headers   /tmp/PrivateHeaderKit/iOS27.0(24A5355q)",
-            "  State     /tmp/PrivateHeaderKit/.state/iOS27.0(24A5355q)",
+            "  Headers   /tmp/PrivateHeaderKit/ios-v1-27.0-b1-24~415355~71",
+            "  State     /tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71",
             "",
             "Run",
             "  ID        run-test",
-            "  Manifest  .state/iOS27.0(24A5355q)/manifest.json",
-            "  Record    .state/iOS27.0(24A5355q)/runs/run-test/run.json",
+            "  Manifest  .state/ios-v1-27.0-b1-24~415355~71/manifest.json",
+            "  Record    .state/ios-v1-27.0-b1-24~415355~71/runs/run-test/run.json",
         ])
     }
 
@@ -1023,13 +1029,13 @@ struct PrivateHeaderKitCLIParsingTests {
             "      no failure summary recorded",
             "",
             "Output",
-            "  Headers   \(outputDirectory.path)/iOS27.0(24A5355q)",
-            "  State     \(outputDirectory.path)/.state/iOS27.0(24A5355q)",
+            "  Headers   \(outputDirectory.path)/ios-v1-27.0-b1-24~415355~71",
+            "  State     \(outputDirectory.path)/.state/ios-v1-27.0-b1-24~415355~71",
             "",
             "Run",
             "  ID        run-failed",
-            "  Manifest  .state/iOS27.0(24A5355q)/manifest.json",
-            "  Record    .state/iOS27.0(24A5355q)/runs/run-failed/run.json",
+            "  Manifest  .state/ios-v1-27.0-b1-24~415355~71/manifest.json",
+            "  Record    .state/ios-v1-27.0-b1-24~415355~71/runs/run-failed/run.json",
         ])
     }
 
@@ -1222,7 +1228,7 @@ private func resumeSummaryFixture(
         fileURLWithPath: "/tmp/PrivateHeaderKit",
         isDirectory: true
     )
-    let directoryName = source.label.directoryName
+    let directoryName = source.storageIdentifier
     return PrivateHeaderGeneration.ResumeSummary(
         source: PrivateHeaderGeneration.SourceRecord(source: source),
         output: PrivateHeaderGeneration.OutputRecord(
@@ -1275,7 +1281,7 @@ private func writeCompletedSubsetGenerationState(
         version: "27.0",
         build: "24A5355q"
     )
-    let sourceDirectoryName = source.label.directoryName
+    let sourceDirectoryName = source.storageIdentifier
     let artifactDirectory = outputBaseDirectory.appendingPathComponent(
         sourceDirectoryName,
         isDirectory: true
