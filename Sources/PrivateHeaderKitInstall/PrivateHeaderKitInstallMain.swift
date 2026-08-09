@@ -418,7 +418,7 @@ func buildSourceCohort(
     )
     let simulatorSDKPath = try resolveSimulatorSDKPath(runner: runner)
     let simulatorTriple = try simulatorHelperTriple ?? defaultSimulatorHelperTriple()
-    let simulatorScratchPath = simulatorBuildScratchURL(
+    let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
         repoRoot: repoRoot,
         triple: simulatorTriple
     )
@@ -537,13 +537,6 @@ func buildSimulatorHelper(
         env: nil,
         cwd: directory
     )
-}
-
-func simulatorBuildScratchURL(repoRoot: URL, triple: String) -> URL {
-    repoRoot
-        .appendingPathComponent(".build", isDirectory: true)
-        .appendingPathComponent("privateheaderkit-simulator", isDirectory: true)
-        .appendingPathComponent(triple, isDirectory: true)
 }
 
 func resolveSimulatorSDKPath(runner: CommandRunning) throws -> String {

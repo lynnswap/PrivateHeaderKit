@@ -7,6 +7,7 @@ import Darwin
 
 @testable import PrivateHeaderKitInstall
 import PrivateHeaderKitTestSupport
+import PrivateHeaderKitTooling
 
 @Suite
 struct InstallOptionTests {
@@ -1424,7 +1425,7 @@ struct SourceBuildResolutionTests {
         let directories = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
         let simulatorTriple = "arm64-apple-ios-simulator"
-        let simulatorScratchPath = simulatorBuildScratchURL(
+        let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
             repoRoot: directories.root,
             triple: simulatorTriple
         )
@@ -1502,7 +1503,7 @@ struct SourceBuildResolutionTests {
         let runner = RecordingCommandRunner()
         let sdkPath = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         let simulatorTriple = "arm64-apple-ios-simulator"
-        let simulatorScratchPath = simulatorBuildScratchURL(
+        let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
             repoRoot: directories.root,
             triple: simulatorTriple
         )
@@ -1617,7 +1618,7 @@ struct SourceBuildResolutionTests {
         )
         let sdk = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         let triple = "arm64-apple-ios-simulator"
-        let simulatorScratchPath = simulatorBuildScratchURL(
+        let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
             repoRoot: repoRoot,
             triple: triple
         )

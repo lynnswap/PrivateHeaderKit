@@ -169,6 +169,7 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitInstall",
                 "PrivateHeaderKitTestSupport",
+                "PrivateHeaderKitTooling",
             ]
         ),
         .testTarget(
