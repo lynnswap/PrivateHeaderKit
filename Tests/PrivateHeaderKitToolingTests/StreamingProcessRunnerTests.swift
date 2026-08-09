@@ -317,6 +317,10 @@ private func drainPipeToEOF(_ descriptor: Int32) throws -> Int {
     }
 }
 
+private enum InjectedPassthroughError: Error {
+    case failure
+}
+
 @Suite
 struct StreamingProcessRunnerTests {
     @Test func streamingCombinesOutputAndForwardsExactBytes() async throws {
@@ -796,7 +800,7 @@ struct StreamingProcessRunnerTests {
             _ = try await task.value
             Issue.record("expected cancellation")
         } catch is CancellationError {
-            // Cancellation is preserved after graceful process-group teardown.
+            // Cancellation is preserved after the owned process group is gone.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
@@ -828,6 +832,33 @@ struct StreamingProcessRunnerTests {
             Issue.record("expected capture cancellation")
         } catch is CancellationError {
             // Cancellation is returned only after the process group is gone and pipes drain.
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(canAcquireExclusiveLock(at: parentLock))
+        #expect(canAcquireExclusiveLock(at: childLock))
+    }
+
+    @Test func passthroughFailureWaitsForWholeProcessGroup() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parentLock = directory.appendingPathComponent("error-parent.lock").path
+        let childLock = directory.appendingPathComponent("error-child.lock").path
+        let helper = try testHelperExecutableURL()
+
+        do {
+            _ = try await ProcessRunner().runStreaming(
+                [helper.path, "process-group", parentLock, childLock],
+                streamOutput: true,
+                passthrough: { data in
+                    guard data.range(of: Data("READY\n".utf8)) != nil else { return }
+                    throw InjectedPassthroughError.failure
+                }
+            )
+            Issue.record("expected passthrough failure")
+        } catch InjectedPassthroughError.failure {
+            // The original downstream failure is preserved after group teardown.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
@@ -869,7 +900,7 @@ struct StreamingProcessRunnerTests {
             _ = try await task.value
             Issue.record("expected blocked passthrough cancellation")
         } catch is CancellationError {
-            // The async sink releases on cancellation; Subprocess then owns full teardown.
+            // The async sink releases before the runner completes process-group teardown.
         } catch {
             Issue.record("unexpected error: \(error)")
         }

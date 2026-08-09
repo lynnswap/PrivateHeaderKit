@@ -17,14 +17,134 @@ private struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertib
     }
 }
 
-private func completeCancelledProcessGroupTeardown(
+private func processGroupTeardownError(
+    operation: String,
+    processGroupID: pid_t,
+    errorCode: Int32
+) -> ProcessGroupTeardownError {
+    ProcessGroupTeardownError(
+        operation: operation,
+        processGroupID: processGroupID,
+        errorCode: errorCode
+    )
+}
+
+private func processGroupHasLiveMember(
+    _ processGroupID: pid_t
+) throws(ProcessGroupTeardownError) -> Bool {
+    var processIDs = [pid_t](repeating: 0, count: 16)
+
+    while true {
+        guard processIDs.count <= Int(Int32.max) / MemoryLayout<pid_t>.stride else {
+            throw processGroupTeardownError(
+                operation: "list members",
+                processGroupID: processGroupID,
+                errorCode: EOVERFLOW
+            )
+        }
+
+        errno = 0
+        let memberCount = processIDs.withUnsafeMutableBytes { buffer in
+            proc_listpgrppids(
+                processGroupID,
+                buffer.baseAddress,
+                Int32(buffer.count)
+            )
+        }
+        let listError = errno
+        if memberCount == 0 {
+            if listError == EINTR {
+                continue
+            }
+            if listError == 0 {
+                return false
+            }
+            throw processGroupTeardownError(
+                operation: "list members",
+                processGroupID: processGroupID,
+                errorCode: listError
+            )
+        }
+        guard memberCount > 0, Int(memberCount) <= processIDs.count else {
+            throw processGroupTeardownError(
+                operation: "list members",
+                processGroupID: processGroupID,
+                errorCode: listError == 0 ? EIO : listError
+            )
+        }
+        if Int(memberCount) == processIDs.count {
+            guard processIDs.count <= Int(Int32.max) / (2 * MemoryLayout<pid_t>.stride) else {
+                throw processGroupTeardownError(
+                    operation: "list members",
+                    processGroupID: processGroupID,
+                    errorCode: EOVERFLOW
+                )
+            }
+            processIDs = [pid_t](repeating: 0, count: processIDs.count * 2)
+            continue
+        }
+
+        for processID in processIDs.prefix(Int(memberCount)) {
+            guard processID > 0 else {
+                throw processGroupTeardownError(
+                    operation: "list members",
+                    processGroupID: processGroupID,
+                    errorCode: EIO
+                )
+            }
+            while true {
+                var info = proc_bsdshortinfo()
+                let expectedSize = Int32(MemoryLayout<proc_bsdshortinfo>.size)
+                errno = 0
+                let actualSize = withUnsafeMutablePointer(to: &info) { pointer in
+                    proc_pidinfo(
+                        processID,
+                        PROC_PIDT_SHORTBSDINFO,
+                        0,
+                        pointer,
+                        expectedSize
+                    )
+                }
+                let infoError = errno
+                if actualSize == expectedSize {
+                    guard info.pbsi_pgid == UInt32(processGroupID) else { break }
+                    if info.pbsi_status != UInt32(SZOMB) {
+                        return true
+                    }
+                    break
+                }
+                if actualSize <= 0 {
+                    if infoError == EINTR {
+                        continue
+                    }
+                    if infoError == ESRCH {
+                        break
+                    }
+                    throw processGroupTeardownError(
+                        operation: "inspect member \(processID)",
+                        processGroupID: processGroupID,
+                        errorCode: infoError == 0 ? EIO : infoError
+                    )
+                }
+                throw processGroupTeardownError(
+                    operation: "inspect member \(processID)",
+                    processGroupID: processGroupID,
+                    errorCode: EIO
+                )
+            }
+        }
+        return false
+    }
+}
+
+private func completeAbortedProcessGroupTeardown(
     _ processGroupID: pid_t?
 ) async throws(ProcessGroupTeardownError) {
     guard let processGroupID else { return }
     precondition(processGroupID > 0)
 
-    // swift-subprocess observes only the group leader. Keep signaling after the leader exits
-    // so SIGTERM-resistant descendants cannot outlive cancellation, and return only at ESRCH.
+    // swift-subprocess observes only the group leader. Once an aborted leader exits, remaining
+    // descendants are orphaned from this command contract and receive no separate grace period.
     while true {
         if Darwin.kill(-processGroupID, SIGKILL) == 0 {
             await Task.yield()
@@ -35,8 +155,16 @@ private func completeCancelledProcessGroupTeardown(
         case EINTR:
             continue
         case EPERM:
-            // Darwin reports EPERM while only unreaped zombies retain an owned group.
-            // Keep polling until ESRCH proves that the process group no longer exists.
+            // Do not fail on zombie-only groups: Darwin retains their pgrp but excludes zombies
+            // from signal delivery. A live member means signal permission is no longer available,
+            // so this adapter must surface failed teardown instead of waiting forever.
+            if try processGroupHasLiveMember(processGroupID) {
+                throw ProcessGroupTeardownError(
+                    operation: "send SIGKILL",
+                    processGroupID: processGroupID,
+                    errorCode: errorCode
+                )
+            }
             await Task.yield()
         case ESRCH:
             return
@@ -116,24 +244,34 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 return standardOutput
             } catch is CancellationError {
                 do {
-                    try await completeCancelledProcessGroupTeardown(processGroupID)
+                    try await completeAbortedProcessGroupTeardown(processGroupID)
                 } catch {
                     throw mapProcessGroupTeardownError(error, command: command)
                 }
                 throw CancellationError()
             } catch let error as SubprocessError {
+                do {
+                    try await completeAbortedProcessGroupTeardown(processGroupID)
+                } catch {
+                    throw mapProcessGroupTeardownError(error, command: command)
+                }
                 if Task.isCancelled {
-                    do {
-                        try await completeCancelledProcessGroupTeardown(processGroupID)
-                    } catch {
-                        throw mapProcessGroupTeardownError(error, command: command)
-                    }
                     throw CancellationError()
                 }
                 guard isRetryableExecutableLaunchError(error) else {
                     throw mapSubprocessError(error, command: command)
                 }
                 lastRetryableLaunchError = error
+            } catch {
+                do {
+                    try await completeAbortedProcessGroupTeardown(processGroupID)
+                } catch {
+                    throw mapProcessGroupTeardownError(error, command: command)
+                }
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                throw error
             }
         }
         guard let lastRetryableLaunchError else {
@@ -263,11 +401,11 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     lastLines: lastLines
                 )
             } catch is CancellationError {
-                try await completeCancelledProcessGroupTeardown(processGroupID)
+                try await completeAbortedProcessGroupTeardown(processGroupID)
                 throw CancellationError()
             } catch let error as SubprocessError {
+                try await completeAbortedProcessGroupTeardown(processGroupID)
                 if Task.isCancelled {
-                    try await completeCancelledProcessGroupTeardown(processGroupID)
                     throw CancellationError()
                 }
                 guard isRetryableExecutableLaunchError(error) else {
@@ -275,8 +413,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 }
                 lastRetryableLaunchError = error
             } catch {
+                try await completeAbortedProcessGroupTeardown(processGroupID)
                 if Task.isCancelled {
-                    try await completeCancelledProcessGroupTeardown(processGroupID)
                     throw CancellationError()
                 }
                 throw error
@@ -364,6 +502,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
         var platformOptions = PlatformOptions()
         platformOptions.createSession = true
         platformOptions.teardownSequence = [
+            // The leader gets a graceful interval. If it exits first, any remaining descendants
+            // are orphaned from the command contract and the catch path force-completes teardown.
             .gracefulShutDown(
                 toProcessGroup: true,
                 allowedDurationToNextStep: .seconds(5)

@@ -1,8 +1,10 @@
-import ArgumentParser
 import Foundation
 import Testing
-import UnixSignals
 import os
+
+#if os(macOS)
+import ArgumentParser
+import UnixSignals
 
 @testable import PrivateHeaderKitInstall
 @testable import PrivateHeaderKitInstallCLI
@@ -371,3 +373,5 @@ private final class ThreadSafeLog: Sendable {
         storage.withLock { $0.append(message) }
     }
 }
+
+#endif

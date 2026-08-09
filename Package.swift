@@ -192,11 +192,27 @@ let package = Package(
         .testTarget(
             name: "PrivateHeaderKitInstallTests",
             dependencies: [
-                "PrivateHeaderKitInstall",
-                "PrivateHeaderKitInstallCLI",
-                "PrivateHeaderKitTestSupport",
-                "PrivateHeaderKitTooling",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .target(
+                    name: "PrivateHeaderKitInstall",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .target(
+                    name: "PrivateHeaderKitTestSupport",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .target(
+                    name: "PrivateHeaderKitInstallCLI",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .target(
+                    name: "PrivateHeaderKitTooling",
+                    condition: .when(platforms: [.macOS])
+                ),
+                .product(
+                    name: "ArgumentParser",
+                    package: "swift-argument-parser",
+                    condition: .when(platforms: [.macOS])
+                ),
                 .product(
                     name: "UnixSignals",
                     package: "swift-service-lifecycle",

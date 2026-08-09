@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Testing
 import os
@@ -2160,3 +2161,4 @@ private func makePrivateHeaderKitRepoMarkers(in repoRoot: URL) throws {
         try Data().write(to: url)
     }
 }
+#endif
