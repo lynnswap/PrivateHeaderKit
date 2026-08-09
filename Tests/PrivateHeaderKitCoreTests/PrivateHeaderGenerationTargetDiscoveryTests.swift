@@ -213,7 +213,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "Frameworks/WebKit.framework/XPCServices/WebKitHelper.xpc",
         ])
         #expect(bundleTarget.candidate.identifier == "system-library:CoreServices/CoreGlyphs.bundle")
-        #expect(bundleTarget.artifactRoot.rawValue == "SystemLibrary/CoreServices/CoreGlyphs")
+        #expect(bundleTarget.artifactRoot.rawValue == "SystemLibrary/CoreServices/CoreGlyphs.bundle")
         #expect(bundleTarget.inputPath == bundleLink.path)
         #expect(bundleTarget.runtimeInputPath == "/System/Library/CoreServices/CoreGlyphs.bundle")
     }
