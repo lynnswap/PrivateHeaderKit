@@ -28,6 +28,14 @@ struct PrivateHeaderKitGenerationRequest: Sendable {
     let output: PrivateHeaderGeneration.Output
     let options: PrivateHeaderGeneration.Options
 
+    var plan: PrivateHeaderGeneration.Plan {
+        PrivateHeaderGeneration.makePlan(
+            source: source,
+            output: output,
+            options: options
+        )
+    }
+
     var sourceDisplayName: String {
         source.label.displayName
     }
@@ -42,6 +50,22 @@ struct PrivateHeaderKitGenerationRequest: Sendable {
 
     var stateBaseDirectory: URL {
         output.stateBaseDirectory
+    }
+
+    var artifactDirectory: URL {
+        plan.artifactDirectory
+    }
+
+    var stateDirectory: URL {
+        plan.stateDirectory
+    }
+
+    var manifestURL: URL {
+        PrivateHeaderGeneration.RunRepository(plan: plan).manifestURL
+    }
+
+    func runRecordURL(runID: String) throws -> URL {
+        try PrivateHeaderGeneration.RunRepository(plan: plan).runRecordURL(for: runID)
     }
 
     var systemRoot: URL? {
@@ -228,24 +252,6 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
         source.label.displayName
     }
 
-    var sourceDirectoryName: String {
-        source.storageIdentifier
-    }
-
-    var artifactDirectory: URL {
-        URL(fileURLWithPath: outputBaseDirectory, isDirectory: true)
-            .appendingPathComponent(sourceDirectoryName, isDirectory: true)
-    }
-
-    var stateDirectory: URL {
-        URL(fileURLWithPath: outputBaseDirectory, isDirectory: true)
-            .appendingPathComponent(".state", isDirectory: true)
-            .appendingPathComponent(sourceDirectoryName, isDirectory: true)
-    }
-
-    var manifestPath: String {
-        stateDirectory.appendingPathComponent("manifest.json", isDirectory: false).path
-    }
 }
 
 struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
@@ -380,7 +386,6 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
 
 func runPrivateHeaderKitCommand(
     _ args: [String],
-    environment: [String: String] = ProcessInfo.processInfo.environment,
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationRunner: @escaping PrivateHeaderKitGenerationRunner = runPrivateHeaderGeneration,
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
@@ -729,7 +734,8 @@ private func renderInteractiveTargetInputScreen(
 }
 
 private func renderInteractiveResumeScreen(
-    source: PrivateHeaderKitGenerateCommand,
+    sourceDisplayName: String,
+    targetQuery: String,
     summary: PrivateHeaderGeneration.ResumeSummary,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     outputLogger: (String) -> Void
@@ -740,8 +746,8 @@ private func renderInteractiveResumeScreen(
     outputLogger("Step 3 of 3: Continue or restart")
     outputLogger("Existing generation state was found.")
     outputLogger("")
-    outputLogger("Source: \(source.sourceDisplayName)")
-    outputLogger("Targets: \(source.targetQuery)")
+    outputLogger("Source: \(sourceDisplayName)")
+    outputLogger("Targets: \(targetQuery)")
     outputLogger("Remaining: \(summary.counts.unfinished) of \(summary.counts.total)")
     if let latestRunID = summary.latestRunID {
         outputLogger("Previous run: \(latestRunID)")
@@ -760,13 +766,6 @@ private func interactiveResumeDecision(
     inputReader: PrivateHeaderKitInputReader,
     outputLogger: (String) -> Void
 ) throws -> PrivateHeaderKitInteractiveResumeDecision {
-    guard FileManager.default.fileExists(atPath: command.manifestPath) else {
-        return PrivateHeaderKitInteractiveResumeDecision(
-            resumeBehavior: .fresh,
-            simulatorResolution: nil
-        )
-    }
-
     let publicExecutableURL = privateHeaderKitExecutableURL(
         currentExecutableURL: currentExecutableURL,
         fallbackProgramName: invokedProgramName
@@ -784,6 +783,12 @@ private func interactiveResumeDecision(
         simulatorResolution: simulatorResolution,
         resumeBehaviorOverride: .requireExplicitResume(resumeRequested: false)
     )
+    guard FileManager.default.fileExists(atPath: request.manifestURL.path) else {
+        return PrivateHeaderKitInteractiveResumeDecision(
+            resumeBehavior: .fresh,
+            simulatorResolution: simulatorResolution
+        )
+    }
     guard let summary = try PrivateHeaderGeneration.availableResumeSummary(
         source: request.source,
         output: request.output,
@@ -796,7 +801,8 @@ private func interactiveResumeDecision(
     }
 
     renderInteractiveResumeScreen(
-        source: command,
+        sourceDisplayName: request.sourceDisplayName,
+        targetQuery: command.targetQuery,
         summary: summary,
         screenClearer: screenClearer,
         outputLogger: outputLogger
@@ -892,37 +898,40 @@ private func runPrivateHeaderKitGenerateCommand(
             simulatorResolution: simulatorResolution,
             resumeBehaviorOverride: resumeBehaviorOverride
         )
-        let summary = try await generationRunner(
-            request,
-            privateHeaderKitProgressLogger(outputLogger: outputLogger)
-        )
-        resultScreenClearer?()
-        renderPrivateHeaderGenerationResultScreen(
-            successResultScreen(command: command, summary: summary),
-            outputLogger: outputLogger
-        )
-        return 0
-    } catch let error as PrivateHeaderGeneration.GenerationError {
-        if case .runFailed(let runID, let failedTargetIDs) = error {
-            let resultScreen = failedResultScreen(
-                command: command,
-                runID: runID,
-                failedTargetIDs: failedTargetIDs
+        do {
+            let summary = try await generationRunner(
+                request,
+                privateHeaderKitProgressLogger(outputLogger: outputLogger)
             )
-            if !resultScreen.wasInterrupted {
-                resultScreenClearer?()
-            }
+            resultScreenClearer?()
             renderPrivateHeaderGenerationResultScreen(
-                resultScreen,
-                outputLogger: errorLogger
+                successResultScreen(command: command, summary: summary),
+                outputLogger: outputLogger
             )
-        } else {
-            errorLogger("error: \(error.description)")
+            return 0
+        } catch let error as PrivateHeaderGeneration.GenerationError {
+            if case .runFailed(let runID, let failedTargetIDs) = error {
+                let resultScreen = try failedResultScreen(
+                    command: command,
+                    request: request,
+                    runID: runID,
+                    failedTargetIDs: failedTargetIDs
+                )
+                if !resultScreen.wasInterrupted {
+                    resultScreenClearer?()
+                }
+                renderPrivateHeaderGenerationResultScreen(
+                    resultScreen,
+                    outputLogger: errorLogger
+                )
+            } else {
+                errorLogger("error: \(error.description)")
+            }
+            if case .resumeRequired = error {
+                errorLogger("rerun with `--resume` to continue the unfinished generation state")
+            }
+            return 2
         }
-        if case .resumeRequired = error {
-            errorLogger("rerun with `--resume` to continue the unfinished generation state")
-        }
-        return 2
     } catch {
         errorLogger("error: \(error)")
         return 2
@@ -955,12 +964,12 @@ private func successResultScreen(
 
 private func failedResultScreen(
     command: PrivateHeaderKitGenerateCommand,
+    request: PrivateHeaderKitGenerationRequest,
     runID: String,
     failedTargetIDs: [String]
-) -> PrivateHeaderKitGenerationResultScreen {
-    let manifestURL = URL(fileURLWithPath: command.manifestPath, isDirectory: false)
-    let runRecordURL = command.stateDirectory
-        .appendingPathComponent("runs/\(runID)/run.json", isDirectory: false)
+) throws -> PrivateHeaderKitGenerationResultScreen {
+    let manifestURL = request.manifestURL
+    let runRecordURL = try request.runRecordURL(runID: runID)
     let manifest = readGenerationManifest(at: manifestURL)
     let runRecord = readGenerationRunRecord(at: runRecordURL)
 
@@ -978,11 +987,11 @@ private func failedResultScreen(
         title: counts.interrupted > 0 && counts.failed == 0
             ? "Generation interrupted"
             : "Generation completed with failures",
-        sourceDisplayName: command.sourceDisplayName,
+        sourceDisplayName: request.sourceDisplayName,
         targetQuery: formattedTargetQuery(command.targetQuery),
         counts: counts,
-        artifactDirectory: command.artifactDirectory,
-        stateDirectory: command.stateDirectory,
+        artifactDirectory: request.artifactDirectory,
+        stateDirectory: request.stateDirectory,
         manifestURL: manifestURL,
         runRecordURL: runRecordURL,
         runID: runID,
@@ -1429,12 +1438,20 @@ private func makePrivateHeaderGenerationRequest(
     simulatorResolution: PrivateHeaderKitSimulatorResolution?,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil
 ) throws -> PrivateHeaderKitGenerationRequest {
-    let source = command.source
+    let effectiveSource = try effectiveSourceConfiguration(
+        from: command,
+        simulatorResolution: simulatorResolution
+    )
+    let source = try PrivateHeaderGeneration.Source(
+        platform: command.source.platform,
+        version: command.source.version,
+        build: effectiveSource.build
+    )
     let outputBaseDirectory = URL(
         fileURLWithPath: command.outputBaseDirectory,
         isDirectory: true
     )
-    let systemRoot = try effectiveSystemRootURL(from: command, simulatorResolution: simulatorResolution)
+    let systemRoot = effectiveSource.systemRoot
     let output = PrivateHeaderGeneration.Output(baseDirectory: outputBaseDirectory)
     let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
         host: hostHelperExecutableURL,
@@ -1481,12 +1498,20 @@ private func makePrivateHeaderGenerationRequest(
     )
 }
 
-private func effectiveSystemRootURL(
+private struct EffectiveSourceConfiguration {
+    let build: String?
+    let systemRoot: URL
+}
+
+private func effectiveSourceConfiguration(
     from command: PrivateHeaderKitGenerateCommand,
     simulatorResolution: PrivateHeaderKitSimulatorResolution?
-) throws -> URL {
+) throws -> EffectiveSourceConfiguration {
     if let systemRoot = command.systemRoot {
-        return URL(fileURLWithPath: systemRoot, isDirectory: true)
+        return EffectiveSourceConfiguration(
+            build: command.build,
+            systemRoot: URL(fileURLWithPath: systemRoot, isDirectory: true)
+        )
     }
 
     switch command.platform {
@@ -1496,7 +1521,13 @@ private func effectiveSystemRootURL(
         guard let simulatorResolution else {
             throw PrivateHeaderKitCLIError.missingSimulatorResolution
         }
-        return URL(fileURLWithPath: simulatorResolution.resolvedRuntimeRoot, isDirectory: true)
+        return EffectiveSourceConfiguration(
+            build: command.build ?? simulatorResolution.runtimeBuild,
+            systemRoot: URL(
+                fileURLWithPath: simulatorResolution.resolvedRuntimeRoot,
+                isDirectory: true
+            )
+        )
     }
 }
 

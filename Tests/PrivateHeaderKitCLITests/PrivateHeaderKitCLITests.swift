@@ -133,7 +133,7 @@ struct PrivateHeaderKitCLIParsingTests {
         )
     }
 
-    @Test func generateInputComputesUserFacingLabelsAndHiddenStateDirectory() throws {
+    @Test func generateInputComputesUserFacingSourceLabel() throws {
         let command = try parsePrivateHeaderKitCommand([
             "privateheaderkit",
             "--platform",
@@ -156,15 +156,6 @@ struct PrivateHeaderKitCLIParsingTests {
         }
 
         #expect(generateCommand.sourceDisplayName == "iOS 27.0 (24A5355q)")
-        #expect(generateCommand.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
-        #expect(
-            generateCommand.artifactDirectory.path
-                == "/tmp/PrivateHeaderKit/ios-v1-27.0-b1-24~415355~71"
-        )
-        #expect(
-            generateCommand.stateDirectory.path
-                == "/tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71"
-        )
     }
 
     @Test func publicHelpDoesNotExposeHiddenCommands() throws {
@@ -652,7 +643,7 @@ struct PrivateHeaderKitCLIParsingTests {
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
-                        build: "24A5355q",
+                        build: nil,
                         systemRoot: nil
                     ),
                 ]
@@ -670,6 +661,8 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(exitCode == 0)
         #expect(loggedMessages.isEmpty)
         #expect(request.targetQuery == "all")
+        #expect(request.source.build == "24A5355q")
+        #expect(request.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
         #expect(!request.startsFresh)
         #expect(outputMessages.contains("Step 3 of 3: Continue or restart"))
         #expect(outputMessages.contains("Existing generation state was found."))
@@ -851,7 +844,7 @@ struct PrivateHeaderKitCLIParsingTests {
         ])
     }
 
-    @Test func iOSGenerateWithoutSystemRootUsesResolvedRuntimeRootAndExplicitSimulatorHelper() async throws {
+    @Test func iOSGenerateWithoutBuildOrSystemRootUsesResolvedRuntimeIdentity() async throws {
         let recorder = GenerationRequestRecorder()
         let simulatorHelper = "/tmp/privateheaderkit-sim-helper"
         let exitCode = await runPrivateHeaderKitCommand(
@@ -861,8 +854,6 @@ struct PrivateHeaderKitCLIParsingTests {
                 "iOS",
                 "--version",
                 "27.0",
-                "--build",
-                "24A5355q",
                 "--out",
                 "/tmp/PrivateHeaderKit",
                 "--target",
@@ -887,9 +878,86 @@ struct PrivateHeaderKitCLIParsingTests {
 
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
+        #expect(request.source.build == "24A5355q")
+        #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
+        #expect(request.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
+        #expect(request.artifactDirectory.path == "/tmp/PrivateHeaderKit/ios-v1-27.0-b1-24~415355~71")
+        #expect(request.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71")
+        #expect(request.manifestURL.path == "/tmp/PrivateHeaderKit/.state/ios-v1-27.0-b1-24~415355~71/manifest.json")
         #expect(request.systemRoot?.path == "/Resolved/RuntimeRoot")
         #expect(request.simulatorRuntimeRoot == "/Resolved/RuntimeRoot")
         #expect(request.simulatorHelperURL?.path == simulatorHelper)
+    }
+
+    @Test func iOSGenerateWithExplicitSystemRootDoesNotBorrowResolvedBuild() async throws {
+        let recorder = GenerationRequestRecorder()
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--system-root",
+                "/Override/RuntimeRoot",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "SwiftUI",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false),
+            generationRunner: { request, _ in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in
+                simulatorResolution(resolvedRuntimeRoot: "/Resolved/RuntimeRoot")
+            },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.source.build == nil)
+        #expect(request.sourceDisplayName == "iOS 27.0")
+        #expect(request.sourceDirectoryName == "ios-v1-27.0-b0")
+        #expect(request.systemRoot?.path == "/Override/RuntimeRoot")
+        #expect(request.simulatorRuntimeRoot == "/Override/RuntimeRoot")
+    }
+
+    @Test func iOSGenerateExplicitBuildWinsOverResolvedRuntimeBuild() async throws {
+        let recorder = GenerationRequestRecorder()
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--build",
+                "24AExplicit",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "SwiftUI",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit", isDirectory: false),
+            generationRunner: { request, _ in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in
+                simulatorResolution(runtimeBuild: "24AResolved")
+            },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.source.build == "24AExplicit")
+        #expect(request.systemRoot?.path == "/tmp/RuntimeRoot")
     }
 
     @Test func macOSGenerateUsesHostExecutionAndDoesNotResolveSimulator() async throws {
@@ -974,10 +1042,6 @@ struct PrivateHeaderKitCLIParsingTests {
                 "iOS",
                 "--version",
                 "27.0",
-                "--build",
-                "24A5355q",
-                "--system-root",
-                "/tmp/RuntimeRoot",
                 "--out",
                 outputDirectory.path,
                 "--target",
@@ -1165,11 +1229,12 @@ private final class RecordingCommandRunner: CommandRunning {
 }
 
 private func simulatorResolution(
+    runtimeBuild: String = "24A5355q",
     resolvedRuntimeRoot: String = "/tmp/RuntimeRoot"
 ) -> PrivateHeaderKitSimulatorResolution {
     PrivateHeaderKitSimulatorResolution(
         runtimeVersion: "27.0",
-        runtimeBuild: "24A5355q",
+        runtimeBuild: runtimeBuild,
         runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
         resolvedRuntimeRoot: resolvedRuntimeRoot,
         deviceName: "iPhone 17",

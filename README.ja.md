@@ -80,8 +80,7 @@ iOS では `--version` / `--build` から利用可能な Simulator runtime を�
       runs/
 ```
 
-custom output では、`--out` と `PH_OUT_DIR` は artifact root ではなく output
-base directory として扱います。生成ヘッダは
+custom output では、`--out` で output base directory を指定します。生成ヘッダは
 `<output-base>/<source-storage-id>/`、state は
 `<output-base>/.state/<source-storage-id>/` に置きます。storage ID は
 PrivateHeaderKit が所有する versioned identifier であり、consumer は表示用 source

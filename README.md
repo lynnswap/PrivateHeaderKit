@@ -80,8 +80,8 @@ Default output is planned under:
       runs/
 ```
 
-For custom output, `--out` and `PH_OUT_DIR` are treated as an output base
-directory. Generated headers live under `<output-base>/<source-storage-id>/`;
+For custom output, `--out` selects the output base directory. Generated headers
+live under `<output-base>/<source-storage-id>/`;
 state lives under `<output-base>/.state/<source-storage-id>/`. The storage ID
 is versioned and owned by PrivateHeaderKit; consumers must not construct it
 from the displayed source label.
