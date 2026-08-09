@@ -487,6 +487,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                         PrivateHeaderGeneration.RunInterruption(summary: summary)
                     )
                 },
+                helperResolver: testPrivateHeaderKitHelperResolver,
                 outputLogger: output.append,
                 errorLogger: output.append
             )
