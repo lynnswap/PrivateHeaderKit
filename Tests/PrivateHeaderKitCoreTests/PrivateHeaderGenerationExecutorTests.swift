@@ -252,6 +252,51 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(manifest.targets.first?.artifacts.map(\.rawValue) == ["Frameworks/Foo.framework/Headers/Generated.h"])
     }
 
+    @Test func headersLayoutKeepsSiblingBundleNamespacesDistinct() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createSystemBundle("CoreServices/Siri.app")
+        try fixture.createSystemBundle("CoreServices/Siri.bundle")
+
+        let runner = RecordingRawDumpRunner()
+        let targetIDs = [
+            "system-library:CoreServices/Siri.app",
+            "system-library:CoreServices/Siri.bundle",
+        ]
+        let plan = try fixture.makePlan(targetRequest: .identifiers(targetIDs))
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+
+        let result = try await executor.run(.init(plan: plan))
+
+        #expect(runner.invocations.count == 2)
+        #expect(result.generatedTargets.map(\.description) == targetIDs)
+        #expect(
+            fileExists(
+                plan.artifactDirectory.appendingPathComponent(
+                    "SystemLibrary/CoreServices/Siri.app/Headers/Generated.h"
+                )
+            )
+        )
+        #expect(
+            fileExists(
+                plan.artifactDirectory.appendingPathComponent(
+                    "SystemLibrary/CoreServices/Siri.bundle/Headers/Generated.h"
+                )
+            )
+        )
+
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: result.manifestURL
+        )
+        #expect(manifest.targets.map(\.id) == targetIDs)
+        #expect(manifest.targets.map(\.status) == [.completed, .completed])
+    }
+
     @Test func partialTargetRerunsWithoutDeletingOldCommittedArtifactsWhenGenerationFails() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
@@ -608,6 +653,16 @@ private struct ExecutorFixture {
     func createFramework(_ name: String) throws {
         try FileManager.default.createDirectory(
             at: systemRoot.appendingPathComponent("System/Library/Frameworks/\(name)", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+    }
+
+    func createSystemBundle(_ relativePath: String) throws {
+        try FileManager.default.createDirectory(
+            at: systemRoot.appendingPathComponent(
+                "System/Library/\(relativePath)",
+                isDirectory: true
+            ),
             withIntermediateDirectories: true
         )
     }

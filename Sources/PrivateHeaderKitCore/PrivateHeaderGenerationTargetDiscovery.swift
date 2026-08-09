@@ -479,16 +479,16 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     static func artifactRoot(
         systemLibraryRelativePath: String
     ) throws -> PrivateHeaderGeneration.ArtifactPath {
-        let components = systemLibraryRelativePath
+        let sourceComponents = systemLibraryRelativePath
             .split(separator: "/", omittingEmptySubsequences: false)
-            .map { normalizeBundleArtifactComponent(String($0)) }
+            .map(String.init)
 
         let artifactComponents: [String]
-        switch components.first {
+        switch sourceComponents.first {
         case "Frameworks", "PrivateFrameworks":
-            artifactComponents = components
+            artifactComponents = frameworkArtifactComponents(sourceComponents)
         default:
-            artifactComponents = ["SystemLibrary"] + components
+            artifactComponents = ["SystemLibrary"] + sourceComponents
         }
 
         return try PrivateHeaderGeneration.ArtifactPath(
@@ -501,20 +501,15 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         return systemRoot.appendingPathComponent(relativePath, isDirectory: false).path
     }
 
-    static func normalizeBundleArtifactComponent(_ component: String) -> String {
-        for suffix in artifactStrippedBundleSuffixes where component.lowercased().hasSuffix(suffix) {
-            return component.removingCaseInsensitiveSuffix(suffix)
+    static func frameworkArtifactComponents(_ sourceComponents: [String]) -> [String] {
+        guard sourceComponents.count > 1 else {
+            return sourceComponents
         }
-        return component
+        var artifactComponents = sourceComponents
+        artifactComponents[1] = artifactComponents[1]
+            .removingCaseInsensitiveSuffix(".framework")
+        return artifactComponents
     }
-
-    static let artifactStrippedBundleSuffixes = [
-        ".framework",
-        ".app",
-        ".bundle",
-        ".xpc",
-        ".appex",
-    ]
 
     static func isDirectory(
         _ url: URL,

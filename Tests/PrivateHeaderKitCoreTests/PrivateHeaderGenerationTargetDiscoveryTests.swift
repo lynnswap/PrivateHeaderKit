@@ -50,8 +50,8 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "Frameworks/AVFoundation",
             "Frameworks/UIKit",
             "PrivateFrameworks/SafariShared",
-            "SystemLibrary/CoreServices/ControlCenter",
-            "SystemLibrary/PreferenceBundles/Foo",
+            "SystemLibrary/CoreServices/ControlCenter.app",
+            "SystemLibrary/PreferenceBundles/Foo.bundle",
             "usr/lib/libobjc.A.dylib",
             "usr/lib/libswiftCore.dylib",
         ])
@@ -72,6 +72,27 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "/System/Library/PreferenceBundles/Foo.bundle",
             "/usr/lib/libobjc.A.dylib",
             "/usr/lib/libswiftCore.dylib",
+        ])
+    }
+
+    @Test func preservesDistinctArtifactRootsForSiblingBundleKinds() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        try createDirectory("System/Library/CoreServices/Siri.app", in: root)
+        try createDirectory("System/Library/CoreServices/Siri.bundle", in: root)
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+
+        #expect(catalog.targets.map(\.candidate.identifier) == [
+            "system-library:CoreServices/Siri.app",
+            "system-library:CoreServices/Siri.bundle",
+        ])
+        #expect(catalog.targets.map(\.artifactRoot.rawValue) == [
+            "SystemLibrary/CoreServices/Siri.app",
+            "SystemLibrary/CoreServices/Siri.bundle",
         ])
     }
 
@@ -145,14 +166,14 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "Frameworks/Foo.framework/XPCServices/FooHelper.xpc",
         ])
         #expect(framework.childTargets.map(\.artifactRoot.rawValue) == [
-            "Frameworks/Foo/PlugIns/FooExtension",
-            "Frameworks/Foo/XPCServices/FooHelper",
+            "Frameworks/Foo/PlugIns/FooExtension.appex",
+            "Frameworks/Foo/XPCServices/FooHelper.xpc",
         ])
         #expect(systemBundle.childTargets.map(\.candidate.displayName) == [
             "PreferenceBundles/Prefs.bundle/XPCServices/PrefsHelper.xpc",
         ])
         #expect(systemBundle.childTargets.map(\.artifactRoot.rawValue) == [
-            "SystemLibrary/PreferenceBundles/Prefs/XPCServices/PrefsHelper",
+            "SystemLibrary/PreferenceBundles/Prefs.bundle/XPCServices/PrefsHelper.xpc",
         ])
         #expect(catalog.resolverCandidates.map(\.displayName) == [
             "Foo",
