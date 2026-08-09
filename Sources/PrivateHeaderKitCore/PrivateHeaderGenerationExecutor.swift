@@ -5,7 +5,7 @@ extension PrivateHeaderGeneration {
   package static func availableResumeSummary(
     source: Source,
     output: Output,
-    options: Options = Options()
+    options: Options
   ) async throws -> ResumeSummary? {
     let plan = makePlan(source: source, output: output, options: options)
     return try await GenerationExecutor.availableResumeSummary(for: plan)
@@ -115,7 +115,7 @@ extension PrivateHeaderGeneration {
         let injectedStoreFault = storeFaultInjector
         let store = try GenerationStore(
           databaseURL: databaseURL,
-          toolVersion: options.toolVersion,
+          toolCompatibilityIdentity: options.toolCompatibilityIdentity,
           faultInjector: { point in
             do {
               try injectedStoreFault(point)
@@ -225,7 +225,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       sourceIdentity: plan.source.storageIdentifier,
       fingerprint: fingerprint,
       targetIDs: targetIDs,
-      toolVersion: plan.options.toolVersion
+      toolCompatibilityIdentity: plan.options.toolCompatibilityIdentity
     )
     _ = try await store.beginRun(id: runID, plan: runPlan, at: dateProvider())
     progressReporter?(.runStarted(runID: runID, totalTargetCount: targetIDsToRun.count))
@@ -850,7 +850,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       }
       let store = try GenerationStore(
         databaseURL: databaseURL,
-        toolVersion: plan.options.toolVersion
+        toolCompatibilityIdentity: plan.options.toolCompatibilityIdentity
       )
       try await recover(store: store, publisher: publisher, at: Date())
       try publisher.cleanupStaging()
@@ -1156,7 +1156,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       canonicalOutputBase.path,
       plan.options.layout.rawValue,
       plan.options.systemRoot?.standardizedFileURL.path ?? "",
-      plan.options.toolVersion,
+      plan.options.toolCompatibilityIdentity,
       String(plan.options.includeNestedChildren),
       String(plan.options.rawDumpingOptions.skipExisting),
       String(plan.options.rawDumpingOptions.useSharedCache),

@@ -28,7 +28,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let publisher = try fixture.publisher()
     let publication = try publisher.inspect()
     #expect(publication.currentGenerationID == .init(rawValue: "generation-001"))
-    let store = try GenerationStore(databaseURL: result.stateDatabaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: result.stateDatabaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(result.runID).status == .completed)
     #expect(
       try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
@@ -93,7 +93,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(try fixture.publisher().inspect().currentGenerationID == oldCurrent)
     #expect(try fixture.readStableHeader() == "old")
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-002")).status == .partial)
     #expect(
       try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
@@ -116,7 +116,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(try fixture.publisher().inspect().currentGenerationID == nil)
     #expect(!FileManager.default.fileExists(atPath: fixture.stableURL.path))
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-failed")).status == .failed)
   }
 
@@ -154,7 +154,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(await runner.invocationCount == 2)
     #expect(try fixture.readStableHeader(framework: "Foo") == "generated")
     #expect(!FileManager.default.fileExists(atPath: fixture.stableHeaderURL(framework: "Bar").path))
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     let run = try await store.runSnapshot(.init(rawValue: "run-cancelled"))
     #expect(run.status == .interrupted)
     let statuses = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0.status) })
@@ -207,7 +207,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(await runner.invocationCount == 1)
     #expect(try fixture.readStableHeader() == "generated")
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-interrupted")).status == .interrupted)
     #expect(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-interrupted"))?
@@ -339,7 +339,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(await secondRunner.invocationCount == 0)
     #expect(try fixture.readStableHeader() == "recoverable")
-    let store = try GenerationStore(databaseURL: result.stateDatabaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: result.stateDatabaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-001")).status == .completed)
     #expect(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-001"))?.state
@@ -387,7 +387,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let publication = try fixture.publisher().inspect()
     #expect(publication.currentGenerationID == expectedGeneration)
     #expect(try fixture.readStableHeader() == (shouldRerun ? "second-attempt" : "first-attempt"))
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     let firstIntent = try #require(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-001"))
     )
@@ -442,7 +442,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(mutation.message == nil)
     #expect(try fixture.publisher().inspect().currentGenerationID == previousGenerationID)
     #expect(try fixture.readStableHeader() == "old")
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     let run = try await store.runSnapshot(.init(rawValue: "run-002"))
     #expect(run.status == .failed)
     #expect(run.targets.first?.status == .failed)
@@ -510,7 +510,7 @@ struct PrivateHeaderGenerationExecutorTests {
     }
 
     #expect(try fixture.publisher().inspect().currentGenerationID == nil)
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolVersion: "test")
+    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-hidden")).status == .failed)
   }
 
@@ -830,7 +830,7 @@ private struct ExecutorFixture {
         helperURLs: helperURLs,
         executionMode: .host,
         resumeBehavior: resumeBehavior,
-        toolVersion: "test"
+        toolCompatibilityIdentity: "test"
       )
     )
   }

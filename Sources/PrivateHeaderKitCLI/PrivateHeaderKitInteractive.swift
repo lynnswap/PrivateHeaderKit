@@ -215,6 +215,7 @@ private func interactiveResumeDecision(
     let request = try makePrivateHeaderGenerationRequest(
         from: command,
         helperURLs: helperPlan.helperURLs,
+        toolCompatibilityIdentity: helperPlan.toolCompatibilityIdentity,
         simulatorResolution: simulatorResolution,
         resumeBehaviorOverride: .requireExplicitResume(resumeRequested: false)
     )

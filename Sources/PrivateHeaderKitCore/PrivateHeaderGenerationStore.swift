@@ -10,7 +10,7 @@ package actor GenerationStore {
 
   package init(
     databaseURL: URL,
-    toolVersion: String,
+    toolCompatibilityIdentity: String,
     faultInjector: @escaping FaultInjector = { _ in }
   ) throws {
     guard databaseURL.isFileURL else {
@@ -34,10 +34,10 @@ package actor GenerationStore {
     try queue.write { db in
       try db.execute(
         sql: """
-          INSERT INTO metadata(key, value) VALUES ('toolVersion', ?)
+          INSERT INTO metadata(key, value) VALUES ('toolCompatibilityIdentity', ?)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value
           """,
-        arguments: [toolVersion]
+        arguments: [toolCompatibilityIdentity]
       )
     }
 

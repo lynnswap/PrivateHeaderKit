@@ -190,7 +190,7 @@ DB path:
 
 Minimum schema:
 
-- `metadata(schemaVersion, toolVersion)`
+- `metadata(schemaVersion, toolCompatibilityIdentity)`
 - `runs(id, source identity, plan fingerprint, startedAt, endedAt, status)`
 - `runTargets(runID, targetID, status, failureSummary, artifactSet)`
 - `targets(targetID, lastSuccessfulRunID, status, artifactSet, updatedAt)`

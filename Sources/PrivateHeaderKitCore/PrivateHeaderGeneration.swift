@@ -10,7 +10,7 @@ package enum PrivateHeaderGeneration {
   package static func makePlan(
     source: Source,
     output: Output,
-    options: Options = Options()
+    options: Options
   ) -> Plan {
     Plan(source: source, output: output, options: options)
   }
@@ -18,7 +18,7 @@ package enum PrivateHeaderGeneration {
   package static func generatePrivateHeaders(
     source: Source,
     output: Output,
-    options: Options = Options(),
+    options: Options,
     rawDumpRunner: @escaping GenerationExecutor.RawDumpRunner,
     progressReporter: GenerationExecutor.ProgressReporter? = nil
   ) async throws -> Result {
@@ -257,7 +257,7 @@ extension PrivateHeaderGeneration {
     package var rawDumpingOptions: RawDumping.Options
     package var includeNestedChildren: Bool
     package var resumeBehavior: ResumeBehavior
-    package var toolVersion: String
+    package var toolCompatibilityIdentity: String
 
     package init(
       layout: Layout = .headers,
@@ -268,7 +268,7 @@ extension PrivateHeaderGeneration {
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
       includeNestedChildren: Bool = true,
       resumeBehavior: ResumeBehavior = .requireExplicitResume(resumeRequested: false),
-      toolVersion: String = "0.1.0"
+      toolCompatibilityIdentity: String
     ) {
       self.layout = layout
       self.targetRequest = targetRequest
@@ -278,7 +278,7 @@ extension PrivateHeaderGeneration {
       self.rawDumpingOptions = rawDumpingOptions
       self.includeNestedChildren = includeNestedChildren
       self.resumeBehavior = resumeBehavior
-      self.toolVersion = toolVersion
+      self.toolCompatibilityIdentity = toolCompatibilityIdentity
     }
   }
 
@@ -303,7 +303,7 @@ extension PrivateHeaderGeneration {
     package let target: Target
     package let options: Options
 
-    package init(source: Source, output: Output, options: Options = Options()) {
+    package init(source: Source, output: Output, options: Options) {
       self.source = source
       self.output = output
       artifactDirectory = output.artifactBaseDirectory.appendingPathComponent(

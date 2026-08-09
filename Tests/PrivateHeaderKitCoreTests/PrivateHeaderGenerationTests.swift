@@ -65,7 +65,11 @@ struct PrivateHeaderGenerationTests {
     let output = PrivateHeaderGeneration.Output(
       baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
     )
-    let plan = PrivateHeaderGeneration.makePlan(source: source, output: output)
+    let plan = PrivateHeaderGeneration.makePlan(
+      source: source,
+      output: output,
+      options: .init(toolCompatibilityIdentity: "test")
+    )
 
     #expect(
       plan.artifactDirectory.path == "/tmp/PrivateHeaderKit/macos-v1-16.0-b1-25~41000")
@@ -84,6 +88,7 @@ struct PrivateHeaderGenerationTests {
       _ = try await PrivateHeaderGeneration.generatePrivateHeaders(
         source: source,
         output: output,
+        options: .init(toolCompatibilityIdentity: "test"),
         rawDumpRunner: { _ in .init(terminationStatus: 0) }
       )
       Issue.record("generation unexpectedly ran without systemRoot")
