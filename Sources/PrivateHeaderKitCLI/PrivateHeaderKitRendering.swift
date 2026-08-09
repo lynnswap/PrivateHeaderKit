@@ -25,7 +25,8 @@ func privateHeaderKitProgressReporter(
 
 func renderPrivateHeaderKitGenerationError(
     _ error: PrivateHeaderGeneration.GenerationError,
-    command: PrivateHeaderKitGenerateCommand,
+    sourceDisplayName: String,
+    targetQuery: String,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer?,
     outputLogger: PrivateHeaderKitOutputLogger
 ) {
@@ -34,8 +35,8 @@ func renderPrivateHeaderKitGenerationError(
         screenClearer?()
         renderPrivateHeaderKitRunSummary(
             failure.summary,
-            sourceDisplayName: command.sourceDisplayName,
-            targetQuery: command.targetQuery,
+            sourceDisplayName: sourceDisplayName,
+            targetQuery: targetQuery,
             title: "Generation completed with failures",
             failedTargetIDs: failure.failedTargetIDs,
             outputLogger: outputLogger
@@ -43,8 +44,8 @@ func renderPrivateHeaderKitGenerationError(
     case .runInterrupted(let interruption):
         renderPrivateHeaderKitRunSummary(
             interruption.summary,
-            sourceDisplayName: command.sourceDisplayName,
-            targetQuery: command.targetQuery,
+            sourceDisplayName: sourceDisplayName,
+            targetQuery: targetQuery,
             title: "Generation interrupted",
             outputLogger: outputLogger
         )
@@ -52,8 +53,8 @@ func renderPrivateHeaderKitGenerationError(
         screenClearer?()
         renderPrivateHeaderKitRunSummary(
             failure.summary,
-            sourceDisplayName: command.sourceDisplayName,
-            targetQuery: command.targetQuery,
+            sourceDisplayName: sourceDisplayName,
+            targetQuery: targetQuery,
             title: "Generation stopped",
             infrastructureMessage: failure.message,
             outputLogger: outputLogger

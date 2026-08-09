@@ -163,6 +163,52 @@ struct PrivateHeaderKitCLIArgumentTests {
 
 @Suite
 struct PrivateHeaderKitCLIExecutionTests {
+    @Test func implicitIOSRuntimePersistsResolvedBuildIdentity() throws {
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: nil, systemRoot: nil),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+        )
+
+        #expect(request.source.build == "24A123")
+        #expect(request.source.label.directoryName == "iOS27.0(24A123)")
+        #expect(request.options.systemRoot?.path == "/ResolvedRuntime")
+        #expect(
+            request.options.executionMode
+                == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/ResolvedRuntime")
+        )
+    }
+
+    @Test func explicitIOSSystemRootDoesNotBorrowResolvedRuntimeBuild() throws {
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: nil, systemRoot: "/OverrideRuntime"),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+        )
+
+        #expect(request.source.build == nil)
+        #expect(request.source.label.directoryName == "iOS27.0")
+        #expect(request.options.systemRoot?.path == "/OverrideRuntime")
+        #expect(
+            request.options.executionMode
+                == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/OverrideRuntime")
+        )
+    }
+
+    @Test func explicitIOSBuildOverridesResolvedRuntimeBuild() throws {
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: "24A999", systemRoot: nil),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+        )
+
+        #expect(request.source.build == "24A999")
+        #expect(request.source.label.directoryName == "iOS27.0(24A999)")
+    }
+
     @Test func directRunMapsFreshModeAndRendersTypedResultAndWarnings() async throws {
         let requestBox = ThreadSafeRequestBox()
         let output = ThreadSafeStrings()
@@ -374,6 +420,37 @@ struct PrivateHeaderKitCLIExecutionTests {
     @Test func interactiveConfirmsLegacyArtifactTreeMigration() async throws {
         try await assertInteractiveLegacyMigration(kind: .artifactTree)
     }
+}
+
+private let testPrivateHeaderKitHelperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
+    host: URL(fileURLWithPath: "/cohort/privateheaderkit-raw-helper"),
+    simulator: URL(fileURLWithPath: "/cohort/privateheaderkit-sim-helper")
+)
+
+private let testPrivateHeaderKitSimulatorResolution = PrivateHeaderKitSimulatorResolution(
+    runtimeVersion: "27.0",
+    runtimeBuild: "24A123",
+    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+    resolvedRuntimeRoot: "/ResolvedRuntime",
+    deviceName: "iPhone 17 Pro",
+    deviceUDID: "SIM-001"
+)
+
+private func iosGenerateCommand(
+    build: String?,
+    systemRoot: String?
+) -> PrivateHeaderKitGenerateCommand {
+    PrivateHeaderKitGenerateCommand(
+        platform: .iOS,
+        version: "27.0",
+        build: build,
+        systemRoot: systemRoot,
+        outputBaseDirectory: "/tmp/PrivateHeaderKit",
+        targetQuery: "all",
+        continuationMode: .fresh,
+        device: nil,
+        simulatorHelperPath: nil
+    )
 }
 
 @Suite

@@ -305,27 +305,30 @@ func runPrivateHeaderKitGenerateCommand(
             simulatorResolution: simulatorResolution,
             resumeBehaviorOverride: resumeBehaviorOverride
         )
-        let result = try await generationRunner(
-            request,
-            privateHeaderKitProgressReporter(outputLogger: outputLogger)
-        )
-        resultScreenClearer?()
-        renderPrivateHeaderKitRunSummary(
-            result.summary,
-            sourceDisplayName: result.plan.source.label.displayName,
-            targetQuery: command.targetQuery,
-            title: "Generation completed",
-            outputLogger: outputLogger
-        )
-        return 0
-    } catch let error as PrivateHeaderGeneration.GenerationError {
-        renderPrivateHeaderKitGenerationError(
-            error,
-            command: command,
-            screenClearer: resultScreenClearer,
-            outputLogger: errorLogger
-        )
-        return 2
+        do {
+            let result = try await generationRunner(
+                request,
+                privateHeaderKitProgressReporter(outputLogger: outputLogger)
+            )
+            resultScreenClearer?()
+            renderPrivateHeaderKitRunSummary(
+                result.summary,
+                sourceDisplayName: result.plan.source.label.displayName,
+                targetQuery: command.targetQuery,
+                title: "Generation completed",
+                outputLogger: outputLogger
+            )
+            return 0
+        } catch let error as PrivateHeaderGeneration.GenerationError {
+            renderPrivateHeaderKitGenerationError(
+                error,
+                sourceDisplayName: request.source.label.displayName,
+                targetQuery: command.targetQuery,
+                screenClearer: resultScreenClearer,
+                outputLogger: errorLogger
+            )
+            return 2
+        }
     } catch {
         errorLogger("error: \(error)")
         return 2
@@ -365,17 +368,17 @@ func makePrivateHeaderGenerationRequest(
     simulatorResolution: PrivateHeaderKitSimulatorResolution?,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil
 ) throws -> PrivateHeaderKitGenerationRequest {
+    let effectiveSource = try effectiveSourceConfiguration(
+        from: command,
+        simulatorResolution: simulatorResolution
+    )
     let source = try PrivateHeaderGeneration.Source(
         platform: command.platform.corePlatform,
         version: command.version,
-        build: command.build
+        build: effectiveSource.build
     )
     let output = PrivateHeaderGeneration.Output(
         baseDirectory: URL(fileURLWithPath: command.outputBaseDirectory, isDirectory: true)
-    )
-    let systemRoot = try effectiveSystemRootURL(
-        from: command,
-        simulatorResolution: simulatorResolution
     )
     let executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
     switch command.platform {
@@ -387,20 +390,20 @@ func makePrivateHeaderGenerationRequest(
         }
         executionMode = .simulator(
             deviceUDID: simulatorResolution.deviceUDID,
-            runtimeRoot: systemRoot.path
+            runtimeRoot: effectiveSource.systemRoot.path
         )
     }
     let targetRequest: PrivateHeaderGeneration.TargetRequest =
         command.targetQuery == "all" ? .allAvailable : .query(command.targetQuery)
     let options = PrivateHeaderGeneration.Options(
         targetRequest: targetRequest,
-        systemRoot: systemRoot,
+        systemRoot: effectiveSource.systemRoot,
         helperURLs: helperURLs,
         executionMode: executionMode,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
             useSharedCache: true,
             preferRuntimeMetadata: true,
-            helperEnvironment: ["PH_RUNTIME_ROOT": systemRoot.path]
+            helperEnvironment: ["PH_RUNTIME_ROOT": effectiveSource.systemRoot.path]
         ),
         resumeBehavior: resumeBehaviorOverride ?? command.resumeBehavior,
         toolCompatibilityIdentity: toolCompatibilityIdentity
@@ -408,17 +411,31 @@ func makePrivateHeaderGenerationRequest(
     return PrivateHeaderKitGenerationRequest(source: source, output: output, options: options)
 }
 
-private func effectiveSystemRootURL(
+private struct EffectiveSourceConfiguration {
+    let build: String?
+    let systemRoot: URL
+}
+
+private func effectiveSourceConfiguration(
     from command: PrivateHeaderKitGenerateCommand,
     simulatorResolution: PrivateHeaderKitSimulatorResolution?
-) throws -> URL {
+) throws -> EffectiveSourceConfiguration {
     if let systemRoot = command.systemRoot {
-        return URL(fileURLWithPath: systemRoot, isDirectory: true)
+        return EffectiveSourceConfiguration(
+            build: command.build,
+            systemRoot: URL(fileURLWithPath: systemRoot, isDirectory: true)
+        )
     }
     guard command.platform == .iOS, let simulatorResolution else {
         throw PrivateHeaderKitCLIError.missingSimulatorResolution
     }
-    return URL(fileURLWithPath: simulatorResolution.resolvedRuntimeRoot, isDirectory: true)
+    return EffectiveSourceConfiguration(
+        build: command.build ?? simulatorResolution.runtimeBuild,
+        systemRoot: URL(
+            fileURLWithPath: simulatorResolution.resolvedRuntimeRoot,
+            isDirectory: true
+        )
+    )
 }
 
 func defaultRawDumpHelperURL(publicExecutableURL: URL) -> URL {
