@@ -478,9 +478,10 @@ func resolvePrivateHeaderKitHelperPlan(
         ),
         failureMessage: "failed to resolve iPhone Simulator SDK path"
     )
-    let scratchPath = layout.buildRoot
-        .appendingPathComponent("privateheaderkit-simulator", isDirectory: true)
-        .appendingPathComponent(simulatorTriple, isDirectory: true)
+    let scratchPath = SwiftPMBuildPaths.simulatorScratchURL(
+        repoRoot: layout.repoRoot,
+        triple: simulatorTriple
+    )
     let simulatorCommand = [
         "swift", "build", "-c", layout.configuration,
         "--scratch-path", scratchPath.path,
