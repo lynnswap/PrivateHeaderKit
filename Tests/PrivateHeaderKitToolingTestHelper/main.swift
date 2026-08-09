@@ -48,13 +48,13 @@ private struct PrivateHeaderKitToolingTestHelper {
 #else
                 throw HelperError.invalidCommand(command)
 #endif
-            case "process-group-child":
+            case "process-group-stubborn-child":
 #if os(macOS)
                 let arguments = Array(CommandLine.arguments.dropFirst(2))
                 guard arguments.count == 1 else {
                     throw HelperError.invalidCommand(command)
                 }
-                try runProcessGroupChild(lockPath: arguments[0])
+                try runStubbornProcessGroupChild(lockPath: arguments[0])
 #else
                 throw HelperError.invalidCommand(command)
 #endif
@@ -144,7 +144,7 @@ private struct PrivateHeaderKitToolingTestHelper {
 
         _ = close(childLock)
         let executable = CommandLine.arguments[0]
-        let argumentValues = [executable, "process-group-child", childLockPath]
+        let argumentValues = [executable, "process-group-stubborn-child", childLockPath]
         var argumentPointers = argumentValues.map { strdup($0) }
         argumentPointers.append(nil)
         defer {
@@ -171,7 +171,8 @@ private struct PrivateHeaderKitToolingTestHelper {
         while true { _ = pause() }
     }
 
-    private static func runProcessGroupChild(lockPath: String) throws -> Never {
+    private static func runStubbornProcessGroupChild(lockPath: String) throws -> Never {
+        _ = signal(SIGTERM, SIG_IGN)
         let permissions = mode_t(S_IRUSR | S_IWUSR)
         let lockDescriptor = lockPath.withCString {
             open($0, O_CREAT | O_RDWR, permissions)

@@ -6,6 +6,51 @@ import Dispatch
 import Subprocess
 #endif
 
+#if os(macOS)
+private struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertible {
+    let operation: String
+    let processGroupID: pid_t
+    let errorCode: Int32
+
+    var description: String {
+        "\(operation) for process group \(processGroupID) failed (errno \(errorCode))"
+    }
+}
+
+private func completeCancelledProcessGroupTeardown(
+    _ processGroupID: pid_t?
+) async throws(ProcessGroupTeardownError) {
+    guard let processGroupID else { return }
+    precondition(processGroupID > 0)
+
+    // swift-subprocess observes only the group leader. Keep signaling after the leader exits
+    // so SIGTERM-resistant descendants cannot outlive cancellation, and return only at ESRCH.
+    while true {
+        if Darwin.kill(-processGroupID, SIGKILL) == 0 {
+            await Task.yield()
+            continue
+        }
+        let errorCode = errno
+        switch errorCode {
+        case EINTR:
+            continue
+        case EPERM:
+            // Darwin reports EPERM while only unreaped zombies retain an owned group.
+            // Keep polling until ESRCH proves that the process group no longer exists.
+            await Task.yield()
+        case ESRCH:
+            return
+        default:
+            throw ProcessGroupTeardownError(
+                operation: "send SIGKILL",
+                processGroupID: processGroupID,
+                errorCode: errorCode
+            )
+        }
+    }
+}
+#endif
+
 public struct StreamingCommandResult: Equatable, Sendable {
     public let status: Int32
     public let wasKilled: Bool
@@ -42,6 +87,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
         var lastRetryableLaunchError: SubprocessError?
         for configuration in configurations {
             try Task.checkCancellation()
+            var processGroupID: pid_t?
             do {
                 let result = try await Subprocess.run(
                     configuration,
@@ -50,10 +96,12 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     // metadata, so truncating at the library default would corrupt successful output.
                     output: .bytes(limit: .max),
                     error: .bytes(limit: .max)
-                )
-                // Subprocess completes its configured teardown and output drain before returning,
-                // and can therefore return a signal termination result to a cancelled caller.
-                // Preserve task cancellation only after that lifecycle cleanup has completed.
+                ) { execution in
+                    precondition(processGroupID == nil)
+                    processGroupID = execution.processIdentifier.value
+                }
+                // Subprocess completes capture and its group-leader lifecycle before returning.
+                // Preserve cancellation only after the catch path also proves group extinction.
                 try Task.checkCancellation()
                 let termination = commandTermination(result.terminationStatus)
                 let standardOutput = String(decoding: result.standardOutput, as: UTF8.self)
@@ -67,9 +115,19 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 }
                 return standardOutput
             } catch is CancellationError {
+                do {
+                    try await completeCancelledProcessGroupTeardown(processGroupID)
+                } catch {
+                    throw mapProcessGroupTeardownError(error, command: command)
+                }
                 throw CancellationError()
             } catch let error as SubprocessError {
                 if Task.isCancelled {
+                    do {
+                        try await completeCancelledProcessGroupTeardown(processGroupID)
+                    } catch {
+                        throw mapProcessGroupTeardownError(error, command: command)
+                    }
                     throw CancellationError()
                 }
                 guard isRetryableExecutableLaunchError(error) else {
@@ -132,6 +190,9 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 await outputWriter.finish()
                 try Task.checkCancellation()
                 return result
+            } catch let error as ProcessGroupTeardownError {
+                await outputWriter.finish()
+                throw mapProcessGroupTeardownError(error, command: command)
             } catch {
                 await outputWriter.finish()
                 if Task.isCancelled {
@@ -162,6 +223,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
         var lastRetryableLaunchError: SubprocessError?
         for configuration in configurations {
             try Task.checkCancellation()
+            var processGroupID: pid_t?
             do {
                 let result = try await Subprocess.run(
                     configuration,
@@ -169,6 +231,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     output: .sequence,
                     error: .combinedWithOutput
                 ) { execution in
+                    precondition(processGroupID == nil)
+                    processGroupID = execution.processIdentifier.value
                     var collector = StreamingOutputCollector()
                     for try await buffer in execution.standardOutput {
                         let bytes = buffer.withUnsafeBytes { Array($0) }
@@ -180,8 +244,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     collector.finish()
                     return collector.lastLines
                 }
-                // See runCapture: cancellation is checked after Subprocess has awaited teardown
-                // and output drain, so callers never outlive a child process or lose cancellation.
+                // See runCapture: cancellation is checked after Subprocess finishes the leader,
+                // then the catch path proves no descendant remains in the owned process group.
                 try Task.checkCancellation()
                 let termination = commandTermination(result.terminationStatus)
                 var lastLines = result.closureResult
@@ -199,15 +263,23 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     lastLines: lastLines
                 )
             } catch is CancellationError {
+                try await completeCancelledProcessGroupTeardown(processGroupID)
                 throw CancellationError()
             } catch let error as SubprocessError {
                 if Task.isCancelled {
+                    try await completeCancelledProcessGroupTeardown(processGroupID)
                     throw CancellationError()
                 }
                 guard isRetryableExecutableLaunchError(error) else {
                     throw mapSubprocessError(error, command: command)
                 }
                 lastRetryableLaunchError = error
+            } catch {
+                if Task.isCancelled {
+                    try await completeCancelledProcessGroupTeardown(processGroupID)
+                    throw CancellationError()
+                }
+                throw error
             }
         }
         guard let lastRetryableLaunchError else {
@@ -340,6 +412,16 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 underlying: error.description
             )
         }
+    }
+
+    private func mapProcessGroupTeardownError(
+        _ error: ProcessGroupTeardownError,
+        command: [String]
+    ) -> ToolingError {
+        .processExecutionFailed(
+            command: command,
+            underlying: error.description
+        )
     }
 
     private func commandTermination(
