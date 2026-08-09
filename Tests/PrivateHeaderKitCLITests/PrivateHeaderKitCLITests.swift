@@ -172,7 +172,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
 
         #expect(request.source.build == "24A123")
-        #expect(request.source.label.directoryName == "iOS27.0(24A123)")
+        #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~41123")
         #expect(request.options.systemRoot?.path == "/ResolvedRuntime")
         #expect(
             request.options.executionMode
@@ -189,7 +189,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
 
         #expect(request.source.build == nil)
-        #expect(request.source.label.directoryName == "iOS27.0")
+        #expect(request.source.storageIdentifier == "ios-v1-27.0-b0")
         #expect(request.options.systemRoot?.path == "/OverrideRuntime")
         #expect(
             request.options.executionMode
@@ -206,7 +206,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
 
         #expect(request.source.build == "24A999")
-        #expect(request.source.label.directoryName == "iOS27.0(24A999)")
+        #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~41999")
     }
 
     @Test func directRunMapsFreshModeAndRendersTypedResultAndWarnings() async throws {

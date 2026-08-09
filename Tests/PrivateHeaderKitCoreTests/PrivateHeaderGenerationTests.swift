@@ -80,6 +80,45 @@ struct PrivateHeaderGenerationTests {
         == "/tmp/PrivateHeaderKit/.state/macos-v1-16.0-b1-25~41000/generation.sqlite")
   }
 
+  @Test func distinctPlansWithEmbeddedNewlinesHaveDistinctFingerprints() throws {
+    let source = try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0")
+    let output = PrivateHeaderGeneration.Output(
+      baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+    )
+    let first = PrivateHeaderGeneration.makePlan(
+      source: source,
+      output: output,
+      options: .init(
+        systemRoot: URL(fileURLWithPath: "/runtime", isDirectory: true),
+        toolCompatibilityIdentity: "test"
+      )
+    )
+    let second = PrivateHeaderGeneration.makePlan(
+      source: source,
+      output: output,
+      options: .init(
+        systemRoot: URL(fileURLWithPath: "/foo\nheaders\n/runtime", isDirectory: true),
+        toolCompatibilityIdentity: "test"
+      )
+    )
+
+    let firstFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      first,
+      canonicalOutputBase: URL(
+        fileURLWithPath: "/output\nheaders\n/foo",
+        isDirectory: true
+      ),
+      executionMode: .host
+    )
+    let secondFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      second,
+      canonicalOutputBase: URL(fileURLWithPath: "/output", isDirectory: true),
+      executionMode: .host
+    )
+
+    #expect(firstFingerprint != secondFingerprint)
+  }
+
   @Test func topLevelAPIRequiresInjectedExecutionConfiguration() async throws {
     let source = try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0")
     let output = PrivateHeaderGeneration.Output(

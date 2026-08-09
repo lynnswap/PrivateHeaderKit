@@ -1146,12 +1146,13 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 }
 
 extension PrivateHeaderGeneration.GenerationExecutor {
-  fileprivate static func planFingerprint(
+  package static func planFingerprint(
     _ plan: PrivateHeaderGeneration.Plan,
     canonicalOutputBase: URL,
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
   ) -> String {
     var components = [
+      "privateheaderkit-plan-fingerprint-v1",
       plan.source.storageIdentifier,
       canonicalOutputBase.path,
       plan.options.layout.rawValue,
@@ -1172,10 +1173,26 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       components += ["simulator", deviceUDID, runtimeRoot]
     }
     for key in plan.options.rawDumpingOptions.helperEnvironment.keys.sorted() {
-      components.append("env:\(key)=\(plan.options.rawDumpingOptions.helperEnvironment[key] ?? "")")
+      components += [
+        "environment",
+        key,
+        plan.options.rawDumpingOptions.helperEnvironment[key] ?? "",
+      ]
     }
-    let digest = SHA256.hash(data: Data(components.joined(separator: "\n").utf8))
+    let digest = SHA256.hash(data: canonicalFingerprintPayload(components))
     return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private static func canonicalFingerprintPayload(_ components: [String]) -> Data {
+    var payload = Data()
+    for component in components {
+      let length = UInt64(component.utf8.count)
+      for shift in stride(from: 56, through: 0, by: -8) {
+        payload.append(UInt8(truncatingIfNeeded: length >> shift))
+      }
+      payload.append(contentsOf: component.utf8)
+    }
+    return payload
   }
 
   fileprivate static func safeTargetDirectoryName(_ targetID: String) -> String {
