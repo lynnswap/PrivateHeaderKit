@@ -34,6 +34,10 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "PrivateHeaderKitHelperProtocol",
+            dependencies: []
+        ),
+        .target(
             name: "PrivateHeaderKitRawDumpRuntimeObjC",
             dependencies: [],
             path: "Sources/PrivateHeaderKitRawDumpRuntimeObjC",
@@ -107,6 +111,12 @@ let package = Package(
                 "PrivateHeaderKitTooling",
             ],
             path: "Tests/PrivateHeaderKitTestSupport"
+        ),
+        .testTarget(
+            name: "PrivateHeaderKitHelperProtocolTests",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+            ]
         ),
         .testTarget(
             name: "PrivateHeaderKitRawDumpTests",
