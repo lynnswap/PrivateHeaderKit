@@ -1423,6 +1423,11 @@ struct SourceBuildResolutionTests {
     @Test func buildCommandsResolveExactHostAndSimulatorProducts() throws {
         let directories = try makeTemporaryTestDirectories()
         let runner = RecordingCommandRunner()
+        let simulatorTriple = "arm64-apple-ios-simulator"
+        let simulatorScratchPath = simulatorBuildScratchURL(
+            repoRoot: directories.root,
+            triple: simulatorTriple
+        )
         runner.setCaptureOutput(
             "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk\n",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
@@ -1437,9 +1442,10 @@ struct SourceBuildResolutionTests {
         try buildSimulatorHelper(
             in: directories.root,
             configuration: .debug,
+            scratchPath: simulatorScratchPath,
             sdkPath: try resolveSimulatorSDKPath(runner: runner),
             runner: runner,
-            simulatorHelperTriple: "arm64-apple-ios-simulator"
+            simulatorHelperTriple: simulatorTriple
         )
 
         #expect(runner.simpleCommands.map(\.command) == [
@@ -1447,12 +1453,20 @@ struct SourceBuildResolutionTests {
             ["swift", "build", "-c", "debug", "--product", "privateheaderkit-raw-helper"],
             [
                 "swift", "build", "-c", "debug",
+                "--scratch-path", simulatorScratchPath.path,
                 "--sdk", "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk",
-                "--triple", "arm64-apple-ios-simulator",
+                "--triple", simulatorTriple,
                 "--product", "privateheaderkit-sim-helper",
             ],
         ])
         #expect(runner.simpleCommands.allSatisfy { $0.cwd == directories.root })
+        #expect(
+            simulatorScratchPath.path
+                == directories.root.appendingPathComponent(
+                    ".build/privateheaderkit-simulator/\(simulatorTriple)",
+                    isDirectory: true
+                ).path
+        )
     }
 
     @Test func binPathResolutionHasNoSiblingFallback() throws {
@@ -1481,6 +1495,42 @@ struct SourceBuildResolutionTests {
                 configuration: .release
             )
         }
+    }
+
+    @Test func simulatorBinPathResolutionUsesTheBuildScratchPath() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let runner = RecordingCommandRunner()
+        let sdkPath = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        let simulatorTriple = "arm64-apple-ios-simulator"
+        let simulatorScratchPath = simulatorBuildScratchURL(
+            repoRoot: directories.root,
+            triple: simulatorTriple
+        )
+        let command = [
+            "swift", "build", "-c", "release",
+            "--scratch-path", simulatorScratchPath.path,
+            "--sdk", sdkPath,
+            "--triple", simulatorTriple,
+            "--show-bin-path",
+        ]
+        let simulatorBin = simulatorScratchPath.appendingPathComponent(
+            "resolved-bin",
+            isDirectory: true
+        )
+        runner.setCaptureOutput("\n\(simulatorBin.path)\n", for: command)
+
+        let result = try resolveSwiftBinDir(
+            repoRoot: directories.root,
+            runner: runner,
+            configuration: .release,
+            scratchPath: simulatorScratchPath,
+            triple: simulatorTriple,
+            sdkPath: sdkPath
+        )
+
+        #expect(result == simulatorBin)
+        #expect(runner.captureCommands.map(\.command) == [command])
+        #expect(runner.captureCommands.allSatisfy { $0.cwd == directories.root })
     }
 
     @Test func sourceSnapshotIncludesTrackedUntrackedAndReleaseProvenance() throws {
@@ -1567,6 +1617,10 @@ struct SourceBuildResolutionTests {
         )
         let sdk = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         let triple = "arm64-apple-ios-simulator"
+        let simulatorScratchPath = simulatorBuildScratchURL(
+            repoRoot: repoRoot,
+            triple: triple
+        )
         runner.setCaptureOutput(
             sdk + "\n",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
@@ -1579,6 +1633,7 @@ struct SourceBuildResolutionTests {
             simulatorBin.path + "\n",
             for: [
                 "swift", "build", "-c", "release",
+                "--scratch-path", simulatorScratchPath.path,
                 "--sdk", sdk,
                 "--triple", triple,
                 "--show-bin-path",

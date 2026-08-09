@@ -418,9 +418,14 @@ func buildSourceCohort(
     )
     let simulatorSDKPath = try resolveSimulatorSDKPath(runner: runner)
     let simulatorTriple = try simulatorHelperTriple ?? defaultSimulatorHelperTriple()
+    let simulatorScratchPath = simulatorBuildScratchURL(
+        repoRoot: repoRoot,
+        triple: simulatorTriple
+    )
     try buildSimulatorHelper(
         in: repoRoot,
         configuration: configuration,
+        scratchPath: simulatorScratchPath,
         sdkPath: simulatorSDKPath,
         runner: runner,
         simulatorHelperTriple: simulatorTriple
@@ -435,6 +440,7 @@ func buildSourceCohort(
         repoRoot: repoRoot,
         runner: runner,
         configuration: configuration,
+        scratchPath: simulatorScratchPath,
         triple: simulatorTriple,
         sdkPath: simulatorSDKPath
     )
@@ -508,6 +514,7 @@ func buildProducts(
 func buildSimulatorHelper(
     in directory: URL,
     configuration: BuildConfiguration,
+    scratchPath: URL,
     sdkPath: String,
     runner: CommandRunning,
     simulatorHelperTriple: String
@@ -518,6 +525,8 @@ func buildSimulatorHelper(
             "build",
             "-c",
             configuration.swiftBuildValue,
+            "--scratch-path",
+            scratchPath.path,
             "--sdk",
             sdkPath,
             "--triple",
@@ -528,6 +537,13 @@ func buildSimulatorHelper(
         env: nil,
         cwd: directory
     )
+}
+
+func simulatorBuildScratchURL(repoRoot: URL, triple: String) -> URL {
+    repoRoot
+        .appendingPathComponent(".build", isDirectory: true)
+        .appendingPathComponent("privateheaderkit-simulator", isDirectory: true)
+        .appendingPathComponent(triple, isDirectory: true)
 }
 
 func resolveSimulatorSDKPath(runner: CommandRunning) throws -> String {
@@ -550,10 +566,14 @@ func resolveSwiftBinDir(
     repoRoot: URL,
     runner: CommandRunning,
     configuration: BuildConfiguration,
+    scratchPath: URL? = nil,
     triple: String? = nil,
     sdkPath: String? = nil
 ) throws -> URL {
     var command = ["swift", "build", "-c", configuration.swiftBuildValue]
+    if let scratchPath {
+        command += ["--scratch-path", scratchPath.path]
+    }
     if let sdkPath {
         command += ["--sdk", sdkPath]
     }

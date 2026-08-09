@@ -134,6 +134,7 @@ host_products=(
 )
 simulator_product="privateheaderkit-sim-helper"
 simulator_triple="arm64-apple-ios-simulator"
+simulator_scratch_path="$repo_root/.build/privateheaderkit-simulator/$simulator_triple"
 
 pushd "$repo_root" >/dev/null
 for product in "${host_products[@]}"; do
@@ -146,12 +147,14 @@ simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 PRIVATEHEADERKIT_BUILD_VERSION="$version" \
 PRIVATEHEADERKIT_BUILD_COMMIT="$commit" \
   swift build -c release \
+    --scratch-path "$simulator_scratch_path" \
     --sdk "$simulator_sdk" \
     --triple "$simulator_triple" \
     --product "$simulator_product"
 
 host_bin="$(swift build -c release --arch arm64 --show-bin-path)"
 simulator_bin="$(swift build -c release \
+  --scratch-path "$simulator_scratch_path" \
   --sdk "$simulator_sdk" \
   --triple "$simulator_triple" \
   --show-bin-path)"
