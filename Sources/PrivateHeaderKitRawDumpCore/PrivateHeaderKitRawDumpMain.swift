@@ -6,7 +6,8 @@ import MachOSwiftSection
 import ObjCDump
 import PrivateHeaderKitHelperProtocol
 import SwiftDeclaration
-@_spi(Support) import SwiftInterface
+import SwiftDeclarationRendering
+import SwiftInterface
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)

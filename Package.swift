@@ -44,7 +44,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
-            revision: "f17bc65b57f372b461fe45687298671c3400909e"
+            "0.14.1" ..< "0.15.0"
         ),
     ],
     targets: [
@@ -71,6 +71,7 @@ let package = Package(
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDeclaration", package: "MachOSwiftSection"),
+                .product(name: "SwiftDeclarationRendering", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
             path: "Sources/PrivateHeaderKitRawDumpCore"

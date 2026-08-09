@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
       "state" : {
-        "revision" : "d83be31cca95efe72e39f914d35f1c4da799777e",
-        "version" : "0.50.100"
+        "revision" : "4374bafbe4c628c05e068382a12467e7971b29ac",
+        "version" : "0.51.101"
       }
     },
     {
@@ -60,7 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
       "state" : {
-        "revision" : "f17bc65b57f372b461fe45687298671c3400909e"
+        "revision" : "3396cfd7332d40edb6aa3b0600758916701a8be4",
+        "version" : "0.14.1"
       }
     },
     {
@@ -145,15 +146,6 @@
       }
     },
     {
-      "identity" : "swift-confidential",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Library-Forks/swift-confidential.git",
-      "state" : {
-        "revision" : "0e3e84cc18ffb4b39c4e51d9deacc3007e5fc67b",
-        "version" : "0.5.100"
-      }
-    },
-    {
       "identity" : "swift-crypto",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
@@ -167,8 +159,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
       "state" : {
-        "revision" : "d32f3154b6a551728e06fe4d5ad3e8f9e83010f5",
-        "version" : "0.4.2"
+        "revision" : "04c959b1b5f2cc8c9baca522cd0fedabb45f73a0",
+        "version" : "0.4.5"
       }
     },
     {
@@ -178,15 +170,6 @@
       "state" : {
         "revision" : "c79f72b3e67a1eb64f66f76704c22ed6a5c1ed84",
         "version" : "1.11.0"
-      }
-    },
-    {
-      "identity" : "swift-dyld-private",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-dyld-private",
-      "state" : {
-        "revision" : "e9b255ed123e0ff5bb998d11639b993196159214",
-        "version" : "1.2.1"
       }
     },
     {
@@ -257,8 +240,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string",
       "state" : {
-        "revision" : "1c3438861ea6dbba0856ab02071d683914468e82",
-        "version" : "0.1.1"
+        "revision" : "daea78f0c94305d69b3c59af337ea69eda53603b",
+        "version" : "0.2.0"
       }
     },
     {
