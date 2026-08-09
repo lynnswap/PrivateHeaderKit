@@ -255,6 +255,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         guard try isDirectory(systemLibraryDirectory, fileManager: fileManager) else {
             return []
         }
+        let systemLibraryPath = systemLibraryDirectory.standardizedFileURL.path
 
         let excludedDirectories: Set<String> = [
             systemLibraryDirectory.appendingPathComponent("Frameworks", isDirectory: true).standardizedFileURL.path,
@@ -267,6 +268,11 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles],
             errorHandler: { url, error in
+                if url.standardizedFileURL.path != systemLibraryPath,
+                   isPermissionDeniedError(error)
+                {
+                    return true
+                }
                 enumerationFailure = (url, error)
                 return false
             }
@@ -285,7 +291,11 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 continue
             }
 
-            guard try isDirectory(url, fileManager: fileManager) else {
+            do {
+                guard try isDirectory(url, fileManager: fileManager) else {
+                    continue
+                }
+            } catch where isPermissionDeniedError(error) {
                 continue
             }
             guard let bundleKind = BundleKind(pathExtension: url.pathExtension) else {
@@ -540,7 +550,24 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     ) throws -> Bool {
         do {
             let attributes = try fileManager.attributesOfItem(atPath: url.path)
-            return attributes[.type] as? FileAttributeType == .typeDirectory
+            let type = attributes[.type] as? FileAttributeType
+            guard type == .typeSymbolicLink else {
+                return type == .typeDirectory
+            }
+
+            var status = stat()
+            let result = url.withUnsafeFileSystemRepresentation { path in
+                fstatat(AT_FDCWD, path, &status, 0)
+            }
+            guard result == 0 else {
+                let errorCode = errno
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(errorCode),
+                    userInfo: [NSFilePathErrorKey: url.path]
+                )
+            }
+            return status.st_mode & S_IFMT == S_IFDIR
         } catch where isMissingFileError(error) {
             return false
         }
@@ -554,7 +581,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     ) throws -> [URL] {
         do {
             return try fileManager.contentsOfDirectory(
-                at: url,
+                at: url.resolvingSymlinksInPath(),
                 includingPropertiesForKeys: keys,
                 options: options
             )
@@ -575,6 +602,22 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         }
         if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
             return isMissingFileError(underlying)
+        }
+        return false
+    }
+
+    static func isPermissionDeniedError(_ error: any Swift.Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain, error.code == NSFileReadNoPermissionError {
+            return true
+        }
+        if error.domain == NSPOSIXErrorDomain,
+           error.code == Int(EACCES) || error.code == Int(EPERM)
+        {
+            return true
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return isPermissionDeniedError(underlying)
         }
         return false
     }

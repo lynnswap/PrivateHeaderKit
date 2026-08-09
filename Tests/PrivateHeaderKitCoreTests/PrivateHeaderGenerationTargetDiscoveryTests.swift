@@ -145,6 +145,128 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         #expect(dylibSource.name == "libobjc.A.dylib")
     }
 
+    @Test func discoversDirectorySymbolicLinksWithLogicalIdentities() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let framework = root.appendingPathComponent(
+            "System/Cryptexes/OS/System/Library/Frameworks/WebKit.framework",
+            isDirectory: true
+        )
+        let xpcServices = framework.appendingPathComponent(
+            "Versions/A/XPCServices/WebKitHelper.xpc",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: xpcServices, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Versions/Current").path,
+            withDestinationPath: "A"
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("XPCServices").path,
+            withDestinationPath: "Versions/Current/XPCServices"
+        )
+        let frameworkLink = root.appendingPathComponent(
+            "System/Library/Frameworks/WebKit.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: frameworkLink.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: frameworkLink.path,
+            withDestinationPath: "../../../System/Cryptexes/OS/System/Library/Frameworks/WebKit.framework"
+        )
+
+        let bundle = root.appendingPathComponent(
+            "System/Library/PrivateFrameworks/SFSymbols.framework/Versions/A/Resources/CoreGlyphs.bundle",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let bundleLink = root.appendingPathComponent(
+            "System/Library/CoreServices/CoreGlyphs.bundle",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: bundleLink.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: bundleLink.path,
+            withDestinationPath: "../PrivateFrameworks/SFSymbols.framework/Versions/A/Resources/CoreGlyphs.bundle"
+        )
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let frameworkTarget = try #require(catalog.targets.first { $0.candidate.displayName == "WebKit" })
+        let bundleTarget = try #require(
+            catalog.targets.first { $0.candidate.displayName == "CoreServices/CoreGlyphs.bundle" }
+        )
+
+        #expect(frameworkTarget.candidate.identifier == "framework:WebKit.framework")
+        #expect(frameworkTarget.artifactRoot.rawValue == "Frameworks/WebKit")
+        #expect(frameworkTarget.inputPath == frameworkLink.path)
+        #expect(frameworkTarget.runtimeInputPath == "/System/Library/Frameworks/WebKit.framework")
+        #expect(frameworkTarget.childTargets.map(\.candidate.displayName) == [
+            "Frameworks/WebKit.framework/XPCServices/WebKitHelper.xpc",
+        ])
+        #expect(bundleTarget.candidate.identifier == "system-library:CoreServices/CoreGlyphs.bundle")
+        #expect(bundleTarget.artifactRoot.rawValue == "SystemLibrary/CoreServices/CoreGlyphs")
+        #expect(bundleTarget.inputPath == bundleLink.path)
+        #expect(bundleTarget.runtimeInputPath == "/System/Library/CoreServices/CoreGlyphs.bundle")
+    }
+
+    @Test func unreadableSystemLibrarySubtreeDoesNotAbortDiscovery() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        try createDirectory("System/Library/CoreServices/ControlCenter.app", in: root)
+        try createDirectory("System/Library/Protected", in: root)
+        let protectedDirectory = root.appendingPathComponent(
+            "System/Library/Protected",
+            isDirectory: true
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: protectedDirectory.path
+            )
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0],
+            ofItemAtPath: protectedDirectory.path
+        )
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+
+        #expect(catalog.targets.contains { $0.candidate.displayName == "CoreServices/ControlCenter.app" })
+    }
+
+    @Test func permissionDeniedSystemLibraryEntryMetadataDoesNotAbortDiscovery() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        try createDirectory("System/Library/CoreServices/ControlCenter.app", in: root)
+        let protectedName = "Protected-\(UUID().uuidString)"
+        try createDirectory("System/Library/\(protectedName)", in: root)
+        let fileManager = FailingAttributesFileManager(
+            failingLastPathComponent: protectedName
+        )
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+            in: root,
+            fileManager: fileManager
+        )
+
+        #expect(catalog.targets.contains { $0.candidate.displayName == "CoreServices/ControlCenter.app" })
+    }
+
     @Test func nestedChildrenAreDiscoveredButExcludedFromResolverCandidates() throws {
         let root = try makeTemporaryDirectory()
         defer {
@@ -403,7 +525,7 @@ private final class FailingContentsFileManager: FileManager, @unchecked Sendable
     private let failingPath: String
 
     init(failingPath: String) {
-        self.failingPath = failingPath
+        self.failingPath = URL(fileURLWithPath: failingPath).resolvingSymlinksInPath().path
         super.init()
     }
 
@@ -412,7 +534,7 @@ private final class FailingContentsFileManager: FileManager, @unchecked Sendable
         includingPropertiesForKeys keys: [URLResourceKey]?,
         options mask: DirectoryEnumerationOptions = []
     ) throws -> [URL] {
-        if url.path == failingPath {
+        if url.resolvingSymlinksInPath().path == failingPath {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
         }
         return try super.contentsOfDirectory(
@@ -420,6 +542,22 @@ private final class FailingContentsFileManager: FileManager, @unchecked Sendable
             includingPropertiesForKeys: keys,
             options: mask
         )
+    }
+}
+
+private final class FailingAttributesFileManager: FileManager, @unchecked Sendable {
+    private let failingLastPathComponent: String
+
+    init(failingLastPathComponent: String) {
+        self.failingLastPathComponent = failingLastPathComponent
+        super.init()
+    }
+
+    override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+        if URL(fileURLWithPath: path).lastPathComponent == failingLastPathComponent {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        }
+        return try super.attributesOfItem(atPath: path)
     }
 }
 
