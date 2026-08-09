@@ -20,7 +20,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/swiftlang/swift-subprocess.git",
-            exact: "1.0.0-beta.1"
+            from: "1.0.0"
         ),
         .package(
             url: "https://github.com/swift-server/swift-service-lifecycle.git",
