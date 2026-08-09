@@ -2,6 +2,7 @@ import Foundation
 import Dispatch
 import MachOKit
 import MachOObjCSection
+import MachOSwiftSection
 import ObjCDump
 import SwiftDeclaration
 @_spi(Support) import SwiftInterface

@@ -49,6 +49,7 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDeclaration", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
