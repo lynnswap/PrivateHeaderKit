@@ -1,5 +1,8 @@
 import Foundation
+
+#if os(macOS)
 import UnixSignals
+#endif
 
 #if canImport(Darwin)
 import Darwin
@@ -7,6 +10,7 @@ import Darwin
 import Glibc
 #endif
 
+#if os(macOS)
 private struct PrivateHeaderKitUnixSignalSource: PrivateHeaderKitSignalSource {
     let signals: UnixSignalsSequence
 
@@ -18,11 +22,13 @@ private struct PrivateHeaderKitUnixSignalSource: PrivateHeaderKitSignalSource {
         preconditionFailure("received a Unix signal that was not registered")
     }
 }
+#endif
 
 @main
 struct PrivateHeaderKitMain {
     static func main() async {
         let arguments = CommandLine.arguments
+        #if os(macOS)
         let signals = await UnixSignalsSequence(trapping: .sigint, .sigterm)
         let signalSource = PrivateHeaderKitUnixSignalSource(signals: signals)
         let status = await coordinatePrivateHeaderKitOperation(
@@ -31,6 +37,9 @@ struct PrivateHeaderKitMain {
                 await runPrivateHeaderKitCommand(arguments)
             }
         )
+        #else
+        let status = await runPrivateHeaderKitCommand(arguments)
+        #endif
         exit(status)
     }
 }
