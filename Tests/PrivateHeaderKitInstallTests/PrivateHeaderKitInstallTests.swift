@@ -203,9 +203,9 @@ struct InstallCommandResolutionTests {
             for: ["swift", "build", "-c", "debug", "--show-bin-path"]
         )
 
-        let binDir = resolveSwiftBinDir(repoRoot: dirs.root, runner: runner, configuration: .debug)
+        let binDir = try resolveSwiftBinDir(repoRoot: dirs.root, runner: runner, configuration: .debug)
 
-        #expect(binDir?.path == dirs.root.appendingPathComponent(".build/debug").path)
+        #expect(binDir.path == dirs.root.appendingPathComponent(".build/debug").path)
     }
 
     @Test func resolveSwiftBinDirCanUseSimulatorTriple() throws {
@@ -226,7 +226,7 @@ struct InstallCommandResolutionTests {
             ]
         )
 
-        let binDir = resolveSwiftBinDir(
+        let binDir = try resolveSwiftBinDir(
             repoRoot: dirs.root,
             runner: runner,
             configuration: .release,
@@ -234,7 +234,24 @@ struct InstallCommandResolutionTests {
             sdkPath: "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         )
 
-        #expect(binDir?.path == dirs.root.appendingPathComponent(".build/arm64-apple-ios-simulator/release").path)
+        #expect(binDir.path == dirs.root.appendingPathComponent(".build/arm64-apple-ios-simulator/release").path)
+    }
+
+    @Test func resolveSwiftBinDirRejectsEmptyOutput() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput(
+            " \n\n",
+            for: ["swift", "build", "-c", "debug", "--show-bin-path"]
+        )
+
+        #expect(throws: InstallError.self) {
+            _ = try resolveSwiftBinDir(
+                repoRoot: dirs.root,
+                runner: runner,
+                configuration: .debug
+            )
+        }
     }
 
     @Test func dryRunInstallMessagesIncludeInternalHelper() {
@@ -416,6 +433,126 @@ struct InstallCommandResolutionTests {
             "privateheaderkit-raw-helper",
         ]))
     }
+
+    @Test func simulatorBuildFailureLeavesExistingInstallUntouched() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let repoRoot = dirs.root.appendingPathComponent("Repo", isDirectory: true)
+        let installPrefix = dirs.root.appendingPathComponent("Install", isDirectory: true)
+        let hostBinDir = repoRoot.appendingPathComponent(".build/release", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        try FileManager.default.createDirectory(at: hostBinDir, withIntermediateDirectories: true)
+        let layout = resolveInstallLayout(prefix: installPrefix.path, bindir: nil)
+        try writeInstalledArtifacts(
+            layout: layout,
+            publicCommand: "old-public",
+            rawDumpHelper: "old-raw",
+            simulatorHelper: "old-sim"
+        )
+
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput("/SDK/iPhoneSimulator.sdk\n", for: [
+            "xcrun",
+            "--sdk",
+            "iphonesimulator",
+            "--show-sdk-path",
+        ])
+        runner.simpleHandler = { command, _, _ in
+            if command.contains(InstallConstants.simulatorHelperBuildProductName) {
+                throw InstallError.message("simulator helper build failed")
+            }
+        }
+        var outputMessages: [String] = []
+
+        #expect(throws: InstallError.self) {
+            try install(
+                options: InstallOptions(prefix: installPrefix.path, bindir: nil, dryRun: false),
+                selfURL: hostBinDir.appendingPathComponent("privateheaderkit", isDirectory: false),
+                currentDirectoryURL: repoRoot,
+                runner: runner,
+                fileManager: .default,
+                outputLogger: { outputMessages.append($0) },
+                errorLogger: { _ in },
+                simulatorHelperTriple: "x86_64-apple-ios-simulator"
+            )
+        }
+
+        #expect(try String(contentsOf: layout.publicCommandURL, encoding: .utf8) == "old-public")
+        #expect(try String(contentsOf: layout.rawDumpHelperURL, encoding: .utf8) == "old-raw")
+        #expect(try String(contentsOf: layout.simulatorHelperURL, encoding: .utf8) == "old-sim")
+        #expect(outputMessages.isEmpty)
+    }
+
+    @Test func missingSimulatorBuildProductLeavesExistingInstallUntouched() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let repoRoot = dirs.root.appendingPathComponent("Repo", isDirectory: true)
+        let installPrefix = dirs.root.appendingPathComponent("Install", isDirectory: true)
+        let hostBinDir = repoRoot.appendingPathComponent(".build/release", isDirectory: true)
+        let simulatorBinDir = repoRoot.appendingPathComponent(
+            ".build/x86_64-apple-ios-simulator/release",
+            isDirectory: true
+        )
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        try FileManager.default.createDirectory(at: hostBinDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: simulatorBinDir, withIntermediateDirectories: true)
+        try Data("new-public".utf8).write(
+            to: hostBinDir.appendingPathComponent("privateheaderkit", isDirectory: false)
+        )
+        try Data("new-raw".utf8).write(
+            to: hostBinDir.appendingPathComponent("privateheaderkit-raw-helper", isDirectory: false)
+        )
+        let layout = resolveInstallLayout(prefix: installPrefix.path, bindir: nil)
+        try writeInstalledArtifacts(
+            layout: layout,
+            publicCommand: "old-public",
+            rawDumpHelper: "old-raw",
+            simulatorHelper: "old-sim"
+        )
+
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput("/SDK/iPhoneSimulator.sdk\n", for: [
+            "xcrun",
+            "--sdk",
+            "iphonesimulator",
+            "--show-sdk-path",
+        ])
+        runner.setCaptureOutput(
+            "\(hostBinDir.path)\n",
+            for: ["swift", "build", "-c", "release", "--show-bin-path"]
+        )
+        runner.setCaptureOutput(
+            "\(simulatorBinDir.path)\n",
+            for: [
+                "swift",
+                "build",
+                "-c",
+                "release",
+                "--sdk",
+                "/SDK/iPhoneSimulator.sdk",
+                "--triple",
+                "x86_64-apple-ios-simulator",
+                "--show-bin-path",
+            ]
+        )
+        var outputMessages: [String] = []
+
+        #expect(throws: InstallError.self) {
+            try install(
+                options: InstallOptions(prefix: installPrefix.path, bindir: nil, dryRun: false),
+                selfURL: hostBinDir.appendingPathComponent("privateheaderkit", isDirectory: false),
+                currentDirectoryURL: repoRoot,
+                runner: runner,
+                fileManager: .default,
+                outputLogger: { outputMessages.append($0) },
+                errorLogger: { _ in },
+                simulatorHelperTriple: "x86_64-apple-ios-simulator"
+            )
+        }
+
+        #expect(try String(contentsOf: layout.publicCommandURL, encoding: .utf8) == "old-public")
+        #expect(try String(contentsOf: layout.rawDumpHelperURL, encoding: .utf8) == "old-raw")
+        #expect(try String(contentsOf: layout.simulatorHelperURL, encoding: .utf8) == "old-sim")
+        #expect(outputMessages.isEmpty)
+    }
 }
 
 private func makePrivateHeaderKitRepoMarkers(in repoRoot: URL) throws {
@@ -431,4 +568,17 @@ private func makePrivateHeaderKitRepoMarkers(in repoRoot: URL) throws {
         withIntermediateDirectories: true
     )
     try Data().write(to: repoRoot.appendingPathComponent("Sources/PrivateHeaderKitCLI/PrivateHeaderKitMain.swift"))
+}
+
+private func writeInstalledArtifacts(
+    layout: InstallLayout,
+    publicCommand: String,
+    rawDumpHelper: String,
+    simulatorHelper: String
+) throws {
+    try FileManager.default.createDirectory(at: layout.binDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: layout.libexecDir, withIntermediateDirectories: true)
+    try Data(publicCommand.utf8).write(to: layout.publicCommandURL)
+    try Data(rawDumpHelper.utf8).write(to: layout.rawDumpHelperURL)
+    try Data(simulatorHelper.utf8).write(to: layout.simulatorHelperURL)
 }

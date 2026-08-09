@@ -382,7 +382,7 @@ func resolveSwiftBinDir(
     triple: String? = nil,
     sdkPath: String? = nil,
     env: [String: String]? = nil
-) -> URL? {
+) throws -> URL {
     // `swift build --show-bin-path` prints a single path line, but be defensive and pick the last non-empty line.
     var command = ["swift", "build", "-c", configuration.swiftBuildValue]
     if let sdkPath {
@@ -392,15 +392,15 @@ func resolveSwiftBinDir(
         command += ["--triple", triple]
     }
     command.append("--show-bin-path")
-    guard let output = try? runner.runCapture(command, env: env, cwd: repoRoot) else {
-        return nil
-    }
+    let output = try runner.runCapture(command, env: env, cwd: repoRoot)
     let path = output
         .split(separator: "\n")
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .reversed()
         .first(where: { !$0.isEmpty }) ?? ""
-    guard !path.isEmpty else { return nil }
+    guard !path.isEmpty else {
+        throw InstallError.message("swift build --show-bin-path returned no path")
+    }
     return URL(fileURLWithPath: path, isDirectory: true)
 }
 
@@ -440,9 +440,6 @@ func install(
         return
     }
 
-    try fileManager.createDirectory(at: layout.binDir, withIntermediateDirectories: true)
-    try fileManager.createDirectory(at: layout.libexecDir, withIntermediateDirectories: true)
-
     let repoRootFromSelf = repositoryRoot(from: selfURL)
     let repoRootFromCwd = PathUtils.findRepositoryRoot(startingAt: currentDirectoryURL)
     let repoRoot: URL?
@@ -459,9 +456,9 @@ func install(
     }
 
     let configuration = options.buildConfiguration ?? buildConfiguration(from: selfURL) ?? .release
-    var publicCommandSourceURL: URL?
-    var simulatorSDKPath: String?
-    let resolvedSimulatorHelperTriple: String?
+    let resolvedPublicCommandSourceURL: URL
+    let resolvedRawDumpHelperSourceURL: URL
+    let simulatorHelperSourceURL: URL
     if let repoRoot {
         let triple: String
         if let simulatorHelperTriple {
@@ -469,117 +466,118 @@ func install(
         } else {
             triple = try defaultSimulatorHelperTriple()
         }
-        resolvedSimulatorHelperTriple = triple
         // Always build install artifacts when possible, so users get the latest binaries after pulling updates.
-        do {
-            if canInstallCurrentExecutableAsPublicCommand(
-                selfURL: selfURL,
-                repoRoot: repoRoot,
-                configuration: configuration
-            ) {
-                publicCommandSourceURL = selfURL
-            } else {
-                try buildProducts(
-                    [InstallConstants.publicCommandName],
-                    configuration: configuration,
-                    in: repoRoot,
-                    runner: runner
-                )
-            }
+        let publicCommandSourceURL: URL?
+        if canInstallCurrentExecutableAsPublicCommand(
+            selfURL: selfURL,
+            repoRoot: repoRoot,
+            configuration: configuration
+        ) {
+            publicCommandSourceURL = selfURL
+        } else {
             try buildProducts(
-                [InstallConstants.rawDumpHelperBuildProductName],
+                [InstallConstants.publicCommandName],
                 configuration: configuration,
                 in: repoRoot,
                 runner: runner
             )
-            let sdkPath = try resolveSimulatorSDKPath(runner: runner)
-            simulatorSDKPath = sdkPath
-            try buildSimulatorHelper(
-                in: repoRoot,
-                configuration: configuration,
-                sdkPath: sdkPath,
-                runner: runner,
-                simulatorHelperTriple: triple
-            )
-        } catch {
-            errorLogger("warning: swift build failed: \(error)")
+            publicCommandSourceURL = nil
         }
-    } else {
-        resolvedSimulatorHelperTriple = nil
-    }
+        try buildProducts(
+            [InstallConstants.rawDumpHelperBuildProductName],
+            configuration: configuration,
+            in: repoRoot,
+            runner: runner
+        )
+        let simulatorSDKPath = try resolveSimulatorSDKPath(runner: runner)
+        try buildSimulatorHelper(
+            in: repoRoot,
+            configuration: configuration,
+            sdkPath: simulatorSDKPath,
+            runner: runner,
+            simulatorHelperTriple: triple
+        )
 
-    let hostBinaryDir: URL
-    if let repoRoot {
-        hostBinaryDir = resolveSwiftBinDir(
+        let hostBinaryDir = try resolveSwiftBinDir(
             repoRoot: repoRoot,
             runner: runner,
             configuration: configuration
-        ) ?? baseURL
-    } else {
-        hostBinaryDir = baseURL
-    }
-
-    let resolvedPublicCommandSourceURL: URL
-    if let publicCommandSourceURL {
-        resolvedPublicCommandSourceURL = publicCommandSourceURL
-    } else {
-        resolvedPublicCommandSourceURL = hostBinaryDir.appendingPathComponent(
-            InstallConstants.publicCommandName,
-            isDirectory: false
         )
-    }
-    let resolvedRawDumpHelperSourceURL: URL
-    if repoRoot != nil {
+        resolvedPublicCommandSourceURL = publicCommandSourceURL
+            ?? hostBinaryDir.appendingPathComponent(
+                InstallConstants.publicCommandName,
+                isDirectory: false
+            )
         resolvedRawDumpHelperSourceURL = hostBinaryDir.appendingPathComponent(
             InstallConstants.rawDumpHelperBuildProductName,
             isDirectory: false
         )
-    } else {
-        resolvedRawDumpHelperSourceURL = defaultInstalledRawDumpHelperURL(for: selfURL)
-    }
-
-    let simulatorHelperSourceURL: URL
-    if let repoRoot {
-        let sdkPath = simulatorSDKPath ?? (try? resolveSimulatorSDKPath(runner: runner))
-        let simulatorBinaryDir = resolveSwiftBinDir(
+        let simulatorBinaryDir = try resolveSwiftBinDir(
             repoRoot: repoRoot,
             runner: runner,
             configuration: configuration,
-            triple: resolvedSimulatorHelperTriple,
-            sdkPath: sdkPath
-        ) ?? baseURL
+            triple: triple,
+            sdkPath: simulatorSDKPath
+        )
         simulatorHelperSourceURL = simulatorBinaryDir.appendingPathComponent(
             InstallConstants.simulatorHelperBuildProductName,
             isDirectory: false
         )
     } else {
+        resolvedPublicCommandSourceURL = baseURL.appendingPathComponent(
+            InstallConstants.publicCommandName,
+            isDirectory: false
+        )
+        resolvedRawDumpHelperSourceURL = defaultInstalledRawDumpHelperURL(for: selfURL)
         simulatorHelperSourceURL = defaultInstalledSimulatorHelperURL(for: selfURL)
     }
 
-    try installExecutableFile(
-        sourceURL: resolvedPublicCommandSourceURL,
-        destinationURL: layout.publicCommandURL,
-        displayName: InstallConstants.publicCommandName,
-        missingMessage: "\(InstallConstants.publicCommandName) not found next to installer (run with `swift run -c release` from the repo root)",
-        fileManager: fileManager,
-        outputLogger: outputLogger
-    )
-    try installExecutableFile(
-        sourceURL: resolvedRawDumpHelperSourceURL,
-        destinationURL: layout.rawDumpHelperURL,
-        displayName: InstallConstants.rawDumpHelperInstallName,
-        missingMessage: "\(InstallConstants.rawDumpHelperInstallName) not found (run install from the repo root so SwiftPM can build the raw dump helper)",
-        fileManager: fileManager,
-        outputLogger: outputLogger
-    )
-    try installExecutableFile(
-        sourceURL: simulatorHelperSourceURL,
-        destinationURL: layout.simulatorHelperURL,
-        displayName: InstallConstants.simulatorHelperInstallName,
-        missingMessage: "\(InstallConstants.simulatorHelperInstallName) not found (run install from the repo root so SwiftPM can build the iOS simulator helper)",
-        fileManager: fileManager,
-        outputLogger: outputLogger
-    )
+    let installArtifacts: [(
+        sourceURL: URL,
+        destinationURL: URL,
+        displayName: String,
+        missingMessage: String
+    )] = [
+        (
+            resolvedPublicCommandSourceURL,
+            layout.publicCommandURL,
+            InstallConstants.publicCommandName,
+            "\(InstallConstants.publicCommandName) not found next to installer (run with `swift run -c release` from the repo root)"
+        ),
+        (
+            resolvedRawDumpHelperSourceURL,
+            layout.rawDumpHelperURL,
+            InstallConstants.rawDumpHelperInstallName,
+            "\(InstallConstants.rawDumpHelperInstallName) not found (run install from the repo root so SwiftPM can build the raw dump helper)"
+        ),
+        (
+            simulatorHelperSourceURL,
+            layout.simulatorHelperURL,
+            InstallConstants.simulatorHelperInstallName,
+            "\(InstallConstants.simulatorHelperInstallName) not found (run install from the repo root so SwiftPM can build the iOS simulator helper)"
+        ),
+    ]
+
+    for artifact in installArtifacts {
+        try validateInstallSource(
+            artifact.sourceURL,
+            missingMessage: artifact.missingMessage,
+            fileManager: fileManager
+        )
+    }
+
+    try fileManager.createDirectory(at: layout.binDir, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: layout.libexecDir, withIntermediateDirectories: true)
+    for artifact in installArtifacts {
+        try installExecutableFile(
+            sourceURL: artifact.sourceURL,
+            destinationURL: artifact.destinationURL,
+            displayName: artifact.displayName,
+            missingMessage: artifact.missingMessage,
+            fileManager: fileManager,
+            outputLogger: outputLogger
+        )
+    }
 }
 
 func dryRunInstallMessages(layout: InstallLayout) -> [String] {
@@ -614,9 +612,7 @@ private func installExecutableFile(
     fileManager: FileManager,
     outputLogger: (String) -> Void
 ) throws {
-    guard fileManager.fileExists(atPath: sourceURL.path) else {
-        throw InstallError.message(missingMessage)
-    }
+    try validateInstallSource(sourceURL, missingMessage: missingMessage, fileManager: fileManager)
     if sourceURL.resolvingSymlinksInPath().path == destinationURL.resolvingSymlinksInPath().path {
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationURL.path)
         outputLogger("Already installed \(displayName) at \(destinationURL.path)")
@@ -628,6 +624,16 @@ private func installExecutableFile(
     try fileManager.copyItem(at: sourceURL, to: destinationURL)
     try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationURL.path)
     outputLogger("Installed \(displayName) to \(destinationURL.path)")
+}
+
+private func validateInstallSource(
+    _ sourceURL: URL,
+    missingMessage: String,
+    fileManager: FileManager
+) throws {
+    guard fileManager.fileExists(atPath: sourceURL.path) else {
+        throw InstallError.message(missingMessage)
+    }
 }
 
 #else
