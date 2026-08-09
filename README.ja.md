@@ -73,14 +73,19 @@ iOS では `--version` / `--build` から利用可能な Simulator runtime を�
 
 ```text
 ~/PrivateHeaderKit/
-  iOS27.0(24A5355q)/
+  ios-v1-27.0-b1-24~415355~71/
   .state/
-    iOS27.0(24A5355q)/
+    ios-v1-27.0-b1-24~415355~71/
       manifest.json
       runs/
 ```
 
-custom output では、`--out` と `PH_OUT_DIR` は artifact root ではなく output base directory として扱います。生成ヘッダは `<output-base>/<source-label>/`、state は `<output-base>/.state/<source-label>/` に置きます。
+custom output では、`--out` と `PH_OUT_DIR` は artifact root ではなく output
+base directory として扱います。生成ヘッダは
+`<output-base>/<source-storage-id>/`、state は
+`<output-base>/.state/<source-storage-id>/` に置きます。storage ID は
+PrivateHeaderKit が所有する versioned identifier であり、consumer は表示用 source
+label から組み立てません。
 
 ## メモ
 
