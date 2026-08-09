@@ -58,6 +58,7 @@ func runPrivateHeaderKitInteractiveGenerate(
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    helperResolver: PrivateHeaderKitHelperResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
     outputBaseDirectoryProvider: () -> String,
     screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
@@ -148,6 +149,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                         invokedProgramName: invokedProgramName,
                         currentExecutableURL: currentExecutableURL,
                         simulatorResolver: simulatorResolver,
+                        helperResolver: helperResolver,
                         screenClearer: screenClearer,
                         inputReader: inputReader,
                         outputLogger: outputLogger
@@ -159,7 +161,9 @@ func runPrivateHeaderKitInteractiveGenerate(
                         currentExecutableURL: currentExecutableURL,
                         generationRunner: generationRunner,
                         simulatorResolver: simulatorResolver,
+                        helperResolver: helperResolver,
                         preResolvedSimulatorResolution: decision.simulatorResolution,
+                        preResolvedHelperPlan: decision.helperPlan,
                         resumeBehaviorOverride: decision.resumeBehavior,
                         resultScreenClearer: screenClearer,
                         outputLogger: outputLogger,
@@ -185,6 +189,7 @@ func runPrivateHeaderKitInteractiveGenerate(
 private struct PrivateHeaderKitInteractiveResumeDecision {
     let resumeBehavior: PrivateHeaderGeneration.ResumeBehavior
     let simulatorResolution: PrivateHeaderKitSimulatorResolution?
+    let helperPlan: PrivateHeaderKitHelperPlan
 }
 
 private func interactiveResumeDecision(
@@ -192,6 +197,7 @@ private func interactiveResumeDecision(
     invokedProgramName: String,
     currentExecutableURL: URL?,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    helperResolver: PrivateHeaderKitHelperResolver,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
     outputLogger: @escaping PrivateHeaderKitOutputLogger
@@ -200,11 +206,15 @@ private func interactiveResumeDecision(
         currentExecutableURL: currentExecutableURL,
         fallbackProgramName: invokedProgramName
     )
-    let hostHelperURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
     let simulatorResolution = command.platform == .iOS ? try simulatorResolver(command) : nil
+    let helperPlan = try await helperResolver(
+        publicExecutableURL,
+        command.simulatorHelperPath,
+        command.platform == .iOS
+    )
     let request = try makePrivateHeaderGenerationRequest(
         from: command,
-        hostHelperExecutableURL: hostHelperURL,
+        helperURLs: helperPlan.helperURLs,
         simulatorResolution: simulatorResolution,
         resumeBehaviorOverride: .requireExplicitResume(resumeRequested: false)
     )
@@ -241,13 +251,15 @@ private func interactiveResumeDecision(
         }
         return PrivateHeaderKitInteractiveResumeDecision(
             resumeBehavior: .fresh,
-            simulatorResolution: simulatorResolution
+            simulatorResolution: simulatorResolution,
+            helperPlan: helperPlan
         )
     }
     guard let summary else {
         return PrivateHeaderKitInteractiveResumeDecision(
             resumeBehavior: .fresh,
-            simulatorResolution: simulatorResolution
+            simulatorResolution: simulatorResolution,
+            helperPlan: helperPlan
         )
     }
 
@@ -265,7 +277,8 @@ private func interactiveResumeDecision(
     )
     return PrivateHeaderKitInteractiveResumeDecision(
         resumeBehavior: action == .continuePrevious ? .resume : .fresh,
-        simulatorResolution: simulatorResolution
+        simulatorResolution: simulatorResolution,
+        helperPlan: helperPlan
     )
 }
 

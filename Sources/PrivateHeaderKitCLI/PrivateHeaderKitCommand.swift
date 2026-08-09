@@ -118,13 +118,42 @@ typealias PrivateHeaderKitGenerationRunner = (
 typealias PrivateHeaderKitSimulatorResolver = (
     PrivateHeaderKitGenerateCommand
 ) throws -> PrivateHeaderKitSimulatorResolution
+typealias PrivateHeaderKitHelperResolver = (
+    URL,
+    String?,
+    Bool
+) async throws -> PrivateHeaderKitHelperPlan
 typealias PrivateHeaderKitOutputLogger = @Sendable (String) -> Void
+
+struct PrivateHeaderKitHelperPlan: Sendable {
+    let helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs
+    fileprivate let buildInvocations: [PrivateHeaderKitHelperBuildInvocation]
+
+    init(helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs) {
+        self.helperURLs = helperURLs
+        self.buildInvocations = []
+    }
+
+    fileprivate init(
+        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
+        buildInvocations: [PrivateHeaderKitHelperBuildInvocation]
+    ) {
+        self.helperURLs = helperURLs
+        self.buildInvocations = buildInvocations
+    }
+}
+
+private struct PrivateHeaderKitHelperBuildInvocation: Sendable {
+    let command: [String]
+    let cwd: URL
+}
 
 func runPrivateHeaderKitCommand(
     _ args: [String],
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationRunner: @escaping PrivateHeaderKitGenerationRunner = runPrivateHeaderGeneration,
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
+    helperResolver: @escaping PrivateHeaderKitHelperResolver = resolvePrivateHeaderKitHelperURLs,
     interactiveSourceProvider: @escaping PrivateHeaderKitInteractiveSourceProvider =
         discoverPrivateHeaderKitInteractiveSources,
     interactiveOutputBaseDirectoryProvider: @escaping () -> String =
@@ -170,6 +199,7 @@ func runPrivateHeaderKitCommand(
             currentExecutableURL: currentExecutableURL,
             generationRunner: generationRunner,
             simulatorResolver: simulatorResolver,
+            helperResolver: helperResolver,
             sourceProvider: interactiveSourceProvider,
             outputBaseDirectoryProvider: interactiveOutputBaseDirectoryProvider,
             screenClearer: interactiveScreenClearer,
@@ -185,6 +215,7 @@ func runPrivateHeaderKitCommand(
             currentExecutableURL: currentExecutableURL,
             generationRunner: generationRunner,
             simulatorResolver: simulatorResolver,
+            helperResolver: helperResolver,
             outputLogger: outputLogger,
             errorLogger: errorLogger
         )
@@ -204,7 +235,9 @@ func runPrivateHeaderKitGenerateCommand(
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    helperResolver: PrivateHeaderKitHelperResolver = resolvePrivateHeaderKitHelperURLs,
     preResolvedSimulatorResolution: PrivateHeaderKitSimulatorResolution? = nil,
+    preResolvedHelperPlan: PrivateHeaderKitHelperPlan? = nil,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil,
     resultScreenClearer: PrivateHeaderKitInteractiveScreenClearer? = nil,
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
@@ -215,13 +248,17 @@ func runPrivateHeaderKitGenerateCommand(
             currentExecutableURL: currentExecutableURL,
             fallbackProgramName: invokedProgramName
         )
-        try ensureSwiftPMBuildHelpersIfNeeded(
-            publicExecutableURL: publicExecutableURL,
-            includeSimulatorHelper: command.platform == .iOS && command.simulatorHelperPath == nil
-        )
-        let hostHelperExecutableURL = defaultRawDumpHelperURL(
-            publicExecutableURL: publicExecutableURL
-        )
+        let helperPlan: PrivateHeaderKitHelperPlan
+        if let preResolvedHelperPlan {
+            helperPlan = preResolvedHelperPlan
+        } else {
+            helperPlan = try await helperResolver(
+                publicExecutableURL,
+                command.simulatorHelperPath,
+                command.platform == .iOS
+            )
+        }
+        try await preparePrivateHeaderKitHelpers(helperPlan)
         let simulatorResolution: PrivateHeaderKitSimulatorResolution?
         if command.platform == .iOS {
             simulatorResolution = try preResolvedSimulatorResolution ?? simulatorResolver(command)
@@ -237,7 +274,7 @@ func runPrivateHeaderKitGenerateCommand(
 
         let request = try makePrivateHeaderGenerationRequest(
             from: command,
-            hostHelperExecutableURL: hostHelperExecutableURL,
+            helperURLs: helperPlan.helperURLs,
             simulatorResolution: simulatorResolution,
             resumeBehaviorOverride: resumeBehaviorOverride
         )
@@ -296,7 +333,7 @@ func runPrivateHeaderGeneration(
 
 func makePrivateHeaderGenerationRequest(
     from command: PrivateHeaderKitGenerateCommand,
-    hostHelperExecutableURL: URL,
+    helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
     simulatorResolution: PrivateHeaderKitSimulatorResolution?,
     resumeBehaviorOverride: PrivateHeaderGeneration.ResumeBehavior? = nil
 ) throws -> PrivateHeaderKitGenerationRequest {
@@ -311,13 +348,6 @@ func makePrivateHeaderGenerationRequest(
     let systemRoot = try effectiveSystemRootURL(
         from: command,
         simulatorResolution: simulatorResolution
-    )
-    let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
-        host: hostHelperExecutableURL,
-        simulator: simulatorHelperURL(
-            from: command,
-            hostHelperExecutableURL: hostHelperExecutableURL
-        )
     )
     let executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
     switch command.platform {
@@ -362,85 +392,138 @@ private func effectiveSystemRootURL(
     return URL(fileURLWithPath: simulatorResolution.resolvedRuntimeRoot, isDirectory: true)
 }
 
-private func simulatorHelperURL(
-    from command: PrivateHeaderKitGenerateCommand,
-    hostHelperExecutableURL: URL
-) -> URL {
-    if let simulatorHelperPath = command.simulatorHelperPath {
-        return URL(
-            fileURLWithPath: PathUtils.expandTilde(simulatorHelperPath),
-            isDirectory: false
-        )
-    }
-    return defaultSimulatorHelperURL(hostExecutableURL: hostHelperExecutableURL)
-}
-
 func defaultRawDumpHelperURL(publicExecutableURL: URL) -> URL {
-    if swiftPMBuildProductLayout(for: publicExecutableURL) != nil {
-        return publicExecutableURL.deletingLastPathComponent()
-            .appendingPathComponent("privateheaderkit-raw-helper", isDirectory: false)
-    }
     let cohortExecutable = publicExecutableURL.resolvingSymlinksInPath()
     return cohortExecutable.deletingLastPathComponent()
         .appendingPathComponent("privateheaderkit-raw-helper", isDirectory: false)
 }
 
 func defaultSimulatorHelperURL(hostExecutableURL: URL) -> URL {
-    if let swiftPMURL = swiftPMBuildSimulatorHelperURL(
-        hostBuildExecutableURL: hostExecutableURL,
-        simulatorTriple: defaultSwiftPMIOSSimulatorTriple()
-    ) {
-        return swiftPMURL
-    }
     let cohortHelper = hostExecutableURL.resolvingSymlinksInPath()
     return cohortHelper.deletingLastPathComponent()
         .appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
 }
 
-func ensureSwiftPMBuildHelpersIfNeeded(
+func resolvePrivateHeaderKitHelperURLs(
     publicExecutableURL: URL,
-    includeSimulatorHelper: Bool,
-    runner: CommandRunning = ProcessRunner(),
-    simulatorTriple: String = defaultSwiftPMIOSSimulatorTriple()
-) throws {
-    guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
-        return
-    }
-    _ = try runner.runCapture(
-        ["swift", "build", "-c", layout.configuration, "--product", "privateheaderkit-raw-helper"],
-        env: nil,
-        cwd: layout.repoRoot
-    )
-    guard includeSimulatorHelper else {
-        return
-    }
-    let sdkPath = try runner.runCapture(
-        ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
-        env: nil,
-        cwd: nil
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
-    _ = try runner.runCapture(
-        [
-            "swift", "build", "-c", layout.configuration,
-            "--sdk", sdkPath, "--triple", simulatorTriple,
-            "--product", "privateheaderkit-sim-helper",
-        ],
-        env: nil,
-        cwd: layout.repoRoot
+    simulatorHelperPath: String?,
+    requiresSimulatorHelper: Bool
+) async throws -> PrivateHeaderKitHelperPlan {
+    try await resolvePrivateHeaderKitHelperPlan(
+        publicExecutableURL: publicExecutableURL,
+        simulatorHelperPath: simulatorHelperPath,
+        requiresSimulatorHelper: requiresSimulatorHelper
     )
 }
 
-func swiftPMBuildSimulatorHelperURL(
-    hostBuildExecutableURL: URL,
-    simulatorTriple: String
-) -> URL? {
-    guard let layout = swiftPMBuildProductLayout(for: hostBuildExecutableURL) else {
-        return nil
+func resolvePrivateHeaderKitHelperPlan(
+    publicExecutableURL: URL,
+    simulatorHelperPath: String?,
+    requiresSimulatorHelper: Bool,
+    runner: CommandRunning = ProcessRunner(),
+    simulatorTriple: String = defaultSwiftPMIOSSimulatorTriple()
+) async throws -> PrivateHeaderKitHelperPlan {
+    guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
+        let hostURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
+        return PrivateHeaderKitHelperPlan(
+            helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs(
+                host: hostURL,
+                simulator: explicitSimulatorHelperURL(simulatorHelperPath)
+                    ?? defaultSimulatorHelperURL(hostExecutableURL: hostURL)
+            )
+        )
     }
-    return layout.buildRoot
+    let hostBinDirectory = try swiftPMBinDirectory(
+        from: runner.runCapture(
+            ["swift", "build", "-c", layout.configuration, "--show-bin-path"],
+            env: nil,
+            cwd: layout.repoRoot
+        ),
+        destination: "host"
+    )
+    let hostURL = hostBinDirectory.appendingPathComponent(
+        "privateheaderkit-raw-helper",
+        isDirectory: false
+    )
+    let hostBuildInvocation = PrivateHeaderKitHelperBuildInvocation(
+        command: [
+            "swift", "build", "-c", layout.configuration,
+            "--product", "privateheaderkit-raw-helper",
+        ],
+        cwd: layout.repoRoot
+    )
+    if let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath) {
+        return PrivateHeaderKitHelperPlan(
+            helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs(
+                host: hostURL,
+                simulator: explicitSimulatorURL
+            ),
+            buildInvocations: [hostBuildInvocation]
+        )
+    }
+    guard requiresSimulatorHelper else {
+        return PrivateHeaderKitHelperPlan(
+            helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs(
+                host: hostURL,
+                simulator: defaultSimulatorHelperURL(hostExecutableURL: hostURL)
+            ),
+            buildInvocations: [hostBuildInvocation]
+        )
+    }
+    let sdkPath = try lastNonemptyOutputLine(
+        runner.runCapture(
+            ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+            env: nil,
+            cwd: nil
+        ),
+        failureMessage: "failed to resolve iPhone Simulator SDK path"
+    )
+    let scratchPath = layout.buildRoot
+        .appendingPathComponent("privateheaderkit-simulator", isDirectory: true)
         .appendingPathComponent(simulatorTriple, isDirectory: true)
-        .appendingPathComponent(layout.configuration, isDirectory: true)
-        .appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+    let simulatorCommand = [
+        "swift", "build", "-c", layout.configuration,
+        "--scratch-path", scratchPath.path,
+        "--sdk", sdkPath,
+        "--triple", simulatorTriple,
+    ]
+    let simulatorBinDirectory = try swiftPMBinDirectory(
+        from: runner.runCapture(
+            simulatorCommand + ["--show-bin-path"],
+            env: nil,
+            cwd: layout.repoRoot
+        ),
+        destination: "iOS Simulator"
+    )
+    return PrivateHeaderKitHelperPlan(
+        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs(
+            host: hostURL,
+            simulator: simulatorBinDirectory.appendingPathComponent(
+                "privateheaderkit-sim-helper",
+                isDirectory: false
+            )
+        ),
+        buildInvocations: [
+            hostBuildInvocation,
+            PrivateHeaderKitHelperBuildInvocation(
+                command: simulatorCommand + ["--product", "privateheaderkit-sim-helper"],
+                cwd: layout.repoRoot
+            ),
+        ]
+    )
+}
+
+func preparePrivateHeaderKitHelpers(_ plan: PrivateHeaderKitHelperPlan) async throws {
+    try await executePrivateHeaderKitHelperBuilds(plan, runner: ProcessRunner())
+}
+
+func executePrivateHeaderKitHelperBuilds(
+    _ plan: PrivateHeaderKitHelperPlan,
+    runner: CommandRunning
+) async throws {
+    for invocation in plan.buildInvocations {
+        _ = try runner.runCapture(invocation.command, env: nil, cwd: invocation.cwd)
+    }
 }
 
 private struct SwiftPMBuildProductLayout {
@@ -457,15 +540,18 @@ private func swiftPMBuildProductLayout(for executableURL: URL) -> SwiftPMBuildPr
         return nil
     }
     let trailing = Array(components.dropFirst(buildIndex + 1))
-    let configuration: String
+    let configuration: String?
     switch trailing.count {
-    case 1 where isSwiftPMBuildConfiguration(trailing[0]):
-        configuration = trailing[0]
-    case 2 where isSwiftPMBuildConfiguration(trailing[1]):
-        configuration = trailing[1]
+    case 1:
+        configuration = swiftPMBuildConfiguration(trailing[0])
+    case 2:
+        configuration = swiftPMBuildConfiguration(trailing[1])
+    case 3 where trailing[0] == "out" && trailing[1] == "Products":
+        configuration = swiftPMBuildConfiguration(trailing[2])
     default:
         return nil
     }
+    guard let configuration else { return nil }
     return SwiftPMBuildProductLayout(
         buildRoot: URL(
             fileURLWithPath: NSString.path(
@@ -476,8 +562,42 @@ private func swiftPMBuildProductLayout(for executableURL: URL) -> SwiftPMBuildPr
     )
 }
 
-private func isSwiftPMBuildConfiguration(_ value: String) -> Bool {
-    value == "debug" || value == "release"
+private func swiftPMBuildConfiguration(_ value: String) -> String? {
+    switch value.lowercased() {
+    case "debug": "debug"
+    case "release": "release"
+    default: nil
+    }
+}
+
+private func explicitSimulatorHelperURL(_ path: String?) -> URL? {
+    path.map {
+        URL(fileURLWithPath: PathUtils.expandTilde($0), isDirectory: false)
+    }
+}
+
+private func swiftPMBinDirectory(from output: String, destination: String) throws -> URL {
+    let path = try lastNonemptyOutputLine(
+        output,
+        failureMessage: "swift build --show-bin-path returned no path for \(destination)"
+    )
+    guard NSString(string: path).isAbsolutePath else {
+        throw ToolingError.message(
+            "swift build --show-bin-path returned a relative path for \(destination): \(path)"
+        )
+    }
+    return URL(fileURLWithPath: path, isDirectory: true)
+}
+
+private func lastNonemptyOutputLine(_ output: String, failureMessage: String) throws -> String {
+    guard let line = output
+        .split(whereSeparator: \Character.isNewline)
+        .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        .last(where: { !$0.isEmpty })
+    else {
+        throw ToolingError.message(failureMessage)
+    }
+    return line
 }
 
 func defaultSwiftPMIOSSimulatorTriple() -> String {

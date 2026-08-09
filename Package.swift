@@ -160,6 +160,7 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitCLI",
                 "PrivateHeaderKitCore",
+                "PrivateHeaderKitTestSupport",
                 "PrivateHeaderKitTooling",
             ]
         ),

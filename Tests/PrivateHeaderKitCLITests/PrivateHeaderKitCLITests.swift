@@ -8,6 +8,7 @@ import Glibc
 #endif
 
 import PrivateHeaderKitCore
+import PrivateHeaderKitTestSupport
 import PrivateHeaderKitTooling
 @testable import PrivateHeaderKitCLI
 
@@ -314,6 +315,11 @@ struct PrivateHeaderKitCLIExecutionTests {
         let outputBase = root.appendingPathComponent("Output", isDirectory: true)
         let input = ScriptedInput(["1", "1"])
         let requestBox = ThreadSafeRequestBox()
+        let helperResolutionCount = ThreadSafeCounter()
+        let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
+            host: URL(fileURLWithPath: "/resolved/privateheaderkit-raw-helper"),
+            simulator: URL(fileURLWithPath: "/resolved/privateheaderkit-sim-helper")
+        )
         let output = ThreadSafeStrings()
 
         let status = await runPrivateHeaderKitCommand(
@@ -325,6 +331,10 @@ struct PrivateHeaderKitCLIExecutionTests {
                     for: request,
                     counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
                 )
+            },
+            helperResolver: { _, _, _ in
+                helperResolutionCount.increment()
+                return PrivateHeaderKitHelperPlan(helperURLs: helperURLs)
             },
             interactiveSourceProvider: {
                 [
@@ -344,6 +354,8 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
         #expect(status == 0)
         #expect(requestBox.value?.options.resumeBehavior == .fresh)
+        #expect(requestBox.value?.options.helperURLs == helperURLs)
+        #expect(helperResolutionCount.value == 1)
         #expect(output.text.contains("Step 1 of 3"))
         #expect(output.text.contains("Generation completed"))
     }
@@ -393,18 +405,123 @@ struct PrivateHeaderKitHelperLookupTests {
         )
     }
 
-    @Test func SwiftPMHelpersUseExplicitBuildProductLayouts() {
-        let host = URL(fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit")
-        let raw = defaultRawDumpHelperURL(publicExecutableURL: host)
-        let simulator = swiftPMBuildSimulatorHelperURL(
-            hostBuildExecutableURL: raw,
-            simulatorTriple: "arm64-apple-ios-simulator"
+    @Test func SwiftPMHelpersUseReportedBinPathsAndDedicatedSimulatorScratch() async throws {
+        let runner = RecordingCommandRunner()
+        let executable = URL(
+            fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit"
         )
-        #expect(raw.path == "/repo/.build/arm64-apple-macosx/debug/privateheaderkit-raw-helper")
+        let sdkPath = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        let simulatorTriple = "arm64-apple-ios-simulator"
+        let scratchPath = "/repo/.build/privateheaderkit-simulator/\(simulatorTriple)"
+        let simulatorCommand = [
+            "swift", "build", "-c", "debug",
+            "--scratch-path", scratchPath,
+            "--sdk", sdkPath,
+            "--triple", simulatorTriple,
+        ]
+        runner.setCaptureOutput(
+            "build log\n/repo/.build/out/Products/Debug\n",
+            for: ["swift", "build", "-c", "debug", "--show-bin-path"]
+        )
+        runner.setCaptureOutput(
+            "\n\(sdkPath)\n",
+            for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
+        )
+        runner.setCaptureOutput(
+            "\n\(scratchPath)/out/Products/Debug-iphonesimulator\n",
+            for: simulatorCommand + ["--show-bin-path"]
+        )
+
+        let plan = try await resolvePrivateHeaderKitHelperPlan(
+            publicExecutableURL: executable,
+            simulatorHelperPath: nil,
+            requiresSimulatorHelper: true,
+            runner: runner,
+            simulatorTriple: simulatorTriple
+        )
+
         #expect(
-            simulator?.path
-                == "/repo/.build/arm64-apple-ios-simulator/debug/privateheaderkit-sim-helper"
+            plan.helperURLs.host.path
+                == "/repo/.build/out/Products/Debug/privateheaderkit-raw-helper"
         )
+        #expect(
+            plan.helperURLs.simulator.path
+                == "\(scratchPath)/out/Products/Debug-iphonesimulator/privateheaderkit-sim-helper"
+        )
+        #expect(runner.captureCommands.map(\.command) == [
+            ["swift", "build", "-c", "debug", "--show-bin-path"],
+            ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+            simulatorCommand + ["--show-bin-path"],
+        ])
+        #expect(runner.captureCommands.map(\.cwd) == [
+            URL(fileURLWithPath: "/repo", isDirectory: true),
+            nil,
+            URL(fileURLWithPath: "/repo", isDirectory: true),
+        ])
+
+        let buildRunner = RecordingCommandRunner()
+        let rawBuild = [
+            "swift", "build", "-c", "debug", "--product", "privateheaderkit-raw-helper",
+        ]
+        let simulatorBuild = simulatorCommand + ["--product", "privateheaderkit-sim-helper"]
+        buildRunner.setCaptureOutput("", for: rawBuild)
+        buildRunner.setCaptureOutput("", for: simulatorBuild)
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
+        #expect(buildRunner.captureCommands.map(\.command) == [rawBuild, simulatorBuild])
+        #expect(
+            buildRunner.captureCommands.allSatisfy {
+                $0.cwd == URL(fileURLWithPath: "/repo", isDirectory: true)
+            }
+        )
+    }
+
+    @Test func explicitSimulatorHelperSkipsSimulatorBuildAndResolution() async throws {
+        let runner = RecordingCommandRunner()
+        let rawBuild = [
+            "swift", "build", "-c", "release", "--product", "privateheaderkit-raw-helper",
+        ]
+        let hostBinQuery = ["swift", "build", "-c", "release", "--show-bin-path"]
+        runner.setCaptureOutput("/repo/.build/out/Products/Release\n", for: hostBinQuery)
+
+        let plan = try await resolvePrivateHeaderKitHelperPlan(
+            publicExecutableURL: URL(
+                fileURLWithPath: "/repo/.build/out/Products/Release/privateheaderkit"
+            ),
+            simulatorHelperPath: "/custom/privateheaderkit-sim-helper",
+            requiresSimulatorHelper: true,
+            runner: runner
+        )
+
+        #expect(
+            plan.helperURLs.host.path
+                == "/repo/.build/out/Products/Release/privateheaderkit-raw-helper"
+        )
+        #expect(plan.helperURLs.simulator.path == "/custom/privateheaderkit-sim-helper")
+        #expect(runner.captureCommands.map(\.command) == [hostBinQuery])
+
+        let buildRunner = RecordingCommandRunner()
+        buildRunner.setCaptureOutput("", for: rawBuild)
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
+        #expect(buildRunner.captureCommands.map(\.command) == [rawBuild])
+    }
+
+    @Test func emptySwiftPMBinPathFailsWithoutLayoutFallback() async {
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput(
+            " \n\t\n",
+            for: ["swift", "build", "-c", "debug", "--show-bin-path"]
+        )
+
+        await #expect(throws: ToolingError.self) {
+            _ = try await resolvePrivateHeaderKitHelperPlan(
+                publicExecutableURL: URL(
+                    fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit"
+                ),
+                simulatorHelperPath: nil,
+                requiresSimulatorHelper: false,
+                runner: runner
+            )
+        }
     }
 }
 
@@ -953,6 +1070,24 @@ private final class ThreadSafeRequestBox: @unchecked Sendable {
     }
 
     var value: PrivateHeaderKitGenerationRequest? {
+        lock.lock()
+        let value = storage
+        lock.unlock()
+        return value
+    }
+}
+
+private final class ThreadSafeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
+    }
+
+    var value: Int {
         lock.lock()
         let value = storage
         lock.unlock()
