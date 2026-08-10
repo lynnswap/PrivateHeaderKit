@@ -1241,6 +1241,7 @@ struct PrivateHeaderKitCLIParsingTests {
             at: runtimeRootAlias,
             withDestinationURL: runtimeRoot
         )
+        let outputBaseDirectory = root.appendingPathComponent("Output", isDirectory: true)
         let recorder = GenerationRequestRecorder()
 
         let exitCode = await runPrivateHeaderKitCommand(
@@ -1253,7 +1254,7 @@ struct PrivateHeaderKitCLIParsingTests {
                 "--system-root",
                 runtimeRootAlias.path,
                 "--out",
-                root.appendingPathComponent("Output", isDirectory: true).path,
+                outputBaseDirectory.path,
                 "--target",
                 "SwiftUI",
             ],
@@ -1271,6 +1272,22 @@ struct PrivateHeaderKitCLIParsingTests {
 
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
+        #expect(request.source.build == "24A5355q")
+        #expect(request.sourceDisplayName == "iOS 27.0 (24A5355q)")
+        #expect(request.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
+        #expect(
+            request.artifactDirectory
+                == outputBaseDirectory.appendingPathComponent(
+                    "ios-v1-27.0-b1-24~415355~71",
+                    isDirectory: true
+                )
+        )
+        #expect(
+            request.stateDirectory
+                == outputBaseDirectory
+                    .appendingPathComponent(".state", isDirectory: true)
+                    .appendingPathComponent("ios-v1-27.0-b1-24~415355~71", isDirectory: true)
+        )
         #expect(request.systemRoot == runtimeRoot.resolvingSymlinksInPath().standardizedFileURL)
         #expect(request.simulatorRuntimeRoot == runtimeRoot.resolvingSymlinksInPath().standardizedFileURL.path)
         #expect(request.usesSharedCache)
@@ -1287,6 +1304,8 @@ struct PrivateHeaderKitCLIParsingTests {
                 "27.0",
                 "--build",
                 "24AExplicit",
+                "--system-root",
+                "/tmp/RuntimeRoot",
                 "--out",
                 "/tmp/PrivateHeaderKit",
                 "--target",
@@ -1308,6 +1327,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(exitCode == 0)
         #expect(request.source.build == "24AExplicit")
         #expect(request.systemRoot?.path == "/tmp/RuntimeRoot")
+        #expect(request.usesSharedCache)
     }
 
     @Test func macOSGenerateUsesHostExecutionAndDoesNotResolveSimulator() async throws {
