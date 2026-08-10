@@ -252,6 +252,9 @@ Contract:
 - cancel 前に完了した target がある場合は、それらを含む generation の publication を recoverable critical section として完了させてから cancellation を caller へ返す。
 - pointer switch は temporary symlink を同一 parent directory で作成し、atomic rename/replace する。
 - generation marker の ID、artifact set checksum、plan fingerprint を publish 前に検証する。
+- artifact ownership は volume semantics に依存させない。各 path component を NFC、`en_US_POSIX` case-insensitive fold、NFC の順で portable key 化し、異なる component spelling、同一 leaf、file/descendant prefix の衝突を target 内・target 間・opaque 間で一括拒否する。同じ spelling の共有 directory prefix は許可する。
+- completed target の置換は prospective ownership、全 removal、全 source、全 destination を immutable mutation plan として検証してから draft を変更する。legacy opaque path は incoming path と byte-for-byte 同一の場合だけ target が claim でき、case/Unicode alias は claim とみなさない。
+- 同じ portable validator を apply、legacy inventory、generation prepare、persisted marker validation で使い、checksum/inventory mismatch より ownership collision を先に報告する。
 
 Publication order:
 
@@ -422,3 +425,4 @@ Required before completion:
 | accidental public implementation API | package scope + product removal | package describe has no Core library product; CLI/tests still compile |
 | discovery and raw dump observe different loaded caches | prepared cohort + pre-mutation identity revalidation + expected UUID | summary reuses one prepared value; changed UUID/path digest fails before state/output mutation; every raw invocation carries one UUID |
 | cache-only `/usr/lib` images are undiscoverable | filesystem/cache inventory union in `TargetDiscovery` | duplicate cache/filesystem paths deduplicate and cache-only direct dylibs resolve |
+| portable artifact aliases overwrite or hide ownership | `ArtifactPublisher` prospective ownership trie + preflighted mutation plan | case/NFC/prefix/same-target/opaque/forged-marker collisions fail before mutation; exact opaque claim and identical shared directories succeed |

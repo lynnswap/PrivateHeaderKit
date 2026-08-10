@@ -239,6 +239,371 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     }
   }
 
+  @Test func applyRejectsCaseAliasedPathsWithinOneTargetBeforeMutation() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-case-alias"),
+      allowLegacyMigration: false
+    )
+    let upperSource = try fixture.sourceFile(contents: "upper")
+    let lowerSource = try fixture.sourceFile(contents: "lower")
+
+    #expect(
+      throws: ArtifactPublisher.PublisherError.artifactCollision(
+        firstPath: "Frameworks/Foo/Headers/A.h",
+        firstOwner: "framework:Foo",
+        secondPath: "Frameworks/Foo/Headers/a.h",
+        secondOwner: "framework:Foo"
+      )
+    ) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Frameworks/Foo/Headers/A.h"): upperSource,
+          .init(rawValue: "Frameworks/Foo/Headers/a.h"): lowerSource,
+        ],
+        to: draft
+      )
+    }
+
+    #expect(try FileManager.default.contentsOfDirectory(atPath: draft.directory.path).isEmpty)
+  }
+
+  @Test func applyRejectsCanonicalUnicodeAliasInSharedComponents() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    var draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-unicode-alias"),
+      allowLegacyMigration: false
+    )
+    let decomposedPath = "Frameworks/Cafe\u{301}/Headers/A.h"
+    let composedPath = "Frameworks/Caf\u{e9}/Headers/B.h"
+    draft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:A",
+      files: [.init(rawValue: decomposedPath): try fixture.sourceFile(contents: "first")],
+      to: draft
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:B",
+        files: [.init(rawValue: composedPath): try fixture.sourceFile(contents: "second")],
+        to: draft
+      )
+    }
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent(decomposedPath),
+        encoding: .utf8
+      ) == "first"
+    )
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: draft.directory.appendingPathComponent(composedPath).path
+      ))
+  }
+
+  @Test func applyRejectsLeafParentCollisionBeforeMutation() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-prefix"),
+      allowLegacyMigration: false
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Frameworks/Foo/Headers"): try fixture.sourceFile(contents: "leaf"),
+          .init(rawValue: "Frameworks/Foo/Headers/Foo.h"):
+            try fixture.sourceFile(contents: "child"),
+        ],
+        to: draft
+      )
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: draft.directory.path).isEmpty)
+  }
+
+  @Test func applyRejectsPortableAliasOfOpaquePathButAllowsExactClaim() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let opaquePath = "Frameworks/Foo/Headers/User.h"
+    let opaqueURL = fixture.publisher.stableURL.appendingPathComponent(opaquePath)
+    try FileManager.default.createDirectory(
+      at: opaqueURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("opaque".utf8).write(to: opaqueURL)
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-opaque-alias"),
+      allowLegacyMigration: true
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Frameworks/Foo/Headers/user.h"):
+            try fixture.sourceFile(contents: "generated")
+        ],
+        to: draft
+      )
+    }
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent(opaquePath),
+        encoding: .utf8
+      ) == "opaque"
+    )
+
+    let claimed = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:Foo",
+      files: [
+        .init(rawValue: opaquePath): try fixture.sourceFile(contents: "generated")
+      ],
+      to: draft
+    )
+    #expect(claimed.opaquePaths.isEmpty)
+    #expect(claimed.artifactsByTarget["framework:Foo"] == [.init(rawValue: opaquePath)])
+    #expect(
+      try String(
+        contentsOf: claimed.directory.appendingPathComponent(opaquePath),
+        encoding: .utf8
+      ) == "generated"
+    )
+  }
+
+  @Test func applyAllowsIdenticalSharedDirectoryComponents() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    var draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-shared-directory"),
+      allowLegacyMigration: false
+    )
+    draft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:A",
+      files: [
+        .init(rawValue: "Frameworks/Shared/Headers/A.h"):
+          try fixture.sourceFile(contents: "a")
+      ],
+      to: draft
+    )
+    draft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:B",
+      files: [
+        .init(rawValue: "Frameworks/Shared/Headers/B.h"):
+          try fixture.sourceFile(contents: "b")
+      ],
+      to: draft
+    )
+
+    let prepared = try fixture.publisher.prepareGeneration(draft, planFingerprint: "fingerprint")
+    #expect(prepared.marker.artifactsByTarget.keys.sorted() == ["framework:A", "framework:B"])
+  }
+
+  @Test func applyPreflightsEverySourceBeforeRemovingReplacedArtifacts() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-source-preflight-old"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Headers/Old.h",
+        contents: "old"
+      )
+    )
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-source-preflight-new"),
+      allowLegacyMigration: false
+    )
+    let invalidSource = fixture.root.appendingPathComponent("invalid-source", isDirectory: true)
+    try FileManager.default.createDirectory(at: invalidSource, withIntermediateDirectories: false)
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Frameworks/Foo/Headers/A.h"):
+            try fixture.sourceFile(contents: "a"),
+          .init(rawValue: "Frameworks/Foo/Headers/Z.h"): invalidSource,
+        ],
+        to: draft
+      )
+    }
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent("Frameworks/Foo/Headers/Old.h"),
+        encoding: .utf8
+      ) == "old"
+    )
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: draft.directory.appendingPathComponent("Frameworks/Foo/Headers/A.h").path
+      ))
+  }
+
+  @Test func applyPreflightsEveryDestinationBeforeRemovingReplacedArtifacts() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-destination-preflight-old"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Headers/Old.h",
+        contents: "old"
+      )
+    )
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-destination-preflight-new"),
+      allowLegacyMigration: false
+    )
+    let outside = try fixture.sourceFile(contents: "outside")
+    let unsafeDestination = draft.directory.appendingPathComponent(
+      "Frameworks/Foo/Headers/Z.h"
+    )
+    try FileManager.default.createSymbolicLink(
+      at: unsafeDestination,
+      withDestinationURL: outside
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Frameworks/Foo/Headers/A.h"):
+            try fixture.sourceFile(contents: "a"),
+          .init(rawValue: "Frameworks/Foo/Headers/Z.h"):
+            try fixture.sourceFile(contents: "z"),
+        ],
+        to: draft
+      )
+    }
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent("Frameworks/Foo/Headers/Old.h"),
+        encoding: .utf8
+      ) == "old"
+    )
+    #expect(try String(contentsOf: outside, encoding: .utf8) == "outside")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: draft.directory.appendingPathComponent("Frameworks/Foo/Headers/A.h").path
+      ))
+  }
+
+  @Test func applyPreflightsEveryRemovalBeforeDeletingAnyOwnedArtifact() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    var initialDraft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-removal-preflight-old"),
+      allowLegacyMigration: false
+    )
+    initialDraft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:Foo",
+      files: [
+        .init(rawValue: "Frameworks/Foo/Headers/A.h"):
+          try fixture.sourceFile(contents: "a"),
+        .init(rawValue: "Frameworks/Foo/Headers/Z.h"):
+          try fixture.sourceFile(contents: "z"),
+      ],
+      to: initialDraft
+    )
+    try fixture.publish(
+      fixture.publisher.prepareGeneration(initialDraft, planFingerprint: "fingerprint")
+    )
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-removal-preflight-new"),
+      allowLegacyMigration: false
+    )
+    let invalidRemoval = draft.directory.appendingPathComponent("Frameworks/Foo/Headers/Z.h")
+    try FileManager.default.removeItem(at: invalidRemoval)
+    try FileManager.default.createDirectory(at: invalidRemoval, withIntermediateDirectories: false)
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Frameworks/Foo/Headers/New.h"):
+            try fixture.sourceFile(contents: "new")
+        ],
+        to: draft
+      )
+    }
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent("Frameworks/Foo/Headers/A.h"),
+        encoding: .utf8
+      ) == "a"
+    )
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: draft.directory.appendingPathComponent("Frameworks/Foo/Headers/New.h").path
+      ))
+  }
+
+  @Test func prepareGenerationRejectsForgedDraftCollisionBeforeInventoryMismatch() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let baseDraft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-forged-draft"),
+      allowLegacyMigration: false
+    )
+    let forged = ArtifactPublisher.Draft(
+      generationID: baseDraft.generationID,
+      directory: baseDraft.directory,
+      artifactsByTarget: [
+        "framework:Foo": [
+          .init(rawValue: "Frameworks/Foo/Headers/A.h"),
+          .init(rawValue: "Frameworks/Foo/Headers/a.h"),
+        ]
+      ],
+      opaquePaths: []
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.artifactCollision(
+      firstPath: "Frameworks/Foo/Headers/A.h",
+      firstOwner: "framework:Foo",
+      secondPath: "Frameworks/Foo/Headers/a.h",
+      secondOwner: "framework:Foo"
+    )) {
+      _ = try fixture.publisher.prepareGeneration(forged, planFingerprint: "fingerprint")
+    }
+  }
+
+  @Test func inspectPrioritizesPersistedPortableCollisionOverChecksumAndInventory() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let prepared = try fixture.prepare(
+      generationID: .init(rawValue: "generation-persisted-collision"),
+      targetID: "framework:Foo",
+      relativePath: "Frameworks/Foo/Headers/Foo.h",
+      contents: "header"
+    )
+    try fixture.publisher.movePreparedGeneration(prepared)
+    let markerURL = prepared.finalDirectory.appendingPathComponent(
+      ".privateheaderkit-generation.json"
+    )
+    var marker = try #require(
+      JSONSerialization.jsonObject(with: Data(contentsOf: markerURL)) as? [String: Any]
+    )
+    var ownership = try #require(marker["artifactsByTarget"] as? [String: Any])
+    ownership["framework:Bar"] = ["Frameworks/Foo/Headers/foo.h"]
+    marker["artifactsByTarget"] = ownership
+    marker["artifactChecksum"] = "intentionally-invalid"
+    try JSONSerialization.data(withJSONObject: marker).write(to: markerURL)
+
+    #expect(throws: ArtifactPublisher.PublisherError.artifactCollision(
+      firstPath: "Frameworks/Foo/Headers/Foo.h",
+      firstOwner: "framework:Foo",
+      secondPath: "Frameworks/Foo/Headers/foo.h",
+      secondOwner: "framework:Bar"
+    )) {
+      _ = try fixture.publisher.inspect()
+    }
+  }
+
   @Test func stableReaderObservesOnlyCompleteOldOrNewGenerations() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }

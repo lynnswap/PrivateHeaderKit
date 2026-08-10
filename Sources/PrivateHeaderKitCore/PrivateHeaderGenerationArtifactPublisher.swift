@@ -28,7 +28,12 @@ package struct ArtifactPublisher: Sendable {
     case legacyMigrationRequiresFresh(String)
     case generationAlreadyExists(String)
     case missingArtifact(String)
-    case artifactCollision(path: String, owners: [String])
+    case artifactCollision(
+      firstPath: String,
+      firstOwner: String,
+      secondPath: String,
+      secondOwner: String
+    )
     case inventoryMismatch(expected: [String], actual: [String])
     case markerMismatch(String)
     case posix(operation: String, path: String, errno: Int32)
@@ -46,8 +51,8 @@ package struct ArtifactPublisher: Sendable {
         "generation already exists: \(id)"
       case .missingArtifact(let path):
         "artifact is missing: \(path)"
-      case .artifactCollision(let path, let owners):
-        "artifact \(path) has multiple owners: \(owners.joined(separator: ", "))"
+      case .artifactCollision(let firstPath, let firstOwner, let secondPath, let secondOwner):
+        "artifact paths collide: \(firstOwner):\(firstPath) and \(secondOwner):\(secondPath)"
       case .inventoryMismatch(let expected, let actual):
         "generation inventory mismatch; expected \(expected), actual \(actual)"
       case .markerMismatch(let message):
@@ -66,6 +71,34 @@ package struct ArtifactPublisher: Sendable {
     let artifactChecksum: String
     let artifactsByTarget: [String: [String]]
     let opaquePaths: [String]
+  }
+
+  fileprivate struct OwnedArtifact {
+    let path: PrivateHeaderGeneration.ArtifactPath
+    let owner: String
+  }
+
+  fileprivate final class PortablePathNode {
+    struct Child {
+      let originalComponent: String
+      let node: PortablePathNode
+    }
+
+    var children: [String: Child] = [:]
+    var firstLeaf: OwnedArtifact?
+    var leaf: OwnedArtifact?
+  }
+
+  fileprivate struct TargetMutationPlan {
+    struct Copy {
+      let source: URL
+      let destination: URL
+    }
+
+    let pathsToRemove: [PrivateHeaderGeneration.ArtifactPath]
+    let copies: [Copy]
+    let artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]]
+    let opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
   }
 
   private typealias ItemKind = ManagedFileSystem.ItemKind
@@ -189,52 +222,25 @@ package struct ArtifactPublisher: Sendable {
     files: [PrivateHeaderGeneration.ArtifactPath: URL],
     to draft: Draft
   ) throws -> Draft {
-    guard !files.isEmpty else {
-      throw PublisherError.missingArtifact("target \(targetID) produced no files")
+    let plan = try targetMutationPlan(targetID: targetID, files: files, draft: draft)
+    for path in plan.pathsToRemove {
+      try removeOwnedArtifact(path, from: draft.directory)
     }
-    var ownership = draft.artifactsByTarget
-    var opaque = Set(draft.opaquePaths)
-
-    for oldPath in ownership[targetID] ?? [] {
-      try removeOwnedArtifact(oldPath, from: draft.directory)
-    }
-    ownership[targetID] = []
-
-    for path in files.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
-      let otherOwners =
-        ownership
-        .filter { $0.key != targetID && $0.value.contains(path) }
-        .map(\.key)
-        .sorted()
-      guard otherOwners.isEmpty else {
-        throw PublisherError.artifactCollision(
-          path: path.rawValue, owners: otherOwners + [targetID])
-      }
-      guard let source = files[path] else {
-        preconditionFailure("artifact dictionary changed during iteration")
-      }
-      guard try itemKind(at: source) == .regular else {
-        throw PublisherError.unexpectedItem(path: source.path, description: "expected regular file")
-      }
-      let destination = try artifactURL(path, in: draft.directory)
-      if try itemKind(at: destination) != nil {
-        try FileManager.default.removeItem(at: destination)
+    for copy in plan.copies {
+      if try itemKind(at: copy.destination) != nil {
+        try FileManager.default.removeItem(at: copy.destination)
       }
       try FileManager.default.createDirectory(
-        at: destination.deletingLastPathComponent(),
+        at: copy.destination.deletingLastPathComponent(),
         withIntermediateDirectories: true
       )
-      try FileManager.default.copyItem(at: source, to: destination)
-      ownership[targetID, default: []].append(path)
-      opaque.remove(path)
+      try FileManager.default.copyItem(at: copy.source, to: copy.destination)
     }
-
-    ownership[targetID]?.sort { $0.rawValue < $1.rawValue }
     return Draft(
       generationID: draft.generationID,
       directory: draft.directory,
-      artifactsByTarget: ownership,
-      opaquePaths: opaque.sorted { $0.rawValue < $1.rawValue }
+      artifactsByTarget: plan.artifactsByTarget,
+      opaquePaths: plan.opaquePaths
     )
   }
 
@@ -261,6 +267,10 @@ package struct ArtifactPublisher: Sendable {
     _ draft: Draft,
     planFingerprint: String
   ) throws -> PreparedGeneration {
+    try Self.validatePortableOwnership(
+      artifactsByTarget: draft.artifactsByTarget,
+      opaquePaths: draft.opaquePaths
+    )
     let actual = try inventoryRegularFiles(
       at: draft.directory,
       allowHidden: true,
@@ -469,6 +479,280 @@ extension ArtifactPublisher {
     try ensureDirectoryWithoutSymlinks(stagingURL)
   }
 
+  fileprivate func targetMutationPlan(
+    targetID: String,
+    files: [PrivateHeaderGeneration.ArtifactPath: URL],
+    draft: Draft
+  ) throws -> TargetMutationPlan {
+    guard !files.isEmpty else {
+      throw PublisherError.missingArtifact("target \(targetID) produced no files")
+    }
+    guard try itemKind(at: draft.directory) == .directory else {
+      throw PublisherError.unexpectedItem(
+        path: draft.directory.path,
+        description: "expected draft directory"
+      )
+    }
+
+    let sortedFiles = files.sorted { $0.key.rawValue < $1.key.rawValue }
+    let incomingPathKeys = Set(sortedFiles.map { Self.lexicalPathKey($0.key) })
+    let claimedOpaquePaths = draft.opaquePaths.filter {
+      incomingPathKeys.contains(Self.lexicalPathKey($0))
+    }
+    var seenRemovalKeys: Set<[UInt8]> = []
+    let pathsToRemove = ((draft.artifactsByTarget[targetID] ?? []) + claimedOpaquePaths)
+      .filter { seenRemovalKeys.insert(Self.lexicalPathKey($0)).inserted }
+      .sorted { Self.lexicalStringPrecedes($0.rawValue, $1.rawValue) }
+    var artifactsByTarget = draft.artifactsByTarget
+    artifactsByTarget[targetID] = sortedFiles.map(\.key)
+    let opaquePaths = draft.opaquePaths.filter {
+      !incomingPathKeys.contains(Self.lexicalPathKey($0))
+    }.sorted {
+      Self.lexicalStringPrecedes($0.rawValue, $1.rawValue)
+    }
+    try Self.validatePortableOwnership(
+      artifactsByTarget: artifactsByTarget,
+      opaquePaths: opaquePaths
+    )
+    for path in pathsToRemove {
+      try preflightRemoval(path, from: draft.directory)
+    }
+
+    var copies: [TargetMutationPlan.Copy] = []
+    copies.reserveCapacity(sortedFiles.count)
+    for (path, source) in sortedFiles {
+      guard try itemKind(at: source) == .regular else {
+        throw PublisherError.unexpectedItem(
+          path: source.path,
+          description: "expected regular file"
+        )
+      }
+      let destination = try artifactURL(path, in: draft.directory)
+      try preflightDestination(
+        path,
+        destination: destination,
+        in: draft.directory,
+        pathsToRemove: pathsToRemove
+      )
+      copies.append(.init(source: source, destination: destination))
+    }
+    return TargetMutationPlan(
+      pathsToRemove: pathsToRemove,
+      copies: copies,
+      artifactsByTarget: artifactsByTarget,
+      opaquePaths: opaquePaths
+    )
+  }
+
+  fileprivate func preflightRemoval(
+    _ artifact: PrivateHeaderGeneration.ArtifactPath,
+    from root: URL
+  ) throws {
+    let components = artifact.rawValue.split(separator: "/").map(String.init)
+    var current = root
+    for (index, component) in components.enumerated() {
+      current.appendPathComponent(component, isDirectory: false)
+      guard let kind = try itemKind(at: current) else {
+        throw PublisherError.missingArtifact(current.path)
+      }
+      let isLeaf = index == components.count - 1
+      if isLeaf {
+        guard kind == .regular else {
+          throw PublisherError.unexpectedItem(
+            path: current.path,
+            description: "owned artifact is not a regular file"
+          )
+        }
+      } else {
+        guard kind == .directory else {
+          throw PublisherError.unexpectedItem(
+            path: current.path,
+            description: "owned artifact parent is not a real directory"
+          )
+        }
+      }
+    }
+  }
+
+  fileprivate func preflightDestination(
+    _ artifact: PrivateHeaderGeneration.ArtifactPath,
+    destination: URL,
+    in root: URL,
+    pathsToRemove: [PrivateHeaderGeneration.ArtifactPath]
+  ) throws {
+    let components = artifact.rawValue.split(separator: "/").map(String.init)
+    var current = root
+    var currentComponents: [String] = []
+    for (index, component) in components.enumerated() {
+      current.appendPathComponent(component, isDirectory: false)
+      currentComponents.append(component)
+      guard let kind = try itemKind(at: current) else { continue }
+      let currentPath = try PrivateHeaderGeneration.ArtifactPath(
+        currentComponents.joined(separator: "/")
+      )
+      let isLeaf = index == components.count - 1
+      switch kind {
+      case .directory:
+        if isLeaf {
+          guard Self.pathWillBeRemoved(currentPath, by: pathsToRemove, asAncestor: true) else {
+            throw PublisherError.unexpectedItem(
+              path: destination.path,
+              description: "artifact destination is an existing directory"
+            )
+          }
+          let actual = try inventoryRegularFiles(
+            at: current,
+            allowHidden: true,
+            allowedExtensions: nil
+          ).map { try PrivateHeaderGeneration.ArtifactPath(
+            currentPath.rawValue + "/" + $0.path.rawValue
+          ) }
+          let removableKeys = Set(pathsToRemove.map(Self.lexicalPathKey))
+          guard actual.allSatisfy({ removableKeys.contains(Self.lexicalPathKey($0)) }) else {
+            throw PublisherError.unexpectedItem(
+              path: destination.path,
+              description: "artifact destination contains unowned files"
+            )
+          }
+        }
+      case .regular:
+        guard Self.pathWillBeRemoved(currentPath, by: pathsToRemove, asAncestor: false) else {
+          throw PublisherError.unexpectedItem(
+            path: current.path,
+            description: isLeaf
+              ? "artifact destination is not owned by the replaced target"
+              : "artifact destination parent is a regular file"
+          )
+        }
+      case .symbolicLink:
+        throw PublisherError.unexpectedItem(
+          path: current.path,
+          description: "symbolic links are not allowed"
+        )
+      case .other:
+        throw PublisherError.unexpectedItem(
+          path: current.path,
+          description: "unsupported filesystem item"
+        )
+      }
+    }
+  }
+
+  fileprivate static func pathWillBeRemoved(
+    _ path: PrivateHeaderGeneration.ArtifactPath,
+    by removedPaths: [PrivateHeaderGeneration.ArtifactPath],
+    asAncestor: Bool
+  ) -> Bool {
+    let key = lexicalPathComponents(path)
+    return removedPaths.contains { removedPath in
+      let removedKey = lexicalPathComponents(removedPath)
+      if asAncestor {
+        return removedKey.count > key.count && removedKey.prefix(key.count).elementsEqual(key)
+      }
+      return removedKey == key
+    }
+  }
+
+  fileprivate static func validatePortableOwnership(
+    artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
+    opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
+  ) throws {
+    var entries: [OwnedArtifact] = []
+    for targetID in artifactsByTarget.keys.sorted() {
+      entries += artifactsByTarget[targetID, default: []].map {
+        OwnedArtifact(path: $0, owner: targetID)
+      }
+    }
+    entries += opaquePaths.map { OwnedArtifact(path: $0, owner: "opaque") }
+    entries.sort(by: ownedArtifactPrecedes)
+
+    let root = PortablePathNode()
+    for entry in entries {
+      let rawComponents = entry.path.rawValue.split(separator: "/").map(String.init)
+      let portableComponents = rawComponents.map(portableComponentKey)
+      var node = root
+      var visitedNodes = [root]
+      for (rawComponent, portableComponent) in zip(rawComponents, portableComponents) {
+        if let shorterPath = node.leaf {
+          throw collision(shorterPath, entry)
+        }
+        if let child = node.children[portableComponent] {
+          if !child.originalComponent.utf8.elementsEqual(rawComponent.utf8) {
+            guard let aliasedPath = child.node.firstLeaf else {
+              preconditionFailure("portable path trie child has no representative leaf")
+            }
+            throw collision(aliasedPath, entry)
+          }
+          node = child.node
+        } else {
+          let child = PortablePathNode()
+          node.children[portableComponent] = .init(
+            originalComponent: rawComponent,
+            node: child
+          )
+          node = child
+        }
+        visitedNodes.append(node)
+      }
+      if let duplicate = node.leaf {
+        throw collision(duplicate, entry)
+      }
+      if let longerPath = node.firstLeaf {
+        throw collision(longerPath, entry)
+      }
+      node.leaf = entry
+      for visitedNode in visitedNodes where visitedNode.firstLeaf == nil {
+        visitedNode.firstLeaf = entry
+      }
+    }
+  }
+
+  fileprivate static func collision(
+    _ first: OwnedArtifact,
+    _ second: OwnedArtifact
+  ) -> PublisherError {
+    let pair = [first, second].sorted(by: ownedArtifactPrecedes)
+    return .artifactCollision(
+      firstPath: pair[0].path.rawValue,
+      firstOwner: pair[0].owner,
+      secondPath: pair[1].path.rawValue,
+      secondOwner: pair[1].owner
+    )
+  }
+
+  fileprivate static func ownedArtifactPrecedes(
+    _ lhs: OwnedArtifact,
+    _ rhs: OwnedArtifact
+  ) -> Bool {
+    if !lhs.path.rawValue.utf8.elementsEqual(rhs.path.rawValue.utf8) {
+      return lexicalStringPrecedes(lhs.path.rawValue, rhs.path.rawValue)
+    }
+    return lexicalStringPrecedes(lhs.owner, rhs.owner)
+  }
+
+  fileprivate static func lexicalPathKey(
+    _ path: PrivateHeaderGeneration.ArtifactPath
+  ) -> [UInt8] {
+    Array(path.rawValue.utf8)
+  }
+
+  fileprivate static func lexicalPathComponents(
+    _ path: PrivateHeaderGeneration.ArtifactPath
+  ) -> [[UInt8]] {
+    path.rawValue.split(separator: "/").map { Array($0.utf8) }
+  }
+
+  fileprivate static func lexicalStringPrecedes(_ lhs: String, _ rhs: String) -> Bool {
+    lhs.utf8.lexicographicallyPrecedes(rhs.utf8)
+  }
+
+  fileprivate static func portableComponentKey(_ component: String) -> String {
+    component
+      .precomposedStringWithCanonicalMapping
+      .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+      .precomposedStringWithCanonicalMapping
+  }
+
   fileprivate static func canonicalizedOutputURL(_ url: URL) throws -> URL {
     do {
       return try ManagedFileSystem.canonicalizedDirectoryResolvingExistingAncestor(url)
@@ -555,32 +839,17 @@ extension ArtifactPublisher {
       throw PublisherError.markerMismatch("missing marker for \(expectedID.rawValue)")
     }
     let marker = try JSONDecoder().decode(Marker.self, from: Data(contentsOf: markerURL))
-    guard marker.generationID == expectedID.rawValue else {
-      throw PublisherError.markerMismatch("directory and marker generation IDs differ")
-    }
     var artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]] = [:]
     for (targetID, paths) in marker.artifactsByTarget {
       artifactsByTarget[targetID] = try paths.map { try PrivateHeaderGeneration.ArtifactPath($0) }
     }
     let opaquePaths = try marker.opaquePaths.map { try PrivateHeaderGeneration.ArtifactPath($0) }
-    var ownerByPath: [PrivateHeaderGeneration.ArtifactPath: String] = [:]
-    for targetID in artifactsByTarget.keys.sorted() {
-      for path in artifactsByTarget[targetID, default: []] {
-        if let existingOwner = ownerByPath.updateValue(targetID, forKey: path) {
-          throw PublisherError.artifactCollision(
-            path: path.rawValue,
-            owners: [existingOwner, targetID]
-          )
-        }
-      }
-    }
-    for path in opaquePaths {
-      if let existingOwner = ownerByPath.updateValue("opaque", forKey: path) {
-        throw PublisherError.artifactCollision(
-          path: path.rawValue,
-          owners: [existingOwner, "opaque"]
-        )
-      }
+    try Self.validatePortableOwnership(
+      artifactsByTarget: artifactsByTarget,
+      opaquePaths: opaquePaths
+    )
+    guard marker.generationID == expectedID.rawValue else {
+      throw PublisherError.markerMismatch("directory and marker generation IDs differ")
     }
     let checksum = Self.artifactChecksum(
       planFingerprint: marker.planFingerprint,
@@ -652,6 +921,7 @@ extension ArtifactPublisher {
     let paths = try inventoryRegularFiles(at: root, allowHidden: true, allowedExtensions: nil)
       .map(\.path)
       .sorted { $0.rawValue < $1.rawValue }
+    try Self.validatePortableOwnership(artifactsByTarget: [:], opaquePaths: paths)
     guard !paths.contains(where: { $0.rawValue == Self.markerName }) else {
       throw PublisherError.unexpectedItem(
         path: root.appendingPathComponent(Self.markerName).path,

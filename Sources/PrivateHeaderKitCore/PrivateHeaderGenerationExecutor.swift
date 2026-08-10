@@ -1189,8 +1189,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
       guard result.updateValue(url, forKey: artifact) == nil else {
         throw ArtifactPublisher.PublisherError.artifactCollision(
-          path: artifact.rawValue,
-          owners: [targetIDForDiagnostic(sourceDirectory)]
+          firstPath: artifact.rawValue,
+          firstOwner: targetIDForDiagnostic(sourceDirectory),
+          secondPath: artifact.rawValue,
+          secondOwner: targetIDForDiagnostic(sourceDirectory)
         )
       }
     }
