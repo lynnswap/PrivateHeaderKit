@@ -440,16 +440,16 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             try persistCancellationAndThrow(for: runRecord)
         }
 
-        progressReporter?(.runFinished(
-            runID: runID,
-            status: finalStatus
-        ))
-
         try repository.pruneRunHistory(from: repository.listRunSummaries())
 
         if Task.isCancelled {
             try persistCancellationAndThrow(for: runRecord)
         }
+
+        progressReporter?(.runFinished(
+            runID: runID,
+            status: finalStatus
+        ))
 
         let failedTargetIDs = runRecord.targetResults
             .filter { !$0.status.isSuccessfulOrSkipped }

@@ -476,6 +476,57 @@ struct PrivateHeaderGenerationExecutorTests {
         ))
     }
 
+    @Test func cancellationInRunFinishedDoesNotRewriteCompletedTerminalState() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let rawRunner = RecordingRawDumpRunner()
+        let progress = ProgressEventRecorder()
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        let task = Task {
+            try await executor.run(.init(
+                plan: plan,
+                progressReporter: { event in
+                    progress.record(event)
+                    guard case .runFinished = event else {
+                        return
+                    }
+                    withUnsafeCurrentTask { task in
+                        task?.cancel()
+                    }
+                }
+            ))
+        }
+
+        let result = try await task.value
+
+        #expect(result.generatedTargets.map(\.description) == ["framework:Foo.framework"])
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let run = try #require(try repository.readRun(id: "run-001"))
+        let manifest = try #require(try repository.readManifest())
+        let terminalEvents = progress.events.filter { event in
+            if case .runFinished = event {
+                return true
+            }
+            return false
+        }
+
+        #expect(run.status == .completed)
+        #expect(run.endedAt != nil)
+        #expect(run.targetResults.first?.status == .completed)
+        #expect(manifest.latestRunID == "run-001")
+        #expect(manifest.targets.first?.status == .completed)
+        #expect(terminalEvents == [
+            .runFinished(runID: "run-001", status: .completed),
+        ])
+    }
+
     @Test func cancellationAfterFirstDurableTargetDoesNotStartOrRecordNextTarget() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
