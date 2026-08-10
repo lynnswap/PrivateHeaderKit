@@ -1,4 +1,5 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 import Testing
 
 @testable import PrivateHeaderKitCore
@@ -8,6 +9,228 @@ struct PrivateHeaderGenerationExecutorTests {
   private enum InjectedFault: Error {
     case stop
     case rawFailure
+  }
+
+  @Test func preparedCacheCohortIsReusedByResumeAndValidatedBeforeEveryRawDump() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try fixture.createFramework("Bar.framework")
+    let cacheUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let inventoryRunner = RecordingInventoryRunner(
+      data: try sharedCacheInventoryData(
+        cacheUUID: cacheUUID,
+        imagePaths: [
+          "/System/Library/Frameworks/Foo.framework/Foo",
+          "/System/Library/Frameworks/Bar.framework/Bar",
+        ]
+      )
+    )
+    let rawRunner = RecordingRunner(contents: "generated")
+    let executor = fixture.executor(
+      runner: rawRunner,
+      inventoryRunner: { invocation in try await inventoryRunner.run(invocation) },
+      runID: "run-cache",
+      generationID: "generation-cache"
+    )
+    let plan = try fixture.plan(
+      .identifiers(["framework:Foo.framework", "framework:Bar.framework"]),
+      rawDumpingOptions: .init(useSharedCache: true)
+    )
+
+    let preparedPlan = try await executor.prepare(plan)
+    #expect(preparedPlan.sharedCacheCohort?.cacheUUID == cacheUUID)
+    #expect(await inventoryRunner.invocationCount == 1)
+    #expect(try await executor.availableResumeSummary(for: preparedPlan) == nil)
+    #expect(await inventoryRunner.invocationCount == 1)
+    _ = try await executor.run(preparedPlan)
+
+    #expect(await inventoryRunner.invocationCount == 2)
+    #expect(await rawRunner.invocationCount == 2)
+    for invocation in await rawRunner.invocations {
+      #expect(invocation.command.contains("--expected-cache-uuid"))
+      #expect(invocation.command.contains(cacheUUID.uuidString.lowercased()))
+    }
+  }
+
+  @Test func disabledSharedCacheDoesNotInvokeInventoryRunner() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let inventoryRunner = RecordingInventoryRunner(
+      data: try sharedCacheInventoryData(
+        imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
+      )
+    )
+    let executor = fixture.executor(
+      runner: RecordingRunner(contents: "generated"),
+      inventoryRunner: { invocation in try await inventoryRunner.run(invocation) },
+      runID: "run-no-cache",
+      generationID: "generation-no-cache"
+    )
+
+    let preparedPlan = try await executor.prepare(try fixture.plan(.query("Foo")))
+    _ = try await executor.run(preparedPlan)
+
+    #expect(await inventoryRunner.invocationCount == 0)
+    #expect(preparedPlan.sharedCacheCohort == nil)
+  }
+
+  @Test func changedPreparedCacheCohortFailsBeforeLeaseStateOrRawDump() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let inventoryRunner = RecordingInventoryRunner(
+      data: try sharedCacheInventoryData(
+        cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+        imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
+      )
+    )
+    let rawRunner = RecordingRunner(contents: "generated")
+    let executor = fixture.executor(
+      runner: rawRunner,
+      inventoryRunner: { invocation in try await inventoryRunner.run(invocation) },
+      runID: "run-cache-change",
+      generationID: "generation-cache-change"
+    )
+    let preparedPlan = try await executor.prepare(
+      try fixture.plan(
+        .query("Foo"),
+        rawDumpingOptions: .init(useSharedCache: true)
+      )
+    )
+    await inventoryRunner.replaceData(
+      try sharedCacheInventoryData(
+        cacheUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+        imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
+      )
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+      _ = try await executor.run(preparedPlan)
+    }
+
+    #expect(await rawRunner.invocationCount == 0)
+    #expect(!FileManager.default.fileExists(atPath: fixture.outputBase.path))
+  }
+
+  @Test func preparedPlanCanChangeOnlyInteractiveResumeBehaviorWithoutReloadingCohort() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let inventoryRunner = RecordingInventoryRunner(
+      data: try sharedCacheInventoryData(
+        imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
+      )
+    )
+    let executor = fixture.executor(
+      runner: RecordingRunner(contents: nil),
+      inventoryRunner: { invocation in try await inventoryRunner.run(invocation) },
+      runID: "run-unused",
+      generationID: "generation-unused"
+    )
+    let preparedPlan = try await executor.prepare(
+      try fixture.plan(
+        .query("Foo"),
+        rawDumpingOptions: .init(useSharedCache: true)
+      )
+    )
+
+    let resumedPlan = preparedPlan.withResumeBehavior(.resume)
+
+    #expect(resumedPlan.plan.options.resumeBehavior == .resume)
+    #expect(resumedPlan.sharedCacheCohort == preparedPlan.sharedCacheCohort)
+    #expect(resumedPlan.selectedTargetIDs == preparedPlan.selectedTargetIDs)
+    #expect(await inventoryRunner.invocationCount == 1)
+  }
+
+  @Test func sharedCacheFingerprintIncludesUUIDAndCanonicalInventoryPaths() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let plan = try fixture.plan(
+      .query("Foo"),
+      rawDumpingOptions: .init(useSharedCache: true)
+    )
+    let firstExecutor = fixture.executor(
+      runner: RecordingRunner(contents: nil),
+      inventoryRunner: { _ in
+        try sharedCacheInventoryData(
+          cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+          imagePaths: ["/z", "/a"]
+        )
+      },
+      runID: "run-unused-1",
+      generationID: "generation-unused-1"
+    )
+    let reorderedExecutor = fixture.executor(
+      runner: RecordingRunner(contents: nil),
+      inventoryRunner: { _ in
+        try sharedCacheInventoryData(
+          cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+          imagePaths: ["/a", "/z", "/a"]
+        )
+      },
+      runID: "run-unused-2",
+      generationID: "generation-unused-2"
+    )
+    let changedExecutor = fixture.executor(
+      runner: RecordingRunner(contents: nil),
+      inventoryRunner: { _ in
+        try sharedCacheInventoryData(
+          cacheUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+          imagePaths: ["/a", "/z"]
+        )
+      },
+      runID: "run-unused-3",
+      generationID: "generation-unused-3"
+    )
+    let first = try await firstExecutor.prepare(plan)
+    let reordered = try await reorderedExecutor.prepare(plan)
+    let changed = try await changedExecutor.prepare(plan)
+    let outputBase = fixture.outputBase.standardizedFileURL
+
+    let firstFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      plan,
+      canonicalOutputBase: outputBase,
+      executionMode: .host,
+      sharedCacheCohort: first.sharedCacheCohort
+    )
+    let reorderedFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      plan,
+      canonicalOutputBase: outputBase,
+      executionMode: .host,
+      sharedCacheCohort: reordered.sharedCacheCohort
+    )
+    let changedFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      plan,
+      canonicalOutputBase: outputBase,
+      executionMode: .host,
+      sharedCacheCohort: changed.sharedCacheCohort
+    )
+
+    #expect(firstFingerprint == reorderedFingerprint)
+    #expect(firstFingerprint != changedFingerprint)
+  }
+
+  @Test func emptySharedCacheInventoryFailsDuringPreparation() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let executor = fixture.executor(
+      runner: RecordingRunner(contents: nil),
+      inventoryRunner: { _ in try sharedCacheInventoryData(imagePaths: []) },
+      runID: "run-unused",
+      generationID: "generation-unused"
+    )
+    let plan = try fixture.plan(
+      .query("Foo"),
+      rawDumpingOptions: .init(useSharedCache: true)
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+      _ = try await executor.prepare(plan)
+    }
   }
 
   @Test func successfulRunPublishesImmutableGenerationAndCommitsStore() async throws {
@@ -759,6 +982,30 @@ private actor RecordingRunner {
   }
 }
 
+private actor RecordingInventoryRunner {
+  private var data: Data
+  private(set) var invocations: [
+    PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
+  ] = []
+
+  init(data: Data) {
+    self.data = data
+  }
+
+  var invocationCount: Int { invocations.count }
+
+  func replaceData(_ data: Data) {
+    self.data = data
+  }
+
+  func run(
+    _ invocation: PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
+  ) throws -> Data {
+    invocations.append(invocation)
+    return data
+  }
+}
+
 private struct ExecutorFixture {
   let root: URL
   let systemRoot: URL
@@ -818,7 +1065,8 @@ private struct ExecutorFixture {
     layout: PrivateHeaderGeneration.Layout = .headers,
     resumeBehavior: PrivateHeaderGeneration.ResumeBehavior = .requireExplicitResume(
       resumeRequested: false),
-    outputBase: URL? = nil
+    outputBase: URL? = nil,
+    rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options = .init()
   ) throws -> PrivateHeaderGeneration.Plan {
     return PrivateHeaderGeneration.makePlan(
       source: source,
@@ -829,6 +1077,7 @@ private struct ExecutorFixture {
         systemRoot: systemRoot,
         helperURLs: helperURLs,
         executionMode: .host,
+        rawDumpingOptions: rawDumpingOptions,
         resumeBehavior: resumeBehavior,
         toolCompatibilityIdentity: "test"
       )
@@ -837,6 +1086,7 @@ private struct ExecutorFixture {
 
   func executor(
     runner: RecordingRunner,
+    inventoryRunner: PrivateHeaderGeneration.GenerationExecutor.SharedCacheInventoryRunner? = nil,
     runID: String,
     generationID: String,
     storeFaultInjector: @escaping GenerationStore.FaultInjector = { _ in },
@@ -845,6 +1095,7 @@ private struct ExecutorFixture {
   ) -> PrivateHeaderGeneration.GenerationExecutor {
     .init(
       rawDumpRunner: { invocation in try await runner.run(invocation) },
+      sharedCacheInventoryRunner: inventoryRunner,
       runIDGenerator: { runID },
       generationIDGenerator: { generationID },
       dateProvider: { Date(timeIntervalSinceReferenceDate: 100) },
@@ -864,4 +1115,16 @@ private struct ExecutorFixture {
   func readStableHeader(framework: String = "Foo") throws -> String {
     try String(contentsOf: stableHeaderURL(framework: framework), encoding: .utf8)
   }
+}
+
+private func sharedCacheInventoryData(
+  cacheUUID: UUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+  imagePaths: [String]
+) throws -> Data {
+  try JSONEncoder().encode(
+    PrivateHeaderKitSharedCacheInventory(
+      cacheUUID: cacheUUID,
+      imagePaths: imagePaths
+    )
+  )
 }

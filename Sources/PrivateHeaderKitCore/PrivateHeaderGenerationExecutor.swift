@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import PrivateHeaderKitHelperProtocol
 
 extension PrivateHeaderGeneration {
   package static func availableResumeSummary(
@@ -8,7 +9,11 @@ extension PrivateHeaderGeneration {
     options: Options
   ) async throws -> ResumeSummary? {
     let plan = makePlan(source: source, output: output, options: options)
-    return try await GenerationExecutor.availableResumeSummary(for: plan)
+    let preparedPlan = try await GenerationExecutor.preparePlan(
+      plan,
+      sharedCacheInventoryRunner: nil
+    )
+    return try await GenerationExecutor.resumeSummary(for: preparedPlan)
   }
 
   package struct GenerationExecutor: Sendable {
@@ -20,6 +25,10 @@ extension PrivateHeaderGeneration {
       @Sendable (
         PrivateHeaderGeneration.RawDumping.Invocation
       ) async throws -> PrivateHeaderGeneration.RawDumping.Result
+    package typealias SharedCacheInventoryRunner =
+      @Sendable (
+        PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
+      ) async throws -> Data
     package typealias ProgressReporter =
       @Sendable (
         PrivateHeaderGeneration.ProgressEvent
@@ -39,7 +48,51 @@ extension PrivateHeaderGeneration {
       }
     }
 
+    package struct SharedCacheCohort: Hashable, Sendable {
+      package let schemaVersion: Int
+      package let cacheUUID: UUID
+      package let imagePathDigest: String
+      fileprivate let imagePaths: [String]
+
+      fileprivate init(_ inventory: PrivateHeaderKitSharedCacheInventory) {
+        schemaVersion = inventory.schemaVersion
+        cacheUUID = inventory.cacheUUID
+        imagePaths = inventory.imagePaths
+        let digest = SHA256.hash(data: GenerationExecutor.canonicalFingerprintPayload(imagePaths))
+        imagePathDigest = digest.map { String(format: "%02x", $0) }.joined()
+      }
+    }
+
+    package struct PreparedPlan: Sendable {
+      package let plan: Plan
+      package let selectedTargetIDs: [String]
+      package let sharedCacheCohort: SharedCacheCohort?
+      fileprivate let selectedTargets: [TargetDiscovery.DiscoveredTarget]
+
+      fileprivate init(
+        plan: Plan,
+        selectedTargets: [TargetDiscovery.DiscoveredTarget],
+        sharedCacheCohort: SharedCacheCohort?
+      ) {
+        self.plan = plan
+        self.selectedTargets = selectedTargets
+        self.selectedTargetIDs = selectedTargets.map(\.candidate.identifier)
+        self.sharedCacheCohort = sharedCacheCohort
+      }
+
+      package func withResumeBehavior(_ resumeBehavior: ResumeBehavior) -> PreparedPlan {
+        var options = plan.options
+        options.resumeBehavior = resumeBehavior
+        return PreparedPlan(
+          plan: Plan(source: plan.source, output: plan.output, options: options),
+          selectedTargets: selectedTargets,
+          sharedCacheCohort: sharedCacheCohort
+        )
+      }
+    }
+
     private let rawDumpRunner: RawDumpRunner
+    private let sharedCacheInventoryRunner: SharedCacheInventoryRunner?
     private let runIDGenerator: @Sendable () -> String
     private let generationIDGenerator: @Sendable () -> String
     private let dateProvider: @Sendable () -> Date
@@ -48,6 +101,7 @@ extension PrivateHeaderGeneration {
 
     package init(
       rawDumpRunner: @escaping RawDumpRunner,
+      sharedCacheInventoryRunner: SharedCacheInventoryRunner? = nil,
       runIDGenerator: @escaping @Sendable () -> String = {
         "run-\(UUID().uuidString.lowercased())"
       },
@@ -59,6 +113,7 @@ extension PrivateHeaderGeneration {
       publicationFaultInjector: @escaping PublicationFaultInjector = { _ in }
     ) {
       self.rawDumpRunner = rawDumpRunner
+      self.sharedCacheInventoryRunner = sharedCacheInventoryRunner
       self.runIDGenerator = runIDGenerator
       self.generationIDGenerator = generationIDGenerator
       self.dateProvider = dateProvider
@@ -66,30 +121,40 @@ extension PrivateHeaderGeneration {
       self.publicationFaultInjector = publicationFaultInjector
     }
 
+    package func prepare(_ plan: Plan) async throws -> PreparedPlan {
+      try await Self.preparePlan(
+        plan,
+        sharedCacheInventoryRunner: sharedCacheInventoryRunner
+      )
+    }
+
+    package func availableResumeSummary(
+      for preparedPlan: PreparedPlan
+    ) async throws -> ResumeSummary? {
+      try await Self.resumeSummary(for: preparedPlan)
+    }
+
     package func run(_ configuration: Configuration) async throws -> Result {
-      let plan = configuration.plan
+      let preparedPlan = try await prepare(configuration.plan)
+      return try await run(
+        preparedPlan,
+        progressReporter: configuration.progressReporter
+      )
+    }
+
+    package func run(
+      _ preparedPlan: PreparedPlan,
+      progressReporter: ProgressReporter? = nil
+    ) async throws -> Result {
+      let plan = preparedPlan.plan
       let options = plan.options
-      guard let systemRoot = options.systemRoot else {
-        throw GenerationError.missingExecutionConfiguration("systemRoot")
-      }
       guard let helperURLs = options.helperURLs else {
         throw GenerationError.missingExecutionConfiguration("helperURLs")
       }
       guard let executionMode = options.executionMode else {
         throw GenerationError.missingExecutionConfiguration("executionMode")
       }
-
-      let catalog = try TargetDiscovery.discover(
-        in: systemRoot,
-        includeNestedChildren: options.includeNestedChildren
-      )
-      let selectedTargets = try Self.selectedExecutionTargets(
-        request: options.targetRequest,
-        catalog: catalog
-      )
-      guard !selectedTargets.isEmpty else {
-        throw GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
-      }
+      try await validatePreparedCohort(preparedPlan)
 
       let publisher = try ArtifactPublisher(
         artifactBaseDirectory: plan.output.baseDirectory,
@@ -128,12 +193,13 @@ extension PrivateHeaderGeneration {
           plan: plan,
           stateDirectory: stateDirectory,
           databaseURL: databaseURL,
-          selectedTargets: selectedTargets,
+          selectedTargets: preparedPlan.selectedTargets,
+          sharedCacheCohort: preparedPlan.sharedCacheCohort,
           store: store,
           publisher: publisher,
           helperURLs: helperURLs,
           executionMode: executionMode,
-          progressReporter: configuration.progressReporter
+          progressReporter: progressReporter
         )
       }
     }
@@ -169,6 +235,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     stateDirectory: URL,
     databaseURL: URL,
     selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
+    sharedCacheCohort: SharedCacheCohort?,
     store: GenerationStore,
     publisher: ArtifactPublisher,
     helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
@@ -192,7 +259,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let fingerprint = Self.planFingerprint(
       plan,
       canonicalOutputBase: publisher.artifactBaseDirectory,
-      executionMode: executionMode
+      executionMode: executionMode,
+      sharedCacheCohort: sharedCacheCohort
     )
     let resumeSummary: PrivateHeaderGeneration.ResumeSummary?
     if plan.options.resumeBehavior.isFresh {
@@ -329,6 +397,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           plan: plan,
           helperURLs: helperURLs,
           executionMode: executionMode,
+          expectedCacheUUID: sharedCacheCohort?.cacheUUID,
           stagingDirectory: targetStagingDirectory,
           publisher: publisher
         )
@@ -662,17 +731,19 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     plan: PrivateHeaderGeneration.Plan,
     helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    expectedCacheUUID: UUID?,
     stagingDirectory: URL,
     publisher: ArtifactPublisher
   ) async throws -> TargetExecution {
     let now = dateProvider()
     let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-      PrivateHeaderGeneration.RawDumping.Request(
+      try PrivateHeaderGeneration.RawDumping.Request(
         helperURLs: helperURLs,
         executionMode: executionMode,
         inputPath: Self.inputPath(for: target, executionMode: executionMode),
         stagingOutputDirectory: stagingDirectory,
-        options: plan.options.rawDumpingOptions
+        options: plan.options.rawDumpingOptions,
+        expectedCacheUUID: expectedCacheUUID
       )
     )
 
@@ -781,6 +852,38 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 }
 
 extension PrivateHeaderGeneration.GenerationExecutor {
+  fileprivate func validatePreparedCohort(_ preparedPlan: PreparedPlan) async throws {
+    guard let expectedCohort = preparedPlan.sharedCacheCohort else { return }
+    guard let sharedCacheInventoryRunner else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration(
+        "sharedCacheInventoryRunner"
+      )
+    }
+    guard let helperURLs = preparedPlan.plan.options.helperURLs else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("helperURLs")
+    }
+    guard let executionMode = preparedPlan.plan.options.executionMode else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
+    }
+    let actualCohort = try await Self.loadSharedCacheCohort(
+      helperURLs: helperURLs,
+      executionMode: executionMode,
+      helperEnvironment: preparedPlan.plan.options.rawDumpingOptions.helperEnvironment,
+      sharedCacheInventoryRunner: sharedCacheInventoryRunner
+    )
+    guard
+      expectedCohort.cacheUUID == actualCohort.cacheUUID,
+      expectedCohort.imagePathDigest == actualCohort.imagePathDigest
+    else {
+      throw PrivateHeaderGeneration.GenerationError.sharedCacheCohortChanged(
+        expectedUUID: expectedCohort.cacheUUID,
+        expectedImagePathDigest: expectedCohort.imagePathDigest,
+        actualUUID: actualCohort.cacheUUID,
+        actualImagePathDigest: actualCohort.imagePathDigest
+      )
+    }
+  }
+
   fileprivate static func recover(
     store: GenerationStore,
     publisher: ArtifactPublisher,
@@ -808,23 +911,91 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     throw PrivateHeaderGeneration.StateError.corruptPublication("recovery did not converge")
   }
 
-  fileprivate static func availableResumeSummary(
-    for plan: PrivateHeaderGeneration.Plan
-  ) async throws -> PrivateHeaderGeneration.ResumeSummary? {
+  fileprivate static func preparePlan(
+    _ plan: PrivateHeaderGeneration.Plan,
+    sharedCacheInventoryRunner: SharedCacheInventoryRunner?
+  ) async throws -> PreparedPlan {
     guard let systemRoot = plan.options.systemRoot else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("systemRoot")
+    }
+    guard let helperURLs = plan.options.helperURLs else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("helperURLs")
     }
     guard let executionMode = plan.options.executionMode else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
     }
+
+    let sharedCacheCohort: SharedCacheCohort?
+    if plan.options.rawDumpingOptions.useSharedCache {
+      guard let sharedCacheInventoryRunner else {
+        throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration(
+          "sharedCacheInventoryRunner"
+        )
+      }
+      sharedCacheCohort = try await loadSharedCacheCohort(
+        helperURLs: helperURLs,
+        executionMode: executionMode,
+        helperEnvironment: plan.options.rawDumpingOptions.helperEnvironment,
+        sharedCacheInventoryRunner: sharedCacheInventoryRunner
+      )
+    } else {
+      sharedCacheCohort = nil
+    }
+
     let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
       in: systemRoot,
-      includeNestedChildren: plan.options.includeNestedChildren
+      includeNestedChildren: plan.options.includeNestedChildren,
+      sharedCacheImagePaths: sharedCacheCohort?.imagePaths ?? []
     )
     let selectedTargets = try selectedExecutionTargets(
       request: plan.options.targetRequest,
       catalog: catalog
     )
+    guard !selectedTargets.isEmpty else {
+      throw PrivateHeaderGeneration.GenerationError.noDiscoveredTargets(
+        systemRoot: systemRoot.path
+      )
+    }
+    return PreparedPlan(
+      plan: plan,
+      selectedTargets: selectedTargets,
+      sharedCacheCohort: sharedCacheCohort
+    )
+  }
+
+  fileprivate static func loadSharedCacheCohort(
+    helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    helperEnvironment: [String: String],
+    sharedCacheInventoryRunner: SharedCacheInventoryRunner
+  ) async throws -> SharedCacheCohort {
+    try Task.checkCancellation()
+    let invocation = PrivateHeaderGeneration.RawDumping.makeSharedCacheInventoryInvocation(
+      helperURLs: helperURLs,
+      executionMode: executionMode,
+      helperEnvironment: helperEnvironment
+    )
+    let data = try await sharedCacheInventoryRunner(invocation)
+    try Task.checkCancellation()
+    let inventory = try JSONDecoder().decode(
+      PrivateHeaderKitSharedCacheInventory.self,
+      from: data
+    )
+    guard !inventory.imagePaths.isEmpty else {
+      throw PrivateHeaderGeneration.GenerationError.emptySharedCacheInventory(
+        cacheUUID: inventory.cacheUUID
+      )
+    }
+    return SharedCacheCohort(inventory)
+  }
+
+  fileprivate static func resumeSummary(
+    for preparedPlan: PreparedPlan
+  ) async throws -> PrivateHeaderGeneration.ResumeSummary? {
+    let plan = preparedPlan.plan
+    guard let executionMode = plan.options.executionMode else {
+      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
+    }
     let publisher = try ArtifactPublisher(
       artifactBaseDirectory: plan.output.baseDirectory,
       sourceLabel: plan.source.storageIdentifier
@@ -868,9 +1039,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         planFingerprint: planFingerprint(
           plan,
           canonicalOutputBase: publisher.artifactBaseDirectory,
-          executionMode: executionMode
+          executionMode: executionMode,
+          sharedCacheCohort: preparedPlan.sharedCacheCohort
         ),
-        selectedTargetIDs: selectedTargets.map(\.candidate.identifier),
+        selectedTargetIDs: preparedPlan.selectedTargetIDs,
         currentArtifactsByTarget: publication.currentMarker?.artifactsByTarget ?? [:],
         at: Date()
       )
@@ -1149,10 +1321,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   package static func planFingerprint(
     _ plan: PrivateHeaderGeneration.Plan,
     canonicalOutputBase: URL,
-    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    sharedCacheCohort: SharedCacheCohort?
   ) -> String {
     var components = [
-      "privateheaderkit-plan-fingerprint-v1",
+      "privateheaderkit-plan-fingerprint-v2",
       plan.source.storageIdentifier,
       canonicalOutputBase.path,
       plan.options.layout.rawValue,
@@ -1166,6 +1339,16 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       plan.options.helperURLs?.host.standardizedFileURL.path ?? "",
       plan.options.helperURLs?.simulator.standardizedFileURL.path ?? "",
     ]
+    if let sharedCacheCohort {
+      components += [
+        "loaded-shared-cache",
+        String(sharedCacheCohort.schemaVersion),
+        sharedCacheCohort.cacheUUID.uuidString.lowercased(),
+        sharedCacheCohort.imagePathDigest,
+      ]
+    } else {
+      components.append("filesystem-only")
+    }
     switch executionMode {
     case .host:
       components.append("host")

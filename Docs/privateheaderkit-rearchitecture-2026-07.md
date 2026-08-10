@@ -85,6 +85,8 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 | Cross-process exclusivity | `GenerationLease` | existing `flock` held across recovery, raw dump, publication, and state finalization |
 | Artifact version construction/publication | `ArtifactPublisher` | fully managed source root; immutable generation + atomic pointer |
 | Raw process capability | `RawDumpRunner` port | Core declares request/result closure; Tooling supplies adapter |
+| Loaded shared-cache cohort | `GenerationExecutor.PreparedPlan` | one validated inventory defines discovery, fingerprint, and every raw-dump expected UUID; run revalidates identity before mutation |
+| Shared-cache inventory process capability | `SharedCacheInventoryRunner` port | Core declares invocation/data closure; CLI supplies the Tooling adapter |
 | Process implementation | `SubprocessRawDumpRunner` / Tooling | `swift-subprocess`; owns child lifecycle and output tail |
 | Parent signal lifecycle | CLI composition root | `UnixSignals` -> root task cancellation -> child graceful shutdown -> completion await |
 | Install/update layout | `VersionCohortInstaller` | complete cohort staged and verified before `current` switch |
@@ -104,7 +106,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 
 ```text
 PrivateHeaderKitCLI (composition root)
-  ├─> PrivateHeaderKitCore ──> GRDB
+  ├─> PrivateHeaderKitCore ──> GRDB, PrivateHeaderKitHelperProtocol
   ├─> PrivateHeaderKitTooling ──> Subprocess, UnixSignals
   └─> ArgumentParser
 
@@ -112,8 +114,8 @@ PrivateHeaderKitInstallCLI
   ├─> PrivateHeaderKitInstall ──> PrivateHeaderKitTooling
   └─> ArgumentParser
 
-PrivateHeaderKitRawDumpHelper ──> PrivateHeaderKitRawDumpCore
-PrivateHeaderKitSimulatorHelper ──> PrivateHeaderKitRawDumpCore
+PrivateHeaderKitRawDumpHelper ──> PrivateHeaderKitRawDumpCore, PrivateHeaderKitHelperProtocol
+PrivateHeaderKitSimulatorHelper ──> PrivateHeaderKitRawDumpCore, PrivateHeaderKitHelperProtocol
 ```
 
 Decisions:
@@ -124,7 +126,7 @@ Decisions:
 - Core は Tooling を import しない。process port を要求し、CLI が concrete adapter を注入する。
 - Subprocess / UnixSignals は macOS process path だけに置き、simulator helper の iOS build graph へ入れない。
 - Installer は public reusable library ではなく package-owned executable concern のままにする。
-- raw dump target graph は今回変更しない。
+- raw helper command と shared-cache inventory wire schema は `PrivateHeaderKitHelperProtocol` の単一 target で共有し、Core/RawDump/helper/test target から明示依存する。
 
 採用 dependency:
 
@@ -156,9 +158,18 @@ package enum PrivateHeaderGeneration {
 
 package struct GenerationExecutor: Sendable {
     package typealias RawDumpRunner = @Sendable (RawDumpInvocation) async throws -> RawDumpResult
+    package typealias SharedCacheInventoryRunner = @Sendable (SharedCacheInventoryInvocation) async throws -> Data
 
-    package init(rawDumpRunner: @escaping RawDumpRunner, ...)
-    package func run(_ configuration: Configuration) async throws -> Result
+    package struct PreparedPlan: Sendable { ... }
+
+    package init(
+        rawDumpRunner: @escaping RawDumpRunner,
+        sharedCacheInventoryRunner: @escaping SharedCacheInventoryRunner,
+        ...
+    )
+    package func prepare(_ plan: Plan) async throws -> PreparedPlan
+    package func availableResumeSummary(for preparedPlan: PreparedPlan) async throws -> ResumeSummary?
+    package func run(_ preparedPlan: PreparedPlan, progressReporter: ProgressReporter?) async throws -> Result
 }
 
 package actor GenerationStore {
@@ -176,6 +187,9 @@ Rules:
 - actor の mutable state は `DatabaseQueue` reference と lifecycle だけとする。
 - actor method 内の `dbQueue.write` / `read` closure は同期処理だけを行い、`await` を含めない。
 - subprocess result と filesystem inspection は immutable `Sendable` value として actor へ渡す。
+- shared-cache mode は inventory を一度 decode/validate して `PreparedPlan` に保持する。同じ prepared value を resume summary と run に渡し、interactive resume 選択は cohort/target selection を再生成せず `ResumeBehavior` だけ差し替える。
+- run は lease、SQLite、publication mutation より前に inventory を再取得し、prepared cohort の UUID と canonical image-path digest が一致しなければ fail fast する。
+- raw dump request は shared-cache enabled と expected cache UUID の組を validated value として保持し、全 target を prepared cohort の UUID に固定する。
 - run ID、generation ID、artifact path は raw `String` を混同しない専用 value type にする。
 - cancellation は `CancellationError` / `.interrupted` として failure から区別する。
 - status は相互排他 enum とし、複数 Bool で表さない。
@@ -198,6 +212,8 @@ Minimum schema:
 - `runLogs(runID, kind, relativePath)`
 
 GRDB migration が schema version の唯一の owner となる。JSON file は migration/state decision に使わない。必要な human-readable report を残す場合は DB snapshot から生成する derived artifact とし、読み戻して制御フローを決めない。
+
+Plan fingerprint v2 は length-prefixed component encoding を使い、filesystem-only / loaded-shared-cache mode、inventory schema version、cache UUID、validated・deduplicated・sorted image paths の SHA-256 digest を含める。inventory JSON は helper wire payload に限り、durable state owner にはしない。
 
 State transition:
 
@@ -389,6 +405,7 @@ Required before completion:
 10. simulator helper product build for its intended destination/triple where the local environment supports it; otherwise record the exact observability gap.
 11. `git diff --check`.
 12. `codex-review` after repo-local checks, with findings fixed and review rerun until clean.
+13. `PrivateHeaderKitCore` target と Core tests の iOS simulator compile gate。Core library product は復活させない。
 
 ## 16. Findings-to-tests mapping
 
@@ -403,3 +420,5 @@ Required before completion:
 | stale installer fallback | preflight all artifacts, then cohort switch | build/missing helper failure leaves current cohort unchanged |
 | mixed-version direct copies | immutable cohort + current pointer | Nth-step failure reports old cohort for all three binaries |
 | accidental public implementation API | package scope + product removal | package describe has no Core library product; CLI/tests still compile |
+| discovery and raw dump observe different loaded caches | prepared cohort + pre-mutation identity revalidation + expected UUID | summary reuses one prepared value; changed UUID/path digest fails before state/output mutation; every raw invocation carries one UUID |
+| cache-only `/usr/lib` images are undiscoverable | filesystem/cache inventory union in `TargetDiscovery` | duplicate cache/filesystem paths deduplicate and cache-only direct dylibs resolve |

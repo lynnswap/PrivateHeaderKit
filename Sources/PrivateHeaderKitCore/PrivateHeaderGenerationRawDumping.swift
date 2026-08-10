@@ -1,9 +1,8 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 
 extension PrivateHeaderGeneration {
   package enum RawDumping {
-    package static let helperSubcommand = "__raw-dump"
-
     package static func makeInvocation(_ request: Request) -> Invocation {
       let helperURL = request.executionMode.helperURL(from: request.helperURLs)
       return Invocation(
@@ -17,13 +16,44 @@ extension PrivateHeaderGeneration {
       )
     }
 
+    package static func makeSharedCacheInventoryInvocation(
+      helperURLs: HelperURLs,
+      executionMode: ExecutionMode,
+      helperEnvironment: [String: String] = [:]
+    ) -> SharedCacheInventoryInvocation {
+      let helperURL = executionMode.helperURL(from: helperURLs)
+      let commandPrefix: [String]
+      switch executionMode {
+      case .host:
+        commandPrefix = [helperURL.path]
+      case .simulator(let deviceUDID, _):
+        commandPrefix = [
+          "xcrun",
+          "simctl",
+          "spawn",
+          deviceUDID,
+          helperURL.path,
+        ]
+      }
+      return SharedCacheInventoryInvocation(
+        phaseLabel: "shared-cache-inventory",
+        executionMode: executionMode,
+        helperURL: helperURL,
+        command: commandPrefix + [PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue],
+        environment: makeEnvironment(
+          helperEnvironment: helperEnvironment,
+          executionMode: executionMode
+        )
+      )
+    }
+
     private static func makeCommand(helperURL: URL, request: Request) -> [String] {
       var command: [String]
       switch request.executionMode {
       case .host:
         command = [
           helperURL.path,
-          helperSubcommand,
+          PrivateHeaderKitHelperCommand.rawDump.rawValue,
           "-o",
           request.stagingOutputDirectory.path,
         ]
@@ -34,7 +64,7 @@ extension PrivateHeaderGeneration {
           "spawn",
           deviceUDID,
           helperURL.path,
-          helperSubcommand,
+          PrivateHeaderKitHelperCommand.rawDump.rawValue,
           "-o",
           request.stagingOutputDirectory.path,
         ]
@@ -42,7 +72,13 @@ extension PrivateHeaderGeneration {
 
       command += ["-b", "-h"]
       if request.options.skipExisting { command.append("-s") }
-      if request.options.useSharedCache { command.append("-c") }
+      if case .expected(let expectedCacheUUID) = request.cacheSelection {
+        command += [
+          "-c",
+          "--expected-cache-uuid",
+          expectedCacheUUID.uuidString.lowercased(),
+        ]
+      }
       if request.options.verbose { command.append("-D") }
       if request.executionMode.isHost, request.options.preferRuntimeMetadata {
         command.append("-R")
@@ -52,8 +88,18 @@ extension PrivateHeaderGeneration {
     }
 
     private static func makeEnvironment(for request: Request) -> [String: String] {
-      var environment = request.options.helperEnvironment
-      if case .simulator(_, let runtimeRoot) = request.executionMode {
+      makeEnvironment(
+        helperEnvironment: request.options.helperEnvironment,
+        executionMode: request.executionMode
+      )
+    }
+
+    private static func makeEnvironment(
+      helperEnvironment: [String: String],
+      executionMode: ExecutionMode
+    ) -> [String: String] {
+      var environment = helperEnvironment
+      if case .simulator(_, let runtimeRoot) = executionMode {
         environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = runtimeRoot
         environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] = runtimeRoot
       }
@@ -113,24 +159,62 @@ extension PrivateHeaderGeneration.RawDumping {
   }
 
   package struct Request: Hashable, Sendable {
+    fileprivate enum CacheSelection: Hashable, Sendable {
+      case disabled
+      case expected(UUID)
+    }
+
     package let helperURLs: HelperURLs
     package let executionMode: ExecutionMode
     package let inputPath: String
     package let stagingOutputDirectory: URL
     package let options: Options
+    fileprivate let cacheSelection: CacheSelection
+
+    package var expectedCacheUUID: UUID? {
+      guard case .expected(let cacheUUID) = cacheSelection else { return nil }
+      return cacheUUID
+    }
 
     package init(
       helperURLs: HelperURLs,
       executionMode: ExecutionMode,
       inputPath: String,
       stagingOutputDirectory: URL,
-      options: Options = Options()
-    ) {
+      options: Options = Options(),
+      expectedCacheUUID: UUID? = nil
+    ) throws {
+      let cacheSelection: CacheSelection
+      switch (options.useSharedCache, expectedCacheUUID) {
+      case (true, .some(let cacheUUID)):
+        cacheSelection = .expected(cacheUUID)
+      case (false, .none):
+        cacheSelection = .disabled
+      case (true, .none):
+        throw ValidationError.missingExpectedCacheUUID
+      case (false, .some):
+        throw ValidationError.unexpectedCacheUUID
+      }
       self.helperURLs = helperURLs
       self.executionMode = executionMode
       self.inputPath = inputPath
       self.stagingOutputDirectory = stagingOutputDirectory
       self.options = options
+      self.cacheSelection = cacheSelection
+    }
+
+    package enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
+      case missingExpectedCacheUUID
+      case unexpectedCacheUUID
+
+      package var description: String {
+        switch self {
+        case .missingExpectedCacheUUID:
+          "shared-cache raw dumping requires the inventoried cache UUID"
+        case .unexpectedCacheUUID:
+          "a cache UUID is invalid when shared-cache raw dumping is disabled"
+        }
+      }
     }
   }
 
@@ -140,6 +224,14 @@ extension PrivateHeaderGeneration.RawDumping {
     package let helperURL: URL
     package let inputPath: String
     package let stagingOutputDirectory: URL
+    package let command: [String]
+    package let environment: [String: String]
+  }
+
+  package struct SharedCacheInventoryInvocation: Hashable, Sendable {
+    package let phaseLabel: String
+    package let executionMode: ExecutionMode
+    package let helperURL: URL
     package let command: [String]
     package let environment: [String: String]
   }

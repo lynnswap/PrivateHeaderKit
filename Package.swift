@@ -41,6 +41,10 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "PrivateHeaderKitHelperProtocol",
+            dependencies: []
+        ),
+        .target(
             name: "PrivateHeaderKitRawDumpRuntimeObjC",
             dependencies: [],
             path: "Sources/PrivateHeaderKitRawDumpRuntimeObjC",
@@ -49,6 +53,7 @@ let package = Package(
         .target(
             name: "PrivateHeaderKitRawDumpCore",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 .target(
                     name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
@@ -69,6 +74,7 @@ let package = Package(
         .target(
             name: "PrivateHeaderKitCore",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -95,12 +101,14 @@ let package = Package(
         .executableTarget(
             name: "PrivateHeaderKitRawDumpHelper",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
             ]
         ),
         .executableTarget(
             name: "PrivateHeaderKitSimulatorHelper",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
             ]
         ),
@@ -119,8 +127,15 @@ let package = Package(
             path: "Tests/PrivateHeaderKitTestSupport"
         ),
         .testTarget(
+            name: "PrivateHeaderKitHelperProtocolTests",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+            ]
+        ),
+        .testTarget(
             name: "PrivateHeaderKitRawDumpTests",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitTestSupport",
                 .target(
@@ -134,6 +149,7 @@ let package = Package(
             name: "PrivateHeaderKitCoreTests",
             dependencies: [
                 "PrivateHeaderKitCore",
+                "PrivateHeaderKitHelperProtocol",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),

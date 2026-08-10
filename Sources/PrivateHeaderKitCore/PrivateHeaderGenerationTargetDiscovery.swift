@@ -11,6 +11,7 @@ extension PrivateHeaderGeneration {
         static func discover(
             in systemRoot: URL,
             includeNestedChildren: Bool = true,
+            sharedCacheImagePaths: [String] = [],
             fileManager: FileManager = .default
         ) throws -> Catalog {
             let root = systemRoot.standardizedFileURL
@@ -38,6 +39,7 @@ extension PrivateHeaderGeneration {
             )
             targets += try discoverUsrLibDylibs(
                 in: root,
+                sharedCacheImagePaths: sharedCacheImagePaths,
                 fileManager: fileManager
             )
 
@@ -331,37 +333,50 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
 
     static func discoverUsrLibDylibs(
         in systemRoot: URL,
+        sharedCacheImagePaths: [String],
         fileManager: FileManager
     ) throws -> [DiscoveredTarget] {
         let usrLibDirectory = systemRoot
             .appendingPathComponent("usr", isDirectory: true)
             .appendingPathComponent("lib", isDirectory: true)
-        guard try isDirectory(usrLibDirectory, fileManager: fileManager) else {
-            return []
-        }
-
-        let dylibEntries = try contentsOfDirectoryIfPresent(
-            at: usrLibDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-            options: [.skipsHiddenFiles],
-            fileManager: fileManager
-        )
-        var dylibNames: [String] = []
-        for entry in dylibEntries {
-            guard entry.pathExtension.lowercased() == "dylib" else {
-                continue
-            }
-            let attributes = try fileManager.attributesOfItem(atPath: entry.path)
-            let type = attributes[.type] as? FileAttributeType
-            if type == .typeRegular || type == .typeSymbolicLink {
-                dylibNames.append(entry.lastPathComponent)
+        var filesystemDylibNames: [String] = []
+        if try isDirectory(usrLibDirectory, fileManager: fileManager) {
+            let dylibEntries = try contentsOfDirectoryIfPresent(
+                at: usrLibDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles],
+                fileManager: fileManager
+            )
+            for entry in dylibEntries {
+                guard entry.pathExtension.lowercased() == "dylib" else {
+                    continue
+                }
+                let attributes = try fileManager.attributesOfItem(atPath: entry.path)
+                let type = attributes[.type] as? FileAttributeType
+                if type == .typeRegular || type == .typeSymbolicLink {
+                    filesystemDylibNames.append(entry.lastPathComponent)
+                }
             }
         }
-        dylibNames.sort()
+        let cacheDylibNames = sharedCacheImagePaths.compactMap { path -> String? in
+            let url = URL(fileURLWithPath: path, isDirectory: false)
+            guard
+                url.deletingLastPathComponent().path == "/usr/lib",
+                url.pathExtension.lowercased() == "dylib"
+            else {
+                return nil
+            }
+            return url.lastPathComponent
+        }
+        let filesystemDylibNameSet = Set(filesystemDylibNames)
+        let dylibNames = Set(filesystemDylibNames + cacheDylibNames).sorted()
 
         return try dylibNames.map { name in
             let source = UsrLibDylibSource(name: name)
             let sourceMetadata = SourceMetadata.usrLibDylib(source)
+            let inputPath = filesystemDylibNameSet.contains(name)
+                ? hostInputPath(for: sourceMetadata, in: systemRoot)
+                : sourceMetadata.runtimeInputPath
             return DiscoveredTarget(
                 candidate: try PrivateHeaderGeneration.TargetCandidate(
                     identifier: "usr-lib:\(name)",
@@ -373,7 +388,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 ),
                 source: sourceMetadata,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(name)"),
-                inputPath: hostInputPath(for: sourceMetadata, in: systemRoot),
+                inputPath: inputPath,
                 runtimeInputPath: sourceMetadata.runtimeInputPath,
                 childTargets: []
             )

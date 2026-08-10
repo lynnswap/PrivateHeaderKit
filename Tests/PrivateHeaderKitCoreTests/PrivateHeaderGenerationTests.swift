@@ -108,12 +108,14 @@ struct PrivateHeaderGenerationTests {
         fileURLWithPath: "/output\nheaders\n/foo",
         isDirectory: true
       ),
-      executionMode: .host
+      executionMode: .host,
+      sharedCacheCohort: nil
     )
     let secondFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
       second,
       canonicalOutputBase: URL(fileURLWithPath: "/output", isDirectory: true),
-      executionMode: .host
+      executionMode: .host,
+      sharedCacheCohort: nil
     )
 
     #expect(firstFingerprint != secondFingerprint)
