@@ -83,8 +83,10 @@ Release and source installs use the same immutable layout:
 Only `privateheaderkit` is public. Its two helpers are always resolved through
 the same validated cohort. To update, download and run the latest `install.sh`
 again, or update the source checkout and rerun `swift run -c release
-privateheaderkit-install`. A failed build, download, validation, staging, or
-activation step restores or leaves active the previous validated cohort.
+privateheaderkit-install`. A failed build, download, validation, or staging
+step leaves the previous validated cohort active. If activation fails, the
+installer attempts to restore the previous cohort and reports any rollback
+failure instead of hiding it.
 Untagged source checkouts use a commit-qualified
 `0.0.0-dev.<short-commit>` version namespace.
 
@@ -92,7 +94,9 @@ An older direct install containing the three executable files is migrated under
 the installer lock. If that migration is interrupted, the next install recovers
 it from the recorded migration intent. A partial or ambiguous legacy layout is
 rejected, and recovery refuses to guess if its files changed after the intent
-was recorded.
+was recorded. A retired helper whose contents changed is left untouched; once
+the validated `current` and public command links establish the managed layout,
+that leftover does not block a later managed install.
 
 Maintainers prepare a release with the `Prepare Draft Release` workflow. It must
 be dispatched with a version and the full SHA of the current default-branch
@@ -110,8 +114,10 @@ privateheaderkit --help
 Running `privateheaderkit` without arguments starts the interactive generation
 wizard; its default output base is `~/PrivateHeaderKit`. The wizard asks for an
 explicit Continue or Restart decision when compatible unfinished state exists,
-and asks for confirmation before migrating legacy state or output. For
-automation and CI, pass generation options directly:
+and asks for confirmation before migrating legacy state or output. If both are
+present, the same confirmation lists both paths and their preservation or
+backup effects before migration. For automation and CI, pass generation
+options directly:
 
 ```bash
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"

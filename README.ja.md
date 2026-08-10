@@ -82,14 +82,17 @@ release install と source install は同じ immutable layout を使います。
 public command は `privateheaderkit` だけです。2 つの helper は常に同じ検証済み
 cohort から解決されます。更新時は最新の `install.sh` を再取得して実行するか、
 source checkout を更新して `swift run -c release privateheaderkit-install` を再実行
-します。build、download、validation、staging、activation のいずれかが失敗した
-場合は、以前の検証済み cohort が維持または復元されます。tag のない source
-checkout は commit を含む `0.0.0-dev.<short-commit>` version namespace を使います。
+します。build、download、validation、staging のいずれかが失敗した場合は、以前の
+検証済み cohort が active なまま維持されます。activation に失敗した場合、installer
+は以前の cohort の復元を試み、rollback 自体の失敗も隠さず報告します。tag のない
+source checkout は commit を含む `0.0.0-dev.<short-commit>` version namespace を使います。
 
 3 つの executable file を直接置く旧 install は、installer lock の下で移行します。
 移行が中断された場合は、次回の install で記録済み migration intent から復旧します。
 一部欠損または曖昧な legacy layout は拒否し、intent の記録後に file が変化していた
-場合も推測で復旧しません。
+場合も推測で復旧しません。内容が変わった retired helper は削除せず残しますが、検証
+済みの `current` と public command の link が managed layout を確定した後は、その
+leftover が後続の managed install を妨げることはありません。
 
 maintainer は `Prepare Draft Release` workflow で release を準備します。workflow は
 version と、現在の default branch HEAD の full SHA を指定して dispatch する必要が
@@ -106,8 +109,9 @@ privateheaderkit --help
 `privateheaderkit` を引数なしで実行すると interactive generation wizard を開始し、
 デフォルトの output base として `~/PrivateHeaderKit` を使います。互換性のある未完了
 state があれば `Continue` / `Restart` の明示選択を求め、legacy state または output
-を移行する前にも確認を求めます。automation / CI では generation option を直接渡し
-ます。
+を移行する前にも確認を求めます。両方が存在する場合は、同じ確認画面に双方の path と
+保存または backup の扱いを表示してから移行します。automation / CI では generation
+option を直接渡します。
 
 ```bash
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"

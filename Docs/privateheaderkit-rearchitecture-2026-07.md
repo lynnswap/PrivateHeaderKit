@@ -366,7 +366,7 @@ Source install と release install は同じ layout/manifest semantics を使う
 
 Source install は build 前の `HEAD`、release tag/effective provenance、tracked diff、untracked input content を 1 source snapshot として fingerprint し、全 product build 後に同一性を再検証する。dirty checkout は許可するが、build 中に source snapshot が変化した cohort は install しない。
 
-Direct-layout migration は DB と filesystem を跨ぐ小さな transaction として扱う。intent write、complete cohort、atomic pointer、same-parent backup を recovery evidence とし、process kill 後の mixed direct/managed layout を単なる ambiguity として拒否せず、lock 取得直後に old complete layout または new complete cohort へ収束させる。intent 自体が malformed、またはどちらの complete state も証明できない場合だけ fail fast する。
+Direct-layout migration は durable `.legacy-migration-intent.json` と filesystem mutation を跨ぐ小さな transaction として扱う。intent write、complete cohort、atomic pointer、same-parent backup を recovery evidence とし、process kill 後の mixed direct/managed layout を単なる ambiguity として拒否せず、lock 取得直後に old complete layout または new complete cohort へ収束させる。intent 自体が malformed、またはどちらの complete state も証明できない場合だけ fail fast する。
 
 `cohort-sha` は git commit ではなく、sorted artifact name / SHA-256 / platform / architecture から算出する content identity とする。git commit は `release.json` の provenance metadata に別記録する。同じ HEAD でも debug/release、build setting、dirty source が異なる binary set を同じ immutable directory と誤認しない。
 
