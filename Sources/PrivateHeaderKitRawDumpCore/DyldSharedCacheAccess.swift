@@ -45,7 +45,11 @@ enum DyldSharedCacheAccessError: Error, Equatable, CustomStringConvertible, Send
 
 struct LoadedDyldCacheImage {
     let logicalPath: String
-    let machO: MachOImage
+    let headerPointer: UnsafePointer<mach_header>
+
+    var machO: MachOImage {
+        MachOImage(ptr: headerPointer)
+    }
 }
 
 struct DyldSharedCacheAccess {
@@ -83,31 +87,21 @@ struct DyldSharedCacheAccess {
                     path: logicalPath
                 )
             }
-            guard let address = Int(exactly: info.address) else {
-                throw DyldSharedCacheAccessError.invalidImageAddress(path: logicalPath)
-            }
-            let (slidAddress, overflow) = address.addingReportingOverflow(slide)
-            guard !overflow,
-                  let pointer = UnsafeRawPointer(bitPattern: slidAddress)
-            else {
-                throw DyldSharedCacheAccessError.invalidImageAddress(path: logicalPath)
-            }
             return LoadedDyldCacheImage(
                 logicalPath: logicalPath,
-                machO: MachOImage(pointer: pointer)
+                headerPointer: try validatedLoadedImageHeaderPointer(
+                    address: info.address,
+                    slide: slide,
+                    logicalPath: logicalPath
+                )
             )
         }
         return DyldSharedCacheAccess(cacheUUID: actualUUID, images: images)
     }
 
     func image(matching candidates: [String]) -> LoadedDyldCacheImage? {
-        guard let logicalPath = exactCacheImagePathMatch(
-            candidates: candidates,
-            inventory: logicalImagePaths
-        ) else {
-            return nil
-        }
-        return images.first { $0.logicalPath == logicalPath }
+        let candidateSet = Set(candidates)
+        return images.first { candidateSet.contains($0.logicalPath) }
     }
 
     var logicalImagePaths: [String] {
@@ -167,12 +161,21 @@ private func isAbsoluteLogicalImagePath(_ path: String) -> Bool {
     }
 }
 
-func exactCacheImagePathMatch(
-    candidates: [String],
-    inventory: [String]
-) -> String? {
-    let candidateSet = Set(candidates)
-    return inventory.first { candidateSet.contains($0) }
+func validatedLoadedImageHeaderPointer(
+    address: UInt64,
+    slide: Int,
+    logicalPath: String
+) throws -> UnsafePointer<mach_header> {
+    guard let address = Int(exactly: address) else {
+        throw DyldSharedCacheAccessError.invalidImageAddress(path: logicalPath)
+    }
+    let (loadedAddress, overflow) = address.addingReportingOverflow(slide)
+    guard !overflow,
+          let pointer = UnsafeRawPointer(bitPattern: loadedAddress)
+    else {
+        throw DyldSharedCacheAccessError.invalidImageAddress(path: logicalPath)
+    }
+    return pointer.assumingMemoryBound(to: mach_header.self)
 }
 
 func makeSharedCacheInventory(
@@ -196,10 +199,4 @@ func encodeSharedCacheInventory(
     encoder: JSONEncoder = JSONEncoder()
 ) throws -> Data {
     try encoder.encode(inventory)
-}
-
-private extension MachOImage {
-    init(pointer: UnsafeRawPointer) {
-        self.init(ptr: pointer.assumingMemoryBound(to: mach_header.self))
-    }
 }

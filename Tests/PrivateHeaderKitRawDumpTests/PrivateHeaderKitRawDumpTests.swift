@@ -1,4 +1,5 @@
 import Foundation
+import MachOKit
 import PrivateHeaderKitHelperProtocol
 import Testing
 #if canImport(PrivateHeaderKitRawDumpRuntimeObjC)
@@ -194,24 +195,90 @@ struct PrivateHeaderKitRawDumpPathTests {
 
 @Suite
 struct PrivateHeaderKitRawDumpSharedCacheTests {
-    @Test func exactMatchingNeverUsesSuffixFallback() {
-        let inventory = [
-            "/System/Library/Frameworks/Foo.framework/Versions/A/Foo",
-            "/usr/lib/libobjc.A.dylib",
-        ]
+    @Test func cacheLookupSelectsTheExactLightweightDescriptor() throws {
+        let headers = UnsafeMutablePointer<mach_header>.allocate(capacity: 2)
+        headers.initialize(
+            repeating: mach_header(
+                magic: 0,
+                cputype: 0,
+                cpusubtype: 0,
+                filetype: 0,
+                ncmds: 0,
+                sizeofcmds: 0,
+                flags: 0
+            ),
+            count: 2
+        )
+        defer {
+            headers.deinitialize(count: 2)
+            headers.deallocate()
+        }
+        let firstHeader = UnsafePointer(headers)
+        let secondHeader = UnsafePointer(headers.advanced(by: 1))
+        let uuid = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let access = DyldSharedCacheAccess(
+            cacheUUID: uuid,
+            images: [
+                LoadedDyldCacheImage(
+                    logicalPath: "/usr/lib/libz.dylib",
+                    headerPointer: firstHeader
+                ),
+                LoadedDyldCacheImage(
+                    logicalPath: "/usr/lib/libexact.dylib",
+                    headerPointer: secondHeader
+                ),
+                LoadedDyldCacheImage(
+                    logicalPath: "/usr/lib/libexact.dylib",
+                    headerPointer: firstHeader
+                ),
+            ]
+        )
 
-        #expect(
-            exactCacheImagePathMatch(
-                candidates: ["/usr/lib/libobjc.A.dylib"],
-                inventory: inventory
-            ) == "/usr/lib/libobjc.A.dylib"
+        let inventory = try makeSharedCacheInventory(access: access)
+        #expect(inventory.imagePaths == [
+            "/usr/lib/libexact.dylib",
+            "/usr/lib/libz.dylib",
+        ])
+        #expect(access.image(matching: ["libexact.dylib"]) == nil)
+
+        let matched = try #require(
+            access.image(matching: ["/usr/lib/libexact.dylib"])
         )
-        #expect(
-            exactCacheImagePathMatch(
-                candidates: ["libobjc.A.dylib"],
-                inventory: inventory
-            ) == nil
+        #expect(matched.headerPointer == secondHeader)
+        #expect(matched.machO.ptr == UnsafeRawPointer(secondHeader))
+    }
+
+    @Test func loadedImageAddressValidationUsesCheckedSlideArithmetic() throws {
+        let path = "/usr/lib/libinvalid.dylib"
+
+        #expect(throws: DyldSharedCacheAccessError.invalidImageAddress(path: path)) {
+            _ = try validatedLoadedImageHeaderPointer(
+                address: UInt64.max,
+                slide: 0,
+                logicalPath: path
+            )
+        }
+        #expect(throws: DyldSharedCacheAccessError.invalidImageAddress(path: path)) {
+            _ = try validatedLoadedImageHeaderPointer(
+                address: UInt64(Int.max),
+                slide: 1,
+                logicalPath: path
+            )
+        }
+        #expect(throws: DyldSharedCacheAccessError.invalidImageAddress(path: path)) {
+            _ = try validatedLoadedImageHeaderPointer(
+                address: 0,
+                slide: 0,
+                logicalPath: path
+            )
+        }
+
+        let negativelySlidPointer = try validatedLoadedImageHeaderPointer(
+            address: 0x2000,
+            slide: -0x100,
+            logicalPath: "/usr/lib/libvalid.dylib"
         )
+        #expect(Int(bitPattern: negativelySlidPointer) == 0x1F00)
     }
 
     @Test func expectedCacheUUIDMismatchIsTyped() throws {
