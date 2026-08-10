@@ -3,19 +3,6 @@ import Foundation
 import PrivateHeaderKitHelperProtocol
 
 extension PrivateHeaderGeneration {
-  package static func availableResumeSummary(
-    source: Source,
-    output: Output,
-    options: Options
-  ) async throws -> ResumeSummary? {
-    let plan = makePlan(source: source, output: output, options: options)
-    let preparedPlan = try await GenerationExecutor.preparePlan(
-      plan,
-      sharedCacheInventoryRunner: nil
-    )
-    return try await GenerationExecutor.resumeSummary(for: preparedPlan)
-  }
-
   package struct GenerationExecutor: Sendable {
     private struct DeliberateFault: Error, @unchecked Sendable {
       let underlying: any Error
@@ -37,16 +24,6 @@ extension PrivateHeaderGeneration {
       @Sendable (
         PrivateHeaderGeneration.PublicationFaultPoint
       ) throws -> Void
-
-    package struct Configuration: Sendable {
-      package let plan: Plan
-      package let progressReporter: ProgressReporter?
-
-      package init(plan: Plan, progressReporter: ProgressReporter? = nil) {
-        self.plan = plan
-        self.progressReporter = progressReporter
-      }
-    }
 
     package struct SharedCacheCohort: Hashable, Sendable {
       package let schemaVersion: Int
@@ -92,7 +69,7 @@ extension PrivateHeaderGeneration {
     }
 
     private let rawDumpRunner: RawDumpRunner
-    private let sharedCacheInventoryRunner: SharedCacheInventoryRunner?
+    private let sharedCacheInventoryRunner: SharedCacheInventoryRunner
     private let runIDGenerator: @Sendable () -> String
     private let generationIDGenerator: @Sendable () -> String
     private let dateProvider: @Sendable () -> Date
@@ -101,7 +78,7 @@ extension PrivateHeaderGeneration {
 
     package init(
       rawDumpRunner: @escaping RawDumpRunner,
-      sharedCacheInventoryRunner: SharedCacheInventoryRunner? = nil,
+      sharedCacheInventoryRunner: @escaping SharedCacheInventoryRunner,
       runIDGenerator: @escaping @Sendable () -> String = {
         "run-\(UUID().uuidString.lowercased())"
       },
@@ -132,14 +109,6 @@ extension PrivateHeaderGeneration {
       for preparedPlan: PreparedPlan
     ) async throws -> ResumeSummary? {
       try await Self.resumeSummary(for: preparedPlan)
-    }
-
-    package func run(_ configuration: Configuration) async throws -> Result {
-      let preparedPlan = try await prepare(configuration.plan)
-      return try await run(
-        preparedPlan,
-        progressReporter: configuration.progressReporter
-      )
     }
 
     package func run(
@@ -854,11 +823,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 extension PrivateHeaderGeneration.GenerationExecutor {
   fileprivate func validatePreparedCohort(_ preparedPlan: PreparedPlan) async throws {
     guard let expectedCohort = preparedPlan.sharedCacheCohort else { return }
-    guard let sharedCacheInventoryRunner else {
-      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration(
-        "sharedCacheInventoryRunner"
-      )
-    }
     guard let helperURLs = preparedPlan.plan.options.helperURLs else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("helperURLs")
     }
@@ -913,7 +877,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
   fileprivate static func preparePlan(
     _ plan: PrivateHeaderGeneration.Plan,
-    sharedCacheInventoryRunner: SharedCacheInventoryRunner?
+    sharedCacheInventoryRunner: SharedCacheInventoryRunner
   ) async throws -> PreparedPlan {
     guard let systemRoot = plan.options.systemRoot else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("systemRoot")
@@ -927,11 +891,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
     let sharedCacheCohort: SharedCacheCohort?
     if plan.options.rawDumpingOptions.useSharedCache {
-      guard let sharedCacheInventoryRunner else {
-        throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration(
-          "sharedCacheInventoryRunner"
-        )
-      }
       sharedCacheCohort = try await loadSharedCacheCohort(
         helperURLs: helperURLs,
         executionMode: executionMode,

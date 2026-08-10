@@ -1600,6 +1600,11 @@ private enum FailureKind {
     case infrastructure
 }
 
+private enum CLIFixtureError: Error {
+    case missingResumeSummary
+    case unexpectedSharedCacheInventory
+}
+
 private func testPrivateHeaderKitGenerationClient(
     onPrepare: @escaping @Sendable (PrivateHeaderKitGenerationRequest) -> Void = { _ in },
     summary: @escaping @Sendable (
@@ -1791,6 +1796,9 @@ private func unfinishedResumeSummaryFixture() async throws
                 failureSummary: "fixture failure"
             )
         },
+        sharedCacheInventoryRunner: { _ in
+            throw CLIFixtureError.unexpectedSharedCacheInventory
+        },
         runIDGenerator: { "run-unfinished" },
         generationIDGenerator: { "generation-unfinished" }
     )
@@ -1802,7 +1810,8 @@ private func unfinishedResumeSummaryFixture() async throws
         guard case .runFailed = error else { throw error }
     }
     let summary = try await executor.availableResumeSummary(for: preparedPlan)
-    return try #require(summary)
+    guard let summary else { throw CLIFixtureError.missingResumeSummary }
+    return summary
 }
 
 private func summaryFixture(

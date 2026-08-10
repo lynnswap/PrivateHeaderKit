@@ -120,21 +120,4 @@ struct PrivateHeaderGenerationTests {
 
     #expect(firstFingerprint != secondFingerprint)
   }
-
-  @Test func topLevelAPIRequiresInjectedExecutionConfiguration() async throws {
-    let source = try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0")
-    let output = PrivateHeaderGeneration.Output(
-      baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit"))
-    do {
-      _ = try await PrivateHeaderGeneration.generatePrivateHeaders(
-        source: source,
-        output: output,
-        options: .init(toolCompatibilityIdentity: "test"),
-        rawDumpRunner: { _ in .init(terminationStatus: 0) }
-      )
-      Issue.record("generation unexpectedly ran without systemRoot")
-    } catch let error as PrivateHeaderGeneration.GenerationError {
-      #expect(error == .missingExecutionConfiguration("systemRoot"))
-    }
-  }
 }

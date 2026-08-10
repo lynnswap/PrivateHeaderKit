@@ -14,21 +14,6 @@ package enum PrivateHeaderGeneration {
   ) -> Plan {
     Plan(source: source, output: output, options: options)
   }
-
-  package static func generatePrivateHeaders(
-    source: Source,
-    output: Output,
-    options: Options,
-    rawDumpRunner: @escaping GenerationExecutor.RawDumpRunner,
-    progressReporter: GenerationExecutor.ProgressReporter? = nil
-  ) async throws -> Result {
-    try await GenerationExecutor(rawDumpRunner: rawDumpRunner).run(
-      GenerationExecutor.Configuration(
-        plan: makePlan(source: source, output: output, options: options),
-        progressReporter: progressReporter
-      )
-    )
-  }
 }
 
 extension PrivateHeaderGeneration {
