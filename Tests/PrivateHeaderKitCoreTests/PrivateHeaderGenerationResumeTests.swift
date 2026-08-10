@@ -14,7 +14,7 @@ struct PrivateHeaderGenerationResumeTests {
             ]
         )
 
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             artifactExists: existingArtifacts([
@@ -57,7 +57,7 @@ struct PrivateHeaderGenerationResumeTests {
             ]
         )
 
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             artifactExists: existingArtifacts([])
@@ -87,7 +87,7 @@ struct PrivateHeaderGenerationResumeTests {
             ]
         )
 
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             artifactExists: existingArtifacts([
@@ -106,6 +106,21 @@ struct PrivateHeaderGenerationResumeTests {
         #expect(summary.counts.stale == 1)
     }
 
+    @Test func artifactInspectionFailureIsPropagated() throws {
+        let plan = try makeRunPlan(targetIDs: ["framework:Foo"])
+        let manifest = try makeManifest(
+            targets: [makeTarget("framework:Foo", status: .completed)]
+        )
+
+        #expect(throws: ArtifactInspectionTestError.self) {
+            _ = try PrivateHeaderGeneration.makeResumeSummary(
+                plan: plan,
+                manifest: manifest,
+                artifactExists: { _ in throw ArtifactInspectionTestError.failed }
+            )
+        }
+    }
+
     @Test func missingManifestEntryIsPendingAndReruns() throws {
         let plan = try makeRunPlan(targetIDs: ["framework:Foo", "framework:New"])
         let manifest = try makeManifest(
@@ -114,7 +129,7 @@ struct PrivateHeaderGenerationResumeTests {
             ]
         )
 
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             artifactExists: existingArtifacts([
@@ -149,7 +164,7 @@ struct PrivateHeaderGenerationResumeTests {
             ) == .compatible
         )
 
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             latestRun: latestRun,
@@ -181,7 +196,7 @@ struct PrivateHeaderGenerationResumeTests {
         )
 
         #expect(
-            PrivateHeaderGeneration.nonInteractiveResumeDecision(
+            try PrivateHeaderGeneration.nonInteractiveResumeDecision(
                 plan: plan,
                 manifest: manifest,
                 latestRun: latestRun,
@@ -190,7 +205,7 @@ struct PrivateHeaderGenerationResumeTests {
             ) == .resumeRequired(summary)
         )
         #expect(
-            PrivateHeaderGeneration.nonInteractiveResumeDecision(
+            try PrivateHeaderGeneration.nonInteractiveResumeDecision(
                 plan: plan,
                 manifest: manifest,
                 latestRun: latestRun,
@@ -428,7 +443,7 @@ struct PrivateHeaderGenerationResumeTests {
             ]
         )
         let latestRun = try makeRunRecord(plan: plan)
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             latestRun: latestRun,
@@ -436,7 +451,7 @@ struct PrivateHeaderGenerationResumeTests {
         )
 
         #expect(
-            PrivateHeaderGeneration.nonInteractiveResumeDecision(
+            try PrivateHeaderGeneration.nonInteractiveResumeDecision(
                 plan: plan,
                 manifest: manifest,
                 latestRun: latestRun,
@@ -454,7 +469,7 @@ struct PrivateHeaderGenerationResumeTests {
             ]
         )
         let latestRun = try makeRunRecord(plan: plan)
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: plan,
             manifest: manifest,
             latestRun: latestRun,
@@ -462,7 +477,7 @@ struct PrivateHeaderGenerationResumeTests {
         )
 
         #expect(
-            PrivateHeaderGeneration.nonInteractiveResumeDecision(
+            try PrivateHeaderGeneration.nonInteractiveResumeDecision(
                 plan: plan,
                 manifest: manifest,
                 latestRun: latestRun,
@@ -471,6 +486,10 @@ struct PrivateHeaderGenerationResumeTests {
             ) == .resume(summary)
         )
     }
+}
+
+private enum ArtifactInspectionTestError: Error {
+    case failed
 }
 
 private func makeSource(

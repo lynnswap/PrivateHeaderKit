@@ -144,6 +144,103 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(run.targetResults.map(\.status) == [.skipped])
     }
 
+    @Test func completedTargetWithSymlinkArtifactIsSafelyRegeneratedOnResume() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let firstPlan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let firstExecutor = makeGenerationExecutor(
+            rawDumpRunner: { invocation in
+                try await RecordingRawDumpRunner().run(invocation)
+            },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        _ = try await firstExecutor.run(.init(plan: firstPlan))
+
+        let artifact = try PrivateHeaderGeneration.ArtifactPath(
+            "Frameworks/Foo/Headers/Generated.h"
+        )
+        let artifactURL = firstPlan.artifactDirectory.appendingPathComponent(artifact.rawValue)
+        let externalURL = fixture.root.appendingPathComponent("External.h")
+        try FileManager.default.removeItem(at: artifactURL)
+        try writeFile("external", to: externalURL)
+        try FileManager.default.createSymbolicLink(
+            at: artifactURL,
+            withDestinationURL: externalURL
+        )
+
+        let resumePlan = try fixture.makePlan(
+            targetRequest: .query("Foo"),
+            resumeBehavior: .requireExplicitResume(resumeRequested: true)
+        )
+        let secondRunner = RecordingRawDumpRunner()
+        let secondExecutor = makeGenerationExecutor(
+            rawDumpRunner: { invocation in try await secondRunner.run(invocation) },
+            runIDGenerator: { "run-002" },
+            dateProvider: fixedDates()
+        )
+
+        let result = try await secondExecutor.run(.init(plan: resumePlan))
+
+        #expect(secondRunner.invocations.count == 1)
+        #expect(result.generatedTargets.map(\.description) == ["framework:Foo.framework"])
+        #expect(try String(contentsOf: externalURL, encoding: .utf8) == "external")
+        #expect(try String(contentsOf: artifactURL, encoding: .utf8) == "// generated\n")
+        let attributes = try FileManager.default.attributesOfItem(atPath: artifactURL.path)
+        #expect(attributes[.type] as? FileAttributeType == .typeRegular)
+    }
+
+    @Test func completedTargetWithNonEmptyDirectoryArtifactFailsWithoutDeletingContents() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let firstRunner = RecordingRawDumpRunner()
+        let firstPlan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let firstExecutor = makeGenerationExecutor(
+            rawDumpRunner: { invocation in try await firstRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        _ = try await firstExecutor.run(.init(plan: firstPlan))
+
+        let artifact = try PrivateHeaderGeneration.ArtifactPath(
+            "Frameworks/Foo/Headers/Generated.h"
+        )
+        let artifactURL = firstPlan.artifactDirectory.appendingPathComponent(
+            artifact.rawValue,
+            isDirectory: true
+        )
+        let sentinelURL = artifactURL.appendingPathComponent("Sentinel.txt")
+        try FileManager.default.removeItem(at: artifactURL)
+        try writeFile("sentinel", to: sentinelURL)
+
+        let resumePlan = try fixture.makePlan(
+            targetRequest: .query("Foo"),
+            resumeBehavior: .requireExplicitResume(resumeRequested: true)
+        )
+        let secondRunner = RecordingRawDumpRunner()
+        let secondExecutor = makeGenerationExecutor(
+            rawDumpRunner: { invocation in try await secondRunner.run(invocation) },
+            runIDGenerator: { "run-002" },
+            dateProvider: fixedDates()
+        )
+
+        await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+            _ = try await secondExecutor.run(.init(plan: resumePlan))
+        }
+
+        #expect(secondRunner.invocations.count == 1)
+        #expect(try String(contentsOf: sentinelURL, encoding: .utf8) == "sentinel")
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: resumePlan.stateDirectory.appendingPathComponent("runs/run-002/run.json")
+        )
+        #expect(run.targetResults.map(\.status) == [.commitFailed])
+    }
+
     @Test func unfinishedCompatibleStateRequiresExplicitResume() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }

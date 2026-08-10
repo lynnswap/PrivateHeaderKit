@@ -226,6 +226,38 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         #expect(pathExists("Outside.h", in: outside))
     }
 
+    @Test func cleanupRejectsInRootIntermediateSymlinkBeforeDeletingAnyArtifact() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let preserved = try PrivateHeaderGeneration.ArtifactPath("A.h")
+        let aliased = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
+        let alias = root.appendingPathComponent("Frameworks")
+
+        try writeFile("preserved", to: preserved.rawValue, in: root)
+        try writeFile("target", to: "Targets/Foo/Foo.h", in: root)
+        try FileManager.default.createSymbolicLink(
+            at: alias,
+            withDestinationURL: root.appendingPathComponent("Targets", isDirectory: true)
+        )
+
+        #expect(
+            throws: PrivateHeaderGeneration.ArtifactStoreError.symbolicLinkInArtifactPath(
+                artifactPath: aliased,
+                symbolicLinkPath: alias.path
+            )
+        ) {
+            try PrivateHeaderGeneration.ArtifactStore.cleanupManagedArtifacts(
+                in: root,
+                artifacts: [preserved, aliased]
+            )
+        }
+        #expect(try fileContents(preserved.rawValue, in: root) == "preserved")
+        #expect(try fileContents("Targets/Foo/Foo.h", in: root) == "target")
+        #expect(symbolicLinkExists("Frameworks", in: root))
+    }
+
     @Test func cleanupTreatsMissingLeafUnderSymlinkArtifactRootAsMissing() throws {
         let base = try makeTemporaryDirectory()
         defer {
@@ -250,6 +282,97 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         #expect(result.prunedDirectories.isEmpty)
         #expect(directoryExists(realRoot))
         #expect(directoryExists(symlinkRoot))
+    }
+
+    @Test func containsAcceptsOnlyRegularFileLeafWithoutDescendantSymlinks() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let artifact = try PrivateHeaderGeneration.ArtifactPath(
+            "Frameworks/Foo/Headers/Generated.h"
+        )
+        let artifactURL = root.appendingPathComponent(artifact.rawValue)
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(try !store.contains(artifact))
+
+        try writeFile("generated", to: artifact.rawValue, in: root)
+        #expect(try store.contains(artifact))
+
+        try FileManager.default.removeItem(at: artifactURL)
+        try FileManager.default.createDirectory(at: artifactURL, withIntermediateDirectories: true)
+        #expect(try !store.contains(artifact))
+
+        try FileManager.default.removeItem(at: artifactURL)
+        let fifoStatus = artifactURL.path.withCString { mkfifo($0, 0o600) }
+        #expect(fifoStatus == 0)
+        #expect(try !store.contains(artifact))
+
+        try FileManager.default.removeItem(at: artifactURL)
+        try writeFile("target", to: "Targets/Generated.h", in: root)
+        try FileManager.default.createSymbolicLink(
+            at: artifactURL,
+            withDestinationURL: root.appendingPathComponent("Targets/Generated.h")
+        )
+        #expect(try !store.contains(artifact))
+
+        try FileManager.default.removeItem(at: artifactURL)
+        try FileManager.default.createSymbolicLink(
+            at: artifactURL,
+            withDestinationURL: root.appendingPathComponent("Targets/Missing.h")
+        )
+        #expect(try !store.contains(artifact))
+
+        try FileManager.default.removeItem(
+            at: root.appendingPathComponent("Frameworks", isDirectory: true)
+        )
+        try writeFile("not a directory", to: "Frameworks", in: root)
+        #expect(try !store.contains(artifact))
+
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Frameworks"))
+        try writeFile("aliased", to: "Targets/Foo/Headers/Generated.h", in: root)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Frameworks"),
+            withDestinationURL: root.appendingPathComponent("Targets", isDirectory: true)
+        )
+        #expect(try !store.contains(artifact))
+        #expect(try fileContents("Targets/Foo/Headers/Generated.h", in: root) == "aliased")
+    }
+
+    @Test func containsAllowsSymlinkArtifactRootAsCommitBoundary() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let realRoot = base.appendingPathComponent("real-artifacts", isDirectory: true)
+        let symlinkRoot = base.appendingPathComponent("artifact-link", isDirectory: true)
+        let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
+        try writeFile("generated", to: artifact.rawValue, in: realRoot)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkRoot,
+            withDestinationURL: realRoot
+        )
+
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: symlinkRoot)
+
+        #expect(try store.contains(artifact))
+    }
+
+    @Test func containsPropagatesUnexpectedInspectionError() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let artifact = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
+        let artifactURL = root.appendingPathComponent(artifact.rawValue)
+        try writeFile("generated", to: artifact.rawValue, in: root)
+        let fileManager = FailingAttributesFileManager(failingPath: artifactURL.path)
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: CocoaError.self) {
+            _ = try store.contains(artifact, fileManager: fileManager)
+        }
     }
 
     @Test func commitRejectsIntermediateSymlinkWithoutModifyingExternalDirectory() throws {
@@ -892,5 +1015,21 @@ private func symbolicLinkExists(_ relativePath: String, in root: URL) -> Bool {
         return attributes[.type] as? FileAttributeType == .typeSymbolicLink
     } catch {
         return false
+    }
+}
+
+private final class FailingAttributesFileManager: FileManager, @unchecked Sendable {
+    private let failingPath: String
+
+    init(failingPath: String) {
+        self.failingPath = failingPath
+        super.init()
+    }
+
+    override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+        if path == failingPath {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        return try super.attributesOfItem(atPath: path)
     }
 }

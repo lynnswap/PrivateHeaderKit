@@ -1,7 +1,7 @@
 import Foundation
 
 public extension PrivateHeaderGeneration {
-    typealias ArtifactExistence = @Sendable (ArtifactPath) -> Bool
+    typealias ArtifactExistence = @Sendable (ArtifactPath) throws -> Bool
 
     enum ResumeCompatibilityRecord: String, Hashable, Sendable {
         case manifest
@@ -261,8 +261,8 @@ public extension PrivateHeaderGeneration {
         manifest: Manifest,
         latestRun: RunRecord? = nil,
         artifactExists: ArtifactExistence
-    ) -> ResumeSummary {
-        let targets = resumeTargetDecisions(
+    ) throws -> ResumeSummary {
+        let targets = try resumeTargetDecisions(
             plan: plan,
             manifest: manifest,
             artifactExists: artifactExists
@@ -284,12 +284,12 @@ public extension PrivateHeaderGeneration {
         plan: RunPlanRecord,
         manifest: Manifest,
         artifactExists: ArtifactExistence
-    ) -> [ResumeTargetDecision] {
+    ) throws -> [ResumeTargetDecision] {
         let targetsByID = manifestTargetsByID(manifest.targets)
-        return deduplicatedTargetIDs(plan.targetIDs).map { targetID in
+        return try deduplicatedTargetIDs(plan.targetIDs).map { targetID in
             let status: ResumeTargetStatus
             if let target = targetsByID[targetID] {
-                status = resumeStatus(for: target, artifactExists: artifactExists)
+                status = try resumeStatus(for: target, artifactExists: artifactExists)
             } else {
                 status = .pending
             }
@@ -301,8 +301,8 @@ public extension PrivateHeaderGeneration {
         plan: RunPlanRecord,
         manifest: Manifest,
         artifactExists: ArtifactExistence
-    ) -> [String] {
-        resumeTargetDecisions(
+    ) throws -> [String] {
+        try resumeTargetDecisions(
             plan: plan,
             manifest: manifest,
             artifactExists: artifactExists
@@ -318,7 +318,7 @@ public extension PrivateHeaderGeneration {
         resumeRequested: Bool,
         artifactExists: ArtifactExistence,
         supportedSchemaVersions: Set<Int> = [1]
-    ) -> NonInteractiveResumeDecision {
+    ) throws -> NonInteractiveResumeDecision {
         let compatibility = evaluateResumeCompatibility(
             plan: plan,
             manifest: manifest,
@@ -329,7 +329,7 @@ public extension PrivateHeaderGeneration {
             return .incompatible(reasons)
         }
 
-        let summary = makeResumeSummary(
+        let summary = try makeResumeSummary(
             plan: plan,
             manifest: manifest,
             latestRun: latestRun,
@@ -422,10 +422,10 @@ private extension PrivateHeaderGeneration {
     static func resumeStatus(
         for target: TargetRecord,
         artifactExists: ArtifactExistence
-    ) -> ResumeTargetStatus {
+    ) throws -> ResumeTargetStatus {
         switch target.status {
         case .completed:
-            return hasCompleteManagedArtifacts(target, artifactExists: artifactExists) ? .completed : .stale
+            return try hasCompleteManagedArtifacts(target, artifactExists: artifactExists) ? .completed : .stale
         case .partial:
             return .partial
         case .failed:
@@ -442,14 +442,14 @@ private extension PrivateHeaderGeneration {
     static func hasCompleteManagedArtifacts(
         _ target: TargetRecord,
         artifactExists: ArtifactExistence
-    ) -> Bool {
+    ) throws -> Bool {
         guard !target.artifacts.isEmpty else {
             return false
         }
 
         var hasGeneratedHeaderOrInterface = false
         for artifact in target.artifacts {
-            guard artifactExists(artifact) else {
+            guard try artifactExists(artifact) else {
                 return false
             }
             if isGeneratedHeaderOrInterface(artifact) {

@@ -79,9 +79,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
             artifactRoot: plan.artifactDirectory
         )
         let artifactExists: PrivateHeaderGeneration.ArtifactExistence = { artifact in
-            (try? artifactStore.contains(artifact)) == true
+            try artifactStore.contains(artifact)
         }
-        let summary = PrivateHeaderGeneration.makeResumeSummary(
+        let summary = try PrivateHeaderGeneration.makeResumeSummary(
             plan: runPlan,
             manifest: manifest,
             latestRun: latestRun,
@@ -289,6 +289,9 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             resumeSummary: resumeSummary
         )
         let targetsToRun = selectedTargets.filter { targetIDsToRun.contains($0.candidate.identifier) }
+        let resumeStatusesByTargetID = Dictionary(
+            uniqueKeysWithValues: (resumeSummary?.targets ?? []).map { ($0.targetID, $0.status) }
+        )
 
         try repository.prepareStateDirectory()
         let runID = runIDGenerator()
@@ -378,9 +381,9 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                     previousTarget: previousTargetRecords[target.candidate.identifier],
                     previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
                     cleanupBeforeRun: Self.shouldCleanupBeforeRun(
-                        targetID: target.candidate.identifier,
                         resumeBehavior: options.resumeBehavior,
-                        previousTarget: previousTargetRecords[target.candidate.identifier]
+                        previousTarget: previousTargetRecords[target.candidate.identifier],
+                        resumeStatus: resumeStatusesByTargetID[target.candidate.identifier]
                     )
                 )
             } catch is CancellationError {
@@ -959,10 +962,10 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         }
 
         let artifactExists: PrivateHeaderGeneration.ArtifactExistence = { artifact in
-            (try? artifactStore.contains(artifact)) == true
+            try artifactStore.contains(artifact)
         }
 
-        switch PrivateHeaderGeneration.nonInteractiveResumeDecision(
+        switch try PrivateHeaderGeneration.nonInteractiveResumeDecision(
             plan: runPlan,
             manifest: manifest,
             latestRun: latestRun,
@@ -970,7 +973,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             artifactExists: artifactExists
         ) {
         case .proceed:
-            return PrivateHeaderGeneration.makeResumeSummary(
+            return try PrivateHeaderGeneration.makeResumeSummary(
                 plan: runPlan,
                 manifest: manifest,
                 latestRun: latestRun,
@@ -1000,14 +1003,14 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
     }
 
     static func shouldCleanupBeforeRun(
-        targetID: String,
         resumeBehavior: PrivateHeaderGeneration.ResumeBehavior,
-        previousTarget: PrivateHeaderGeneration.TargetRecord?
+        previousTarget: PrivateHeaderGeneration.TargetRecord?,
+        resumeStatus: PrivateHeaderGeneration.ResumeTargetStatus?
     ) -> Bool {
         if case .fresh = resumeBehavior {
             return true
         }
-        return previousTarget?.id == targetID && previousTarget?.status == .commitFailed
+        return previousTarget?.status == .commitFailed || resumeStatus == .stale
     }
 
     static func skippedRunTargets(
