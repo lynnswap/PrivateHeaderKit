@@ -25,6 +25,8 @@ public extension PrivateHeaderGeneration {
         case symbolicLinkInStagingDirectory(String)
         case missingStagedArtifact(String)
         case stagedArtifactIsNotDirectory(String)
+        case stagedArtifactIsNotRegularFile(String)
+        case artifactPathOutsideCommitRoot(artifactPath: ArtifactPath, artifactRoot: ArtifactPath)
         case stagingDirectoryChanged(String)
         case artifactRootChanged(expected: String, actual: String)
 
@@ -43,7 +45,11 @@ public extension PrivateHeaderGeneration {
             case .missingStagedArtifact(let path):
                 "staged artifact disappeared before commit: \(path)"
             case .stagedArtifactIsNotDirectory(let path):
-                "staged artifact root is not a directory: \(path)"
+                "staged artifact path is not a directory: \(path)"
+            case .stagedArtifactIsNotRegularFile(let path):
+                "staged artifact is not a regular file: \(path)"
+            case .artifactPathOutsideCommitRoot(let artifactPath, let artifactRoot):
+                "artifact path is outside commit root: \(artifactPath.rawValue) is not under \(artifactRoot.rawValue)"
             case .stagingDirectoryChanged(let path):
                 "staging directory changed after commit preflight: \(path)"
             case .artifactRootChanged(let expected, let actual):
@@ -57,6 +63,7 @@ public extension PrivateHeaderGeneration {
             fileprivate let root: ArtifactRootURLs
             fileprivate let stagedSourceDirectory: URL
             fileprivate let artifactRoot: ArtifactPath
+            fileprivate let artifacts: [ArtifactPath]
             fileprivate let entries: [CommitEntry]
         }
 
@@ -90,18 +97,22 @@ public extension PrivateHeaderGeneration {
         public func prepareCommit(
             stagedSourceDirectory: URL,
             artifactRoot: ArtifactPath,
+            artifacts: [ArtifactPath],
             fileManager: FileManager = .default
         ) throws -> CommitPlan {
             let root = try Self.artifactRootURLs(for: self.artifactRoot)
+            let artifacts = Array(Set(artifacts)).sorted { $0.rawValue < $1.rawValue }
             let entries = try Self.commitEntries(
                 stagedSourceDirectory: stagedSourceDirectory,
                 artifactRoot: artifactRoot,
+                artifacts: artifacts,
                 fileManager: fileManager
             )
             let plan = CommitPlan(
                 root: root,
                 stagedSourceDirectory: stagedSourceDirectory.standardizedFileURL,
                 artifactRoot: artifactRoot,
+                artifacts: artifacts,
                 entries: entries
             )
             try preflightCommit(plan, fileManager: fileManager)
@@ -221,8 +232,14 @@ public extension PrivateHeaderGeneration {
 
         private enum ArtifactItemKind: Equatable {
             case directory
+            case regularFile
             case symbolicLink
             case other
+        }
+
+        private enum ExpectedStagedItemKind {
+            case directory
+            case regularFile
         }
 
         private static func artifactRootURLs(for artifactRoot: URL) throws -> ArtifactRootURLs {
@@ -276,37 +293,59 @@ public extension PrivateHeaderGeneration {
         private static func commitEntries(
             stagedSourceDirectory: URL,
             artifactRoot: ArtifactPath,
+            artifacts: [ArtifactPath],
             fileManager: FileManager
         ) throws -> [CommitEntry] {
             let sourceDirectory = stagedSourceDirectory.standardizedFileURL
-            guard let sourceKind = try artifactItemKind(
+            try validateStagedItem(
                 at: sourceDirectory,
+                expectedKind: .directory,
                 fileManager: fileManager
-            ) else {
-                throw ArtifactStoreError.missingStagedArtifact(sourceDirectory.path)
-            }
-            guard sourceKind != .symbolicLink else {
-                throw ArtifactStoreError.symbolicLinkInStagingDirectory(sourceDirectory.path)
-            }
-            guard sourceKind == .directory else {
-                throw ArtifactStoreError.stagedArtifactIsNotDirectory(sourceDirectory.path)
-            }
+            )
 
-            var entries = [
-                CommitEntry(
+            let rootComponents = artifactRoot.rawValue.split(separator: "/").map(String.init)
+            var entriesByArtifact: [ArtifactPath: CommitEntry] = [
+                artifactRoot: CommitEntry(
                     source: sourceDirectory,
                     artifact: artifactRoot,
                     kind: .directory
                 ),
             ]
-            try appendCommitEntries(
-                from: sourceDirectory,
-                relativeComponents: [],
-                artifactRoot: artifactRoot,
-                fileManager: fileManager,
-                entries: &entries
-            )
-            return entries.sorted {
+
+            for artifact in artifacts {
+                let components = artifact.rawValue.split(separator: "/").map(String.init)
+                guard components.count > rootComponents.count,
+                      components.prefix(rootComponents.count).elementsEqual(rootComponents)
+                else {
+                    throw ArtifactStoreError.artifactPathOutsideCommitRoot(
+                        artifactPath: artifact,
+                        artifactRoot: artifactRoot
+                    )
+                }
+
+                let relativeComponents = Array(components.dropFirst(rootComponents.count))
+                var source = sourceDirectory
+                for (index, component) in relativeComponents.enumerated() {
+                    source.appendPathComponent(component)
+                    let isLeaf = index == relativeComponents.count - 1
+                    try validateStagedItem(
+                        at: source,
+                        expectedKind: isLeaf ? .regularFile : .directory,
+                        fileManager: fileManager
+                    )
+
+                    let entryArtifact = try ArtifactPath(
+                        (rootComponents + relativeComponents.prefix(index + 1)).joined(separator: "/")
+                    )
+                    entriesByArtifact[entryArtifact] = CommitEntry(
+                        source: source,
+                        artifact: entryArtifact,
+                        kind: isLeaf ? .file : .directory
+                    )
+                }
+            }
+
+            return entriesByArtifact.values.sorted {
                 let leftDepth = pathDepth($0.artifact)
                 let rightDepth = pathDepth($1.artifact)
                 if leftDepth == rightDepth {
@@ -319,49 +358,29 @@ public extension PrivateHeaderGeneration {
             }
         }
 
-        private static func appendCommitEntries(
-            from sourceDirectory: URL,
-            relativeComponents: [String],
-            artifactRoot: ArtifactPath,
-            fileManager: FileManager,
-            entries: inout [CommitEntry]
+        private static func validateStagedItem(
+            at url: URL,
+            expectedKind: ExpectedStagedItemKind,
+            fileManager: FileManager
         ) throws {
-            let children = try fileManager.contentsOfDirectory(
-                at: sourceDirectory,
-                includingPropertiesForKeys: nil,
-                options: []
-            )
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-
-            for child in children {
-                guard let itemKind = try artifactItemKind(at: child, fileManager: fileManager) else {
-                    throw ArtifactStoreError.missingStagedArtifact(child.path)
-                }
-                guard itemKind != .symbolicLink else {
-                    throw ArtifactStoreError.symbolicLinkInStagingDirectory(child.path)
-                }
-
-                let components = relativeComponents + [child.lastPathComponent]
-                let artifact = try ArtifactPath(
-                    ([artifactRoot.rawValue] + components).joined(separator: "/")
-                )
-                let kind: CommitEntryKind = itemKind == .directory ? .directory : .file
-                entries.append(
-                    CommitEntry(
-                        source: child,
-                        artifact: artifact,
-                        kind: kind
-                    )
-                )
-
-                if kind == .directory {
-                    try appendCommitEntries(
-                        from: child,
-                        relativeComponents: components,
-                        artifactRoot: artifactRoot,
-                        fileManager: fileManager,
-                        entries: &entries
-                    )
+            guard let kind = try artifactItemKind(at: url, fileManager: fileManager) else {
+                throw ArtifactStoreError.missingStagedArtifact(url.path)
+            }
+            guard kind != .symbolicLink else {
+                throw ArtifactStoreError.symbolicLinkInStagingDirectory(url.path)
+            }
+            let hasExpectedKind = switch expectedKind {
+            case .directory:
+                kind == .directory
+            case .regularFile:
+                kind == .regularFile
+            }
+            guard hasExpectedKind else {
+                switch expectedKind {
+                case .directory:
+                    throw ArtifactStoreError.stagedArtifactIsNotDirectory(url.path)
+                case .regularFile:
+                    throw ArtifactStoreError.stagedArtifactIsNotRegularFile(url.path)
                 }
             }
         }
@@ -402,6 +421,7 @@ public extension PrivateHeaderGeneration {
             let currentEntries = try Self.commitEntries(
                 stagedSourceDirectory: plan.stagedSourceDirectory,
                 artifactRoot: plan.artifactRoot,
+                artifacts: plan.artifacts,
                 fileManager: fileManager
             )
             guard currentEntries == plan.entries else {
@@ -439,7 +459,7 @@ public extension PrivateHeaderGeneration {
             guard sourceKind != .symbolicLink else {
                 throw ArtifactStoreError.symbolicLinkInStagingDirectory(entry.source.path)
             }
-            let expectedSourceKind: ArtifactItemKind = entry.kind == .directory ? .directory : .other
+            let expectedSourceKind: ArtifactItemKind = entry.kind == .directory ? .directory : .regularFile
             guard sourceKind == expectedSourceKind else {
                 throw ArtifactStoreError.stagingDirectoryChanged(
                     plan.stagedSourceDirectory.path
@@ -461,7 +481,9 @@ public extension PrivateHeaderGeneration {
 
         private func validateArtifactRoot(of plan: CommitPlan) throws {
             let current = try Self.artifactRootURLs(for: artifactRoot)
-            guard current == plan.root else {
+            guard current.unresolved.path == plan.root.unresolved.path,
+                  current.resolved.path == plan.root.resolved.path
+            else {
                 throw ArtifactStoreError.artifactRootChanged(
                     expected: plan.root.resolved.path,
                     actual: current.resolved.path
@@ -479,14 +501,14 @@ public extension PrivateHeaderGeneration {
             }
 
             switch (entry.kind, existingKind) {
-            case (.directory, .directory), (.file, .other):
+            case (.directory, .directory), (.file, .regularFile):
                 return
             case (.directory, .symbolicLink), (.file, .symbolicLink):
                 throw ArtifactStoreError.symbolicLinkInArtifactPath(
                     artifactPath: entry.artifact,
                     symbolicLinkPath: destination.path
                 )
-            case (.directory, .other):
+            case (.directory, .regularFile), (.directory, .other):
                 throw ArtifactStoreError.commitDestinationTypeMismatch(
                     artifactPath: entry.artifact,
                     expected: "directory",
@@ -497,6 +519,12 @@ public extension PrivateHeaderGeneration {
                     artifactPath: entry.artifact,
                     expected: "file",
                     actual: "directory"
+                )
+            case (.file, .other):
+                throw ArtifactStoreError.commitDestinationTypeMismatch(
+                    artifactPath: entry.artifact,
+                    expected: "regular file",
+                    actual: "special file"
                 )
             }
         }
@@ -510,6 +538,9 @@ public extension PrivateHeaderGeneration {
                 let fileType = attributes[.type] as? FileAttributeType
                 if fileType == .typeDirectory {
                     return .directory
+                }
+                if fileType == .typeRegular {
+                    return .regularFile
                 }
                 if fileType == .typeSymbolicLink {
                     return .symbolicLink

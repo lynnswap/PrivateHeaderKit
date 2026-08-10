@@ -591,7 +591,8 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         do {
             commitPlan = try artifactStore.prepareCommit(
                 stagedSourceDirectory: stagedSourceDirectory,
-                artifactRoot: artifactRoot
+                artifactRoot: artifactRoot,
+                artifacts: attemptedArtifacts
             )
         } catch {
             let failureSummary = "commit failed: \(error)"
