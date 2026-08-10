@@ -110,10 +110,13 @@ package struct ArtifactPublisher: Sendable {
     fileprivate struct Node {
       let path: PrivateHeaderGeneration.ArtifactPath
       let kind: NodeKind
+      let recordedByOwnership: Bool
+      var observedDirectoryPath: PrivateHeaderGeneration.ArtifactPath?
     }
 
     private var nodes: [[String]: Node] = [:]
     private var childCounts: [[String]: Int] = [:]
+    private var ownershipCounts: [[String]: Int] = [:]
 
     init(
       ownedPaths: [PrivateHeaderGeneration.ArtifactPath],
@@ -140,19 +143,17 @@ package struct ArtifactPublisher: Sendable {
         ownedPathByCanonicalPath[ownedPath] = ownedPath
         let components = ownedPath.rawValue.split(separator: "/").map(String.init)
         for componentCount in 1..<components.count {
-          try insert(
-            PrivateHeaderGeneration.ArtifactPath(
-              rawValue: components.prefix(componentCount).joined(separator: "/")
-            ),
-            kind: .directory,
-            allowCanonicalSpelling: false
+          let directory = PrivateHeaderGeneration.ArtifactPath(
+            rawValue: components.prefix(componentCount).joined(separator: "/")
           )
+          try insertRecorded(directory, kind: .directory)
+          ownershipCounts[ArtifactPublisher.portablePathComponents(directory), default: 0] += 1
         }
-        try insert(ownedPath, kind: .regular, allowCanonicalSpelling: false)
+        try insertRecorded(ownedPath, kind: .regular)
       }
 
       for directory in existingDirectories.sorted(by: Self.namespacePathPrecedes) {
-        try insert(directory, kind: .directory, allowCanonicalSpelling: true)
+        try insertObservedDirectory(directory)
       }
 
       for key in nodes.keys where !key.isEmpty {
@@ -180,10 +181,14 @@ package struct ArtifactPublisher: Sendable {
         let requestedPath = PrivateHeaderGeneration.ArtifactPath(
           rawValue: components.prefix(index + 1).joined(separator: "/")
         )
-        guard node.path == requestedPath else {
+        let existingPath =
+          node.kind == .directory && ownershipCounts[key, default: 0] == 0
+          ? node.observedDirectoryPath ?? node.path
+          : node.path
+        guard existingPath.rawValue.utf8.elementsEqual(requestedPath.rawValue.utf8) else {
           throw PublisherError.unexpectedItem(
             path: destination.path,
-            description: "portable alias of existing path \(node.path.rawValue)"
+            description: "portable alias of existing path \(existingPath.rawValue)"
           )
         }
         let isLeaf = index == components.count - 1
@@ -214,17 +219,16 @@ package struct ArtifactPublisher: Sendable {
       return ArtifactPublisher.artifactPathPrecedes(lhs, rhs)
     }
 
-    private mutating func insert(
+    private mutating func insertRecorded(
       _ path: PrivateHeaderGeneration.ArtifactPath,
-      kind: NodeKind,
-      allowCanonicalSpelling: Bool
+      kind: NodeKind
     ) throws {
       let key = ArtifactPublisher.portablePathComponents(path)
       if let existing = nodes[key] {
-        let sameSpelling = allowCanonicalSpelling
-          ? existing.path == path
-          : existing.path.rawValue.utf8.elementsEqual(path.rawValue.utf8)
-        guard existing.kind == kind, sameSpelling else {
+        guard existing.kind == kind,
+          existing.recordedByOwnership,
+          existing.path.rawValue.utf8.elementsEqual(path.rawValue.utf8)
+        else {
           throw PublisherError.unexpectedItem(
             path: path.rawValue,
             description: "portable alias of existing path \(existing.path.rawValue)"
@@ -232,7 +236,43 @@ package struct ArtifactPublisher: Sendable {
         }
         return
       }
-      nodes[key] = Node(path: path, kind: kind)
+      nodes[key] = Node(
+        path: path,
+        kind: kind,
+        recordedByOwnership: true,
+        observedDirectoryPath: nil
+      )
+    }
+
+    private mutating func insertObservedDirectory(
+      _ path: PrivateHeaderGeneration.ArtifactPath
+    ) throws {
+      let key = ArtifactPublisher.portablePathComponents(path)
+      guard var existing = nodes[key] else {
+        nodes[key] = Node(
+          path: path,
+          kind: .directory,
+          recordedByOwnership: false,
+          observedDirectoryPath: path
+        )
+        return
+      }
+      let matchesRecordedPrefix = existing.recordedByOwnership && existing.path == path
+      let matchesObservedDirectory = existing.observedDirectoryPath.map {
+        $0.rawValue.utf8.elementsEqual(path.rawValue.utf8)
+      } ?? false
+      guard existing.kind == .directory,
+        matchesObservedDirectory || (existing.observedDirectoryPath == nil && matchesRecordedPrefix)
+      else {
+        throw PublisherError.unexpectedItem(
+          path: path.rawValue,
+          description: "portable alias of existing path \(existing.path.rawValue)"
+        )
+      }
+      if existing.observedDirectoryPath == nil {
+        existing.observedDirectoryPath = path
+        nodes[key] = existing
+      }
     }
 
     private mutating func removeRegularFile(
@@ -241,6 +281,13 @@ package struct ArtifactPublisher: Sendable {
       var key = ArtifactPublisher.portablePathComponents(path)
       guard let node = nodes[key], node.kind == .regular, node.path == path else {
         throw PublisherError.missingArtifact(path.rawValue)
+      }
+      for componentCount in 1..<key.count {
+        let directoryKey = Array(key.prefix(componentCount))
+        guard let count = ownershipCounts[directoryKey], count > 0 else {
+          preconditionFailure("prospective namespace ownership count is inconsistent")
+        }
+        ownershipCounts[directoryKey] = count - 1
       }
       removeNode(at: key)
       key.removeLast()
@@ -257,6 +304,7 @@ package struct ArtifactPublisher: Sendable {
     private mutating func removeNode(at key: [String]) {
       precondition(nodes.removeValue(forKey: key) != nil)
       childCounts.removeValue(forKey: key)
+      ownershipCounts.removeValue(forKey: key)
       guard !key.isEmpty else { return }
       let parent = Array(key.dropLast())
       guard let count = childCounts[parent], count > 0 else {

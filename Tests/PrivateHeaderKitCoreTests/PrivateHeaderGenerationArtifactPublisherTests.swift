@@ -456,6 +456,42 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     )
   }
 
+  @Test func prospectiveNamespaceRejectsNormalizationAliasOfActualOnlyDirectory() throws {
+    let decomposedDirectory = PrivateHeaderGeneration.ArtifactPath(
+      rawValue: "Directories/Cafe\u{301}"
+    )
+    let namespace = try ArtifactPublisher.ProspectiveNamespace(
+      ownedPaths: [],
+      existingDirectories: [
+        .init(rawValue: "Directories"),
+        decomposedDirectory,
+      ],
+      existingRegularPaths: [],
+      pathsToRemove: []
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      try namespace.preflightDestination(
+        .init(rawValue: "Directories/Caf\u{e9}/Header.h"),
+        destination: URL(fileURLWithPath: "/draft/Directories/Caf\u{e9}/Header.h")
+      )
+    }
+  }
+
+  @Test func prospectiveNamespaceRejectsTwoObservedNormalizationAliases() {
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try ArtifactPublisher.ProspectiveNamespace(
+        ownedPaths: [],
+        existingDirectories: [
+          .init(rawValue: "Directories/Cafe\u{301}"),
+          .init(rawValue: "Directories/Caf\u{e9}"),
+        ],
+        existingRegularPaths: [],
+        pathsToRemove: []
+      )
+    }
+  }
+
   @Test func applySupportsFileToDirectoryTransition() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
