@@ -271,6 +271,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: staging,
                 stagedSourceDirectory: staging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -305,6 +306,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: staging,
                 stagedSourceDirectory: staging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -339,6 +341,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: staging,
                 stagedSourceDirectory: staging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths(
@@ -372,6 +375,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
 
         let plan = try store.prepareCommit(
+            stagingDirectory: staging,
             stagedSourceDirectory: staging,
             artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
             artifacts: try artifactPaths(
@@ -411,6 +415,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: symlinkRoot)
 
         let plan = try store.prepareCommit(
+            stagingDirectory: staging,
             stagedSourceDirectory: staging,
             artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
             artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -440,6 +445,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: symlinkStaging,
                 stagedSourceDirectory: symlinkStaging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -447,6 +453,48 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         }
 
         #expect(try fileContents("Generated.h", in: realStaging) == "generated")
+        #expect(!pathExists("Frameworks/Foo/Headers/Generated.h", in: root))
+    }
+
+    @Test func commitRejectsSymlinkBetweenStagingRootAndStagedSource() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("target-staging", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try writeFile(
+            "external",
+            to: "System/Library/Foo/Headers/Generated.h",
+            in: outside
+        )
+        try FileManager.default.createSymbolicLink(
+            at: staging.appendingPathComponent("System"),
+            withDestinationURL: outside.appendingPathComponent("System", isDirectory: true)
+        )
+        let stagedSource = staging.appendingPathComponent(
+            "System/Library/Foo/Headers",
+            isDirectory: true
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagingDirectory: staging,
+                stagedSourceDirectory: stagedSource,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
+                artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
+            )
+        }
+
+        #expect(
+            try fileContents(
+                "System/Library/Foo/Headers/Generated.h",
+                in: outside
+            ) == "external"
+        )
         #expect(!pathExists("Frameworks/Foo/Headers/Generated.h", in: root))
     }
 
@@ -468,6 +516,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: staging,
                 stagedSourceDirectory: staging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths("Frameworks/Foo/Headers/Linked.h")
@@ -491,6 +540,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
         let plan = try store.prepareCommit(
+            stagingDirectory: staging,
             stagedSourceDirectory: staging,
             artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
             artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -516,6 +566,60 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         #expect(pathExists("Generated.h", in: staging))
     }
 
+    @Test func commitRechecksStagingBoundaryAfterPreflight() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("target-staging", isDirectory: true)
+        let stagedSource = staging.appendingPathComponent(
+            "System/Library/Foo/Headers",
+            isDirectory: true
+        )
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try writeFile("generated", to: "Generated.h", in: stagedSource)
+        try writeFile(
+            "external",
+            to: "System/Library/Foo/Headers/Generated.h",
+            in: outside
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+        let plan = try store.prepareCommit(
+            stagingDirectory: staging,
+            stagedSourceDirectory: stagedSource,
+            artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
+            artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
+        )
+        let originalSystem = base.appendingPathComponent("original-System", isDirectory: true)
+        try FileManager.default.moveItem(
+            at: staging.appendingPathComponent("System", isDirectory: true),
+            to: originalSystem
+        )
+        try FileManager.default.createSymbolicLink(
+            at: staging.appendingPathComponent("System"),
+            withDestinationURL: outside.appendingPathComponent("System", isDirectory: true)
+        )
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            try store.commit(plan)
+        }
+
+        #expect(
+            try fileContents(
+                "System/Library/Foo/Headers/Generated.h",
+                in: outside
+            ) == "external"
+        )
+        #expect(
+            try fileContents(
+                "Library/Foo/Headers/Generated.h",
+                in: originalSystem
+            ) == "generated"
+        )
+        #expect(!pathExists("Frameworks/Foo/Headers/Generated.h", in: root))
+    }
+
     @Test func commitIgnoresUnownedStagedFiles() throws {
         let base = try makeTemporaryDirectory()
         defer {
@@ -528,6 +632,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
 
         let plan = try store.prepareCommit(
+            stagingDirectory: staging,
             stagedSourceDirectory: staging,
             artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
             artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -554,6 +659,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: staging,
                 stagedSourceDirectory: staging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths("Frameworks/Foo/Headers/Generated.h")
@@ -575,6 +681,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
             _ = try store.prepareCommit(
+                stagingDirectory: staging,
                 stagedSourceDirectory: staging,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
                 artifacts: try artifactPaths("Frameworks/Bar/Headers/Generated.h")
@@ -583,6 +690,77 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         #expect(pathExists("Generated.h", in: staging))
         #expect(!pathExists("Frameworks/Bar/Headers/Generated.h", in: root))
+    }
+
+    @Test func commitRejectsExactSourceDestinationOverlapWithoutRemovingSource() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("target-staging", isDirectory: true)
+        try writeFile("generated", to: "Generated.h", in: staging)
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: base)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagingDirectory: staging,
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("target-staging"),
+                artifacts: try artifactPaths("target-staging/Generated.h")
+            )
+        }
+
+        #expect(try fileContents("Generated.h", in: staging) == "generated")
+    }
+
+    @Test func commitRejectsDestinationAncestorOfSourceWithoutRemovingSource() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent(
+            "Output/target-staging",
+            isDirectory: true
+        )
+        try writeFile("generated", to: "Generated.h", in: staging)
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: base)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagingDirectory: staging,
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Output"),
+                artifacts: try artifactPaths("Output/Generated.h")
+            )
+        }
+
+        #expect(try fileContents("Generated.h", in: staging) == "generated")
+    }
+
+    @Test func commitRejectsCaseFoldedDestinationCollisionBeforeMutation() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try writeFile("alpha", to: "A.h", in: staging)
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagingDirectory: staging,
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers"),
+                artifacts: try artifactPaths(
+                    "Frameworks/Foo/Headers/A.h",
+                    "Frameworks/Foo/Headers/a.h"
+                )
+            )
+        }
+
+        #expect(try fileContents("A.h", in: staging) == "alpha")
+        #expect(!directoryExists(root))
     }
 }
 

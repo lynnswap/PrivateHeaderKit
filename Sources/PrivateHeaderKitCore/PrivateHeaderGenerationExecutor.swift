@@ -590,6 +590,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         let commitPlan: PrivateHeaderGeneration.ArtifactStore.CommitPlan
         do {
             commitPlan = try artifactStore.prepareCommit(
+                stagingDirectory: targetStagingDirectory,
                 stagedSourceDirectory: stagedSourceDirectory,
                 artifactRoot: artifactRoot,
                 artifacts: attemptedArtifacts

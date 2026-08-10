@@ -19,6 +19,7 @@ public extension PrivateHeaderGeneration {
 
     enum ArtifactStoreError: Error, Equatable, CustomStringConvertible, Sendable {
         case nonFileArtifactRoot(String)
+        case nonFileStagingDirectory(String)
         case artifactPathEscapesRoot(artifactPath: ArtifactPath, artifactRoot: String, resolvedPath: String)
         case symbolicLinkInArtifactPath(artifactPath: ArtifactPath, symbolicLinkPath: String)
         case commitDestinationTypeMismatch(artifactPath: ArtifactPath, expected: String, actual: String)
@@ -26,7 +27,10 @@ public extension PrivateHeaderGeneration {
         case missingStagedArtifact(String)
         case stagedArtifactIsNotDirectory(String)
         case stagedArtifactIsNotRegularFile(String)
+        case stagedSourceOutsideStagingDirectory(stagedSource: String, stagingDirectory: String)
         case artifactPathOutsideCommitRoot(artifactPath: ArtifactPath, artifactRoot: ArtifactPath)
+        case commitSourceDestinationOverlap(source: String, destination: String)
+        case commitDestinationCollision(first: ArtifactPath, second: ArtifactPath)
         case stagingDirectoryChanged(String)
         case artifactRootChanged(expected: String, actual: String)
 
@@ -34,6 +38,8 @@ public extension PrivateHeaderGeneration {
             switch self {
             case .nonFileArtifactRoot(let artifactRoot):
                 "artifact root must be a file URL: \(artifactRoot)"
+            case .nonFileStagingDirectory(let stagingDirectory):
+                "staging directory must be a file URL: \(stagingDirectory)"
             case .artifactPathEscapesRoot(let artifactPath, let artifactRoot, let resolvedPath):
                 "artifact path escapes artifact root: \(artifactPath.rawValue) resolved to \(resolvedPath) outside \(artifactRoot)"
             case .symbolicLinkInArtifactPath(let artifactPath, let symbolicLinkPath):
@@ -48,8 +54,14 @@ public extension PrivateHeaderGeneration {
                 "staged artifact path is not a directory: \(path)"
             case .stagedArtifactIsNotRegularFile(let path):
                 "staged artifact is not a regular file: \(path)"
+            case .stagedSourceOutsideStagingDirectory(let stagedSource, let stagingDirectory):
+                "staged source is outside staging directory: \(stagedSource) is not under \(stagingDirectory)"
             case .artifactPathOutsideCommitRoot(let artifactPath, let artifactRoot):
                 "artifact path is outside commit root: \(artifactPath.rawValue) is not under \(artifactRoot.rawValue)"
+            case .commitSourceDestinationOverlap(let source, let destination):
+                "commit source and destination overlap: \(source) and \(destination)"
+            case .commitDestinationCollision(let first, let second):
+                "commit destinations collide: \(first.rawValue) and \(second.rawValue)"
             case .stagingDirectoryChanged(let path):
                 "staging directory changed after commit preflight: \(path)"
             case .artifactRootChanged(let expected, let actual):
@@ -61,7 +73,10 @@ public extension PrivateHeaderGeneration {
     struct ArtifactStore: Sendable {
         public struct CommitPlan: Sendable {
             fileprivate let root: ArtifactRootURLs
+            fileprivate let stagingDirectory: URL
+            fileprivate let resolvedStagingDirectory: URL
             fileprivate let stagedSourceDirectory: URL
+            fileprivate let resolvedStagedSourceDirectory: URL
             fileprivate let artifactRoot: ArtifactPath
             fileprivate let artifacts: [ArtifactPath]
             fileprivate let entries: [CommitEntry]
@@ -95,14 +110,17 @@ public extension PrivateHeaderGeneration {
         }
 
         public func prepareCommit(
+            stagingDirectory: URL,
             stagedSourceDirectory: URL,
             artifactRoot: ArtifactPath,
             artifacts: [ArtifactPath],
             fileManager: FileManager = .default
         ) throws -> CommitPlan {
             let root = try Self.artifactRootURLs(for: self.artifactRoot)
-            let artifacts = Array(Set(artifacts)).sorted { $0.rawValue < $1.rawValue }
+            let artifacts = artifacts.sorted { $0.rawValue < $1.rawValue }
+            try Self.validateDestinationCollisions(artifacts)
             let entries = try Self.commitEntries(
+                stagingDirectory: stagingDirectory,
                 stagedSourceDirectory: stagedSourceDirectory,
                 artifactRoot: artifactRoot,
                 artifacts: artifacts,
@@ -110,7 +128,14 @@ public extension PrivateHeaderGeneration {
             )
             let plan = CommitPlan(
                 root: root,
+                stagingDirectory: stagingDirectory.standardizedFileURL,
+                resolvedStagingDirectory: stagingDirectory
+                    .resolvingSymlinksInPath()
+                    .standardizedFileURL,
                 stagedSourceDirectory: stagedSourceDirectory.standardizedFileURL,
+                resolvedStagedSourceDirectory: stagedSourceDirectory
+                    .resolvingSymlinksInPath()
+                    .standardizedFileURL,
                 artifactRoot: artifactRoot,
                 artifacts: artifacts,
                 entries: entries
@@ -291,17 +316,18 @@ public extension PrivateHeaderGeneration {
         }
 
         private static func commitEntries(
+            stagingDirectory: URL,
             stagedSourceDirectory: URL,
             artifactRoot: ArtifactPath,
             artifacts: [ArtifactPath],
             fileManager: FileManager
         ) throws -> [CommitEntry] {
-            let sourceDirectory = stagedSourceDirectory.standardizedFileURL
-            try validateStagedItem(
-                at: sourceDirectory,
-                expectedKind: .directory,
+            try validateStagingBoundary(
+                stagingDirectory: stagingDirectory,
+                stagedSourceDirectory: stagedSourceDirectory,
                 fileManager: fileManager
             )
+            let sourceDirectory = stagedSourceDirectory.standardizedFileURL
 
             let rootComponents = artifactRoot.rawValue.split(separator: "/").map(String.init)
             var entriesByArtifact: [ArtifactPath: CommitEntry] = [
@@ -345,7 +371,7 @@ public extension PrivateHeaderGeneration {
                 }
             }
 
-            return entriesByArtifact.values.sorted {
+            let entries = entriesByArtifact.values.sorted {
                 let leftDepth = pathDepth($0.artifact)
                 let rightDepth = pathDepth($1.artifact)
                 if leftDepth == rightDepth {
@@ -356,6 +382,8 @@ public extension PrivateHeaderGeneration {
                 }
                 return leftDepth < rightDepth
             }
+            try validateDestinationCollisions(entries.map(\.artifact))
+            return entries
         }
 
         private static func validateStagedItem(
@@ -383,6 +411,77 @@ public extension PrivateHeaderGeneration {
                     throw ArtifactStoreError.stagedArtifactIsNotRegularFile(url.path)
                 }
             }
+        }
+
+        private static func validateStagingBoundary(
+            stagingDirectory: URL,
+            stagedSourceDirectory: URL,
+            fileManager: FileManager
+        ) throws {
+            guard stagingDirectory.isFileURL else {
+                throw ArtifactStoreError.nonFileStagingDirectory(
+                    stagingDirectory.absoluteString
+                )
+            }
+            guard stagedSourceDirectory.isFileURL else {
+                throw ArtifactStoreError.nonFileStagingDirectory(
+                    stagedSourceDirectory.absoluteString
+                )
+            }
+
+            let stagingDirectory = stagingDirectory.standardizedFileURL
+            let stagedSourceDirectory = stagedSourceDirectory.standardizedFileURL
+            let stagingComponents = stagingDirectory.pathComponents
+            let sourceComponents = stagedSourceDirectory.pathComponents
+            guard sourceComponents.count >= stagingComponents.count,
+                  sourceComponents.prefix(stagingComponents.count).elementsEqual(stagingComponents)
+            else {
+                throw ArtifactStoreError.stagedSourceOutsideStagingDirectory(
+                    stagedSource: stagedSourceDirectory.path,
+                    stagingDirectory: stagingDirectory.path
+                )
+            }
+
+            var current = stagingDirectory
+            try validateStagedItem(
+                at: current,
+                expectedKind: .directory,
+                fileManager: fileManager
+            )
+            for component in sourceComponents.dropFirst(stagingComponents.count) {
+                current.appendPathComponent(component, isDirectory: true)
+                try validateStagedItem(
+                    at: current,
+                    expectedKind: .directory,
+                    fileManager: fileManager
+                )
+            }
+        }
+
+        private static func validateDestinationCollisions(
+            _ artifacts: [ArtifactPath]
+        ) throws {
+            var artifactByCollisionKey: [String: ArtifactPath] = [:]
+            for artifact in artifacts {
+                let key = collisionKey(for: artifact.rawValue)
+                if let existing = artifactByCollisionKey[key] {
+                    throw ArtifactStoreError.commitDestinationCollision(
+                        first: existing,
+                        second: artifact
+                    )
+                }
+                artifactByCollisionKey[key] = artifact
+            }
+        }
+
+        private static func collisionKey(for path: String) -> String {
+            path
+                .precomposedStringWithCanonicalMapping
+                .folding(
+                    options: [.caseInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
+                )
+                .precomposedStringWithCanonicalMapping
         }
 
         private static func commitDestinationURL(
@@ -418,7 +517,9 @@ public extension PrivateHeaderGeneration {
             fileManager: FileManager
         ) throws {
             try validateArtifactRoot(of: plan)
+            try validateStagingBoundary(of: plan, fileManager: fileManager)
             let currentEntries = try Self.commitEntries(
+                stagingDirectory: plan.stagingDirectory,
                 stagedSourceDirectory: plan.stagedSourceDirectory,
                 artifactRoot: plan.artifactRoot,
                 artifacts: plan.artifacts,
@@ -429,6 +530,7 @@ public extension PrivateHeaderGeneration {
                     plan.stagedSourceDirectory.path
                 )
             }
+            try Self.validateSourceDestinationDisjoint(plan)
 
             for entry in plan.entries {
                 let destination = try Self.commitDestinationURL(
@@ -450,6 +552,7 @@ public extension PrivateHeaderGeneration {
             fileManager: FileManager
         ) throws -> URL {
             try validateArtifactRoot(of: plan)
+            try validateStagingBoundary(of: plan, fileManager: fileManager)
             guard let sourceKind = try Self.artifactItemKind(
                 at: entry.source,
                 fileManager: fileManager
@@ -477,6 +580,73 @@ public extension PrivateHeaderGeneration {
                 fileManager: fileManager
             )
             return destination
+        }
+
+        private func validateStagingBoundary(
+            of plan: CommitPlan,
+            fileManager: FileManager
+        ) throws {
+            try Self.validateStagingBoundary(
+                stagingDirectory: plan.stagingDirectory,
+                stagedSourceDirectory: plan.stagedSourceDirectory,
+                fileManager: fileManager
+            )
+            let resolvedStagingDirectory = plan.stagingDirectory
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            let resolvedStagedSourceDirectory = plan.stagedSourceDirectory
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard resolvedStagingDirectory.path == plan.resolvedStagingDirectory.path,
+                  resolvedStagedSourceDirectory.path == plan.resolvedStagedSourceDirectory.path
+            else {
+                throw ArtifactStoreError.stagingDirectoryChanged(
+                    plan.stagingDirectory.path
+                )
+            }
+        }
+
+        private static func validateSourceDestinationDisjoint(
+            _ plan: CommitPlan
+        ) throws {
+            let sources = [
+                plan.resolvedStagingDirectory,
+                plan.resolvedStagedSourceDirectory,
+            ]
+            for entry in plan.entries {
+                let destination = resolvedArtifactURL(
+                    for: entry.artifact,
+                    root: plan.root
+                )
+                for source in sources where pathsOverlap(source, destination) {
+                    throw ArtifactStoreError.commitSourceDestinationOverlap(
+                        source: source.path,
+                        destination: destination.path
+                    )
+                }
+            }
+        }
+
+        private static func resolvedArtifactURL(
+            for artifact: ArtifactPath,
+            root: ArtifactRootURLs
+        ) -> URL {
+            var url = root.resolved
+            for component in artifact.rawValue.split(separator: "/", omittingEmptySubsequences: false) {
+                url.appendPathComponent(String(component))
+            }
+            return url.standardizedFileURL
+        }
+
+        private static func pathsOverlap(_ first: URL, _ second: URL) -> Bool {
+            let firstComponents = normalizedPathComponents(of: first)
+            let secondComponents = normalizedPathComponents(of: second)
+            return firstComponents.prefix(secondComponents.count).elementsEqual(secondComponents)
+                || secondComponents.prefix(firstComponents.count).elementsEqual(firstComponents)
+        }
+
+        private static func normalizedPathComponents(of url: URL) -> [String] {
+            url.standardizedFileURL.pathComponents.map(collisionKey(for:))
         }
 
         private func validateArtifactRoot(of plan: CommitPlan) throws {
