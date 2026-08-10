@@ -1,4 +1,5 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 import Testing
 #if canImport(PrivateHeaderKitRawDumpRuntimeObjC)
 import PrivateHeaderKitRawDumpRuntimeObjC
@@ -29,6 +30,7 @@ struct PrivateHeaderKitRawDumpArgumentTests {
             "-s",
             "-j", "OnlyClass",
             "-c",
+            "--expected-cache-uuid", "11111111-2222-3333-4444-555555555555",
             "-D",
             "-R",
             "/tmp/input"
@@ -45,6 +47,7 @@ struct PrivateHeaderKitRawDumpArgumentTests {
         #expect(parsed?.options.skipExisting == true)
         #expect(parsed?.options.onlyOneClass == "OnlyClass")
         #expect(parsed?.options.useSharedCache == true)
+        #expect(parsed?.options.expectedCacheUUID == UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         #expect(parsed?.options.verbose == true)
         #expect(parsed?.options.useRuntimeFallback == true)
     }
@@ -57,6 +60,22 @@ struct PrivateHeaderKitRawDumpArgumentTests {
     @Test func parseArgumentsReturnsNilWithoutInput() {
         let parsed = parseArguments(["-r"], environment: [:])
         #expect(parsed == nil)
+    }
+
+    @Test func sharedCacheArgumentsRequireValidExpectedUUID() {
+        #expect(parseArguments(["-c", "/tmp/input"], environment: [:]) == nil)
+        #expect(
+            parseArguments(
+                ["-c", "--expected-cache-uuid", "not-a-uuid", "/tmp/input"],
+                environment: [:]
+            ) == nil
+        )
+        #expect(
+            parseArguments(
+                ["--expected-cache-uuid", "11111111-2222-3333-4444-555555555555", "/tmp/input"],
+                environment: [:]
+            ) == nil
+        )
     }
 
     @Test func parseArgumentsHelpCallsExit() {
@@ -138,6 +157,7 @@ struct PrivateHeaderKitRawDumpPathTests {
 
         #expect(paths.first == "/Runtime/System/Library/Frameworks/Foo.framework/Foo")
         #expect(paths.contains("/System/Library/Frameworks/Foo.framework/Foo"))
+        #expect(paths.contains("/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
         #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/Current/Foo"))
         #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
         #expect(Set(paths).count == paths.count)
@@ -162,15 +182,105 @@ struct PrivateHeaderKitRawDumpPathTests {
     }
     #endif
 
-    @Test func sharedCachePathUsesInjectedFileManagerAndEnvironment() {
-        let simCache = "/Runtime/System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64e"
-        let fake = FakeFileManager(existing: [simCache])
-        let resolved = sharedCachePath(fileManager: fake, environment: ["PH_RUNTIME_ROOT": "/Runtime"])
-        #expect(resolved == simCache)
+}
 
-        let empty = FakeFileManager(existing: [])
-        let fallback = sharedCachePath(fileManager: empty, environment: [:])
-        #expect(fallback == "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
+@Suite
+struct PrivateHeaderKitRawDumpSharedCacheTests {
+    @Test func exactMatchingNeverUsesSuffixFallback() {
+        let inventory = [
+            "/System/Library/Frameworks/Foo.framework/Versions/A/Foo",
+            "/usr/lib/libobjc.A.dylib",
+        ]
+
+        #expect(
+            exactCacheImagePathMatch(
+                candidates: ["/usr/lib/libobjc.A.dylib"],
+                inventory: inventory
+            ) == "/usr/lib/libobjc.A.dylib"
+        )
+        #expect(
+            exactCacheImagePathMatch(
+                candidates: ["libobjc.A.dylib"],
+                inventory: inventory
+            ) == nil
+        )
+    }
+
+    @Test func expectedCacheUUIDMismatchIsTyped() throws {
+        let expected = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let actual = try #require(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+
+        #expect(throws: DyldSharedCacheAccessError.expectedUUIDMismatch(expected: expected, actual: actual)) {
+            try validateExpectedCacheUUID(expected, actual: actual)
+        }
+        try validateExpectedCacheUUID(nil, actual: actual)
+        try validateExpectedCacheUUID(actual, actual: actual)
+    }
+
+    @Test func loaderRejectsSharedCacheWithoutExpectedUUID() {
+        var options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        options.useSharedCache = true
+
+        #expect(throws: DyldSharedCacheAccessError.missingExpectedUUID) {
+            _ = try RawMachOLoader(
+                options: options,
+                environment: [:],
+                sharedCacheFactory: { _ in
+                    Issue.record("shared-cache factory must not run without an expected UUID")
+                    throw DyldSharedCacheAccessError.unavailable
+                }
+            )
+        }
+    }
+
+    @Test func loadedCacheEnvironmentRequiresTheRunningSimulatorRuntime() {
+        #expect(throws: DyldSharedCacheAccessError.missingSimulatorRuntimeRoot) {
+            try validateLoadedCacheEnvironment(["SIMULATOR_ROOT": "/Runtime"])
+        }
+        #expect(
+            throws: DyldSharedCacheAccessError.simulatorRuntimeRootMismatch(
+                expected: "/Runtime",
+                actual: "/OtherRuntime"
+            )
+        ) {
+            try validateLoadedCacheEnvironment([
+                "SIMULATOR_ROOT": "/Runtime",
+                "PH_RUNTIME_ROOT": "/OtherRuntime",
+            ])
+        }
+        #expect(throws: DyldSharedCacheAccessError.unsupportedHostRuntimeRoot("/Runtime")) {
+            try validateLoadedCacheEnvironment(["PH_RUNTIME_ROOT": "/Runtime"])
+        }
+    }
+
+    @Test func loadedCacheEnvironmentAcceptsCurrentHostAndSimulatorRoots() throws {
+        try validateLoadedCacheEnvironment([:])
+        try validateLoadedCacheEnvironment(["PH_RUNTIME_ROOT": "/"])
+        try validateLoadedCacheEnvironment([
+            "SIMULATOR_ROOT": "/Runtime/./",
+            "PH_RUNTIME_ROOT": "/Runtime",
+        ])
+    }
+
+    @Test func inventoryRejectsCustomHostRootBeforeOpeningLoadedCache() {
+        #expect(throws: DyldSharedCacheAccessError.unsupportedHostRuntimeRoot("/Runtime")) {
+            _ = try makeSharedCacheInventory(environment: ["PH_RUNTIME_ROOT": "/Runtime"])
+        }
+    }
+
+    @Test func inventoryEncodingMatchesHelperWireSchema() throws {
+        let uuid = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let data = try encodeSharedCacheInventory(
+            try PrivateHeaderKitSharedCacheInventory(
+                cacheUUID: uuid,
+                imagePaths: ["/usr/lib/libobjc.A.dylib"]
+            )
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["cacheUUID"] as? String == uuid.uuidString)
+        #expect(object["imagePaths"] as? [String] == ["/usr/lib/libobjc.A.dylib"])
     }
 }
 

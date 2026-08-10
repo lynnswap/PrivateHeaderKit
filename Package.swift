@@ -46,6 +46,7 @@ let package = Package(
         .target(
             name: "PrivateHeaderKitRawDumpCore",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 .target(
                     name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
@@ -91,12 +92,14 @@ let package = Package(
         .executableTarget(
             name: "PrivateHeaderKitRawDumpHelper",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
             ]
         ),
         .executableTarget(
             name: "PrivateHeaderKitSimulatorHelper",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
             ]
         ),
@@ -123,6 +126,7 @@ let package = Package(
         .testTarget(
             name: "PrivateHeaderKitRawDumpTests",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitTestSupport",
                 .target(

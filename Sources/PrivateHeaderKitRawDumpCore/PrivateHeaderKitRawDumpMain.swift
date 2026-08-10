@@ -4,6 +4,7 @@ import MachOKit
 import MachOObjCSection
 import MachOSwiftSection
 import ObjCDump
+import PrivateHeaderKitHelperProtocol
 import SwiftDeclaration
 @_spi(Support) import SwiftInterface
 #if canImport(Darwin)
@@ -29,6 +30,7 @@ protocol SwiftInterfaceBuilding {
 
 protocol SwiftInterfaceBuildingFactory {
     func makeBuilder(machO: MachOFile) throws -> SwiftInterfaceBuilding
+    func makeBuilder(machO: MachOImage) throws -> SwiftInterfaceBuilding
 }
 
 struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
@@ -50,13 +52,21 @@ struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
             eventHandlers: eventHandlers
         )
     }
+
+    func makeBuilder(machO: MachOImage) throws -> SwiftInterfaceBuilding {
+        try SwiftInterfaceBuilderAdapter(
+            machO: machO,
+            configuration: configuration,
+            eventHandlers: eventHandlers
+        )
+    }
 }
 
-struct SwiftInterfaceBuilderAdapter: SwiftInterfaceBuilding {
-    private let builder: SwiftInterfaceBuilder<MachOFile>
+struct SwiftInterfaceBuilderAdapter<MachO: MachOSwiftSectionRepresentableWithCache>: SwiftInterfaceBuilding {
+    private let builder: SwiftInterfaceBuilder<MachO>
 
     init(
-        machO: MachOFile,
+        machO: MachO,
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
         eventHandlers: [SwiftIndexEvents.Handler] = []
     ) throws {
@@ -80,6 +90,7 @@ struct DumpOptions {
     var skipExisting: Bool = false
     var onlyOneClass: String? = nil
     var useSharedCache: Bool = false
+    var expectedCacheUUID: UUID? = nil
     var verbose: Bool = false
     var useRuntimeFallback: Bool = false
     var logSkippedClasses: Bool = false
@@ -93,6 +104,20 @@ public struct PrivateHeaderKitRawDumpCLI {
     }
 
     public static func main(arguments args: [String]) async {
+        if args == [PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue] {
+            do {
+                let data = try encodeSharedCacheInventory(makeSharedCacheInventory())
+                guard let payload = String(data: data, encoding: .utf8) else {
+                    throw CocoaError(.fileReadInapplicableStringEncoding)
+                }
+                print(payload)
+            } catch {
+                fputs("privateheaderkit __shared-cache-inventory: error: \(error)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+            return
+        }
+
         guard let parsed = parseArguments(args) else {
             printUsage()
             exit(EXIT_FAILURE)
@@ -148,6 +173,13 @@ func parseArguments(
             index += 1
         case "-c":
             options.useSharedCache = true
+        case "--expected-cache-uuid":
+            let nextIndex = index + 1
+            guard nextIndex < args.count,
+                  let uuid = UUID(uuidString: args[nextIndex])
+            else { return nil }
+            options.expectedCacheUUID = uuid
+            index += 1
         case "-D":
             options.verbose = true
         case "-R":
@@ -163,6 +195,9 @@ func parseArguments(
     }
 
     guard let inputPath else { return nil }
+    guard options.useSharedCache == (options.expectedCacheUUID != nil) else {
+        return nil
+    }
     if !options.useRuntimeFallback {
         options.useRuntimeFallback = shouldUseRuntimeFallback(environment: environment)
     }
@@ -185,6 +220,8 @@ private func printUsage() {
         -s   Skip already found files
         -j   Only dump a single class/protocol name
         -c   Use dyld shared cache when dumping (recommended for simulator runtimes)
+        --expected-cache-uuid <uuid>
+             Require the helper process to use the expected dyld shared cache
         -D   Verbose logging
         -R   Prefer Objective-C runtime metadata (auto-enabled in simulator)
     """
@@ -245,15 +282,31 @@ func run(parsed: ParsedArguments) async throws {
     let options = parsed.options
     let inputPath = parsed.inputPath
     let fileManager = FileManager.default
+    let machOLoader = try RawMachOLoader(options: options)
 
     if options.recursive {
-        try await dumpRecursive(inputPath: inputPath, options: options, fileManager: fileManager)
+        try await dumpRecursive(
+            inputPath: inputPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
     } else {
-        try await dumpSingle(inputPath: inputPath, options: options, fileManager: fileManager)
+        try await dumpSingle(
+            inputPath: inputPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
     }
 }
 
-private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager: FileManager) async throws {
+private func dumpRecursive(
+    inputPath: String,
+    options: DumpOptions,
+    fileManager: FileManager,
+    machOLoader: RawMachOLoader
+) async throws {
     let inputURL = URL(fileURLWithPath: inputPath).standardizedFileURL
     let rootURL = resolveRuntimeURL(inputURL)
     guard let enumerator = fileManager.enumerator(
@@ -269,7 +322,13 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
             enumerator.skipDescendants()
             if let executableURL = resolveBundleExecutableURL(url, fileManager: fileManager) {
                 let originalPath = stripRuntimeRoot(from: executableURL.path)
-                try await dumpImage(executableURL, originalPath: originalPath, options: options, fileManager: fileManager)
+                try await dumpImage(
+                    executableURL,
+                    originalPath: originalPath,
+                    options: options,
+                    fileManager: fileManager,
+                    machOLoader: machOLoader
+                )
             }
             continue
         }
@@ -280,20 +339,43 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
         else { continue }
 
         let originalPath = stripRuntimeRoot(from: url.path)
-        try await dumpImage(url, originalPath: originalPath, options: options, fileManager: fileManager)
+        try await dumpImage(
+            url,
+            originalPath: originalPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
     }
 }
 
-private func dumpSingle(inputPath: String, options: DumpOptions, fileManager: FileManager) async throws {
+private func dumpSingle(
+    inputPath: String,
+    options: DumpOptions,
+    fileManager: FileManager,
+    machOLoader: RawMachOLoader
+) async throws {
     let originalURL = URL(fileURLWithPath: inputPath)
     let resolvedURL = resolveRuntimeURL(originalURL)
     if isBundleDirectory(resolvedURL), let executableURL = resolveBundleExecutableURL(resolvedURL, fileManager: fileManager) {
         let originalPath = stripRuntimeRoot(from: executableURL.path)
-        try await dumpImage(executableURL, originalPath: originalPath, options: options, fileManager: fileManager)
+        try await dumpImage(
+            executableURL,
+            originalPath: originalPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
         return
     }
     let originalPath = stripRuntimeRoot(from: resolvedURL.path)
-    try await dumpImage(resolvedURL, originalPath: originalPath, options: options, fileManager: fileManager)
+    try await dumpImage(
+        resolvedURL,
+        originalPath: originalPath,
+        options: options,
+        fileManager: fileManager,
+        machOLoader: machOLoader
+    )
 }
 
 func isBundleDirectory(_ url: URL) -> Bool {
@@ -362,13 +444,14 @@ private func dumpImage(
     _ url: URL,
     originalPath: String,
     options: DumpOptions,
-    fileManager: FileManager
+    fileManager: FileManager,
+    machOLoader: RawMachOLoader
 ) async throws {
     let loadStart = profileNowNanoseconds(enabled: options.profile)
-    guard let machO = loadMachOFile(url: url, options: options) else {
+    guard let machO = try machOLoader.load(url: url) else {
         return
     }
-    profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "loadMachOFile", since: loadStart)
+    profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "loadMachO", since: loadStart)
 
     let outputDir = writeDirectory(for: originalPath, outputRoot: options.outputDir, options: options)
     if options.verbose {
@@ -376,7 +459,13 @@ private func dumpImage(
     }
 
     let objcStart = profileNowNanoseconds(enabled: options.profile)
-    try dumpObjC(machO: machO, imagePath: originalPath, outputDir: outputDir, options: options, fileManager: fileManager)
+    try dumpObjC(
+        machO: machO,
+        imagePath: originalPath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
     profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "dumpObjC", since: objcStart)
 
     try await dumpSwift(
@@ -405,27 +494,62 @@ private func defaultSwiftInterfaceBuilderFactory(
     return DefaultSwiftInterfaceBuilderFactory()
 }
 
-private func loadMachOFile(url: URL, options: DumpOptions) -> MachOFile? {
-    if options.useSharedCache, let cached = loadFromSharedCache(imagePath: url.path) {
-        return cached
-    }
-    do {
-        let file = try loadFromFile(url: url)
-        switch file {
-        case .machO(let machO):
-            return isSupported(machO) ? machO : nil
-        case .fat(let fat):
-            let machOFiles = try fat.machOFiles()
-            if let match = machOFiles.first(where: { isSupported($0) }) {
-                return match
+enum RawMachO {
+    case file(MachOFile)
+    case loaded(MachOImage)
+}
+
+struct RawMachOLoader {
+    private let sharedCache: DyldSharedCacheAccess?
+    private let environment: [String: String]
+
+    init(
+        options: DumpOptions,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sharedCacheFactory: (UUID?) throws -> DyldSharedCacheAccess = DyldSharedCacheAccess.current
+    ) throws {
+        self.environment = environment
+        if options.useSharedCache {
+            guard let expectedCacheUUID = options.expectedCacheUUID else {
+                throw DyldSharedCacheAccessError.missingExpectedUUID
             }
+            try validateLoadedCacheEnvironment(environment)
+            self.sharedCache = try sharedCacheFactory(expectedCacheUUID)
+        } else {
+            self.sharedCache = nil
+        }
+    }
+
+    func load(url: URL) throws -> RawMachO? {
+        if let sharedCache {
+            let candidates = normalizedCacheImagePaths(
+                for: url.path,
+                environment: environment
+            )
+            if let loaded = sharedCache.image(matching: candidates) {
+                return .loaded(loaded.machO)
+            }
+        }
+
+        return loadFromDisk(url: url)
+    }
+
+    private func loadFromDisk(url: URL) -> RawMachO? {
+        do {
+            let file = try loadFromFile(url: url)
+            switch file {
+            case .machO(let machO):
+                return isSupported(machO) ? .file(machO) : nil
+            case .fat(let fat):
+                let machOFiles = try fat.machOFiles()
+                if let match = machOFiles.first(where: { isSupported($0) }) {
+                    return .file(match)
+                }
+                return nil
+            }
+        } catch {
             return nil
         }
-    } catch {
-        if options.useSharedCache {
-            return loadFromSharedCache(imagePath: url.path)
-        }
-        return nil
     }
 }
 
@@ -438,43 +562,11 @@ private func isSupported(_ machO: MachOFile) -> Bool {
     }
 }
 
-private func loadFromSharedCache(imagePath: String) -> MachOFile? {
-    let cachePath = sharedCachePath()
-    guard let fullCache = try? FullDyldCache(url: URL(fileURLWithPath: cachePath)) else {
-        return nil
-    }
-    let candidates = normalizedCacheImagePaths(for: imagePath)
-    if let match = fullCache.machOFiles().first(where: { candidates.contains($0.imagePath) }) {
-        return match
-    }
-    for candidate in candidates {
-        if let match = fullCache.machOFiles().first(where: { $0.imagePath.hasSuffix(candidate) }) {
-            return match
-        }
-    }
-    return nil
-}
-
 func normalizedCacheImagePaths(
     for path: String,
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> [String] {
-    var results: [String] = [path]
-
-    // On macOS, cache entries for frameworks frequently use versioned image paths
-    // (e.g. ".../Foo.framework/Versions/A/Foo"), while callers may provide
-    // ".../Foo.framework/Foo". Include common versioned variants so cache lookup
-    // still resolves when the unversioned symlink target is absent.
-    if let frameworkRange = path.range(of: ".framework/"), !path.contains(".framework/Versions/") {
-        let frameworkPrefix = String(path[..<frameworkRange.upperBound])
-        let imageName = URL(fileURLWithPath: path).lastPathComponent
-        if !imageName.isEmpty {
-            results.append(frameworkPrefix + "Versions/Current/" + imageName)
-            results.append(frameworkPrefix + "Versions/A/" + imageName)
-            results.append(frameworkPrefix + "Versions/B/" + imageName)
-            results.append(frameworkPrefix + "Versions/C/" + imageName)
-        }
-    }
+    var basePaths: [String] = [path]
 
     let rootCandidates = [
         environment["PH_RUNTIME_ROOT"],
@@ -487,16 +579,32 @@ func normalizedCacheImagePaths(
         if path.hasPrefix(trimmedRoot + "/") {
             let suffix = String(path.dropFirst(trimmedRoot.count))
             if !suffix.isEmpty {
-                results.append(suffix)
+                basePaths.append(suffix)
             }
         }
     }
 
     if let range = path.range(of: "/System/Library/") {
-        results.append(String(path[range.lowerBound...]))
+        basePaths.append(String(path[range.lowerBound...]))
     }
     if let range = path.range(of: "/usr/lib/") {
-        results.append(String(path[range.lowerBound...]))
+        basePaths.append(String(path[range.lowerBound...]))
+    }
+
+    var results = basePaths
+    for basePath in basePaths {
+        // Shared-cache framework identities are commonly versioned even when the
+        // filesystem-facing source path uses the unversioned bundle symlink.
+        guard let frameworkRange = basePath.range(of: ".framework/"),
+              !basePath.contains(".framework/Versions/")
+        else { continue }
+        let frameworkPrefix = String(basePath[..<frameworkRange.upperBound])
+        let imageName = URL(fileURLWithPath: basePath).lastPathComponent
+        guard !imageName.isEmpty else { continue }
+        results.append(frameworkPrefix + "Versions/Current/" + imageName)
+        results.append(frameworkPrefix + "Versions/A/" + imageName)
+        results.append(frameworkPrefix + "Versions/B/" + imageName)
+        results.append(frameworkPrefix + "Versions/C/" + imageName)
     }
 
     var unique: [String] = []
@@ -504,62 +612,6 @@ func normalizedCacheImagePaths(
         unique.append(item)
     }
     return unique
-}
-
-func sharedCachePath(
-    fileManager: FileExistenceChecking = FileManager.default,
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> String {
-    let rootCandidates = [
-        environment["PH_RUNTIME_ROOT"],
-        environment["DYLD_ROOT_PATH"],
-        environment["SIMCTL_CHILD_DYLD_ROOT_PATH"]
-    ].compactMap { $0 }
-
-    for runtimeRoot in rootCandidates {
-        let simArm64eCandidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64e")
-        if fileManager.fileExists(atPath: simArm64eCandidate.path) {
-            return simArm64eCandidate.path
-        }
-
-        let simArm64Candidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64")
-        if fileManager.fileExists(atPath: simArm64Candidate.path) {
-            return simArm64Candidate.path
-        }
-
-        let candidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
-        if fileManager.fileExists(atPath: candidate.path) {
-            return candidate.path
-        }
-
-        let arm64Candidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64")
-        if fileManager.fileExists(atPath: arm64Candidate.path) {
-            return arm64Candidate.path
-        }
-    }
-
-    let primary = "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e"
-    if fileManager.fileExists(atPath: primary) {
-        return primary
-    }
-
-    let candidates = [
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64",
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_x86_64",
-        "/private/var/db/dyld/dyld_shared_cache_arm64e",
-        "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
-        "/private/var/db/dyld/dyld_shared_cache_x86_64",
-        "/private/var/db/dyld/dyld_shared_cache_arm64"
-    ]
-    for candidate in candidates where fileManager.fileExists(atPath: candidate) {
-        return candidate
-    }
-    return primary
 }
 
 func writeDirectory(for imagePath: String, outputRoot: URL, options: DumpOptions) -> URL {
@@ -960,28 +1012,17 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
 }
 
 private func dumpObjC(
-    machO: MachOFile,
+    machO: RawMachO,
     imagePath: String,
     outputDir: URL,
     options: DumpOptions,
     fileManager: FileManager
 ) throws {
-    let objc = machO.objc
-    var classInfos: [String: ObjCClassInfo] = [:]
-    var protocolInfos: [String: ObjCProtocolInfo] = [:]
-    var categoryInfos: [String: ObjCCategoryInfo] = [:]
-
-    if let list = objc.classes64 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
-    }
-    if let list = objc.classes32 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
-    }
-    if let list = objc.nonLazyClasses64 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
-    }
-    if let list = objc.nonLazyClasses32 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
+    var metadata = switch machO {
+    case .file(let file):
+        collectObjCMetadata(from: file.objc, in: machO, options: options)
+    case .loaded(let image):
+        collectObjCMetadata(from: image.objc, in: machO, options: options)
     }
 
 #if canImport(ObjectiveC)
@@ -993,21 +1034,53 @@ private func dumpObjC(
                 stderr
             )
         }
-        for info in runtimeInfos {
-            if classInfos[info.name] == nil {
-                classInfos[info.name] = info
-            }
+        for info in runtimeInfos where metadata.classInfos[info.name] == nil {
+            metadata.classInfos[info.name] = info
         }
     }
 #endif
+
+    try writeObjCMetadata(
+        metadata,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
+}
+
+private struct CollectedObjCMetadata {
+    var classInfos: [String: ObjCClassInfo] = [:]
+    var protocolInfos: [String: ObjCProtocolInfo] = [:]
+    var categoryInfos: [String: ObjCCategoryInfo] = [:]
+}
+
+private func collectObjCMetadata<Section: ObjCSectionRepresentable>(
+    from objc: Section,
+    in machO: RawMachO,
+    options: DumpOptions
+) -> CollectedObjCMetadata {
+    var metadata = CollectedObjCMetadata()
+
+    if let list = objc.classes64 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
+    if let list = objc.classes32 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
+    if let list = objc.nonLazyClasses64 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
+    if let list = objc.nonLazyClasses32 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
 
     var protocolCandidates: [any ObjCProtocolProtocol] = []
     if let list = objc.protocols64 { protocolCandidates.append(contentsOf: list) }
     if let list = objc.protocols32 { protocolCandidates.append(contentsOf: list) }
 
     for proto in protocolCandidates {
-        if let info = proto.info(in: machO) {
-            protocolInfos[info.name] = info
+        if let info = protocolInfo(proto, in: machO) {
+            metadata.protocolInfos[info.name] = info
         }
     }
 
@@ -1020,11 +1093,24 @@ private func dumpObjC(
     if let list = objc.categories2_32 { categoryCandidates.append(contentsOf: list) }
 
     for category in categoryCandidates {
-        if let info = category.info(in: machO) {
+        if let info = categoryInfo(category, in: machO) {
             let key = "\(info.className)(\(info.name))"
-            categoryInfos[key] = info
+            metadata.categoryInfos[key] = info
         }
     }
+
+    return metadata
+}
+
+private func writeObjCMetadata(
+    _ metadata: CollectedObjCMetadata,
+    outputDir: URL,
+    options: DumpOptions,
+    fileManager: FileManager
+) throws {
+    let classInfos = metadata.classInfos
+    let protocolInfos = metadata.protocolInfos
+    let categoryInfos = metadata.categoryInfos
 
     try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
@@ -1296,7 +1382,60 @@ private func normalizedImagePath(_ path: String) -> String {
 
 private func collectClassInfos<T: ObjCClassProtocol>(
     _ classes: [T],
+    in machO: RawMachO,
+    options: DumpOptions,
+    classInfos: inout [String: ObjCClassInfo]
+) {
+    switch machO {
+    case .file(let file):
+        collectClassInfos(classes, in: file, options: options, classInfos: &classInfos)
+    case .loaded(let image):
+        collectClassInfos(classes, in: image, options: options, classInfos: &classInfos)
+    }
+}
+
+private func protocolInfo(
+    _ proto: any ObjCProtocolProtocol,
+    in machO: RawMachO
+) -> ObjCProtocolInfo? {
+    switch machO {
+    case .file(let file):
+        proto.info(in: file)
+    case .loaded(let image):
+        proto.info(in: image)
+    }
+}
+
+private func categoryInfo(
+    _ category: any ObjCCategoryProtocol,
+    in machO: RawMachO
+) -> ObjCCategoryInfo? {
+    switch machO {
+    case .file(let file):
+        category.info(in: file)
+    case .loaded(let image):
+        category.info(in: image)
+    }
+}
+
+private func collectClassInfos<T: ObjCClassProtocol>(
+    _ classes: [T],
     in machO: MachOFile,
+    options: DumpOptions,
+    classInfos: inout [String: ObjCClassInfo]
+) {
+    for cls in classes {
+        if let info = cls.info(in: machO) {
+            classInfos[info.name] = info
+        } else if options.verbose && options.logSkippedClasses {
+            logClassInfoFailure(cls, in: machO)
+        }
+    }
+}
+
+private func collectClassInfos<T: ObjCClassProtocol>(
+    _ classes: [T],
+    in machO: MachOImage,
     options: DumpOptions,
     classInfos: inout [String: ObjCClassInfo]
 ) {
@@ -1331,6 +1470,59 @@ private func logClassInfoFailure<T: ObjCClassProtocol>(
     )
 }
 
+private func logClassInfoFailure<T: ObjCClassProtocol>(
+    _ cls: T,
+    in machO: MachOImage
+) {
+    let data = cls.classROData(in: machO)
+    let meta = cls.metaClass(in: machO)
+    let metaData = meta.flatMap { $0.1.classROData(in: $0.0) }
+    let name = data?.name(in: machO)
+    var missing: [String] = []
+    if data == nil { missing.append("classROData") }
+    if meta == nil { missing.append("metaClass") }
+    if metaData == nil { missing.append("metaClassROData") }
+    if name == nil { missing.append("name") }
+    let missingText = missing.isEmpty ? "unknown" : missing.joined(separator: ",")
+    let displayName = name ?? "<unknown>"
+    let imagePath = machO.path ?? "<unknown>"
+    let metaImage = meta?.0.path ?? "<nil>"
+    fputs(
+        "privateheaderkit __raw-dump: skip class \(displayName) (offset=\(cls.offset)) image=\(imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
+        stderr
+    )
+}
+
+private func dumpSwift(
+    machO: RawMachO,
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    interfaceBuilderFactory: SwiftInterfaceBuildingFactory,
+    fileManager: FileManager
+) async throws {
+    switch machO {
+    case .file(let file):
+        try await dumpSwift(
+            machO: file,
+            imagePath: imagePath,
+            outputDir: outputDir,
+            options: options,
+            interfaceBuilderFactory: interfaceBuilderFactory,
+            fileManager: fileManager
+        )
+    case .loaded(let image):
+        try await dumpSwift(
+            machO: image,
+            imagePath: imagePath,
+            outputDir: outputDir,
+            options: options,
+            interfaceBuilderFactory: interfaceBuilderFactory,
+            fileManager: fileManager
+        )
+    }
+}
+
 func dumpSwift(
     machO: MachOFile,
     imagePath: String,
@@ -1343,6 +1535,43 @@ func dumpSwift(
         return
     }
     let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
+    try await dumpSwift(
+        builder: builder,
+        imagePath: imagePath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
+}
+
+func dumpSwift(
+    machO: MachOImage,
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    interfaceBuilderFactory: SwiftInterfaceBuildingFactory = DefaultSwiftInterfaceBuilderFactory(),
+    fileManager: FileManager
+) async throws {
+    if shouldSkipSwiftInterface(imagePath: imagePath, outputDir: outputDir, options: options, fileManager: fileManager) {
+        return
+    }
+    let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
+    try await dumpSwift(
+        builder: builder,
+        imagePath: imagePath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
+}
+
+private func dumpSwift(
+    builder: SwiftInterfaceBuilding,
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    fileManager: FileManager
+) async throws {
     try await dumpSwiftInterface(
         imagePath: imagePath,
         outputDir: outputDir,
