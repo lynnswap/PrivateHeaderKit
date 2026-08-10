@@ -160,6 +160,7 @@ struct PrivateHeaderGenerationPlanTests {
         )
     }
 
+    #if os(macOS)
     @Test func generatePrivateHeadersRequiresExecutionConfiguration() async throws {
         let source = try PrivateHeaderGeneration.Source(
             platform: .macOS,
@@ -201,4 +202,5 @@ struct PrivateHeaderGenerationPlanTests {
             #expect(error == .missingExecutionConfiguration("systemRoot"))
         }
     }
+    #endif
 }

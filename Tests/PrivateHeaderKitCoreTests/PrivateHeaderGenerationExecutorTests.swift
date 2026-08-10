@@ -13,7 +13,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
         let runner = RecordingRawDumpRunner()
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -62,7 +62,7 @@ struct PrivateHeaderGenerationExecutorTests {
         let runner = RecordingRawDumpRunner()
         let progress = ProgressEventRecorder()
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -95,7 +95,7 @@ struct PrivateHeaderGenerationExecutorTests {
         let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
         let probe = StateLockProbe(repository: repository)
         let runner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in
                 await probe.recordNestedLockAttempt()
                 return try await runner.run(invocation)
@@ -119,7 +119,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
         let firstRunner = RecordingRawDumpRunner()
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
-        let firstExecutor = PrivateHeaderGeneration.GenerationExecutor(
+        let firstExecutor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await firstRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -127,7 +127,7 @@ struct PrivateHeaderGenerationExecutorTests {
         _ = try await firstExecutor.run(.init(plan: plan))
 
         let secondRunner = RecordingRawDumpRunner()
-        let secondExecutor = PrivateHeaderGeneration.GenerationExecutor(
+        let secondExecutor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await secondRunner.run(invocation) },
             runIDGenerator: { "run-002" },
             dateProvider: fixedDates()
@@ -167,7 +167,7 @@ struct PrivateHeaderGenerationExecutorTests {
         )
 
         let runner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-002" },
             dateProvider: fixedDates()
@@ -189,7 +189,7 @@ struct PrivateHeaderGenerationExecutorTests {
         let inventoryRunner = RecordingSharedCacheInventoryRunner(
             data: try inventoryData(imagePaths: ["/usr/lib/libobjc.A.dylib"])
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             sharedCacheInventoryRunner: { invocation in
                 try await inventoryRunner.run(invocation)
             }
@@ -200,6 +200,7 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(inventoryRunner.invocations.isEmpty)
     }
 
+    #if os(macOS)
     @Test func availableResumeSummaryReturnsCompatibleUnfinishedState() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
@@ -229,6 +230,7 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(summary.targetIDsToRun == [targetID])
         #expect(summary.counts.unfinished == 1)
     }
+    #endif
 
     @Test func sharedCacheInventoryAddsCacheOnlyTargetAndPinsRawDumpToCacheUUID() async throws {
         let fixture = try ExecutorFixture()
@@ -245,7 +247,7 @@ struct PrivateHeaderGenerationExecutorTests {
             targetRequest: .query("libobjc.A.dylib"),
             rawDumpingOptions: .init(useSharedCache: true)
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             sharedCacheInventoryRunner: { invocation in
                 try await inventoryRunner.run(invocation)
@@ -276,7 +278,7 @@ struct PrivateHeaderGenerationExecutorTests {
             data: try inventoryData(imagePaths: ["/usr/lib/libobjc.A.dylib"])
         )
         let rawRunner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             sharedCacheInventoryRunner: { invocation in
                 try await inventoryRunner.run(invocation)
@@ -298,7 +300,7 @@ struct PrivateHeaderGenerationExecutorTests {
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
         let rawRunner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             sharedCacheInventoryRunner: { _ in throw InventoryTestError.failed }
         )
@@ -318,7 +320,7 @@ struct PrivateHeaderGenerationExecutorTests {
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
         let rawRunner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             sharedCacheInventoryRunner: { _ in try inventoryData(imagePaths: []) }
         )
@@ -338,7 +340,7 @@ struct PrivateHeaderGenerationExecutorTests {
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
         let rawRunner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             sharedCacheInventoryRunner: { _ in throw CancellationError() }
         )
@@ -366,7 +368,7 @@ struct PrivateHeaderGenerationExecutorTests {
                 "framework:Bar.framework",
             ])
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -422,7 +424,7 @@ struct PrivateHeaderGenerationExecutorTests {
         let rawRunner = RecordingRawDumpRunner()
         let progress = ProgressEventRecorder()
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -484,7 +486,7 @@ struct PrivateHeaderGenerationExecutorTests {
         let rawRunner = RecordingRawDumpRunner()
         let progress = ProgressEventRecorder()
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -540,7 +542,7 @@ struct PrivateHeaderGenerationExecutorTests {
                 "framework:Bar.framework",
             ])
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -599,7 +601,7 @@ struct PrivateHeaderGenerationExecutorTests {
         let rawRunner = RecordingRawDumpRunner()
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
         let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -658,7 +660,7 @@ struct PrivateHeaderGenerationExecutorTests {
                 "framework:Baz.framework",
             ])
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -760,7 +762,7 @@ struct PrivateHeaderGenerationExecutorTests {
                 imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
             )
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             sharedCacheInventoryRunner: { invocation in
                 try await inventoryRunner.run(invocation)
             }
@@ -782,7 +784,7 @@ struct PrivateHeaderGenerationExecutorTests {
             targetRequest: .query("Foo"),
             layout: .bundle
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -812,7 +814,7 @@ struct PrivateHeaderGenerationExecutorTests {
             "system-library:CoreServices/Siri.bundle",
         ]
         let plan = try fixture.makePlan(targetRequest: .identifiers(targetIDs))
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -877,7 +879,7 @@ struct PrivateHeaderGenerationExecutorTests {
             ),
             writesArtifacts: false
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-002" },
             dateProvider: fixedDates()
@@ -919,7 +921,7 @@ struct PrivateHeaderGenerationExecutorTests {
             )
         )
         let plan = try fixture.makePlan(targetRequest: .query("Foo"))
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
@@ -980,7 +982,7 @@ struct PrivateHeaderGenerationExecutorTests {
         )
 
         let runner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-002" },
             dateProvider: fixedDates()
@@ -1025,7 +1027,7 @@ struct PrivateHeaderGenerationExecutorTests {
         )
 
         let runner = RecordingRawDumpRunner()
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             runIDGenerator: { "run-002" },
             dateProvider: fixedDates()
@@ -1079,7 +1081,7 @@ struct PrivateHeaderGenerationExecutorTests {
                 helperEnvironment: ["SIMCTL_CHILD_PH_PROFILE": "1"]
             )
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             sharedCacheInventoryRunner: { invocation in
                 try await inventoryRunner.run(invocation)
@@ -1137,7 +1139,7 @@ struct PrivateHeaderGenerationExecutorTests {
             executionMode: .simulator(deviceUDID: "SIM-001", runtimeRoot: fixture.systemRoot.path),
             rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(useSharedCache: true)
         )
-        let executor = PrivateHeaderGeneration.GenerationExecutor(
+        let executor = makeGenerationExecutor(
             rawDumpRunner: { invocation in try await runner.run(invocation) },
             sharedCacheInventoryRunner: { invocation in
                 try await inventoryRunner.run(invocation)
@@ -1537,6 +1539,31 @@ private struct ExecutorFixture {
             )
         )
     }
+}
+
+private enum UnexpectedGenerationRunnerInvocation: Error {
+    case rawDump
+    case sharedCacheInventory
+}
+
+private func makeGenerationExecutor(
+    rawDumpRunner: @escaping PrivateHeaderGeneration.GenerationExecutor.RawDumpRunner = { _ in
+        throw UnexpectedGenerationRunnerInvocation.rawDump
+    },
+    sharedCacheInventoryRunner: @escaping PrivateHeaderGeneration.GenerationExecutor.SharedCacheInventoryRunner = { _ in
+        throw UnexpectedGenerationRunnerInvocation.sharedCacheInventory
+    },
+    runIDGenerator: @escaping @Sendable () -> String = { "run-test" },
+    dateProvider: @escaping @Sendable () -> Date = {
+        Date(timeIntervalSinceReferenceDate: 0)
+    }
+) -> PrivateHeaderGeneration.GenerationExecutor {
+    PrivateHeaderGeneration.GenerationExecutor(
+        rawDumpRunner: rawDumpRunner,
+        sharedCacheInventoryRunner: sharedCacheInventoryRunner,
+        runIDGenerator: runIDGenerator,
+        dateProvider: dateProvider
+    )
 }
 
 private func fixedDates() -> @Sendable () -> Date {

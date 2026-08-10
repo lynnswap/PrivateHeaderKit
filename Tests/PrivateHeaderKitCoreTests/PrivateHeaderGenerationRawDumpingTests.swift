@@ -182,6 +182,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
         ])
     }
 
+    #if os(macOS)
     @Test func liveRawDumpRunnerCapturesFailureOutput() async throws {
         let invocation = PrivateHeaderGeneration.RawDumping.Invocation(
             phaseLabel: "raw-header-dump",
@@ -319,6 +320,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
             _ = try await task.value
         }
     }
+    #endif
 
     @Test func rawDumpRequestRejectsMissingInventoryCohort() {
         #expect(throws: PrivateHeaderGeneration.RawDumping.Request.ValidationError.self) {
