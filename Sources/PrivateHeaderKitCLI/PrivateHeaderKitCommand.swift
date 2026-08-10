@@ -206,7 +206,7 @@ func runPrivateHeaderKitCommand(
     do {
         switch command {
         case .interactiveGenerate:
-            exitCode = await runPrivateHeaderKitInteractiveGenerate(
+            exitCode = try await runPrivateHeaderKitInteractiveGenerate(
                 invokedProgramName: args.first ?? "privateheaderkit",
                 currentExecutableURL: currentExecutableURL,
                 generationClient: generationClient,
@@ -546,7 +546,7 @@ func resolvePrivateHeaderKitHelperPlan(
         "swift", "build", "--force-resolved-versions", "-c", layout.configuration,
     ]
     let hostBinDirectory = try swiftPMBinDirectory(
-        from: runner.runCapture(
+        from: await runner.runCapture(
             hostCommand + ["--show-bin-path"],
             env: nil,
             cwd: layout.repoRoot
@@ -584,7 +584,7 @@ func resolvePrivateHeaderKitHelperPlan(
         }
     } else if requiresSimulatorHelper {
         let sdkPath = try lastNonemptyOutputLine(
-            runner.runCapture(
+            await runner.runCapture(
                 ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
                 env: nil,
                 cwd: nil
@@ -602,7 +602,7 @@ func resolvePrivateHeaderKitHelperPlan(
             "--triple", simulatorTriple,
         ]
         let simulatorBinDirectory = try swiftPMBinDirectory(
-            from: runner.runCapture(
+            from: await runner.runCapture(
                 simulatorCommand + ["--show-bin-path"],
                 env: nil,
                 cwd: layout.repoRoot
@@ -636,7 +636,7 @@ func resolvePrivateHeaderKitHelperPlan(
         externalArtifacts: externalArtifacts,
         buildEnvironment: environment
     )
-    let baseline = try captureSwiftPMToolSnapshot(
+    let baseline = try await captureSwiftPMToolSnapshot(
         context: identityContext,
         runner: runner,
         fileManager: .default
@@ -686,7 +686,7 @@ func executePrivateHeaderKitHelperBuilds(
             fileManager: .default
         )
     case let .swiftPM(preparation):
-        let beforeBuild = try captureSwiftPMToolSnapshot(
+        let beforeBuild = try await captureSwiftPMToolSnapshot(
             context: preparation.context,
             runner: runner,
             fileManager: .default
@@ -697,9 +697,13 @@ func executePrivateHeaderKitHelperBuilds(
             )
         }
         for invocation in preparation.buildInvocations {
-            _ = try runner.runCapture(invocation.command, env: nil, cwd: invocation.cwd)
+            _ = try await runner.runCapture(
+                invocation.command,
+                env: nil,
+                cwd: invocation.cwd
+            )
         }
-        let afterBuild = try captureSwiftPMToolSnapshot(
+        let afterBuild = try await captureSwiftPMToolSnapshot(
             context: preparation.context,
             runner: runner,
             fileManager: .default
@@ -947,14 +951,14 @@ private func currentHostSupportsNativeArm64Simulator() -> Bool {
 
 func resolvePrivateHeaderKitSimulator(
     for command: PrivateHeaderKitGenerateCommand
-) throws -> PrivateHeaderKitSimulatorResolution {
+) async throws -> PrivateHeaderKitSimulatorResolution {
     let runner = ProcessRunner()
-    let runtime = try Simctl.findRuntime(
+    let runtime = try await Simctl.findRuntime(
         version: command.version,
         build: command.build,
         runner: runner
     )
-    let device = try Simctl.resolveDevice(
+    let device = try await Simctl.resolveDevice(
         runtime: runtime,
         query: command.device,
         runner: runner
@@ -962,31 +966,36 @@ func resolvePrivateHeaderKitSimulator(
     return PrivateHeaderKitSimulatorResolution(runtime: runtime, device: device)
 }
 
-func discoverPrivateHeaderKitInteractiveSources() throws -> [PrivateHeaderKitInteractiveSource] {
-    let runner = ProcessRunner()
-    var sources = (try? Simctl.listRuntimes(runner: runner))?.map {
+func discoverPrivateHeaderKitInteractiveSources() async throws
+    -> [PrivateHeaderKitInteractiveSource]
+{
+    try await discoverPrivateHeaderKitInteractiveSources(runner: ProcessRunner())
+}
+
+func discoverPrivateHeaderKitInteractiveSources(
+    runner: CommandRunning
+) async throws -> [PrivateHeaderKitInteractiveSource] {
+    var sources = try await Simctl.listRuntimes(runner: runner).map {
         PrivateHeaderKitInteractiveSource(
             platform: .iOS,
             version: $0.version,
             build: $0.build.isEmpty ? nil : $0.build,
             systemRoot: nil
         )
-    } ?? []
-    if let macOS = try? currentMacOSInteractiveSource(runner: runner) {
-        sources.append(macOS)
     }
+    sources.append(try await currentMacOSInteractiveSource(runner: runner))
     return sources
 }
 
 private func currentMacOSInteractiveSource(
     runner: CommandRunning
-) throws -> PrivateHeaderKitInteractiveSource {
-    let version = try runner.runCapture(
+) async throws -> PrivateHeaderKitInteractiveSource {
+    let version = try await runner.runCapture(
         ["/usr/bin/sw_vers", "-productVersion"],
         env: nil,
         cwd: nil
     ).trimmingCharacters(in: .whitespacesAndNewlines)
-    let build = try runner.runCapture(
+    let build = try await runner.runCapture(
         ["/usr/bin/sw_vers", "-buildVersion"],
         env: nil,
         cwd: nil

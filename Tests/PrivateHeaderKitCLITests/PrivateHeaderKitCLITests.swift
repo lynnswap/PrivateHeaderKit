@@ -471,7 +471,8 @@ struct PrivateHeaderKitCLIExecutionTests {
                     "--target", "all",
                 ],
                 currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-                generationRunner: { request, _ in
+                generationClient: testPrivateHeaderKitGenerationClient {
+                    request, _, _ in
                     generationStarted.signal()
                     await withTaskCancellationHandler {
                         await cancellationObserved.wait(until: 1)
@@ -548,6 +549,75 @@ struct PrivateHeaderKitCLIExecutionTests {
         } catch {
             Issue.record("unexpected cancellation error: \(error)")
         }
+    }
+
+    @Test func liveGenerationClientUsesOneRunnerForInventoryAndRawDump() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let systemRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        try FileManager.default.createDirectory(at: systemRoot, withIntermediateDirectories: true)
+        let helperURL = root.appendingPathComponent("privateheaderkit-raw-helper")
+        let inventoryCommand = [helperURL.path, "__shared-cache-inventory"]
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            #"{"schemaVersion":1,"cacheUUID":"11111111-2222-3333-4444-555555555555","imagePaths":["/usr/lib/libCacheOnly.dylib"]}"#,
+            for: inventoryCommand
+        )
+        await runner.setStreamingHandler { command, _, _ in
+            guard let outputIndex = command.firstIndex(of: "-o"), outputIndex + 1 < command.count else {
+                throw ToolingError.message("raw dump command is missing its output directory")
+            }
+            let stagingDirectory = URL(
+                fileURLWithPath: command[outputIndex + 1],
+                isDirectory: true
+            )
+            let headerDirectory = stagingDirectory
+                .appendingPathComponent("usr/lib/libCacheOnly.dylib/Headers", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: headerDirectory,
+                withIntermediateDirectories: true
+            )
+            try Data("// generated\n".utf8).write(
+                to: headerDirectory.appendingPathComponent("Generated.h")
+            )
+            return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+        }
+
+        let helperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
+            host: helperURL,
+            simulator: root.appendingPathComponent("privateheaderkit-sim-helper")
+        )
+        let request = PrivateHeaderKitGenerationRequest(
+            source: try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0"),
+            output: PrivateHeaderGeneration.Output(
+                baseDirectory: root.appendingPathComponent("Output", isDirectory: true)
+            ),
+            options: PrivateHeaderGeneration.Options(
+                targetRequest: .query("/usr/lib/libCacheOnly.dylib"),
+                systemRoot: systemRoot,
+                helperURLs: helperURLs,
+                executionMode: .host,
+                rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
+                    useSharedCache: true
+                ),
+                resumeBehavior: .fresh,
+                toolCompatibilityIdentity: "test-tool-identity"
+            )
+        )
+        let prepared = try await PrivateHeaderKitGenerationClient
+            .live(processRunner: runner)
+            .prepare(request)
+
+        #expect(try await prepared.summary() == .noUnfinishedRun)
+        #expect(await runner.captureCommandSnapshot().count == 1)
+
+        let result = try await prepared.run(.fresh, { _ in })
+        #expect(result.targetCounts.completed == 1)
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [
+            inventoryCommand,
+            inventoryCommand,
+        ])
+        #expect(await runner.streamingCommandSnapshot().count == 1)
     }
 
     @Test func signalCoordinatorWaitsForOperationCleanupBeforeReturningSignalStatus() async {

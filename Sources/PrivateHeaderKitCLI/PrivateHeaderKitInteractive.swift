@@ -9,7 +9,8 @@ import Glibc
 #endif
 
 typealias PrivateHeaderKitInteractiveScreenClearer = () -> Void
-typealias PrivateHeaderKitInteractiveSourceProvider = () throws -> [PrivateHeaderKitInteractiveSource]
+typealias PrivateHeaderKitInteractiveSourceProvider = @Sendable () async throws
+    -> [PrivateHeaderKitInteractiveSource]
 
 struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let platform: PrivateHeaderKitGenerateCommand.Platform
@@ -60,9 +61,9 @@ func runPrivateHeaderKitInteractiveGenerate(
     inputFinalizer: @escaping PrivateHeaderKitInputFinalizer,
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
     errorLogger: @escaping PrivateHeaderKitOutputLogger
-) async -> Int32 {
+) async throws -> Int32 {
     do {
-        let sources = try sourceProvider()
+        let sources = try await sourceProvider()
         guard !sources.isEmpty else {
             errorLogger("error: no available generation sources found")
             return 2
@@ -171,8 +172,7 @@ func runPrivateHeaderKitInteractiveGenerate(
             }
         }
     } catch is CancellationError {
-        outputLogger("Cancelled.")
-        return 130
+        throw CancellationError()
     } catch let error as PrivateHeaderKitCLIError {
         errorLogger("error: \(error.description)")
         return 1
