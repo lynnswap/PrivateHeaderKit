@@ -237,7 +237,8 @@ private func interactiveResumeDecision(
             throw error
         }
         let action = try await promptLegacyMigrationDecision(
-            command: command,
+            sourceDisplayName: request.source.label.displayName,
+            outputBaseDirectory: command.outputBaseDirectory,
             kind: legacyKind,
             backupDirectory: request.output.baseDirectory
                 .appendingPathComponent(".privateheaderkit", isDirectory: true)
@@ -265,7 +266,7 @@ private func interactiveResumeDecision(
     }
 
     renderInteractiveResumeScreen(
-        command: command,
+        sourceDisplayName: request.source.label.displayName,
         summary: summary,
         screenClearer: screenClearer,
         outputLogger: outputLogger
@@ -284,7 +285,8 @@ private func interactiveResumeDecision(
 }
 
 private func promptLegacyMigrationDecision(
-    command: PrivateHeaderKitGenerateCommand,
+    sourceDisplayName: String,
+    outputBaseDirectory: String,
     kind: PrivateHeaderKitLegacyMigrationKind,
     backupDirectory: URL,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
@@ -297,8 +299,8 @@ private func promptLegacyMigrationDecision(
     outputLogger("Step 3 of 3: Migrate legacy output")
     outputLogger("Legacy PrivateHeaderKit state or artifacts were found.")
     outputLogger("")
-    outputLogger("Source: \(command.sourceDisplayName)")
-    outputLogger("Output: \(command.outputBaseDirectory)")
+    outputLogger("Source: \(sourceDisplayName)")
+    outputLogger("Output: \(outputBaseDirectory)")
     outputLogger("Detected: \(kind.path)")
     outputLogger("")
     switch kind {
@@ -372,8 +374,8 @@ private func renderInteractiveTargetInputScreen(
     outputLogger("Enter comma-separated target names, or press Escape to go back.")
 }
 
-private func renderInteractiveResumeScreen(
-    command: PrivateHeaderKitGenerateCommand,
+func renderInteractiveResumeScreen(
+    sourceDisplayName: String,
     summary: PrivateHeaderGeneration.ResumeSummary,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     outputLogger: PrivateHeaderKitOutputLogger
@@ -382,7 +384,7 @@ private func renderInteractiveResumeScreen(
     outputLogger("PrivateHeaderKit")
     outputLogger("")
     outputLogger("Step 3 of 3: Continue or restart")
-    outputLogger("Source: \(command.sourceDisplayName)")
+    outputLogger("Source: \(sourceDisplayName)")
     outputLogger("Remaining: \(summary.counts.unfinished) of \(summary.counts.total)")
     outputLogger("Previous run: \(summary.latestRunID.rawValue)")
     outputLogger("")

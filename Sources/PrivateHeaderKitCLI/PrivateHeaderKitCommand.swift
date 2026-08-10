@@ -401,7 +401,7 @@ func makePrivateHeaderGenerationRequest(
         helperURLs: helperURLs,
         executionMode: executionMode,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
-            useSharedCache: true,
+            useSharedCache: effectiveSource.useSharedCache,
             preferRuntimeMetadata: true,
             helperEnvironment: ["PH_RUNTIME_ROOT": effectiveSource.systemRoot.path]
         ),
@@ -414,6 +414,7 @@ func makePrivateHeaderGenerationRequest(
 private struct EffectiveSourceConfiguration {
     let build: String?
     let systemRoot: URL
+    let useSharedCache: Bool
 }
 
 private func effectiveSourceConfiguration(
@@ -421,9 +422,23 @@ private func effectiveSourceConfiguration(
     simulatorResolution: PrivateHeaderKitSimulatorResolution?
 ) throws -> EffectiveSourceConfiguration {
     if let systemRoot = command.systemRoot {
+        let systemRootURL = canonicalDirectoryURL(path: systemRoot)
+        let useSharedCache: Bool
+        switch command.platform {
+        case .macOS:
+            useSharedCache = systemRootURL.path == "/"
+        case .iOS:
+            guard let simulatorResolution else {
+                throw PrivateHeaderKitCLIError.missingSimulatorResolution
+            }
+            useSharedCache = systemRootURL == canonicalDirectoryURL(
+                path: simulatorResolution.resolvedRuntimeRoot
+            )
+        }
         return EffectiveSourceConfiguration(
             build: command.build,
-            systemRoot: URL(fileURLWithPath: systemRoot, isDirectory: true)
+            systemRoot: systemRootURL,
+            useSharedCache: useSharedCache
         )
     }
     guard command.platform == .iOS, let simulatorResolution else {
@@ -431,11 +446,15 @@ private func effectiveSourceConfiguration(
     }
     return EffectiveSourceConfiguration(
         build: command.build ?? simulatorResolution.runtimeBuild,
-        systemRoot: URL(
-            fileURLWithPath: simulatorResolution.resolvedRuntimeRoot,
-            isDirectory: true
-        )
+        systemRoot: canonicalDirectoryURL(path: simulatorResolution.resolvedRuntimeRoot),
+        useSharedCache: true
     )
+}
+
+private func canonicalDirectoryURL(path: String) -> URL {
+    URL(fileURLWithPath: path, isDirectory: true)
+        .resolvingSymlinksInPath()
+        .standardizedFileURL
 }
 
 func defaultRawDumpHelperURL(publicExecutableURL: URL) -> URL {

@@ -16,7 +16,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("version"), help: "Source OS version.")
     var sourceVersion: String?
 
-    @Option(help: "Optional source build identifier.")
+    @Option(help: "Source build identifier; required when an iOS version is ambiguous.")
     var build: String?
 
     @Option(name: .customLong("system-root"), help: "Runtime system root. Required for macOS.")

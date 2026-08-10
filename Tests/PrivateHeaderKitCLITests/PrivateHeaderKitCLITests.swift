@@ -7,7 +7,7 @@ import Darwin
 import Glibc
 #endif
 
-import PrivateHeaderKitCore
+@testable import PrivateHeaderKitCore
 import PrivateHeaderKitTestSupport
 import PrivateHeaderKitTooling
 @testable import PrivateHeaderKitCLI
@@ -84,6 +84,8 @@ struct PrivateHeaderKitCLIArgumentTests {
         )
         #expect(status == 0)
         #expect(output.text.contains("USAGE: privateheaderkit [<options>]"))
+        #expect(output.text.contains("required when an iOS version"))
+        #expect(output.text.contains("is ambiguous"))
         #expect(!output.text.contains("<subcommand>"))
         #expect(!output.text.contains("SUBCOMMANDS:"))
         #expect(errors.text.isEmpty)
@@ -174,6 +176,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.source.build == "24A123")
         #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~41123")
         #expect(request.options.systemRoot?.path == "/ResolvedRuntime")
+        #expect(request.options.rawDumpingOptions.useSharedCache)
         #expect(
             request.options.executionMode
                 == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/ResolvedRuntime")
@@ -191,6 +194,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.source.build == nil)
         #expect(request.source.storageIdentifier == "ios-v1-27.0-b0")
         #expect(request.options.systemRoot?.path == "/OverrideRuntime")
+        #expect(!request.options.rawDumpingOptions.useSharedCache)
         #expect(
             request.options.executionMode
                 == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/OverrideRuntime")
@@ -207,6 +211,74 @@ struct PrivateHeaderKitCLIExecutionTests {
 
         #expect(request.source.build == "24A999")
         #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~41999")
+        #expect(request.options.rawDumpingOptions.useSharedCache)
+    }
+
+    @Test func explicitIOSRuntimeAliasUsesTheSelectedLoadedCache() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        let runtimeAlias = root.appendingPathComponent("RuntimeAlias", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: runtimeAlias,
+            withDestinationURL: runtimeRoot
+        )
+        let resolution = PrivateHeaderKitSimulatorResolution(
+            runtimeVersion: "27.0",
+            runtimeBuild: "24A123",
+            runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+            resolvedRuntimeRoot: runtimeRoot.path,
+            deviceName: "iPhone 17 Pro",
+            deviceUDID: "SIM-001"
+        )
+
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: nil, systemRoot: runtimeAlias.path),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: resolution
+        )
+        let canonicalRuntimeRoot = runtimeRoot.resolvingSymlinksInPath().standardizedFileURL
+
+        #expect(request.source.build == nil)
+        #expect(request.options.systemRoot == canonicalRuntimeRoot)
+        #expect(request.options.rawDumpingOptions.useSharedCache)
+        #expect(
+            request.options.executionMode
+                == .simulator(deviceUDID: "SIM-001", runtimeRoot: canonicalRuntimeRoot.path)
+        )
+        #expect(
+            request.options.rawDumpingOptions.helperEnvironment["PH_RUNTIME_ROOT"]
+                == canonicalRuntimeRoot.path
+        )
+    }
+
+    @Test func macOSUsesLoadedCacheOnlyForTheCurrentRoot() throws {
+        let currentRootRequest = try makePrivateHeaderGenerationRequest(
+            from: macOSGenerateCommand(systemRoot: "/"),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: nil
+        )
+        #expect(currentRootRequest.options.systemRoot?.path == "/")
+        #expect(currentRootRequest.options.rawDumpingOptions.useSharedCache)
+
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let customRoot = root.appendingPathComponent("MountedSystem", isDirectory: true)
+        try FileManager.default.createDirectory(at: customRoot, withIntermediateDirectories: true)
+        let customRootRequest = try makePrivateHeaderGenerationRequest(
+            from: macOSGenerateCommand(systemRoot: customRoot.path),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: nil
+        )
+        #expect(
+            customRootRequest.options.systemRoot
+                == customRoot.resolvingSymlinksInPath().standardizedFileURL
+        )
+        #expect(!customRootRequest.options.rawDumpingOptions.useSharedCache)
     }
 
     @Test func directRunMapsFreshModeAndRendersTypedResultAndWarnings() async throws {
@@ -420,6 +492,110 @@ struct PrivateHeaderKitCLIExecutionTests {
     @Test func interactiveConfirmsLegacyArtifactTreeMigration() async throws {
         try await assertInteractiveLegacyMigration(kind: .artifactTree)
     }
+
+    @Test func interactiveLegacyMigrationUsesResolvedSourceAndReusesRuntimeIdentity() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtimeRoot.appendingPathComponent(
+                "System/Library/Frameworks/Foo.framework",
+                isDirectory: true
+            ),
+            withIntermediateDirectories: true
+        )
+        let outputBase = root.appendingPathComponent("Output", isDirectory: true)
+        let legacyManifest = outputBase.appendingPathComponent(
+            ".state/ios-v1-27.0-b1-24~41123/manifest.json",
+            isDirectory: false
+        )
+        try FileManager.default.createDirectory(
+            at: legacyManifest.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("legacy".utf8).write(to: legacyManifest)
+
+        let input = ScriptedInput(["1", "1", "1"])
+        let output = ThreadSafeStrings()
+        let requestBox = ThreadSafeRequestBox()
+        let simulatorResolutionCount = ThreadSafeCounter()
+        let helperResolutionCount = ThreadSafeCounter()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationRunner: { request, _ in
+                requestBox.set(request)
+                return resultFixture(
+                    for: request,
+                    counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                )
+            },
+            simulatorResolver: { _ in
+                simulatorResolutionCount.increment()
+                return PrivateHeaderKitSimulatorResolution(
+                    runtimeVersion: "27.0",
+                    runtimeBuild: "24A123",
+                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    resolvedRuntimeRoot: runtimeRoot.path,
+                    deviceName: "iPhone 17 Pro",
+                    deviceUDID: "SIM-001"
+                )
+            },
+            helperResolver: { _, _, _ in
+                helperResolutionCount.increment()
+                return PrivateHeaderKitHelperPlan(
+                    helperURLs: testPrivateHeaderKitHelperURLs,
+                    toolCompatibilityIdentity: "test-tool-identity"
+                )
+            },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: nil,
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { outputBase.path },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 0)
+        #expect(requestBox.value?.source.build == "24A123")
+        #expect(output.text.contains("Source: iOS 27.0 (24A123)"))
+        #expect(simulatorResolutionCount.value == 1)
+        #expect(helperResolutionCount.value == 1)
+    }
+
+    @Test func resumeScreenUsesThePreparedSourceIdentity() {
+        let output = ThreadSafeStrings()
+        let summary = PrivateHeaderGeneration.ResumeSummary(
+            latestRunID: PrivateHeaderGeneration.RunID(rawValue: "run-previous"),
+            startedAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200),
+            targets: [
+                PrivateHeaderGeneration.ResumeTargetDecision(
+                    targetID: "framework:Foo.framework",
+                    status: .pending
+                ),
+            ]
+        )
+
+        renderInteractiveResumeScreen(
+            sourceDisplayName: "iOS 27.0 (24A123)",
+            summary: summary,
+            screenClearer: {},
+            outputLogger: output.append
+        )
+
+        #expect(output.text.contains("Source: iOS 27.0 (24A123)"))
+        #expect(output.text.contains("Previous run: run-previous"))
+    }
 }
 
 private let testPrivateHeaderKitHelperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
@@ -444,6 +620,20 @@ private func iosGenerateCommand(
         platform: .iOS,
         version: "27.0",
         build: build,
+        systemRoot: systemRoot,
+        outputBaseDirectory: "/tmp/PrivateHeaderKit",
+        targetQuery: "all",
+        continuationMode: .fresh,
+        device: nil,
+        simulatorHelperPath: nil
+    )
+}
+
+private func macOSGenerateCommand(systemRoot: String) -> PrivateHeaderKitGenerateCommand {
+    PrivateHeaderKitGenerateCommand(
+        platform: .macOS,
+        version: "16.0",
+        build: nil,
         systemRoot: systemRoot,
         outputBaseDirectory: "/tmp/PrivateHeaderKit",
         targetQuery: "all",
