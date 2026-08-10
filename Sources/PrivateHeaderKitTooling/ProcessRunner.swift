@@ -469,24 +469,13 @@ public struct ProcessRunner: CommandRunning, Sendable {
         } else {
             var effectiveEnvironment = ProcessInfo.processInfo.environment
             effectiveEnvironment.merge(env ?? [:]) { _, updated in updated }
-            if let pathValue = effectiveEnvironment["PATH"], !pathValue.isEmpty {
-                let searchBasePath = cwd?.path ?? FileManager.default.currentDirectoryPath
-                let separator = searchBasePath.hasSuffix("/") ? "" : "/"
-                effectiveEnvironment["PATH"] = pathValue
-                    .split(separator: ":", omittingEmptySubsequences: false)
-                    .map { component in
-                        let value = String(component)
-                        guard !value.hasPrefix("/") else { return value }
-                        // Subprocess applies cwd before normal executable lookup. Make the same
-                        // base explicit, but preserve '..' so kernel path traversal retains
-                        // symlink semantics for cwd and PATH components.
-                        return searchBasePath + separator + (value.isEmpty ? "." : value)
-                    }
-                    .joined(separator: ":")
-            }
             let executableURLs = Which.findAll(
                 executableValue,
-                environment: effectiveEnvironment
+                environment: effectiveEnvironment,
+                currentDirectory: cwd ?? URL(
+                    fileURLWithPath: FileManager.default.currentDirectoryPath,
+                    isDirectory: true
+                )
             )
             guard !executableURLs.isEmpty else {
                 throw ToolingError.processLaunchFailed(

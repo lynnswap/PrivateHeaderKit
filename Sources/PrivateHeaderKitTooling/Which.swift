@@ -7,7 +7,11 @@ public enum Which {
 
     static func findAll(
         _ name: String,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        currentDirectory: URL = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        )
     ) -> [URL] {
         let fileManager = FileManager.default
         if name.contains("/") {
@@ -19,10 +23,22 @@ public enum Which {
         }
 
         let pathValue = environment["PATH"] ?? ""
+        guard !pathValue.isEmpty else { return [] }
+        let currentDirectoryPath = currentDirectory.path
+        let separator = currentDirectoryPath.hasSuffix("/") ? "" : "/"
         var seenPaths: Set<String> = []
         var results: [URL] = []
-        for dir in pathValue.split(separator: ":") {
-            let candidate = URL(fileURLWithPath: String(dir), isDirectory: true).appendingPathComponent(name)
+        for component in pathValue.split(separator: ":", omittingEmptySubsequences: false) {
+            let value = String(component)
+            let directoryPath = if value.isEmpty {
+                currentDirectoryPath
+            } else if value.hasPrefix("/") {
+                value
+            } else {
+                currentDirectoryPath + separator + value
+            }
+            let candidate = URL(fileURLWithPath: directoryPath, isDirectory: true)
+                .appendingPathComponent(name)
             if seenPaths.insert(candidate.path).inserted,
                isExecutableRegularFile(at: candidate, fileManager: fileManager)
             {

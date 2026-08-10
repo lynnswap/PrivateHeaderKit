@@ -22,6 +22,43 @@ struct PathAndVersionTests {
         #expect(found?.path == executable.path)
         #expect(Which.find("missing", environment: ["PATH": binDir.path]) == nil)
     }
+
+    @Test func whichResolvesRelativeAndEmbeddedEmptyPathEntriesFromTheWorkingDirectory() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let binDir = dirs.root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        let cwdExecutable = dirs.root.appendingPathComponent("cwd-tool", isDirectory: false)
+        let relativeExecutable = binDir.appendingPathComponent("relative-tool", isDirectory: false)
+        for executable in [cwdExecutable, relativeExecutable] {
+            try Data("#!/bin/sh\n".utf8).write(to: executable)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
+
+        #expect(
+            Which.findAll(
+                "cwd-tool",
+                environment: ["PATH": ":/usr/bin:"],
+                currentDirectory: dirs.root
+            ).map(\.path) == [cwdExecutable.path]
+        )
+        #expect(
+            Which.findAll(
+                "relative-tool",
+                environment: ["PATH": "bin"],
+                currentDirectory: dirs.root
+            ).map(\.path) == [relativeExecutable.path]
+        )
+        #expect(
+            Which.findAll(
+                "cwd-tool",
+                environment: ["PATH": ""],
+                currentDirectory: dirs.root
+            ).isEmpty
+        )
+    }
 }
 
 @Suite
