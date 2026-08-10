@@ -211,7 +211,7 @@ Rules:
 DB path:
 
 ```text
-<state-base>/<source-label>/generation.sqlite
+<output-base>/.state/<source-storage-id>/generation.sqlite
 ```
 
 Minimum schema:
