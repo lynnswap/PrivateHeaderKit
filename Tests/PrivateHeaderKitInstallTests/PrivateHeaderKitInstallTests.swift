@@ -647,7 +647,7 @@ struct VersionCohortInstallerTests {
         )
     }
 
-    @Test func managedCohortRejectsRootHelperMixAsAmbiguous() throws {
+    @Test func managedCohortIgnoresRetiredRootHelperLeftovers() throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
         let first = try makeTestCohort(
@@ -670,11 +670,9 @@ struct VersionCohortInstallerTests {
             marker: "second"
         )
 
-        #expect(throws: InstallError.self) {
-            _ = try testInstaller(layout: layout).install(second)
-        }
+        _ = try testInstaller(layout: layout).install(second)
 
-        try assertActive(first.manifest, layout: layout, marker: "first")
+        try assertActive(second.manifest, layout: layout, marker: "second")
         #expect(
             try FileManager.default.destinationOfSymbolicLink(
                 atPath: layout.rawDumpHelperURL.path
@@ -1145,6 +1143,20 @@ struct VersionCohortInstallerTests {
         )
         #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
         #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+
+        let nextCohort = try makeTestCohort(
+            under: directories.root,
+            version: "v3.0.0",
+            commit: String(repeating: "d", count: 40),
+            marker: "next"
+        )
+        _ = try testInstaller(layout: layout).install(nextCohort)
+
+        try assertActive(nextCohort.manifest, layout: layout, marker: "next")
+        #expect(
+            try String(contentsOf: layout.rawDumpHelperURL, encoding: .utf8)
+                == "replacement-raw"
+        )
     }
 
     @Test func publicFirstRestorationPreservesAValidCommandAtEachFailure() throws {

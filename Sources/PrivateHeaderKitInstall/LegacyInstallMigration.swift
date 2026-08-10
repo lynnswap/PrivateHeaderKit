@@ -119,12 +119,13 @@ extension VersionCohortInstaller {
             return .absent
         }
 
+        // Retired root helper paths are not part of managed helper resolution.
+        // A cleanup-preserved leftover must not regain layout authority once
+        // the public and current links prove the active managed cohort.
         if case .symbolicLink(
             "../libexec/privateheaderkit/current/privateheaderkit"
         ) = kinds[0],
-           case .symbolicLink = current,
-           case .absent = kinds[1],
-           case .absent = kinds[2]
+           case .symbolicLink = current
         {
             return .absent
         }
