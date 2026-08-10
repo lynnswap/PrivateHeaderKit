@@ -108,6 +108,26 @@ struct SimctlDeterministicTests {
         #expect(runner.captureCommands.map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
     }
 
+    @Test func listRuntimesOrdersEqualVersionsByBuildAndIdentity() throws {
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput(
+            """
+            {
+              "runtimes": [
+                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-z", "runtimeRoot": "/runtimes/Z", "isAvailable": true, "buildversion": "24B2"},
+                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/B", "isAvailable": true, "buildversion": "24A1"},
+                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/A", "isAvailable": true, "buildversion": "24A1"}
+              ]
+            }
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+
+        let runtimes = try Simctl.listRuntimes(runner: runner)
+
+        #expect(runtimes.map(\.identifier) == ["ios-27-a", "ios-27-b", "ios-27-z"])
+    }
+
     @Test func findRuntimeMatchesExplicitBuildWhenProvided() throws {
         let runner = RecordingCommandRunner()
         runner.setCaptureOutput(
@@ -126,6 +146,84 @@ struct SimctlDeterministicTests {
 
         #expect(runtime.identifier == "ios-27-b")
         #expect(runtime.runtimeRoot == "/runtimes/27B")
+    }
+
+    @Test func findRuntimeRejectsDuplicateExplicitBuildRegardlessOfInputOrder() {
+        let entries = [
+            """
+            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24A1"}
+            """,
+            """
+            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
+            """,
+        ]
+        let expectedError = "multiple available iOS runtimes match version 27.0 build 24A1: "
+            + "ios-27-a [/runtimes/27A], ios-27-b [/runtimes/27B]; "
+            + "remove the duplicate runtime installation"
+
+        for orderedEntries in [entries, Array(entries.reversed())] {
+            let runner = RecordingCommandRunner()
+            runner.setCaptureOutput(
+                """
+                {"runtimes":[\(orderedEntries.joined(separator: ","))]}
+                """,
+                for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+            )
+
+            #expect(
+                runtimeResolutionError {
+                    try Simctl.findRuntime(version: "27.0", build: "24A1", runner: runner)
+                } == expectedError
+            )
+        }
+    }
+
+    @Test func findRuntimeWithoutBuildReturnsUniqueVersionMatch() throws {
+        let runner = RecordingCommandRunner()
+        runner.setCaptureOutput(
+            """
+            {
+              "runtimes": [
+                {"name": "iOS 26.0", "version": "26.0", "identifier": "ios-26", "runtimeRoot": "/runtimes/26", "isAvailable": true, "buildversion": "23A1"},
+                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27", "runtimeRoot": "/runtimes/27", "isAvailable": true, "buildversion": "24A1"}
+              ]
+            }
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+
+        let runtime = try Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
+
+        #expect(runtime.identifier == "ios-27")
+    }
+
+    @Test func findRuntimeWithoutBuildRejectsAmbiguousBuildsRegardlessOfInputOrder() {
+        let entries = [
+            """
+            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
+            """,
+            """
+            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24B2"}
+            """,
+        ]
+        let expectedError = "multiple available iOS runtimes match version 27.0 "
+            + "(builds: 24A1, 24B2); specify --build"
+
+        for orderedEntries in [entries, Array(entries.reversed())] {
+            let runner = RecordingCommandRunner()
+            runner.setCaptureOutput(
+                """
+                {"runtimes":[\(orderedEntries.joined(separator: ","))]}
+                """,
+                for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+            )
+
+            #expect(
+                runtimeResolutionError {
+                    try Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
+                } == expectedError
+            )
+        }
     }
 
     @Test func listDevicesParsesDevicesForRuntime() throws {
@@ -376,6 +474,21 @@ struct SimctlDeterministicTests {
                 "ios-27",
             ],
         ])
+    }
+}
+
+private func runtimeResolutionError(
+    _ operation: () throws -> RuntimeInfo
+) -> String? {
+    do {
+        _ = try operation()
+        Issue.record("expected runtime resolution to fail")
+        return nil
+    } catch let error as ToolingError {
+        return error.description
+    } catch {
+        Issue.record("unexpected error: \(error)")
+        return nil
     }
 }
 

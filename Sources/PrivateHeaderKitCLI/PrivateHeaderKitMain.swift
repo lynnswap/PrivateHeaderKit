@@ -2295,6 +2295,7 @@ func privateHeaderKitUsageText() -> String {
     Options:
       --platform <iOS|macOS>  Source platform
       --version <version>     Source OS version
+      --build <build>         Source build; required when an iOS version is ambiguous
       --out <path>            Output base directory
       --target <query>        Comma-separated target query, for example SwiftUI,UIKit
       -h, --help              Show this help
@@ -2317,7 +2318,7 @@ func privateHeaderKitGenerateUsageText() -> String {
       --target <query>        Comma-separated target query, for example SwiftUI,UIKit
 
     Optional Options:
-      --build <build>         Source build train for labels and state keys
+      --build <build>         Source build; required when an iOS version is ambiguous
       --system-root <path>    Mounted system root to scan; required for macOS, optional for iOS
       --device <name-or-udid> iOS simulator device to use
       --sim-helper <path>     iOS simulator raw-dump helper path

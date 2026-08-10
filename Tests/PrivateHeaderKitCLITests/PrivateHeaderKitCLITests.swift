@@ -163,6 +163,8 @@ struct PrivateHeaderKitCLIParsingTests {
 
         let usage = privateHeaderKitUsageText()
         #expect(usage.contains("--platform <iOS|macOS>"))
+        #expect(usage.contains("--build <build>"))
+        #expect(usage.contains("required when an iOS version is ambiguous"))
         #expect(usage.contains("--target <query>"))
         #expect(!usage.contains("__raw-dump"))
         #expect(!usage.contains("install"))
@@ -174,6 +176,8 @@ struct PrivateHeaderKitCLIParsingTests {
 
         let usage = privateHeaderKitGenerateUsageText()
         #expect(usage.contains("--platform <iOS|macOS>"))
+        #expect(usage.contains("--build <build>"))
+        #expect(usage.contains("required when an iOS version is ambiguous"))
         #expect(usage.contains("--target <query>"))
         #expect(usage.contains("--device <name-or-udid>"))
         #expect(usage.contains("--sim-helper <path>"))

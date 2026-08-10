@@ -63,7 +63,7 @@ privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /p
 privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
 ```
 
-iOS では `--version` / `--build` から利用可能な Simulator runtime を解決し、device を選択・boot して internal simulator helper で raw dump します。`--system-root` は iOS では任意です。指定した場合は、その runtime root を明示入力として使い、解決済み runtime root で黙って置き換えません。`--device <name-or-udid>` と `--sim-helper <path>` は automation 用の任意 flag です。
+iOS では `--version` / `--build` から利用可能な Simulator runtime を解決し、device を選択・boot して internal simulator helper で raw dump します。指定した version の runtime が複数 install されている場合は `--build` が必須であり、`simctl` の出力順には依存しません。`--system-root` は iOS では任意です。指定した場合は、その runtime root を明示入力として使い、解決済み runtime root で黙って置き換えません。`--device <name-or-udid>` と `--sim-helper <path>` は automation 用の任意 flag です。
 
 `--target` は comma-separated target query です。`--resume` は明示的な non-interactive resume request です。旧 `<version>` positional style は新しい public surface には含めません。
 

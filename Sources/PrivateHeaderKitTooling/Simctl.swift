@@ -112,15 +112,21 @@ public enum Simctl {
             )
         }
 
-        results.sort { VersionUtils.versionKey($0.version).lexicographicallyPrecedes(VersionUtils.versionKey($1.version)) }
-        return results
-    }
-
-    public static func findRuntime(version: String, runner: CommandRunning) throws -> RuntimeInfo {
-        for runtime in try listRuntimes(runner: runner) where runtime.version == version {
-            return runtime
+        results.sort { lhs, rhs in
+            let lhsVersion = VersionUtils.versionKey(lhs.version)
+            let rhsVersion = VersionUtils.versionKey(rhs.version)
+            if lhsVersion != rhsVersion {
+                return lhsVersion.lexicographicallyPrecedes(rhsVersion)
+            }
+            if lhs.build != rhs.build {
+                return lhs.build < rhs.build
+            }
+            if lhs.identifier != rhs.identifier {
+                return lhs.identifier < rhs.identifier
+            }
+            return lhs.runtimeRoot < rhs.runtimeRoot
         }
-        throw ToolingError.message("iOS runtime not found or unavailable: \(version)")
+        return results
     }
 
     public static func findRuntime(version: String, build: String?, runner: CommandRunning) throws -> RuntimeInfo {
@@ -130,20 +136,29 @@ public enum Simctl {
         }
 
         guard let build, !build.isEmpty else {
+            guard matches.count == 1 else {
+                let builds = Set(matches.map { $0.build.isEmpty ? "<unknown>" : $0.build }).sorted()
+                throw ToolingError.message(
+                    "multiple available iOS runtimes match version \(version) "
+                        + "(builds: \(builds.joined(separator: ", "))); specify --build"
+                )
+            }
             return matches[0]
         }
-        if let match = matches.first(where: { $0.build == build }) {
-            return match
+        let buildMatches = matches.filter { $0.build == build }
+        guard !buildMatches.isEmpty else {
+            throw ToolingError.message("iOS runtime not found or unavailable: \(version) (\(build))")
         }
-        throw ToolingError.message("iOS runtime not found or unavailable: \(version) (\(build))")
-    }
-
-    public static func latestRuntime(runner: CommandRunning) throws -> RuntimeInfo {
-        let runtimes = try listRuntimes(runner: runner)
-        guard let last = runtimes.last else {
-            throw ToolingError.message("no available iOS runtimes found")
+        guard buildMatches.count == 1 else {
+            let identities = buildMatches
+                .map { "\($0.identifier) [\($0.runtimeRoot)]" }
+                .sorted()
+            throw ToolingError.message(
+                "multiple available iOS runtimes match version \(version) build \(build): "
+                    + "\(identities.joined(separator: ", ")); remove the duplicate runtime installation"
+            )
         }
-        return last
+        return buildMatches[0]
     }
 
     public static func listDevices(runtimeId: String, runner: CommandRunning) throws -> [DeviceInfo] {
