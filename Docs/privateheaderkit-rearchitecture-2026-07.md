@@ -71,12 +71,12 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - README が示す consumer は CLI だけだが、Core の state/storage/executor implementation types まで public になっている。
 - 既存 tests と削除済み rewrite requirements は unknown file 保存を契約にしているため、legacy output を「追跡外なら削除可能」と推測できない。
 
-追加 baseline:
+設計監査開始時の historical baseline:
 
 - explicit public declaration line は Core 275、Tooling 85 に対し、`package` declaration は 0。
 - status は `TargetStatus`、`RunTargetStatus`、`PhaseStatus`、`ResumeTargetStatus` の 4 系統 26 case に重複し、CLI はさらに raw `String` へ変換している。
-- test は Swift Testing の 26 suite / 194 test（Core 101、CLI 32、RawDump 32、Tooling 15、Install 14）。
-- clean worktree で `swift package resolve` 後に実行した baseline `swift test` は 194 test / 26 suite が成功する。既存 checkout の stale SwiftPM workspace cache では trait planning error を再現したため、acceptance は clean resolve 可能性と clean build の両方を確認する。
+- 当時の test は Swift Testing の 26 suite / 194 test（Core 101、CLI 32、RawDump 32、Tooling 15、Install 14）。この値は移行前 snapshot の観測値であり、現行 suite の acceptance count ではない。
+- clean worktree で `swift package resolve` 後に実行した baseline `swift test` は成功した。既存 checkout の stale SwiftPM workspace cache では trait planning error を再現したため、現行 acceptance は固定件数ではなく、その revision での clean resolve と全 `swift test` 成功を確認する。
 
 ## 4. Owner map
 
@@ -366,7 +366,7 @@ Source install と release install は同じ layout/manifest semantics を使う
 
 Source install は build 前の `HEAD`、release tag/effective provenance、tracked diff、untracked input content を 1 source snapshot として fingerprint し、全 product build 後に同一性を再検証する。dirty checkout は許可するが、build 中に source snapshot が変化した cohort は install しない。
 
-Direct-layout migration は durable `.legacy-migration-intent.json` と filesystem mutation を跨ぐ小さな transaction として扱う。intent write、complete cohort、atomic pointer、same-parent backup を recovery evidence とし、process kill 後の mixed direct/managed layout を単なる ambiguity として拒否せず、lock 取得直後に old complete layout または new complete cohort へ収束させる。intent 自体が malformed、またはどちらの complete state も証明できない場合だけ fail fast する。
+Direct-layout migration は durable `.legacy-migration-intent.json` と filesystem mutation を跨ぐ小さな transaction として扱う。matching valid intent、complete cohort、atomic pointer、same-parent backup を recovery evidence とし、その intent が所有する process-kill 後の mixed direct/managed layout は lock 取得直後に old complete layout または new complete cohort へ収束させる。intent が存在しない ownerless mixed layout、malformed intent、またはどちらの complete state も証明できない状態は ambiguity として fail fast する。
 
 `cohort-sha` は git commit ではなく、sorted artifact name / SHA-256 / platform / architecture から算出する content identity とする。git commit は `release.json` の provenance metadata に別記録する。同じ HEAD でも debug/release、build setting、dirty source が異なる binary set を同じ immutable directory と誤認しない。
 
