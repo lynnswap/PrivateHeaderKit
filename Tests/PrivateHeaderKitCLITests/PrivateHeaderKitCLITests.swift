@@ -214,7 +214,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.rawDumpingOptions.useSharedCache)
     }
 
-    @Test func explicitIOSRuntimeAliasUsesTheSelectedLoadedCache() throws {
+    @Test func explicitIOSRuntimeAliasUsesTheSelectedRuntimeIdentityAndLoadedCache() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
@@ -241,7 +241,8 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
         let canonicalRuntimeRoot = runtimeRoot.resolvingSymlinksInPath().standardizedFileURL
 
-        #expect(request.source.build == nil)
+        #expect(request.source.build == "24A123")
+        #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~41123")
         #expect(request.options.systemRoot == canonicalRuntimeRoot)
         #expect(request.options.rawDumpingOptions.useSharedCache)
         #expect(
@@ -252,6 +253,20 @@ struct PrivateHeaderKitCLIExecutionTests {
             request.options.rawDumpingOptions.helperEnvironment["PH_RUNTIME_ROOT"]
                 == canonicalRuntimeRoot.path
         )
+    }
+
+    @Test func explicitIOSBuildOverridesSelectedRuntimeBuildForExplicitRuntimeRoot() throws {
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: "24A999", systemRoot: "/ResolvedRuntime"),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+        )
+
+        #expect(request.source.build == "24A999")
+        #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~41999")
+        #expect(request.options.systemRoot?.path == "/ResolvedRuntime")
+        #expect(request.options.rawDumpingOptions.useSharedCache)
     }
 
     @Test func macOSUsesLoadedCacheOnlyForTheCurrentRoot() throws {
@@ -518,6 +533,105 @@ struct PrivateHeaderKitCLIExecutionTests {
         try await assertInteractiveLegacyMigration(kind: .artifactTree)
     }
 
+    @Test func interactiveConfirmsCombinedLegacyMigrationOnceAndDisplaysBothEffects() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtimeRoot.appendingPathComponent(
+                "System/Library/Frameworks/Foo.framework",
+                isDirectory: true
+            ),
+            withIntermediateDirectories: true
+        )
+        let outputBase = root.appendingPathComponent("Output", isDirectory: true)
+        let statePath = outputBase.appendingPathComponent(
+            ".state/ios-v1-27.0-b1-24~41123",
+            isDirectory: true
+        ).path
+        let artifactsPath = outputBase.appendingPathComponent(
+            "ios-v1-27.0-b1-24~41123",
+            isDirectory: true
+        ).path
+        let input = ScriptedInput(["1", "1", "1"])
+        let output = ThreadSafeStrings()
+        let preparationCount = ThreadSafeCounter()
+        let summaryInspectionCount = ThreadSafeCounter()
+        let runCount = ThreadSafeCounter()
+        let simulatorResolutionCount = ThreadSafeCounter()
+        let helperResolutionCount = ThreadSafeCounter()
+
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient(
+                onPrepare: { _ in preparationCount.increment() },
+                summary: { _ in
+                    summaryInspectionCount.increment()
+                    return .legacyMigration(
+                        .stateAndArtifacts(
+                            statePath: statePath,
+                            artifactsPath: artifactsPath
+                        )
+                    )
+                },
+                run: { request, resumeBehavior, _ in
+                    runCount.increment()
+                    #expect(resumeBehavior == .fresh)
+                    return resultFixture(
+                        for: request,
+                        counts: .init(total: 1, completed: 1)
+                    )
+                }
+            ),
+            simulatorResolver: { _ in
+                simulatorResolutionCount.increment()
+                return PrivateHeaderKitSimulatorResolution(
+                    runtimeVersion: "27.0",
+                    runtimeBuild: "24A123",
+                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    resolvedRuntimeRoot: runtimeRoot.path,
+                    deviceName: "iPhone 17 Pro",
+                    deviceUDID: "SIM-001"
+                )
+            },
+            helperResolver: { _, _, _ in
+                helperResolutionCount.increment()
+                return PrivateHeaderKitHelperPlan(
+                    helperURLs: testPrivateHeaderKitHelperURLs,
+                    toolCompatibilityIdentity: "test-tool-identity"
+                )
+            },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: nil,
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { outputBase.path },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 0)
+        #expect(preparationCount.value == 1)
+        #expect(summaryInspectionCount.value == 1)
+        #expect(runCount.value == 1)
+        #expect(simulatorResolutionCount.value == 1)
+        #expect(helperResolutionCount.value == 1)
+        #expect(output.text.contains("Legacy state: \(statePath)"))
+        #expect(output.text.contains("Legacy artifacts: \(artifactsPath)"))
+        #expect(output.text.contains("Legacy state files will remain in place"))
+        #expect(output.text.contains("artifact tree and unknown regular files will be preserved"))
+        #expect(output.text.contains("legacy-backups"))
+    }
+
     @Test func interactiveLegacyMigrationUsesResolvedSourceAndReusesRuntimeIdentity() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -550,7 +664,9 @@ struct PrivateHeaderKitCLIExecutionTests {
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
             generationClient: testPrivateHeaderKitGenerationClient(
                 summary: { _ in
-                    .legacyState(path: legacyManifest.deletingLastPathComponent().path)
+                    .legacyMigration(
+                        .state(path: legacyManifest.deletingLastPathComponent().path)
+                    )
                 },
                 run: { request, resumeBehavior, _ in
                     requestBox.set(request)
@@ -680,6 +796,128 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(simulatorResolutionCount.value == 1)
         #expect(helperResolutionCount.value == 1)
         #expect(preparationCount.value == 1)
+    }
+
+    @Test func interactiveIncompatibleResumeRestartsTheSamePreparedGeneration() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = ScriptedInput(["1", "1", "1"])
+        let output = ThreadSafeStrings()
+        let simulatorResolutionCount = ThreadSafeCounter()
+        let helperResolutionCount = ThreadSafeCounter()
+        let preparationCount = ThreadSafeCounter()
+        let runCount = ThreadSafeCounter()
+        let generationClient = PrivateHeaderKitGenerationClient(
+            prepare: { request in
+                preparationCount.increment()
+                return PrivateHeaderKitPreparedGeneration(
+                    summary: { .incompatibleResume(reason: "plan fingerprint changed") },
+                    run: { resumeBehavior, _ in
+                        runCount.increment()
+                        #expect(resumeBehavior == .fresh)
+                        return resultFixture(
+                            for: request,
+                            counts: .init(total: 1, completed: 1)
+                        )
+                    }
+                )
+            }
+        )
+
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: generationClient,
+            simulatorResolver: { _ in
+                simulatorResolutionCount.increment()
+                return PrivateHeaderKitSimulatorResolution(
+                    runtimeVersion: "27.0",
+                    runtimeBuild: "24A123",
+                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    resolvedRuntimeRoot: root.appendingPathComponent("RuntimeRoot").path,
+                    deviceName: "iPhone 17 Pro",
+                    deviceUDID: "SIM-001"
+                )
+            },
+            helperResolver: { _, _, _ in
+                helperResolutionCount.increment()
+                return PrivateHeaderKitHelperPlan(
+                    helperURLs: testPrivateHeaderKitHelperURLs,
+                    toolCompatibilityIdentity: "test-tool-identity"
+                )
+            },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: nil,
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { root.path },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 0)
+        #expect(simulatorResolutionCount.value == 1)
+        #expect(helperResolutionCount.value == 1)
+        #expect(preparationCount.value == 1)
+        #expect(runCount.value == 1)
+        #expect(output.text.contains("Restart required"))
+        #expect(output.text.contains("plan fingerprint changed"))
+        #expect(output.text.contains("[2] Back"))
+    }
+
+    @Test func interactiveIncompatibleResumeBackDoesNotRun() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = ScriptedInput(["1", "1", "2", "\u{001B}", "\u{001B}"])
+        let preparationCount = ThreadSafeCounter()
+        let runCount = ThreadSafeCounter()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: PrivateHeaderKitGenerationClient(
+                prepare: { request in
+                    preparationCount.increment()
+                    return PrivateHeaderKitPreparedGeneration(
+                        summary: { .incompatibleResume(reason: "plan fingerprint changed") },
+                        run: { _, _ in
+                            runCount.increment()
+                            return resultFixture(
+                                for: request,
+                                counts: .init(total: 1, completed: 1)
+                            )
+                        }
+                    )
+                }
+            ),
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .macOS,
+                        version: "16.0",
+                        build: nil,
+                        systemRoot: "/"
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { root.path },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        #expect(status == 1)
+        #expect(preparationCount.value == 1)
+        #expect(runCount.value == 0)
     }
 
 }
@@ -1675,9 +1913,13 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
             summary: { _ in
                 switch kind {
                 case .jsonState:
-                    .legacyState(path: detectedURL.deletingLastPathComponent().path)
+                    .legacyMigration(
+                        .state(path: detectedURL.deletingLastPathComponent().path)
+                    )
                 case .artifactTree:
-                    .legacyArtifacts(path: detectedURL.deletingLastPathComponent().path)
+                    .legacyMigration(
+                        .artifacts(path: detectedURL.deletingLastPathComponent().path)
+                    )
                 }
             },
             run: { request, resumeBehavior, _ in

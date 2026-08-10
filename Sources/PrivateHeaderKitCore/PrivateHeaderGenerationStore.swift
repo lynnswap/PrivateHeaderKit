@@ -446,9 +446,23 @@ package actor GenerationStore {
         return .none
       }
       if intent.state == .aborted {
-        guard publication.currentGenerationID != intent.generationID else {
+        guard publication.currentGenerationID == intent.previousGenerationID else {
           throw PrivateHeaderGeneration.StateError.corruptPublication(
-            "aborted generation \(intent.generationID.rawValue) is current"
+            "aborted generation \(intent.generationID.rawValue) does not preserve its previous current generation"
+          )
+        }
+        switch (intent.previousGenerationID, publication.stablePathState) {
+        case (nil, .absent), (nil, .legacyDirectory):
+          break
+        case (.some, .managed):
+          guard publication.currentMarker != nil else {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "aborted generation \(intent.generationID.rawValue) has no marker for its previous current generation"
+            )
+          }
+        case (nil, .managed), (.some, .absent), (.some, .legacyDirectory):
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "aborted generation \(intent.generationID.rawValue) has inconsistent stable publication state"
           )
         }
         try Self.interruptDanglingRuns(db, at: date)
@@ -636,21 +650,38 @@ package actor GenerationStore {
       }
 
       let attempts = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0) })
+      let publishedTargets = try Dictionary(
+        uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT * FROM targets").map {
+          let snapshot = try Self.targetSnapshot($0)
+          return (snapshot.targetID, snapshot)
+        }
+      )
       let decisions = selectedTargetIDs.map {
         targetID -> PrivateHeaderGeneration.ResumeTargetDecision in
         guard let attempt = attempts[targetID] else {
           return .init(targetID: targetID, status: .pending)
         }
+        let currentArtifacts = currentArtifactsByTarget[targetID].map(Set.init)
+        let publishedTarget = publishedTargets[targetID]
         if attempt.status == .completed,
-          Set(currentArtifactsByTarget[targetID] ?? []) == Set(attempt.artifacts)
+          publishedTarget?.lastSuccessfulRunID == run.id,
+          Set(publishedTarget?.artifacts ?? []) == Set(attempt.artifacts),
+          currentArtifacts == Set(attempt.artifacts)
         {
           return .init(targetID: targetID, status: .completed)
         }
-        if attempt.status == .skipped, currentArtifactsByTarget[targetID] != nil {
+        if attempt.status == .skipped,
+          publishedTarget?.status == .completed,
+          currentArtifacts == Set(publishedTarget?.artifacts ?? [])
+        {
           return .init(targetID: targetID, status: .completed)
         }
         return .init(
-          targetID: targetID, status: attempt.status == .completed ? .pending : attempt.status)
+          targetID: targetID,
+          status: attempt.status == .completed || attempt.status == .skipped
+            ? .pending
+            : attempt.status
+        )
       }
       return PrivateHeaderGeneration.ResumeSummary(
         latestRunID: run.id,

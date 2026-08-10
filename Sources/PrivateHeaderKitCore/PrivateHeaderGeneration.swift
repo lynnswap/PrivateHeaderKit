@@ -361,8 +361,7 @@ extension PrivateHeaderGeneration {
     case unresolvedTargetQuery(String)
     case incompatibleResume(String)
     case resumeRequired(ResumeSummary)
-    case legacyStateRequiresFresh(path: String)
-    case legacyArtifactsRequireFresh(path: String)
+    case legacyMigrationRequiresFresh(LegacyMigrationRequirement)
     case runFailed(RunFailure)
     case runInterrupted(RunInterruption)
     case infrastructureFailed(RunInfrastructureFailure)
@@ -392,10 +391,16 @@ extension PrivateHeaderGeneration {
         "existing generation state is incompatible: \(reason)"
       case .resumeRequired(let summary):
         "existing generation state is unfinished; explicit resume is required for \(summary.latestRunID.rawValue)"
-      case .legacyStateRequiresFresh(let path):
-        "legacy JSON state at \(path) requires an explicit fresh migration"
-      case .legacyArtifactsRequireFresh(let path):
-        "legacy artifact directory at \(path) requires an explicit fresh migration"
+      case .legacyMigrationRequiresFresh(let requirement):
+        switch requirement {
+        case .state(let path):
+          "legacy JSON state at \(path) requires an explicit fresh migration"
+        case .artifacts(let path):
+          "legacy artifact directory at \(path) requires an explicit fresh migration"
+        case .stateAndArtifacts(let statePath, let artifactsPath):
+          "legacy JSON state at \(statePath) and artifact directory at \(artifactsPath) "
+            + "require an explicit fresh migration"
+        }
       case .runFailed(let failure):
         "private header generation run \(failure.summary.runID.rawValue) failed for \(failure.failedTargetIDs.count) targets"
       case .runInterrupted(let interruption):

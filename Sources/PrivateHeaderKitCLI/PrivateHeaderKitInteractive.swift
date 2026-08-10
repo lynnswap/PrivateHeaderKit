@@ -37,20 +37,14 @@ private enum PrivateHeaderKitInteractiveAction {
     case restart
 }
 
-private enum PrivateHeaderKitLegacyMigrationAction {
-    case migrateAndStartFresh
+private enum PrivateHeaderKitIncompatibleResumeAction {
+    case restart
     case back
 }
 
-private enum PrivateHeaderKitLegacyMigrationKind {
-    case state(path: String)
-    case artifacts(path: String)
-
-    var path: String {
-        switch self {
-        case .state(let path), .artifacts(let path): path
-        }
-    }
+private enum PrivateHeaderKitLegacyMigrationAction {
+    case migrateAndStartFresh
+    case back
 }
 
 func runPrivateHeaderKitInteractiveGenerate(
@@ -197,20 +191,12 @@ private func interactiveResumeDecision(
     outputLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> PrivateHeaderGeneration.ResumeBehavior {
     let summary = try await preparedGeneration.summary()
-    let legacyKind: PrivateHeaderKitLegacyMigrationKind?
     switch summary {
-    case .legacyState(let path):
-        legacyKind = .state(path: path)
-    case .legacyArtifacts(let path):
-        legacyKind = .artifacts(path: path)
-    case .noUnfinishedRun, .unfinished:
-        legacyKind = nil
-    }
-    if let legacyKind {
+    case .legacyMigration(let requirement):
         let action = try await promptLegacyMigrationDecision(
             sourceDisplayName: request.source.label.displayName,
             outputBaseDirectory: outputBaseDirectory,
-            kind: legacyKind,
+            requirement: requirement,
             backupDirectory: request.output.baseDirectory
                 .appendingPathComponent(".privateheaderkit", isDirectory: true)
                 .appendingPathComponent(request.source.storageIdentifier, isDirectory: true)
@@ -223,30 +209,46 @@ private func interactiveResumeDecision(
             throw PrivateHeaderKitInteractiveNavigation.back
         }
         return .fresh
-    }
-    guard case .unfinished(let resumeSummary) = summary else {
+    case .incompatibleResume(let reason):
+        renderInteractiveIncompatibleResumeScreen(
+            sourceDisplayName: request.source.label.displayName,
+            reason: reason,
+            screenClearer: screenClearer,
+            outputLogger: outputLogger
+        )
+        let action: PrivateHeaderKitIncompatibleResumeAction = try await promptIndexedSelection(
+            prompt: "Select action:",
+            values: [.restart, .back],
+            inputReader: inputReader,
+            outputLogger: outputLogger
+        )
+        guard action == .restart else {
+            throw PrivateHeaderKitInteractiveNavigation.back
+        }
         return .fresh
+    case .noUnfinishedRun:
+        return .fresh
+    case .unfinished(let resumeSummary):
+        renderInteractiveResumeScreen(
+            sourceDisplayName: request.source.label.displayName,
+            summary: resumeSummary,
+            screenClearer: screenClearer,
+            outputLogger: outputLogger
+        )
+        let action: PrivateHeaderKitInteractiveAction = try await promptIndexedSelection(
+            prompt: "Select action:",
+            values: [.continuePrevious, .restart],
+            inputReader: inputReader,
+            outputLogger: outputLogger
+        )
+        return action == .continuePrevious ? .resume : .fresh
     }
-
-    renderInteractiveResumeScreen(
-        sourceDisplayName: request.source.label.displayName,
-        summary: resumeSummary,
-        screenClearer: screenClearer,
-        outputLogger: outputLogger
-    )
-    let action: PrivateHeaderKitInteractiveAction = try await promptIndexedSelection(
-        prompt: "Select action:",
-        values: [.continuePrevious, .restart],
-        inputReader: inputReader,
-        outputLogger: outputLogger
-    )
-    return action == .continuePrevious ? .resume : .fresh
 }
 
 private func promptLegacyMigrationDecision(
     sourceDisplayName: String,
     outputBaseDirectory: String,
-    kind: PrivateHeaderKitLegacyMigrationKind,
+    requirement: PrivateHeaderGeneration.LegacyMigrationRequirement,
     backupDirectory: URL,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
@@ -260,13 +262,23 @@ private func promptLegacyMigrationDecision(
     outputLogger("")
     outputLogger("Source: \(sourceDisplayName)")
     outputLogger("Output: \(outputBaseDirectory)")
-    outputLogger("Detected: \(kind.path)")
-    outputLogger("")
-    switch kind {
-    case .state:
+    switch requirement {
+    case .state(let path):
+        outputLogger("Legacy state: \(path)")
+        outputLogger("")
         outputLogger("Legacy state files will remain in place.")
         outputLogger("A new generation.sqlite database will become the source of truth.")
-    case .artifacts:
+    case .artifacts(let path):
+        outputLogger("Legacy artifacts: \(path)")
+        outputLogger("")
+        outputLogger("The existing artifact tree and unknown regular files will be preserved.")
+        outputLogger("Artifact backup: \(backupDirectory.path)/")
+    case .stateAndArtifacts(let statePath, let artifactsPath):
+        outputLogger("Legacy state: \(statePath)")
+        outputLogger("Legacy artifacts: \(artifactsPath)")
+        outputLogger("")
+        outputLogger("Legacy state files will remain in place.")
+        outputLogger("A new generation.sqlite database will become the source of truth.")
         outputLogger("The existing artifact tree and unknown regular files will be preserved.")
         outputLogger("Artifact backup: \(backupDirectory.path)/")
     }
@@ -349,6 +361,23 @@ private func renderInteractiveResumeScreen(
     outputLogger("")
     outputLogger("  [1] Continue")
     outputLogger("  [2] Restart")
+}
+
+private func renderInteractiveIncompatibleResumeScreen(
+    sourceDisplayName: String,
+    reason: String,
+    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
+    outputLogger: PrivateHeaderKitOutputLogger
+) {
+    screenClearer()
+    outputLogger("PrivateHeaderKit")
+    outputLogger("")
+    outputLogger("Step 3 of 3: Restart required")
+    outputLogger("Source: \(sourceDisplayName)")
+    outputLogger("The previous run cannot be resumed: \(reason)")
+    outputLogger("")
+    outputLogger("  [1] Restart")
+    outputLogger("  [2] Back")
 }
 
 private func promptIndexedSelection<Value>(

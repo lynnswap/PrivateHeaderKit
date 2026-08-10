@@ -188,6 +188,71 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
+  @Test func abortedIntentRejectsMissingPreviousCurrentPointer() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let ids = try await fixture.prepareCompletedPublication(
+      previousGenerationID: previousGenerationID
+    )
+    _ = try await fixture.store.recover(
+      using: .init(
+        currentGenerationID: previousGenerationID,
+        stablePathState: .managed,
+        markers: [
+          previousGenerationID: fixture.marker(previousGenerationID),
+          ids.generationID: fixture.marker(ids.generationID),
+        ]
+      ),
+      at: fixture.date
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: nil,
+          stablePathState: .absent,
+          markers: [:]
+        ),
+        at: fixture.date
+      )
+    }
+  }
+
+  @Test func abortedIntentRejectsUnrelatedCurrentPointer() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let unrelatedGenerationID = PrivateHeaderGeneration.GenerationID(
+      rawValue: "generation-unrelated"
+    )
+    let ids = try await fixture.prepareCompletedPublication(
+      previousGenerationID: previousGenerationID
+    )
+    _ = try await fixture.store.recover(
+      using: .init(
+        currentGenerationID: previousGenerationID,
+        stablePathState: .managed,
+        markers: [
+          previousGenerationID: fixture.marker(previousGenerationID),
+          ids.generationID: fixture.marker(ids.generationID),
+        ]
+      ),
+      at: fixture.date
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: unrelatedGenerationID,
+          stablePathState: .managed,
+          markers: [unrelatedGenerationID: fixture.marker(unrelatedGenerationID)]
+        ),
+        at: fixture.date
+      )
+    }
+  }
+
   @Test func controlledPreparedAbortFailsActiveTargetAndRetainsPendingRows() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
@@ -324,6 +389,63 @@ struct PrivateHeaderGenerationStoreTests {
         return
       }
     }
+  }
+
+  @Test func completedAttemptRequiresTransactionalPublicationOwnershipToResumeAsComplete() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let first = try await fixture.prepareCompletedPublication()
+    try await fixture.store.markPointerPublished(first.generationID)
+    _ = try await fixture.store.completePublication(first.generationID, at: fixture.date)
+
+    let secondRunID = PrivateHeaderGeneration.RunID(rawValue: "run-unpublished")
+    _ = try await fixture.store.beginRun(
+      id: secondRunID,
+      plan: fixture.plan(targetIDs: ["framework:Foo"]),
+      at: fixture.date
+    )
+    try await fixture.store.beginTargetAttempt(
+      targetID: "framework:Foo",
+      displayName: "Foo",
+      kind: "framework",
+      in: secondRunID,
+      at: fixture.date
+    )
+    try await fixture.store.recordTargetAttempt(
+      fixture.completedTarget("framework:Foo"),
+      in: secondRunID
+    )
+    let secondGenerationID = PrivateHeaderGeneration.GenerationID(
+      rawValue: "generation-unpublished"
+    )
+    _ = try await fixture.store.preparePublication(
+      generationID: secondGenerationID,
+      runID: secondRunID,
+      previousGenerationID: first.generationID,
+      planFingerprint: "fingerprint",
+      artifactChecksum: "checksum-new",
+      at: fixture.date
+    )
+    #expect(
+      try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: first.generationID,
+          stablePathState: .managed,
+          markers: [first.generationID: fixture.marker(first.generationID)]
+        ),
+        at: fixture.date
+      ) == .discardGeneration(secondGenerationID)
+    )
+
+    let summary = try #require(
+      try await fixture.store.resumeSummary(
+        planFingerprint: "fingerprint",
+        selectedTargetIDs: ["framework:Foo"],
+        currentArtifactsByTarget: fixture.marker(first.generationID).artifactsByTarget,
+        at: fixture.date
+      )
+    )
+    #expect(summary.targets == [.init(targetID: "framework:Foo", status: .pending)])
   }
 
   @Test func interruptionIsIdempotentAndNeverBecomesFailure() async throws {

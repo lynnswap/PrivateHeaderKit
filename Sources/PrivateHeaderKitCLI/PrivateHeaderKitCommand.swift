@@ -422,20 +422,25 @@ private func effectiveSourceConfiguration(
 ) throws -> EffectiveSourceConfiguration {
     if let systemRoot = command.systemRoot {
         let systemRootURL = canonicalDirectoryURL(path: systemRoot)
+        let build: String?
         let useSharedCache: Bool
         switch command.platform {
         case .macOS:
+            build = command.build
             useSharedCache = systemRootURL.path == "/"
         case .iOS:
             guard let simulatorResolution else {
                 throw PrivateHeaderKitCLIError.missingSimulatorResolution
             }
-            useSharedCache = systemRootURL == canonicalDirectoryURL(
+            let identifiesSelectedRuntime = systemRootURL == canonicalDirectoryURL(
                 path: simulatorResolution.resolvedRuntimeRoot
             )
+            build = command.build
+                ?? (identifiesSelectedRuntime ? simulatorResolution.runtimeBuild : nil)
+            useSharedCache = identifiesSelectedRuntime
         }
         return EffectiveSourceConfiguration(
-            build: command.build,
+            build: build,
             systemRoot: systemRootURL,
             useSharedCache: useSharedCache
         )

@@ -283,6 +283,12 @@ extension PrivateHeaderGeneration {
     }
   }
 
+  package enum LegacyMigrationRequirement: Equatable, Sendable {
+    case state(path: String)
+    case artifacts(path: String)
+    case stateAndArtifacts(statePath: String, artifactsPath: String)
+  }
+
   package struct PublicationIntent: Equatable, Sendable {
     package let generationID: GenerationID
     package let runID: RunID

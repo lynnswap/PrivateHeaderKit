@@ -140,11 +140,14 @@ extension PrivateHeaderGeneration {
           isDirectory: false
         )
         let hadDatabase = try Self.regularFileExists(databaseURL)
-        if try Self.legacyStateExists(in: stateDirectory),
-          !hadDatabase,
-          !options.resumeBehavior.isFresh
+        if !hadDatabase,
+          !options.resumeBehavior.isFresh,
+          let requirement = try Self.legacyMigrationRequirement(
+            stateDirectory: stateDirectory,
+            publisher: publisher
+          )
         {
-          throw GenerationError.legacyStateRequiresFresh(path: stateDirectory.path)
+          throw GenerationError.legacyMigrationRequiresFresh(requirement)
         }
         let injectedStoreFault = storeFaultInjector
         let store = try GenerationStore(
@@ -219,8 +222,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     if publication.stablePathState == .legacyDirectory,
       !plan.options.resumeBehavior.isFresh
     {
-      throw PrivateHeaderGeneration.GenerationError.legacyArtifactsRequireFresh(
-        path: publisher.stableURL.path
+      throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
+        .artifacts(path: publisher.stableURL.path)
       )
     }
 
@@ -970,13 +973,14 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         isDirectory: false
       )
       let hadDatabase = try regularFileExists(databaseURL)
-      if try legacyStateExists(in: stateDirectory),
-        !hadDatabase,
-        !plan.options.resumeBehavior.isFresh
-      {
-        throw PrivateHeaderGeneration.GenerationError.legacyStateRequiresFresh(
-          path: stateDirectory.path
+      if !hadDatabase,
+        !plan.options.resumeBehavior.isFresh,
+        let requirement = try legacyMigrationRequirement(
+          stateDirectory: stateDirectory,
+          publisher: publisher
         )
+      {
+        throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(requirement)
       }
       let store = try GenerationStore(
         databaseURL: databaseURL,
@@ -989,8 +993,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       if publication.stablePathState == .legacyDirectory,
         !plan.options.resumeBehavior.isFresh
       {
-        throw PrivateHeaderGeneration.GenerationError.legacyArtifactsRequireFresh(
-          path: publisher.stableURL.path
+        throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
+          .artifacts(path: publisher.stableURL.path)
         )
       }
       guard !plan.options.resumeBehavior.isFresh else { return nil }
@@ -1431,6 +1435,27 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   fileprivate static func legacyStateExists(in stateDirectory: URL) throws -> Bool {
     try pathExists(stateDirectory.appendingPathComponent("manifest.json"))
       || pathExists(stateDirectory.appendingPathComponent("runs", isDirectory: true))
+  }
+
+  fileprivate static func legacyMigrationRequirement(
+    stateDirectory: URL,
+    publisher: ArtifactPublisher
+  ) throws -> PrivateHeaderGeneration.LegacyMigrationRequirement? {
+    let hasLegacyState = try legacyStateExists(in: stateDirectory)
+    let hasLegacyArtifacts = try publisher.inspect().stablePathState == .legacyDirectory
+    switch (hasLegacyState, hasLegacyArtifacts) {
+    case (false, false):
+      return nil
+    case (true, false):
+      return .state(path: stateDirectory.path)
+    case (false, true):
+      return .artifacts(path: publisher.stableURL.path)
+    case (true, true):
+      return .stateAndArtifacts(
+        statePath: stateDirectory.path,
+        artifactsPath: publisher.stableURL.path
+      )
+    }
   }
 
   fileprivate static func publisherItemKind(at url: URL) throws -> ManagedFileSystem.ItemKind? {

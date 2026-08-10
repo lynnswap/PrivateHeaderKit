@@ -629,6 +629,56 @@ struct PrivateHeaderGenerationExecutorTests {
     }
   }
 
+  @Test(arguments: [
+    PrivateHeaderGeneration.PublicationFaultPoint.afterPrepared,
+    .afterGenerationMove,
+  ])
+  func abortedPublicationWithSameArtifactPathsRerunsInsteadOfReusingOldContent(
+    _ faultPoint: PrivateHeaderGeneration.PublicationFaultPoint
+  ) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old-content"),
+      runID: "run-old",
+      generationID: "generation-old"
+    ).run(plan: try fixture.plan(.query("Foo")))
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "unpublished-content"),
+        runID: "run-unpublished",
+        generationID: "generation-unpublished",
+        publicationFaultInjector: { point in
+          if point == faultPoint { throw InjectedFault.stop }
+        }
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+
+    let resumedRunner = RecordingRunner(contents: "resumed-content")
+    _ = try await fixture.executor(
+      runner: resumedRunner,
+      runID: "run-resumed",
+      generationID: "generation-resumed"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+
+    #expect(await resumedRunner.invocationCount == 1)
+    #expect(try fixture.readStableHeader() == "resumed-content")
+    #expect(
+      try fixture.publisher().inspect().currentGenerationID
+        == .init(rawValue: "generation-resumed")
+    )
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL,
+      toolCompatibilityIdentity: "test"
+    )
+    #expect(
+      try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
+        == .init(rawValue: "run-resumed")
+    )
+  }
+
   @Test func generationMoveFailureAbortsAsFailedAndPreservesPreviousCurrent() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
@@ -696,6 +746,48 @@ struct PrivateHeaderGenerationExecutorTests {
       }
       #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
     }
+  }
+
+  @Test func combinedLegacyStateAndArtifactsAreReportedBeforeDatabaseCreation() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try FileManager.default.createDirectory(
+      at: fixture.stateDirectory,
+      withIntermediateDirectories: true
+    )
+    try Data("{}".utf8).write(
+      to: fixture.stateDirectory.appendingPathComponent("manifest.json")
+    )
+    try FileManager.default.createDirectory(
+      at: fixture.stableURL,
+      withIntermediateDirectories: true
+    )
+    try Data("legacy".utf8).write(
+      to: fixture.stableURL.appendingPathComponent("Unknown.txt")
+    )
+    let executor = fixture.executor(
+      runner: RecordingRunner(contents: "unused"),
+      runID: "run-unused",
+      generationID: "generation-unused"
+    )
+    let preparedPlan = try await executor.prepare(try fixture.plan(.query("Foo")))
+
+    do {
+      _ = try await executor.availableResumeSummary(for: preparedPlan)
+      Issue.record("combined legacy migration unexpectedly returned a resume summary")
+    } catch let PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
+      requirement
+    ) {
+      guard case .stateAndArtifacts(let statePath, let artifactsPath) = requirement else {
+        Issue.record("unexpected legacy migration requirement: \(requirement)")
+        return
+      }
+      #expect(statePath == fixture.stateDirectory.path)
+      #expect(artifactsPath == fixture.stableURL.path)
+    }
+
+    #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
   }
 
   @Test func startupRecoveryRemovesCrashedStateStagingPayload() async throws {
