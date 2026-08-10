@@ -63,7 +63,7 @@ privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /p
 privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
 ```
 
-For iOS, `generate` resolves an available iOS simulator runtime from `--version`/`--build`, selects and boots a simulator device, and uses the internal simulator helper. `--system-root` is optional for iOS; when supplied, it is used as the runtime root instead of silently replacing it with the resolved runtime path. `--device <name-or-udid>` and `--sim-helper <path>` are optional automation flags.
+For iOS, `generate` resolves an available iOS simulator runtime from `--version`/`--build`, selects and boots a simulator device, and uses the internal simulator helper. `--system-root` is optional for iOS; when supplied, it is used as the runtime root instead of silently replacing it with the resolved runtime path. The loaded dyld shared cache is used only when that root identifies the selected runtime (or `/` for macOS); a different custom root is scanned as a filesystem-only source, so cache-only targets are not advertised. `--device <name-or-udid>` and `--sim-helper <path>` are optional automation flags.
 
 `--target` is a comma-separated target query, not a stable target ID list. `--resume` is an explicit non-interactive resume request. The old `<version>` positional style is not part of the new public surface.
 
