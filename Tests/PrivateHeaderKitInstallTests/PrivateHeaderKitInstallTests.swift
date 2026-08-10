@@ -1063,13 +1063,13 @@ struct VersionCohortInstallerTests {
         #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
         #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
 
-        let nextCohort = try makeTestCohort(
+        let nextCohort = try await makeTestCohort(
             under: directories.root,
             version: "v3.0.0",
             commit: String(repeating: "d", count: 40),
             marker: "next"
         )
-        _ = try testInstaller(layout: layout).install(nextCohort)
+        _ = try await testInstaller(layout: layout).install(nextCohort)
 
         try assertActive(nextCohort.manifest, layout: layout, marker: "next")
         #expect(
