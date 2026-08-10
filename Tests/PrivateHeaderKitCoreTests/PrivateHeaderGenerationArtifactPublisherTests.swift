@@ -403,6 +403,143 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     #expect(prepared.marker.artifactsByTarget.keys.sorted() == ["framework:A", "framework:B"])
   }
 
+  @Test func prospectiveNamespaceModelsShapeAndSpellingChangesWithoutFilesystemSemantics() throws {
+    let root = URL(fileURLWithPath: "/draft", isDirectory: true)
+    let oldFile = PrivateHeaderGeneration.ArtifactPath(rawValue: "Artifacts/A")
+    let fileToDirectory = try ArtifactPublisher.ProspectiveNamespace(
+      ownedPaths: [oldFile],
+      existingDirectories: [],
+      existingRegularPaths: [oldFile],
+      pathsToRemove: [oldFile]
+    )
+    try fileToDirectory.preflightDestination(
+      .init(rawValue: "Artifacts/A/Header.h"),
+      destination: root.appendingPathComponent("Artifacts/A/Header.h")
+    )
+
+    let oldChild = PrivateHeaderGeneration.ArtifactPath(rawValue: "Artifacts/A/Header.h")
+    let directoryToFile = try ArtifactPublisher.ProspectiveNamespace(
+      ownedPaths: [oldChild],
+      existingDirectories: [.init(rawValue: "Artifacts"), .init(rawValue: "Artifacts/A")],
+      existingRegularPaths: [oldChild],
+      pathsToRemove: [oldChild]
+    )
+    try directoryToFile.preflightDestination(
+      .init(rawValue: "Artifacts/A"),
+      destination: root.appendingPathComponent("Artifacts/A")
+    )
+
+    let uppercase = PrivateHeaderGeneration.ArtifactPath(rawValue: "Headers/Name.h")
+    let caseRename = try ArtifactPublisher.ProspectiveNamespace(
+      ownedPaths: [uppercase],
+      existingDirectories: [.init(rawValue: "Headers")],
+      existingRegularPaths: [uppercase],
+      pathsToRemove: [uppercase]
+    )
+    try caseRename.preflightDestination(
+      .init(rawValue: "Headers/name.h"),
+      destination: root.appendingPathComponent("Headers/name.h")
+    )
+
+    let decomposed = PrivateHeaderGeneration.ArtifactPath(
+      rawValue: "Headers/Cafe\u{301}.h"
+    )
+    let normalizationRename = try ArtifactPublisher.ProspectiveNamespace(
+      ownedPaths: [decomposed],
+      existingDirectories: [.init(rawValue: "Headers")],
+      existingRegularPaths: [decomposed],
+      pathsToRemove: [decomposed]
+    )
+    try normalizationRename.preflightDestination(
+      .init(rawValue: "Headers/Caf\u{e9}.h"),
+      destination: root.appendingPathComponent("Headers/Caf\u{e9}.h")
+    )
+  }
+
+  @Test func applySupportsFileToDirectoryTransition() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-file-to-directory-old"),
+        targetID: "framework:Foo",
+        relativePath: "Artifacts/A",
+        contents: "old"
+      )
+    )
+    var draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-file-to-directory-new"),
+      allowLegacyMigration: false
+    )
+
+    draft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:Foo",
+      files: [
+        .init(rawValue: "Artifacts/A/Header.h"): try fixture.sourceFile(contents: "new")
+      ],
+      to: draft
+    )
+
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent("Artifacts/A/Header.h"),
+        encoding: .utf8
+      ) == "new"
+    )
+    _ = try fixture.publisher.prepareGeneration(draft, planFingerprint: "fingerprint")
+  }
+
+  @Test func prospectiveTransitionFailureLeavesOldNamespaceUntouched() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-transition-failure-old"),
+        targetID: "framework:Foo",
+        relativePath: "Artifacts/A",
+        contents: "old"
+      )
+    )
+    let draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-transition-failure-new"),
+      allowLegacyMigration: false
+    )
+    let outside = try fixture.sourceFile(contents: "outside")
+    let unsafeDestination = draft.directory.appendingPathComponent("Artifacts/Z.h")
+    try FileManager.default.createSymbolicLink(
+      at: unsafeDestination,
+      withDestinationURL: outside
+    )
+
+    do {
+      _ = try fixture.publisher.applyCompletedTarget(
+        targetID: "framework:Foo",
+        files: [
+          .init(rawValue: "Artifacts/A/Header.h"): try fixture.sourceFile(contents: "new"),
+          .init(rawValue: "Artifacts/Z.h"): try fixture.sourceFile(contents: "z"),
+        ],
+        to: draft
+      )
+      Issue.record("expected destination preflight to fail")
+    } catch let error as ArtifactPublisher.PublisherError {
+      if case .unexpectedItem(let path, let description) = error {
+        #expect(path.hasSuffix("/Artifacts/Z.h"))
+        #expect(description == "symbolic links are not allowed")
+      } else {
+        Issue.record("unexpected publisher error: \(error)")
+      }
+    } catch {
+      Issue.record("unexpected error: \(error)")
+    }
+    #expect(
+      try String(
+        contentsOf: draft.directory.appendingPathComponent("Artifacts/A"),
+        encoding: .utf8
+      ) == "old"
+    )
+    #expect(try String(contentsOf: outside, encoding: .utf8) == "outside")
+  }
+
   @Test func applyPreflightsEverySourceBeforeRemovingReplacedArtifacts() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }

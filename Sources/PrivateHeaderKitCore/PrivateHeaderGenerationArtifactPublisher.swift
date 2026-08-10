@@ -101,6 +101,177 @@ package struct ArtifactPublisher: Sendable {
     let opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
   }
 
+  struct ProspectiveNamespace {
+    fileprivate enum NodeKind {
+      case directory
+      case regular
+    }
+
+    fileprivate struct Node {
+      let path: PrivateHeaderGeneration.ArtifactPath
+      let kind: NodeKind
+    }
+
+    private var nodes: [[String]: Node] = [:]
+    private var childCounts: [[String]: Int] = [:]
+
+    init(
+      ownedPaths: [PrivateHeaderGeneration.ArtifactPath],
+      existingDirectories: [PrivateHeaderGeneration.ArtifactPath],
+      existingRegularPaths: [PrivateHeaderGeneration.ArtifactPath],
+      pathsToRemove: [PrivateHeaderGeneration.ArtifactPath]
+    ) throws {
+      let ownedSet = Set(ownedPaths)
+      let existingRegularSet = Set(existingRegularPaths)
+      guard ownedSet.count == ownedPaths.count,
+        existingRegularSet.count == existingRegularPaths.count,
+        ownedSet == existingRegularSet
+      else {
+        throw PublisherError.inventoryMismatch(
+          expected: ownedPaths.map(\.rawValue).sorted(),
+          actual: existingRegularPaths.map(\.rawValue).sorted()
+        )
+      }
+
+      var ownedPathByCanonicalPath: [
+        PrivateHeaderGeneration.ArtifactPath: PrivateHeaderGeneration.ArtifactPath
+      ] = [:]
+      for ownedPath in ownedPaths.sorted(by: ArtifactPublisher.artifactPathPrecedes) {
+        ownedPathByCanonicalPath[ownedPath] = ownedPath
+        let components = ownedPath.rawValue.split(separator: "/").map(String.init)
+        for componentCount in 1..<components.count {
+          try insert(
+            PrivateHeaderGeneration.ArtifactPath(
+              rawValue: components.prefix(componentCount).joined(separator: "/")
+            ),
+            kind: .directory,
+            allowCanonicalSpelling: false
+          )
+        }
+        try insert(ownedPath, kind: .regular, allowCanonicalSpelling: false)
+      }
+
+      for directory in existingDirectories.sorted(by: Self.namespacePathPrecedes) {
+        try insert(directory, kind: .directory, allowCanonicalSpelling: true)
+      }
+
+      for key in nodes.keys where !key.isEmpty {
+        childCounts[Array(key.dropLast()), default: 0] += 1
+      }
+      for path in pathsToRemove {
+        guard let ownedPath = ownedPathByCanonicalPath[path] else {
+          throw PublisherError.missingArtifact(path.rawValue)
+        }
+        try removeRegularFile(ownedPath)
+      }
+    }
+
+    func preflightDestination(
+      _ artifact: PrivateHeaderGeneration.ArtifactPath,
+      destination: URL
+    ) throws {
+      let components = artifact.rawValue.split(separator: "/").map(String.init)
+      var key: [String] = []
+      for (index, component) in components.enumerated() {
+        key.append(ArtifactPublisher.portableComponentKey(component))
+        guard let node = nodes[key] else {
+          return
+        }
+        let requestedPath = PrivateHeaderGeneration.ArtifactPath(
+          rawValue: components.prefix(index + 1).joined(separator: "/")
+        )
+        guard node.path == requestedPath else {
+          throw PublisherError.unexpectedItem(
+            path: destination.path,
+            description: "portable alias of existing path \(node.path.rawValue)"
+          )
+        }
+        let isLeaf = index == components.count - 1
+        if isLeaf {
+          throw PublisherError.unexpectedItem(
+            path: destination.path,
+            description: node.kind == .directory
+              ? "artifact destination is an existing directory"
+              : "artifact destination is an existing regular file"
+          )
+        }
+        guard node.kind == .directory else {
+          throw PublisherError.unexpectedItem(
+            path: destination.path,
+            description: "artifact destination parent is a regular file"
+          )
+        }
+      }
+    }
+
+    private static func namespacePathPrecedes(
+      _ lhs: PrivateHeaderGeneration.ArtifactPath,
+      _ rhs: PrivateHeaderGeneration.ArtifactPath
+    ) -> Bool {
+      let lhsCount = lhs.rawValue.split(separator: "/").count
+      let rhsCount = rhs.rawValue.split(separator: "/").count
+      if lhsCount != rhsCount { return lhsCount < rhsCount }
+      return ArtifactPublisher.artifactPathPrecedes(lhs, rhs)
+    }
+
+    private mutating func insert(
+      _ path: PrivateHeaderGeneration.ArtifactPath,
+      kind: NodeKind,
+      allowCanonicalSpelling: Bool
+    ) throws {
+      let key = ArtifactPublisher.portablePathComponents(path)
+      if let existing = nodes[key] {
+        let sameSpelling = allowCanonicalSpelling
+          ? existing.path == path
+          : existing.path.rawValue.utf8.elementsEqual(path.rawValue.utf8)
+        guard existing.kind == kind, sameSpelling else {
+          throw PublisherError.unexpectedItem(
+            path: path.rawValue,
+            description: "portable alias of existing path \(existing.path.rawValue)"
+          )
+        }
+        return
+      }
+      nodes[key] = Node(path: path, kind: kind)
+    }
+
+    private mutating func removeRegularFile(
+      _ path: PrivateHeaderGeneration.ArtifactPath
+    ) throws {
+      var key = ArtifactPublisher.portablePathComponents(path)
+      guard let node = nodes[key], node.kind == .regular, node.path == path else {
+        throw PublisherError.missingArtifact(path.rawValue)
+      }
+      removeNode(at: key)
+      key.removeLast()
+      while !key.isEmpty,
+        let parent = nodes[key],
+        parent.kind == .directory,
+        childCounts[key, default: 0] == 0
+      {
+        removeNode(at: key)
+        key.removeLast()
+      }
+    }
+
+    private mutating func removeNode(at key: [String]) {
+      precondition(nodes.removeValue(forKey: key) != nil)
+      childCounts.removeValue(forKey: key)
+      guard !key.isEmpty else { return }
+      let parent = Array(key.dropLast())
+      guard let count = childCounts[parent], count > 0 else {
+        preconditionFailure("prospective namespace child count is inconsistent")
+      }
+      childCounts[parent] = count - 1
+    }
+  }
+
+  fileprivate struct InventoriedItem {
+    let path: PrivateHeaderGeneration.ArtifactPath
+    let url: URL
+    let kind: ManagedFileSystem.ItemKind
+  }
+
   private typealias ItemKind = ManagedFileSystem.ItemKind
 
   package let artifactBaseDirectory: URL
@@ -227,8 +398,11 @@ package struct ArtifactPublisher: Sendable {
       try removeOwnedArtifact(path, from: draft.directory)
     }
     for copy in plan.copies {
-      if try itemKind(at: copy.destination) != nil {
-        try FileManager.default.removeItem(at: copy.destination)
+      guard try itemKind(at: copy.destination) == nil else {
+        throw PublisherError.unexpectedItem(
+          path: copy.destination.path,
+          description: "artifact destination changed after preflight"
+        )
       }
       try FileManager.default.createDirectory(
         at: copy.destination.deletingLastPathComponent(),
@@ -511,12 +685,33 @@ extension ArtifactPublisher {
       Self.lexicalStringPrecedes($0.rawValue, $1.rawValue)
     }
     try Self.validatePortableOwnership(
+      artifactsByTarget: draft.artifactsByTarget,
+      opaquePaths: draft.opaquePaths
+    )
+    try Self.validatePortableOwnership(
       artifactsByTarget: artifactsByTarget,
       opaquePaths: opaquePaths
     )
     for path in pathsToRemove {
       try preflightRemoval(path, from: draft.directory)
     }
+    let existingItems = try inventoryItems(
+      at: draft.directory,
+      allowHidden: true,
+      allowedExtensions: nil
+    )
+    let existingRegularPaths = existingItems.compactMap {
+      $0.kind == .regular ? $0.path : nil
+    }
+    let existingDirectories = existingItems.compactMap {
+      $0.kind == .directory ? $0.path : nil
+    }
+    let namespace = try ProspectiveNamespace(
+      ownedPaths: draft.artifactsByTarget.values.flatMap { $0 } + draft.opaquePaths,
+      existingDirectories: existingDirectories,
+      existingRegularPaths: existingRegularPaths,
+      pathsToRemove: pathsToRemove
+    )
 
     var copies: [TargetMutationPlan.Copy] = []
     copies.reserveCapacity(sortedFiles.count)
@@ -528,12 +723,7 @@ extension ArtifactPublisher {
         )
       }
       let destination = try artifactURL(path, in: draft.directory)
-      try preflightDestination(
-        path,
-        destination: destination,
-        in: draft.directory,
-        pathsToRemove: pathsToRemove
-      )
+      try namespace.preflightDestination(path, destination: destination)
       copies.append(.init(source: source, destination: destination))
     }
     return TargetMutationPlan(
@@ -571,85 +761,6 @@ extension ArtifactPublisher {
           )
         }
       }
-    }
-  }
-
-  fileprivate func preflightDestination(
-    _ artifact: PrivateHeaderGeneration.ArtifactPath,
-    destination: URL,
-    in root: URL,
-    pathsToRemove: [PrivateHeaderGeneration.ArtifactPath]
-  ) throws {
-    let components = artifact.rawValue.split(separator: "/").map(String.init)
-    var current = root
-    var currentComponents: [String] = []
-    for (index, component) in components.enumerated() {
-      current.appendPathComponent(component, isDirectory: false)
-      currentComponents.append(component)
-      guard let kind = try itemKind(at: current) else { continue }
-      let currentPath = try PrivateHeaderGeneration.ArtifactPath(
-        currentComponents.joined(separator: "/")
-      )
-      let isLeaf = index == components.count - 1
-      switch kind {
-      case .directory:
-        if isLeaf {
-          guard Self.pathWillBeRemoved(currentPath, by: pathsToRemove, asAncestor: true) else {
-            throw PublisherError.unexpectedItem(
-              path: destination.path,
-              description: "artifact destination is an existing directory"
-            )
-          }
-          let actual = try inventoryRegularFiles(
-            at: current,
-            allowHidden: true,
-            allowedExtensions: nil
-          ).map { try PrivateHeaderGeneration.ArtifactPath(
-            currentPath.rawValue + "/" + $0.path.rawValue
-          ) }
-          let removableKeys = Set(pathsToRemove.map(Self.lexicalPathKey))
-          guard actual.allSatisfy({ removableKeys.contains(Self.lexicalPathKey($0)) }) else {
-            throw PublisherError.unexpectedItem(
-              path: destination.path,
-              description: "artifact destination contains unowned files"
-            )
-          }
-        }
-      case .regular:
-        guard Self.pathWillBeRemoved(currentPath, by: pathsToRemove, asAncestor: false) else {
-          throw PublisherError.unexpectedItem(
-            path: current.path,
-            description: isLeaf
-              ? "artifact destination is not owned by the replaced target"
-              : "artifact destination parent is a regular file"
-          )
-        }
-      case .symbolicLink:
-        throw PublisherError.unexpectedItem(
-          path: current.path,
-          description: "symbolic links are not allowed"
-        )
-      case .other:
-        throw PublisherError.unexpectedItem(
-          path: current.path,
-          description: "unsupported filesystem item"
-        )
-      }
-    }
-  }
-
-  fileprivate static func pathWillBeRemoved(
-    _ path: PrivateHeaderGeneration.ArtifactPath,
-    by removedPaths: [PrivateHeaderGeneration.ArtifactPath],
-    asAncestor: Bool
-  ) -> Bool {
-    let key = lexicalPathComponents(path)
-    return removedPaths.contains { removedPath in
-      let removedKey = lexicalPathComponents(removedPath)
-      if asAncestor {
-        return removedKey.count > key.count && removedKey.prefix(key.count).elementsEqual(key)
-      }
-      return removedKey == key
     }
   }
 
@@ -736,10 +847,17 @@ extension ArtifactPublisher {
     Array(path.rawValue.utf8)
   }
 
-  fileprivate static func lexicalPathComponents(
+  fileprivate static func portablePathComponents(
     _ path: PrivateHeaderGeneration.ArtifactPath
-  ) -> [[UInt8]] {
-    path.rawValue.split(separator: "/").map { Array($0.utf8) }
+  ) -> [String] {
+    path.rawValue.split(separator: "/").map { portableComponentKey(String($0)) }
+  }
+
+  fileprivate static func artifactPathPrecedes(
+    _ lhs: PrivateHeaderGeneration.ArtifactPath,
+    _ rhs: PrivateHeaderGeneration.ArtifactPath
+  ) -> Bool {
+    lexicalStringPrecedes(lhs.rawValue, rhs.rawValue)
   }
 
   fileprivate static func lexicalStringPrecedes(_ lhs: String, _ rhs: String) -> Bool {
@@ -936,6 +1054,20 @@ extension ArtifactPublisher {
     allowHidden: Bool,
     allowedExtensions: Set<String>?
   ) throws -> [(path: PrivateHeaderGeneration.ArtifactPath, url: URL)] {
+    try inventoryItems(
+      at: root,
+      allowHidden: allowHidden,
+      allowedExtensions: allowedExtensions
+    ).compactMap { item in
+      item.kind == .regular ? (item.path, item.url) : nil
+    }
+  }
+
+  fileprivate func inventoryItems(
+    at root: URL,
+    allowHidden: Bool,
+    allowedExtensions: Set<String>?
+  ) throws -> [InventoriedItem] {
     guard try itemKind(at: root) == .directory else {
       throw PublisherError.unexpectedItem(path: root.path, description: "expected directory")
     }
@@ -955,7 +1087,7 @@ extension ArtifactPublisher {
         path: root.path, description: "could not enumerate directory")
     }
     let rootPath = root.standardizedFileURL.path
-    var files: [(PrivateHeaderGeneration.ArtifactPath, URL)] = []
+    var items: [InventoriedItem] = []
     for case let url as URL in enumerator {
       let relative = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
       if !allowHidden, relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
@@ -966,7 +1098,12 @@ extension ArtifactPublisher {
       }
       switch kind {
       case .directory:
-        continue
+        items.append(
+          InventoriedItem(
+            path: try PrivateHeaderGeneration.ArtifactPath(relative),
+            url: url,
+            kind: kind
+          ))
       case .symbolicLink:
         throw PublisherError.unexpectedItem(
           path: url.path, description: "symbolic links are not allowed")
@@ -975,7 +1112,12 @@ extension ArtifactPublisher {
           throw PublisherError.unexpectedItem(
             path: url.path, description: "unsupported regular file")
         }
-        files.append((try PrivateHeaderGeneration.ArtifactPath(relative), url))
+        items.append(
+          InventoriedItem(
+            path: try PrivateHeaderGeneration.ArtifactPath(relative),
+            url: url,
+            kind: kind
+          ))
       case .other:
         throw PublisherError.unexpectedItem(
           path: url.path, description: "unsupported filesystem item")
@@ -987,7 +1129,7 @@ extension ArtifactPublisher {
         description: "directory enumeration failed: \(error)"
       )
     }
-    return files
+    return items
   }
 
   fileprivate func artifactURL(
