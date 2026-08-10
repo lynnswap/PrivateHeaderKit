@@ -353,18 +353,138 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(rawRunner.invocations.isEmpty)
     }
 
-    @Test func rawDumpCancellationDoesNotCommitArtifactsOrStartLaterTargets() async throws {
+    @Test func cancellationBeforeFirstTargetPersistsInterruptedRunAndManifest() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
         try fixture.createFramework("Foo.framework")
         try fixture.createFramework("Bar.framework")
-        let rawRunner = CancellableRawDumpRunner()
+
+        let rawRunner = RecordingRawDumpRunner()
+        let plan = try fixture.makePlan(
+            targetRequest: .identifiers([
+                "framework:Foo.framework",
+                "framework:Bar.framework",
+            ])
+        )
         let executor = PrivateHeaderGeneration.GenerationExecutor(
             rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
             runIDGenerator: { "run-001" },
             dateProvider: fixedDates()
         )
-        let plan = try fixture.makePlan(targetRequest: .query("Foo,Bar"))
+        let task = Task {
+            try await executor.run(.init(
+                plan: plan,
+                progressReporter: { event in
+                    guard case .runStarted = event else {
+                        return
+                    }
+                    withUnsafeCurrentTask { task in
+                        task?.cancel()
+                    }
+                }
+            ))
+        }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+
+        #expect(rawRunner.invocations.isEmpty)
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let run = try #require(try repository.readRun(id: "run-001"))
+        let manifest = try #require(try repository.readManifest())
+        let interruptedRunTarget = try #require(run.targetResults.first)
+        let interruptedManifestTarget = try #require(manifest.targets.first)
+
+        #expect(run.status == .interrupted)
+        #expect(run.endedAt != nil)
+        #expect(run.targetResults.count == 1)
+        #expect(interruptedRunTarget.targetID == "framework:Foo.framework")
+        #expect(interruptedRunTarget.status == .interrupted)
+        #expect(interruptedRunTarget.phases.isEmpty)
+        #expect(interruptedRunTarget.artifacts.isEmpty)
+        #expect(interruptedRunTarget.attemptedArtifacts.isEmpty)
+        #expect(interruptedRunTarget.failureSummary == "cancelled")
+        #expect(manifest.latestRunID == "run-001")
+        #expect(manifest.targets.count == 1)
+        #expect(interruptedManifestTarget.id == "framework:Foo.framework")
+        #expect(interruptedManifestTarget.status == .interrupted)
+        #expect(interruptedManifestTarget.phases.isEmpty)
+        #expect(interruptedManifestTarget.artifacts.isEmpty)
+        #expect(interruptedManifestTarget.failureSummary == "cancelled")
+    }
+
+    @Test func cancellationPersistenceFailureIsNotMaskedAsCancellation() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let rawRunner = RecordingRawDumpRunner()
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        let task = Task {
+            try await executor.run(.init(
+                plan: plan,
+                progressReporter: { event in
+                    guard case .targetStarted = event else {
+                        return
+                    }
+                    do {
+                        try FileManager.default.removeItem(at: repository.manifestURL)
+                        try FileManager.default.createDirectory(
+                            at: repository.manifestURL,
+                            withIntermediateDirectories: false
+                        )
+                    } catch {
+                        Issue.record("failed to inject manifest write failure: \(error)")
+                    }
+                    withUnsafeCurrentTask { task in
+                        task?.cancel()
+                    }
+                }
+            ))
+        }
+
+        do {
+            _ = try await task.value
+            Issue.record("cancelled run unexpectedly returned success")
+        } catch is CancellationError {
+            Issue.record("manifest persistence failure was masked as cancellation")
+        } catch {
+            #expect((error as NSError).domain == NSCocoaErrorDomain)
+        }
+
+        #expect(rawRunner.invocations.isEmpty)
+        let run = try #require(try repository.readRun(id: "run-001"))
+        #expect(run.status == .interrupted)
+        #expect(run.endedAt != nil)
+    }
+
+    @Test func rawDumpCancellationAfterOneCompletionPersistsProgressWithoutStartingLaterTarget() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+        try fixture.createFramework("Bar.framework")
+        try fixture.createFramework("Baz.framework")
+
+        let rawRunner = CancellableRawDumpRunner(suspendingInvocationNumber: 2)
+        let plan = try fixture.makePlan(
+            targetRequest: .identifiers([
+                "framework:Foo.framework",
+                "framework:Bar.framework",
+                "framework:Baz.framework",
+            ])
+        )
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
         let task = Task {
             try await executor.run(.init(plan: plan))
         }
@@ -375,9 +495,9 @@ struct PrivateHeaderGenerationExecutorTests {
             _ = try await task.value
         }
 
-        #expect(rawRunner.invocations.count == 1)
+        #expect(rawRunner.invocations.count == 2)
         #expect(
-            !fileExists(
+            fileExists(
                 plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")
             )
         )
@@ -386,6 +506,54 @@ struct PrivateHeaderGenerationExecutorTests {
                 plan.artifactDirectory.appendingPathComponent("Frameworks/Bar/Headers/Generated.h")
             )
         )
+        #expect(
+            !fileExists(
+                plan.artifactDirectory.appendingPathComponent("Frameworks/Baz/Headers/Generated.h")
+            )
+        )
+
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let run = try #require(try repository.readRun(id: "run-001"))
+        let manifest = try #require(try repository.readManifest())
+        let runTargetsByID = Dictionary(
+            uniqueKeysWithValues: run.targetResults.map { ($0.targetID, $0) }
+        )
+        let manifestTargetsByID = Dictionary(
+            uniqueKeysWithValues: manifest.targets.map { ($0.id, $0) }
+        )
+        let completedRunTarget = try #require(runTargetsByID["framework:Foo.framework"])
+        let interruptedRunTarget = try #require(runTargetsByID["framework:Bar.framework"])
+        let completedManifestTarget = try #require(manifestTargetsByID["framework:Foo.framework"])
+        let interruptedManifestTarget = try #require(manifestTargetsByID["framework:Bar.framework"])
+
+        #expect(run.status == .interrupted)
+        #expect(run.endedAt != nil)
+        #expect(run.targetResults.map(\.targetID) == [
+            "framework:Foo.framework",
+            "framework:Bar.framework",
+        ])
+        #expect(completedRunTarget.status == .completed)
+        #expect(completedRunTarget.artifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
+        #expect(interruptedRunTarget.status == .interrupted)
+        #expect(interruptedRunTarget.phases.isEmpty)
+        #expect(interruptedRunTarget.artifacts.isEmpty)
+        #expect(interruptedRunTarget.attemptedArtifacts.isEmpty)
+        #expect(interruptedRunTarget.failureSummary == "cancelled")
+        #expect(manifest.latestRunID == "run-001")
+        #expect(Set(manifest.targets.map(\.id)) == [
+            "framework:Foo.framework",
+            "framework:Bar.framework",
+        ])
+        #expect(completedManifestTarget.status == .completed)
+        #expect(completedManifestTarget.artifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
+        #expect(interruptedManifestTarget.status == .interrupted)
+        #expect(interruptedManifestTarget.phases.isEmpty)
+        #expect(interruptedManifestTarget.artifacts.isEmpty)
+        #expect(interruptedManifestTarget.failureSummary == "cancelled")
     }
 
     @Test func availableResumeSummaryUsesInventoryAndRejectsChangedCacheCohort() async throws {
@@ -920,8 +1088,11 @@ private final class CancellableRawDumpRunner: @unchecked Sendable {
     private var recordedInvocations: [PrivateHeaderGeneration.RawDumping.Invocation] = []
     private var resultContinuation: CheckedContinuation<Result, any Error>?
     private var cancellationRequested = false
+    private let suspendingInvocationNumber: Int
 
-    init() {
+    init(suspendingInvocationNumber: Int = 1) {
+        precondition(suspendingInvocationNumber > 0)
+        self.suspendingInvocationNumber = suspendingInvocationNumber
         let started = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         startedStream = started.stream
         startedContinuation = started.continuation
@@ -941,9 +1112,14 @@ private final class CancellableRawDumpRunner: @unchecked Sendable {
         _ invocation: PrivateHeaderGeneration.RawDumping.Invocation
     ) async throws -> Result {
         try writeStagedArtifact(for: invocation)
-        lock.withLock {
+        let invocationNumber = lock.withLock {
             recordedInvocations.append(invocation)
+            return recordedInvocations.count
         }
+        if invocationNumber < suspendingInvocationNumber {
+            return Result(terminationStatus: 0)
+        }
+        precondition(invocationNumber == suspendingInvocationNumber)
         startedContinuation.yield()
 
         return try await withTaskCancellationHandler {

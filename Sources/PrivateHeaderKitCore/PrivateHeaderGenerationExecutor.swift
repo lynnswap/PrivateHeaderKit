@@ -322,43 +322,48 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         var generatedTargetIDs: [String] = []
 
         for (offset, target) in targetsToRun.enumerated() {
-            try Task.checkCancellation()
             let targetIndex = offset + 1
             progressReporter?(.targetStarted(
                 index: targetIndex,
                 total: targetsToRun.count,
                 displayName: target.candidate.displayName
             ))
-            let targetResult = try await executeTarget(
-                target,
-                runID: runID,
-                runDirectories: runDirectories,
-                plan: plan,
-                helperURLs: helperURLs,
-                executionMode: executionMode,
-                rawDumpingOptions: options.rawDumpingOptions,
-                expectedCacheUUID: expectedCacheUUID,
-                artifactStore: artifactStore,
-                previousTarget: previousTargetRecords[target.candidate.identifier],
-                previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
-                cleanupBeforeRun: Self.shouldCleanupBeforeRun(
-                    targetID: target.candidate.identifier,
-                    resumeBehavior: options.resumeBehavior,
-                    previousTarget: previousTargetRecords[target.candidate.identifier]
+            let targetResult: TargetExecutionResult
+            do {
+                try Task.checkCancellation()
+                targetResult = try await executeTarget(
+                    target,
+                    runID: runID,
+                    runDirectories: runDirectories,
+                    plan: plan,
+                    helperURLs: helperURLs,
+                    executionMode: executionMode,
+                    rawDumpingOptions: options.rawDumpingOptions,
+                    expectedCacheUUID: expectedCacheUUID,
+                    artifactStore: artifactStore,
+                    previousTarget: previousTargetRecords[target.candidate.identifier],
+                    previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
+                    cleanupBeforeRun: Self.shouldCleanupBeforeRun(
+                        targetID: target.candidate.identifier,
+                        resumeBehavior: options.resumeBehavior,
+                        previousTarget: previousTargetRecords[target.candidate.identifier]
+                    )
                 )
-            )
-            progressReporter?(.targetFinished(
-                index: targetIndex,
-                total: targetsToRun.count,
-                displayName: target.candidate.displayName,
-                status: targetResult.runTarget.status
-            ))
+            } catch is CancellationError {
+                targetResult = interruptedTargetResult(
+                    target: target,
+                    runID: runID,
+                    preservedArtifacts: previousTargetRecords[target.candidate.identifier]?.artifacts ?? []
+                )
+            }
 
+            let targetWasInterrupted = targetResult.runTarget.status == .interrupted
+            let targetEndedAt = targetWasInterrupted ? dateProvider() : nil
             runRecord = Self.runRecordByAppending(
                 targetResult.runTarget,
                 to: runRecord,
-                status: .running,
-                endedAt: nil
+                status: targetWasInterrupted ? .interrupted : .running,
+                endedAt: targetEndedAt
             )
             targetRecords = Self.upserting(targetResult.manifestTarget, in: targetRecords)
             try repository.writeRun(runRecord)
@@ -368,9 +373,23 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                     runPlan: runPlan,
                     runID: runID,
                     targetRecords: targetRecords,
-                    updatedAt: dateProvider()
+                    updatedAt: targetEndedAt ?? dateProvider()
                 )
             )
+            progressReporter?(.targetFinished(
+                index: targetIndex,
+                total: targetsToRun.count,
+                displayName: target.candidate.displayName,
+                status: targetResult.runTarget.status
+            ))
+
+            if targetWasInterrupted {
+                progressReporter?(.runFinished(
+                    runID: runID,
+                    status: .interrupted
+                ))
+                throw CancellationError()
+            }
 
             if targetResult.runTarget.status == .completed {
                 generatedTargetIDs.append(target.candidate.identifier)
@@ -516,7 +535,11 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             rawResult = try await rawDumpRunner(invocation)
             try Task.checkCancellation()
         } catch is CancellationError {
-            throw CancellationError()
+            return interruptedTargetResult(
+                target: target,
+                runID: runID,
+                preservedArtifacts: preservedArtifacts
+            )
         } catch {
             let failureSummary = String(describing: error)
             return failedTargetResult(
@@ -691,6 +714,22 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             failureSummary: targetFailureSummary
         )
         return TargetExecutionResult(runTarget: runTarget, manifestTarget: manifestTarget)
+    }
+
+    func interruptedTargetResult(
+        target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+        runID: String,
+        preservedArtifacts: [PrivateHeaderGeneration.ArtifactPath]
+    ) -> TargetExecutionResult {
+        failedTargetResult(
+            target: target,
+            runID: runID,
+            status: .interrupted,
+            phases: [],
+            artifacts: preservedArtifacts,
+            attemptedArtifacts: [],
+            failureSummary: "cancelled"
+        )
     }
 
     func failedTargetResult(
