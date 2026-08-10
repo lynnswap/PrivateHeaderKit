@@ -466,6 +466,9 @@ package actor GenerationStore {
           )
         }
         try Self.interruptDanglingRuns(db, at: date)
+        if publication.validGenerationIDs.contains(intent.generationID) {
+          return .discardGeneration(intent.generationID)
+        }
         return .recognized(publication.currentGenerationID)
       }
 

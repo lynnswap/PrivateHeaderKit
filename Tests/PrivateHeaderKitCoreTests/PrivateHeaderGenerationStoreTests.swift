@@ -188,6 +188,74 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
+  @Test func abortedIntentRetriesDiscardUntilGenerationIsAbsent() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let ids = try await fixture.prepareCompletedPublication(
+      previousGenerationID: previousGenerationID
+    )
+    let previousMarker = fixture.marker(previousGenerationID)
+    let abortedMarker = fixture.marker(ids.generationID)
+    let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
+      currentGenerationID: previousGenerationID,
+      stablePathState: .managed,
+      markers: [
+        previousGenerationID: previousMarker,
+        ids.generationID: abortedMarker,
+      ]
+    )
+
+    #expect(
+      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
+        == .discardGeneration(ids.generationID)
+    )
+    #expect(
+      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
+        == .discardGeneration(ids.generationID)
+    )
+    #expect(
+      try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: previousGenerationID,
+          stablePathState: .managed,
+          markers: [previousGenerationID: previousMarker]
+        ),
+        at: fixture.date
+      ) == .recognized(previousGenerationID)
+    )
+  }
+
+  @Test func abortedLegacyMigrationRetriesDiscardUntilGenerationIsAbsent() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let ids = try await fixture.prepareCompletedPublication(previousGenerationID: nil)
+    let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
+      currentGenerationID: nil,
+      stablePathState: .legacyDirectory,
+      markers: [ids.generationID: fixture.marker(ids.generationID)]
+    )
+
+    #expect(
+      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
+        == .discardGeneration(ids.generationID)
+    )
+    #expect(
+      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
+        == .discardGeneration(ids.generationID)
+    )
+    #expect(
+      try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: nil,
+          stablePathState: .legacyDirectory,
+          markers: [:]
+        ),
+        at: fixture.date
+      ) == .recognized(nil)
+    )
+  }
+
   @Test func abortedIntentRejectsMissingPreviousCurrentPointer() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
