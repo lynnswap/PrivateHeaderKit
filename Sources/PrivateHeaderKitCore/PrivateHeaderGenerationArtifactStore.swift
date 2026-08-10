@@ -77,7 +77,7 @@ public extension PrivateHeaderGeneration {
     }
 
     struct ArtifactStore: Sendable {
-        public struct CommitPlan: Sendable {
+        internal struct CommitPlan: Sendable {
             fileprivate let root: ArtifactRootURLs
             fileprivate let stagingDirectory: URL
             fileprivate let resolvedStagingDirectory: URL
@@ -116,7 +116,7 @@ public extension PrivateHeaderGeneration {
             )
         }
 
-        public func prepareCommit(
+        internal func prepareCommit(
             stagingDirectory: URL,
             stagedSourceDirectory: URL,
             artifactRoot: ArtifactPath,
@@ -157,7 +157,7 @@ public extension PrivateHeaderGeneration {
             return plan
         }
 
-        public func commit(
+        internal func commit(
             _ plan: CommitPlan,
             fileManager: FileManager = .default
         ) throws {
@@ -704,7 +704,7 @@ public extension PrivateHeaderGeneration {
             return url.standardizedFileURL
         }
 
-        static func pathsOverlap(
+        internal static func pathsOverlap(
             _ first: URL,
             _ second: URL,
             volumeSupportsCaseSensitiveNames: Bool
