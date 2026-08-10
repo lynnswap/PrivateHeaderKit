@@ -19,6 +19,7 @@ public enum PrivateHeaderGeneration {
         )
     }
 
+    #if os(macOS)
     public static func generatePrivateHeaders(
         source: Source,
         output: Output,
@@ -37,8 +38,10 @@ public enum PrivateHeaderGeneration {
             )
         )
     }
+    #endif
 }
 
+#if os(macOS)
 public func generatePrivateHeaders(
     source: PrivateHeaderGeneration.Source,
     output: PrivateHeaderGeneration.Output,
@@ -52,6 +55,7 @@ public func generatePrivateHeaders(
         progressReporter: progressReporter
     )
 }
+#endif
 
 public extension PrivateHeaderGeneration {
     struct Source: Hashable, Sendable {

@@ -1,12 +1,11 @@
 import Foundation
 import PrivateHeaderKitHelperProtocol
 
-#if canImport(Darwin)
+#if os(macOS)
 import Darwin
-#elseif canImport(Glibc)
-import Glibc
 #endif
 
+#if os(macOS)
 public extension PrivateHeaderGeneration {
     static func availableResumeSummary(
         source: Source,
@@ -21,6 +20,7 @@ public extension PrivateHeaderGeneration {
         return try await GenerationExecutor().availableResumeSummary(for: plan)
     }
 }
+#endif
 
 extension PrivateHeaderGeneration.GenerationExecutor {
     func availableResumeSummary(
@@ -121,6 +121,7 @@ public extension PrivateHeaderGeneration {
         private let runIDGenerator: @Sendable () -> String
         private let dateProvider: @Sendable () -> Date
 
+        #if os(macOS)
         public init(
             rawDumpRunner: @escaping RawDumpRunner = GenerationExecutor.liveRawDumpRunner,
             sharedCacheInventoryRunner: @escaping SharedCacheInventoryRunner = GenerationExecutor.liveSharedCacheInventoryRunner,
@@ -134,6 +135,21 @@ public extension PrivateHeaderGeneration {
             self.runIDGenerator = runIDGenerator
             self.dateProvider = dateProvider
         }
+        #else
+        public init(
+            rawDumpRunner: @escaping RawDumpRunner,
+            sharedCacheInventoryRunner: @escaping SharedCacheInventoryRunner,
+            runIDGenerator: @escaping @Sendable () -> String = {
+                "run-\(UUID().uuidString.lowercased())"
+            },
+            dateProvider: @escaping @Sendable () -> Date = { Date() }
+        ) {
+            self.rawDumpRunner = rawDumpRunner
+            self.sharedCacheInventoryRunner = sharedCacheInventoryRunner
+            self.runIDGenerator = runIDGenerator
+            self.dateProvider = dateProvider
+        }
+        #endif
 
         public func run(_ configuration: Configuration) async throws -> Result {
             let plan = configuration.plan
@@ -1314,6 +1330,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
     }
 }
 
+#if os(macOS)
 public extension PrivateHeaderGeneration.GenerationExecutor {
     static func liveRawDumpRunner(
         invocation: PrivateHeaderGeneration.RawDumping.Invocation
@@ -1561,6 +1578,7 @@ private final class CancellableProcessController: @unchecked Sendable {
         _ = kill(process.processIdentifier, SIGKILL)
     }
 }
+#endif
 
 private extension PrivateHeaderGeneration.ResumeBehavior {
     var resumeRequested: Bool {

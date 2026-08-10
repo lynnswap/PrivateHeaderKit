@@ -4,6 +4,20 @@ import Testing
 import PrivateHeaderKitCore
 
 @Suite
+struct PrivateHeaderGenerationPlatformTests {
+    @Test func generationExecutorAcceptsExplicitPlatformNeutralRunners() {
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { _ in
+                PrivateHeaderGeneration.RawDumping.Result(terminationStatus: 0)
+            },
+            sharedCacheInventoryRunner: { _ in Data() }
+        )
+
+        _ = executor
+    }
+}
+
+@Suite
 struct PrivateHeaderGenerationLabelTests {
     @Test func iOSSourceKeepsPresentationSeparateFromStorageIdentity() throws {
         let source = try PrivateHeaderGeneration.Source(
