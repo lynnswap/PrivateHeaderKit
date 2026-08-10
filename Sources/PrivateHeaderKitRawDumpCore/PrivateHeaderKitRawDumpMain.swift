@@ -63,7 +63,7 @@ struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
     }
 }
 
-struct SwiftInterfaceBuilderAdapter<MachO: MachOSwiftSectionRepresentableWithCache>: SwiftInterfaceBuilding {
+struct SwiftInterfaceBuilderAdapter<MachO: FieldLayoutRenderable>: SwiftInterfaceBuilding {
     private let builder: SwiftInterfaceBuilder<MachO>
 
     init(
