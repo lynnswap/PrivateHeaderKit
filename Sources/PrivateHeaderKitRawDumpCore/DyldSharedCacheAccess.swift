@@ -153,7 +153,10 @@ func validateLoadedCacheEnvironment(_ environment: [String: String]) throws {
 }
 
 private func standardizedRootPath(_ path: String) -> String {
-    URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+    URL(fileURLWithPath: path, isDirectory: true)
+        .resolvingSymlinksInPath()
+        .standardizedFileURL
+        .path
 }
 
 private func isAbsoluteLogicalImagePath(_ path: String) -> Bool {

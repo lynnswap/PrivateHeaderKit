@@ -19,6 +19,14 @@ private struct FakeFileManager: FileExistenceChecking {
     }
 }
 
+private enum FakeRawMachOLoadError: Error, CustomStringConvertible {
+    case invalidFixture
+
+    var description: String {
+        "invalid fixture"
+    }
+}
+
 @Suite
 struct PrivateHeaderKitRawDumpArgumentTests {
     @Test func parseArgumentsPopulatesOptions() {
@@ -233,6 +241,67 @@ struct PrivateHeaderKitRawDumpSharedCacheTests {
         }
     }
 
+    @Test func cacheMissAndDiskFailureSurfaceTypedContext() throws {
+        let cacheUUID = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        var options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        options.useSharedCache = true
+        options.expectedCacheUUID = cacheUUID
+        let loader = try RawMachOLoader(
+            options: options,
+            environment: [:],
+            sharedCacheFactory: { _ in
+                DyldSharedCacheAccess(cacheUUID: cacheUUID, images: [])
+            },
+            diskLoader: { _ in
+                throw FakeRawMachOLoadError.invalidFixture
+            }
+        )
+        let inputURL = URL(fileURLWithPath: "/usr/lib/libMissing.dylib")
+
+        #expect(
+            throws: RawMachOLoadError.sharedCacheMissAndDiskLoadFailed(
+                inputPath: inputURL.path,
+                cacheUUID: cacheUUID,
+                normalizedCandidates: [inputURL.path],
+                diskError: "invalid fixture"
+            )
+        ) {
+            _ = try loader.load(url: inputURL)
+        }
+    }
+
+    @Test func diskParseFailureSurfacesWithoutSharedCache() throws {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let loader = try RawMachOLoader(
+            options: options,
+            environment: [:],
+            diskLoader: { _ in
+                throw FakeRawMachOLoadError.invalidFixture
+            }
+        )
+        let inputURL = URL(fileURLWithPath: "/tmp/invalid-mach-o")
+
+        #expect(
+            throws: RawMachOLoadError.diskLoadFailed(
+                inputPath: inputURL.path,
+                diskError: "invalid fixture"
+            )
+        ) {
+            _ = try loader.load(url: inputURL)
+        }
+    }
+
+    @Test func unsupportedCPUIsTheOnlyIntentionalDiskNilResult() throws {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let loader = try RawMachOLoader(
+            options: options,
+            environment: [:],
+            diskLoader: { _ in nil }
+        )
+
+        #expect(try loader.load(url: URL(fileURLWithPath: "/tmp/unsupported-mach-o")) == nil)
+    }
+
     @Test func loadedCacheEnvironmentRequiresTheRunningSimulatorRuntime() {
         #expect(throws: DyldSharedCacheAccessError.missingSimulatorRuntimeRoot) {
             try validateLoadedCacheEnvironment(["SIMULATOR_ROOT": "/Runtime"])
@@ -259,6 +328,22 @@ struct PrivateHeaderKitRawDumpSharedCacheTests {
         try validateLoadedCacheEnvironment([
             "SIMULATOR_ROOT": "/Runtime/./",
             "PH_RUNTIME_ROOT": "/Runtime",
+        ])
+    }
+
+    @Test func loadedCacheEnvironmentAcceptsSymlinkAliasForSameRuntime() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let runtimeRoot = dirs.root.appendingPathComponent("CanonicalRuntime", isDirectory: true)
+        let runtimeAlias = dirs.root.appendingPathComponent("RuntimeAlias", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: runtimeAlias.path,
+            withDestinationPath: runtimeRoot.path
+        )
+
+        try validateLoadedCacheEnvironment([
+            "SIMULATOR_ROOT": runtimeRoot.path,
+            "PH_RUNTIME_ROOT": runtimeAlias.path,
         ])
     }
 
