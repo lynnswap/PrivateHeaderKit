@@ -96,13 +96,13 @@ label から組み立てません。
 
 `swift test` は deterministic であることを期待します。通常テストは固定 fixture tree、注入された environment、stub command runner を使ってください。
 
-simulator を起動せず、platform-neutral な Core API とその test surface を iOS 向けに compile するには、次を実行します。
+simulator を起動せず、platform-neutral な Core target とその test surface を iOS 向けに compile するには、次を実行します。
 
 ```bash
 PHK_IOS_SIMULATOR_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 PHK_IOS_SIMULATOR_TRIPLE="$(uname -m)-apple-ios17.0-simulator"
 PHK_IOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-ios-compile/$PHK_IOS_SIMULATOR_TRIPLE"
-swift build --scratch-path "$PHK_IOS_BUILD_SCRATCH" --sdk "$PHK_IOS_SIMULATOR_SDK" --triple "$PHK_IOS_SIMULATOR_TRIPLE" --product PrivateHeaderKitCore
+swift build --scratch-path "$PHK_IOS_BUILD_SCRATCH" --sdk "$PHK_IOS_SIMULATOR_SDK" --triple "$PHK_IOS_SIMULATOR_TRIPLE" --target PrivateHeaderKitCore
 swift build --scratch-path "$PHK_IOS_BUILD_SCRATCH" --sdk "$PHK_IOS_SIMULATOR_SDK" --triple "$PHK_IOS_SIMULATOR_TRIPLE" --target PrivateHeaderKitCoreTests
 ```
 
