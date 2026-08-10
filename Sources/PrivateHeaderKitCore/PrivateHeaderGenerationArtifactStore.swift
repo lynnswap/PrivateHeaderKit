@@ -31,6 +31,8 @@ public extension PrivateHeaderGeneration {
         case artifactPathOutsideCommitRoot(artifactPath: ArtifactPath, artifactRoot: ArtifactPath)
         case commitSourceDestinationOverlap(source: String, destination: String)
         case commitDestinationCollision(first: ArtifactPath, second: ArtifactPath)
+        case destinationVolumeCaseSensitivityUnavailable(String)
+        case destinationVolumeCaseSensitivityChanged(root: String, expected: Bool, actual: Bool)
         case stagingDirectoryChanged(String)
         case artifactRootChanged(expected: String, actual: String)
 
@@ -62,6 +64,10 @@ public extension PrivateHeaderGeneration {
                 "commit source and destination overlap: \(source) and \(destination)"
             case .commitDestinationCollision(let first, let second):
                 "commit destinations collide: \(first.rawValue) and \(second.rawValue)"
+            case .destinationVolumeCaseSensitivityUnavailable(let root):
+                "destination volume case sensitivity is unavailable: \(root)"
+            case .destinationVolumeCaseSensitivityChanged(let root, let expected, let actual):
+                "destination volume case sensitivity changed: \(root) expected \(expected), found \(actual)"
             case .stagingDirectoryChanged(let path):
                 "staging directory changed after commit preflight: \(path)"
             case .artifactRootChanged(let expected, let actual):
@@ -80,6 +86,7 @@ public extension PrivateHeaderGeneration {
             fileprivate let artifactRoot: ArtifactPath
             fileprivate let artifacts: [ArtifactPath]
             fileprivate let entries: [CommitEntry]
+            fileprivate let destinationVolumeSupportsCaseSensitiveNames: Bool
         }
 
         public let artifactRoot: URL
@@ -117,6 +124,11 @@ public extension PrivateHeaderGeneration {
             fileManager: FileManager = .default
         ) throws -> CommitPlan {
             let root = try Self.artifactRootURLs(for: self.artifactRoot)
+            let destinationVolumeSupportsCaseSensitiveNames = try Self
+                .destinationVolumeSupportsCaseSensitiveNames(
+                    for: root,
+                    fileManager: fileManager
+                )
             let artifacts = artifacts.sorted { $0.rawValue < $1.rawValue }
             try Self.validateDestinationCollisions(artifacts)
             let entries = try Self.commitEntries(
@@ -138,7 +150,8 @@ public extension PrivateHeaderGeneration {
                     .standardizedFileURL,
                 artifactRoot: artifactRoot,
                 artifacts: artifacts,
-                entries: entries
+                entries: entries,
+                destinationVolumeSupportsCaseSensitiveNames: destinationVolumeSupportsCaseSensitiveNames
             )
             try preflightCommit(plan, fileManager: fileManager)
             return plan
@@ -277,6 +290,50 @@ public extension PrivateHeaderGeneration {
                 unresolved: unresolved,
                 resolved: unresolved.resolvingSymlinksInPath().standardizedFileURL
             )
+        }
+
+        private static func destinationVolumeSupportsCaseSensitiveNames(
+            for root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws -> Bool {
+            var candidate = root.resolved
+            while true {
+                let kind: ArtifactItemKind?
+                do {
+                    kind = try artifactItemKind(at: candidate, fileManager: fileManager)
+                } catch {
+                    throw ArtifactStoreError.destinationVolumeCaseSensitivityUnavailable(
+                        root.resolved.path
+                    )
+                }
+
+                if kind != nil {
+                    let values: URLResourceValues
+                    do {
+                        values = try candidate.resourceValues(
+                            forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+                        )
+                    } catch {
+                        throw ArtifactStoreError.destinationVolumeCaseSensitivityUnavailable(
+                            root.resolved.path
+                        )
+                    }
+                    guard let supportsCaseSensitiveNames = values.volumeSupportsCaseSensitiveNames else {
+                        throw ArtifactStoreError.destinationVolumeCaseSensitivityUnavailable(
+                            root.resolved.path
+                        )
+                    }
+                    return supportsCaseSensitiveNames
+                }
+
+                let parent = candidate.deletingLastPathComponent().standardizedFileURL
+                guard parent.path != candidate.path else {
+                    throw ArtifactStoreError.destinationVolumeCaseSensitivityUnavailable(
+                        root.resolved.path
+                    )
+                }
+                candidate = parent
+            }
         }
 
         private static func artifactFileURLs(
@@ -463,7 +520,7 @@ public extension PrivateHeaderGeneration {
         ) throws {
             var artifactByCollisionKey: [String: ArtifactPath] = [:]
             for artifact in artifacts {
-                let key = collisionKey(for: artifact.rawValue)
+                let key = portableCollisionKey(for: artifact.rawValue)
                 if let existing = artifactByCollisionKey[key] {
                     throw ArtifactStoreError.commitDestinationCollision(
                         first: existing,
@@ -474,7 +531,10 @@ public extension PrivateHeaderGeneration {
             }
         }
 
-        private static func collisionKey(for path: String) -> String {
+        private static func portableCollisionKey(for path: String) -> String {
+            // Do not derive this from the current volume. Persisted state and artifacts must
+            // remain portable across volumes, and the ObjC header resolver disambiguates
+            // case-only names.
             path
                 .precomposedStringWithCanonicalMapping
                 .folding(
@@ -517,6 +577,7 @@ public extension PrivateHeaderGeneration {
             fileManager: FileManager
         ) throws {
             try validateArtifactRoot(of: plan)
+            try validateDestinationVolumeSemantics(of: plan, fileManager: fileManager)
             try validateStagingBoundary(of: plan, fileManager: fileManager)
             let currentEntries = try Self.commitEntries(
                 stagingDirectory: plan.stagingDirectory,
@@ -552,6 +613,7 @@ public extension PrivateHeaderGeneration {
             fileManager: FileManager
         ) throws -> URL {
             try validateArtifactRoot(of: plan)
+            try validateDestinationVolumeSemantics(of: plan, fileManager: fileManager)
             try validateStagingBoundary(of: plan, fileManager: fileManager)
             guard let sourceKind = try Self.artifactItemKind(
                 at: entry.source,
@@ -618,7 +680,11 @@ public extension PrivateHeaderGeneration {
                     for: entry.artifact,
                     root: plan.root
                 )
-                for source in sources where pathsOverlap(source, destination) {
+                for source in sources where pathsOverlap(
+                    source,
+                    destination,
+                    volumeSupportsCaseSensitiveNames: plan.destinationVolumeSupportsCaseSensitiveNames
+                ) {
                     throw ArtifactStoreError.commitSourceDestinationOverlap(
                         source: source.path,
                         destination: destination.path
@@ -638,15 +704,51 @@ public extension PrivateHeaderGeneration {
             return url.standardizedFileURL
         }
 
-        private static func pathsOverlap(_ first: URL, _ second: URL) -> Bool {
-            let firstComponents = normalizedPathComponents(of: first)
-            let secondComponents = normalizedPathComponents(of: second)
+        static func pathsOverlap(
+            _ first: URL,
+            _ second: URL,
+            volumeSupportsCaseSensitiveNames: Bool
+        ) -> Bool {
+            let firstComponents = normalizedPathComponents(
+                of: first,
+                volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+            )
+            let secondComponents = normalizedPathComponents(
+                of: second,
+                volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+            )
             return firstComponents.prefix(secondComponents.count).elementsEqual(secondComponents)
                 || secondComponents.prefix(firstComponents.count).elementsEqual(firstComponents)
         }
 
-        private static func normalizedPathComponents(of url: URL) -> [String] {
-            url.standardizedFileURL.pathComponents.map(collisionKey(for:))
+        private static func normalizedPathComponents(
+            of url: URL,
+            volumeSupportsCaseSensitiveNames: Bool
+        ) -> [String] {
+            url.standardizedFileURL.pathComponents.map { component in
+                let normalized = component.precomposedStringWithCanonicalMapping
+                guard !volumeSupportsCaseSensitiveNames else {
+                    return normalized
+                }
+                return portableCollisionKey(for: normalized)
+            }
+        }
+
+        private func validateDestinationVolumeSemantics(
+            of plan: CommitPlan,
+            fileManager: FileManager
+        ) throws {
+            let current = try Self.destinationVolumeSupportsCaseSensitiveNames(
+                for: plan.root,
+                fileManager: fileManager
+            )
+            guard current == plan.destinationVolumeSupportsCaseSensitiveNames else {
+                throw ArtifactStoreError.destinationVolumeCaseSensitivityChanged(
+                    root: plan.root.resolved.path,
+                    expected: plan.destinationVolumeSupportsCaseSensitiveNames,
+                    actual: current
+                )
+            }
         }
 
         private func validateArtifactRoot(of plan: CommitPlan) throws {

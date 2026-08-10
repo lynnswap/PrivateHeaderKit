@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import Testing
 
-import PrivateHeaderKitCore
+@testable import PrivateHeaderKitCore
 
 @Suite
 struct PrivateHeaderGenerationArtifactStoreTests {
@@ -711,6 +711,80 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         }
 
         #expect(try fileContents("Generated.h", in: staging) == "generated")
+    }
+
+    @Test func pathOverlapUsesDestinationVolumeCaseSensitivity() {
+        let source = URL(fileURLWithPath: "/Volumes/Artifacts/Output")
+        let caseOnlyDestination = URL(
+            fileURLWithPath: "/Volumes/artifacts/output/Generated.h"
+        )
+
+        #expect(
+            !PrivateHeaderGeneration.ArtifactStore.pathsOverlap(
+                source,
+                caseOnlyDestination,
+                volumeSupportsCaseSensitiveNames: true
+            )
+        )
+        #expect(
+            PrivateHeaderGeneration.ArtifactStore.pathsOverlap(
+                source,
+                caseOnlyDestination,
+                volumeSupportsCaseSensitiveNames: false
+            )
+        )
+    }
+
+    @Test func pathOverlapUsesCanonicalUnicodeOnCaseSensitiveVolumes() {
+        let source = URL(fileURLWithPath: "/Volumes/Artifacts/Cafe\u{301}")
+        let destination = URL(fileURLWithPath: "/Volumes/Artifacts/Caf\u{E9}/Generated.h")
+
+        #expect(
+            PrivateHeaderGeneration.ArtifactStore.pathsOverlap(
+                source,
+                destination,
+                volumeSupportsCaseSensitiveNames: true
+            )
+        )
+    }
+
+    @Test func commitOverlapMatchesExistingHostVolumeCaseSensitivity() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("CaseSource", isDirectory: true)
+        try writeFile("generated", to: "Generated.h", in: staging)
+        let values = try base.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+        )
+        let supportsCaseSensitiveNames = try #require(
+            values.volumeSupportsCaseSensitiveNames as Bool?
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: base)
+
+        let prepare = {
+            try store.prepareCommit(
+                stagingDirectory: staging,
+                stagedSourceDirectory: staging,
+                artifactRoot: PrivateHeaderGeneration.ArtifactPath("casesource"),
+                artifacts: artifactPaths("casesource/Generated.h")
+            )
+        }
+
+        if supportsCaseSensitiveNames {
+            _ = try prepare()
+        } else {
+            #expect(
+                throws: PrivateHeaderGeneration.ArtifactStoreError
+                    .commitSourceDestinationOverlap(
+                        source: staging.path,
+                        destination: base.appendingPathComponent("casesource").path
+                    )
+            ) {
+                _ = try prepare()
+            }
+        }
     }
 
     @Test func commitRejectsDestinationAncestorOfSourceWithoutRemovingSource() throws {
