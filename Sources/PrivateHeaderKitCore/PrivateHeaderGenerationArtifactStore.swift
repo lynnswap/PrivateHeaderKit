@@ -22,6 +22,8 @@ public extension PrivateHeaderGeneration {
         case nonFileStagingDirectory(String)
         case artifactPathEscapesRoot(artifactPath: ArtifactPath, artifactRoot: String, resolvedPath: String)
         case symbolicLinkInArtifactPath(artifactPath: ArtifactPath, symbolicLinkPath: String)
+        case cleanupParentTypeMismatch(artifactPath: ArtifactPath, parentPath: String, actual: String)
+        case cleanupDirectoryNotEmpty(artifactPath: ArtifactPath, directoryPath: String)
         case commitDestinationTypeMismatch(artifactPath: ArtifactPath, expected: String, actual: String)
         case symbolicLinkInStagingDirectory(String)
         case missingStagedArtifact(String)
@@ -46,6 +48,10 @@ public extension PrivateHeaderGeneration {
                 "artifact path escapes artifact root: \(artifactPath.rawValue) resolved to \(resolvedPath) outside \(artifactRoot)"
             case .symbolicLinkInArtifactPath(let artifactPath, let symbolicLinkPath):
                 "artifact path contains a symbolic link: \(artifactPath.rawValue) traverses \(symbolicLinkPath)"
+            case .cleanupParentTypeMismatch(let artifactPath, let parentPath, let actual):
+                "cleanup artifact parent has unexpected type: \(artifactPath.rawValue) traverses \(parentPath), found \(actual)"
+            case .cleanupDirectoryNotEmpty(let artifactPath, let directoryPath):
+                "cleanup artifact directory is not empty: \(artifactPath.rawValue) at \(directoryPath)"
             case .commitDestinationTypeMismatch(let artifactPath, let expected, let actual):
                 "commit destination has unexpected type: \(artifactPath.rawValue) expected \(expected), found \(actual)"
             case .symbolicLinkInStagingDirectory(let path):
@@ -107,7 +113,7 @@ public extension PrivateHeaderGeneration {
             ) {
             case .leaf(_, .some(.regularFile)):
                 return true
-            case .invalidParent, .symbolicLinkParent, .leaf:
+            case .missingParent, .occupiedParent, .symbolicLinkParent, .leaf:
                 return false
             }
         }
@@ -220,22 +226,14 @@ public extension PrivateHeaderGeneration {
                     missingArtifacts.append(artifact)
                     continue
                 }
-                let inspection = try cleanupArtifactInspection(
+                let inspection = try preflightCleanupArtifact(
                     for: artifact,
                     root: root,
                     fileManager: fileManager
                 )
-                guard case .leaf(let artifactURL, let inspectedKind) = inspection,
-                      let itemKind = inspectedKind
-                else {
+                guard case .leaf(let artifactURL, .some(_)) = inspection else {
                     missingArtifacts.append(artifact)
                     continue
-                }
-
-                if itemKind == .directory {
-                    guard try fileManager.contentsOfDirectory(atPath: artifactURL.path).isEmpty else {
-                        continue
-                    }
                 }
 
                 try fileManager.removeItem(at: artifactURL)
@@ -291,7 +289,8 @@ public extension PrivateHeaderGeneration {
         }
 
         private enum ArtifactPathInspection {
-            case invalidParent
+            case missingParent
+            case occupiedParent(URL, ArtifactItemKind)
             case symbolicLinkParent(URL)
             case leaf(URL, ArtifactItemKind?)
         }
@@ -364,13 +363,35 @@ public extension PrivateHeaderGeneration {
         ) throws -> [ArtifactPath: ArtifactPathInspection] {
             var inspections: [ArtifactPath: ArtifactPathInspection] = [:]
             for artifact in artifacts {
-                inspections[artifact] = try cleanupArtifactInspection(
+                inspections[artifact] = try preflightCleanupArtifact(
                     for: artifact,
                     root: root,
                     fileManager: fileManager
                 )
             }
             return inspections
+        }
+
+        private static func preflightCleanupArtifact(
+            for artifact: ArtifactPath,
+            root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws -> ArtifactPathInspection {
+            let inspection = try cleanupArtifactInspection(
+                for: artifact,
+                root: root,
+                fileManager: fileManager
+            )
+            if case .leaf(let url, .some(.directory)) = inspection {
+                let contents = try fileManager.contentsOfDirectory(atPath: url.path)
+                if !contents.isEmpty {
+                    throw ArtifactStoreError.cleanupDirectoryNotEmpty(
+                        artifactPath: artifact,
+                        directoryPath: url.path
+                    )
+                }
+            }
+            return inspection
         }
 
         private static func cleanupArtifactInspection(
@@ -387,6 +408,13 @@ public extension PrivateHeaderGeneration {
                 throw ArtifactStoreError.symbolicLinkInArtifactPath(
                     artifactPath: artifact,
                     symbolicLinkPath: url.path
+                )
+            }
+            if case .occupiedParent(let url, let kind) = inspection {
+                throw ArtifactStoreError.cleanupParentTypeMismatch(
+                    artifactPath: artifact,
+                    parentPath: url.path,
+                    actual: artifactItemKindDescription(kind)
                 )
             }
             return inspection
@@ -409,17 +437,30 @@ public extension PrivateHeaderGeneration {
                     return .leaf(url, kind)
                 }
                 guard let kind else {
-                    return .invalidParent
+                    return .missingParent
                 }
                 if kind == .symbolicLink {
                     return .symbolicLinkParent(url)
                 }
                 guard kind == .directory else {
-                    return .invalidParent
+                    return .occupiedParent(url, kind)
                 }
             }
 
             preconditionFailure("ArtifactPath validation guarantees at least one component")
+        }
+
+        private static func artifactItemKindDescription(_ kind: ArtifactItemKind) -> String {
+            switch kind {
+            case .directory:
+                "directory"
+            case .regularFile:
+                "regular file"
+            case .symbolicLink:
+                "symbolic link"
+            case .other:
+                "special file"
+            }
         }
 
         private static func commitEntries(

@@ -125,7 +125,7 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         #expect(directoryExists(root))
     }
 
-    @Test func cleanupPreservesNonEmptyManagedDirectoryCandidatesWithUnknownDescendants() throws {
+    @Test func cleanupRejectsNonEmptyManagedDirectoryCandidatesWithUnknownDescendants() throws {
         let root = try makeTemporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: root)
@@ -134,14 +134,17 @@ struct PrivateHeaderGenerationArtifactStoreTests {
 
         try writeFile("SystemLibrary/Foo.bundle/Headers/Foo.h", in: root)
 
-        let result = try PrivateHeaderGeneration.ArtifactStore.cleanupManagedArtifacts(
-            in: root,
-            artifacts: [managedDirectory]
-        )
-
-        #expect(result.deletedArtifacts.isEmpty)
-        #expect(result.missingArtifacts.isEmpty)
-        #expect(result.prunedDirectories.isEmpty)
+        #expect(
+            throws: PrivateHeaderGeneration.ArtifactStoreError.cleanupDirectoryNotEmpty(
+                artifactPath: managedDirectory,
+                directoryPath: root.appendingPathComponent(managedDirectory.rawValue).path
+            )
+        ) {
+            try PrivateHeaderGeneration.ArtifactStore.cleanupManagedArtifacts(
+                in: root,
+                artifacts: [managedDirectory]
+            )
+        }
         #expect(pathExists("SystemLibrary/Foo.bundle/Headers/Foo.h", in: root))
         #expect(directoryExists("SystemLibrary/Foo.bundle", in: root))
     }
@@ -256,6 +259,71 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         #expect(try fileContents(preserved.rawValue, in: root) == "preserved")
         #expect(try fileContents("Targets/Foo/Foo.h", in: root) == "target")
         #expect(symbolicLinkExists("Frameworks", in: root))
+    }
+
+    @Test(arguments: CleanupOccupiedParentKind.allCases)
+    func cleanupRejectsOccupiedIntermediateNodeBeforeDeletingAnyArtifact(
+        _ occupiedKind: CleanupOccupiedParentKind
+    ) throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let preserved = try PrivateHeaderGeneration.ArtifactPath("A.h")
+        let blocked = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
+        let occupiedParent = root.appendingPathComponent("Frameworks")
+        try writeFile("preserved", to: preserved.rawValue, in: root)
+
+        switch occupiedKind {
+        case .regularFile:
+            try writeFile("occupied", to: "Frameworks", in: root)
+        case .fifo:
+            let status = occupiedParent.path.withCString { mkfifo($0, 0o600) }
+            #expect(status == 0)
+        }
+
+        #expect(
+            throws: PrivateHeaderGeneration.ArtifactStoreError.cleanupParentTypeMismatch(
+                artifactPath: blocked,
+                parentPath: occupiedParent.path,
+                actual: occupiedKind.expectedDescription
+            )
+        ) {
+            try PrivateHeaderGeneration.ArtifactStore.cleanupManagedArtifacts(
+                in: root,
+                artifacts: [preserved, blocked]
+            )
+        }
+        #expect(try fileContents(preserved.rawValue, in: root) == "preserved")
+        #expect(pathExists("Frameworks", in: root))
+    }
+
+    @Test func cleanupRejectsNonEmptyDirectoryBeforeDeletingAnyArtifact() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let preserved = try PrivateHeaderGeneration.ArtifactPath("A.h")
+        let blocked = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")
+        let blockedURL = root.appendingPathComponent(blocked.rawValue, isDirectory: true)
+        try writeFile("preserved", to: preserved.rawValue, in: root)
+        try writeFile("sentinel", to: "Frameworks/Foo/Foo.h/Sentinel.txt", in: root)
+
+        #expect(
+            throws: PrivateHeaderGeneration.ArtifactStoreError.cleanupDirectoryNotEmpty(
+                artifactPath: blocked,
+                directoryPath: blockedURL.path
+            )
+        ) {
+            try PrivateHeaderGeneration.ArtifactStore.cleanupManagedArtifacts(
+                in: root,
+                artifacts: [preserved, blocked]
+            )
+        }
+        #expect(try fileContents(preserved.rawValue, in: root) == "preserved")
+        #expect(
+            try fileContents("Frameworks/Foo/Foo.h/Sentinel.txt", in: root) == "sentinel"
+        )
     }
 
     @Test func cleanupTreatsMissingLeafUnderSymlinkArtifactRootAsMissing() throws {
@@ -1015,6 +1083,20 @@ private func symbolicLinkExists(_ relativePath: String, in root: URL) -> Bool {
         return attributes[.type] as? FileAttributeType == .typeSymbolicLink
     } catch {
         return false
+    }
+}
+
+enum CleanupOccupiedParentKind: CaseIterable, Sendable {
+    case regularFile
+    case fifo
+
+    var expectedDescription: String {
+        switch self {
+        case .regularFile:
+            "regular file"
+        case .fifo:
+            "special file"
+        }
     }
 }
 

@@ -232,13 +232,28 @@ struct PrivateHeaderGenerationExecutorTests {
             _ = try await secondExecutor.run(.init(plan: resumePlan))
         }
 
-        #expect(secondRunner.invocations.count == 1)
+        #expect(secondRunner.invocations.isEmpty)
         #expect(try String(contentsOf: sentinelURL, encoding: .utf8) == "sentinel")
         let run = try PrivateHeaderGeneration.StateJSON.read(
             PrivateHeaderGeneration.RunRecord.self,
             from: resumePlan.stateDirectory.appendingPathComponent("runs/run-002/run.json")
         )
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: resumePlan.stateDirectory.appendingPathComponent("manifest.json")
+        )
         #expect(run.targetResults.map(\.status) == [.commitFailed])
+        #expect(run.targetResults.first?.phases.map(\.name) == ["cleanup"])
+        #expect(run.targetResults.first?.phases.map(\.status) == [.failed])
+        #expect(run.targetResults.first?.artifacts.isEmpty == true)
+        #expect(run.targetResults.first?.attemptedArtifacts.isEmpty == true)
+        #expect(
+            run.targetResults.first?.failureSummary?.contains(
+                "cleanup failed: cleanup artifact directory is not empty"
+            ) == true
+        )
+        #expect(manifest.targets.first?.status == .commitFailed)
+        #expect(manifest.targets.first?.artifacts == [artifact])
     }
 
     @Test func unfinishedCompatibleStateRequiresExplicitResume() async throws {
