@@ -501,9 +501,11 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(!output.text.contains("error:"))
     }
 
-    @Test func sourceDiscoveryDistinguishesAvailabilityFailureAndCancellation() async throws {
+    @Test func sourceDiscoveryModelsSimulatorAvailabilityAndPropagatesListingFailures() async throws {
         let availableRunner = CaptureOnlyCommandRunner { command, _, _ in
             switch command {
+            case ["xcrun", "--find", "simctl"]:
+                return "/Applications/Xcode.app/Contents/Developer/usr/bin/simctl\n"
             case ["xcrun", "simctl", "list", "runtimes", "-j"]:
                 return #"{"runtimes":[]}"#
             case ["/usr/bin/sw_vers", "-productVersion"]:
@@ -526,19 +528,40 @@ struct PrivateHeaderKitCLIExecutionTests {
             ),
         ])
 
-        let failingRunner = CaptureOnlyCommandRunner { _, _, _ in
+        let unavailableRunner = CaptureOnlyCommandRunner { command, _, _ in
+            switch command {
+            case ["xcrun", "--find", "simctl"]:
+                throw DiscoveryProbeError.commandFailed
+            case ["/usr/bin/sw_vers", "-productVersion"]:
+                return "16.0\n"
+            case ["/usr/bin/sw_vers", "-buildVersion"]:
+                return "24A1\n"
+            default:
+                throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+        #expect(
+            try await discoverPrivateHeaderKitInteractiveSources(runner: unavailableRunner)
+                == sources
+        )
+
+        let failingRunner = CaptureOnlyCommandRunner { command, _, _ in
+            if command == ["xcrun", "--find", "simctl"] {
+                return "/Applications/Xcode.app/Contents/Developer/usr/bin/simctl\n"
+            }
             throw DiscoveryProbeError.commandFailed
         }
         do {
             _ = try await discoverPrivateHeaderKitInteractiveSources(runner: failingRunner)
-            Issue.record("expected discovery command failure")
+            Issue.record("expected available simulator discovery failure")
         } catch let error as DiscoveryProbeError {
             #expect(error == .commandFailed)
         } catch {
             Issue.record("unexpected discovery error: \(error)")
         }
 
-        let cancellingRunner = CaptureOnlyCommandRunner { _, _, _ in
+        let cancellingRunner = CaptureOnlyCommandRunner { command, _, _ in
+            #expect(command == ["xcrun", "--find", "simctl"])
             throw CancellationError()
         }
         do {

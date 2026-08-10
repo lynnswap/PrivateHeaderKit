@@ -129,6 +129,24 @@ public enum Simctl {
         return results
     }
 
+    package static func listRuntimesIfAvailable(
+        runner: CommandRunning
+    ) async throws -> [RuntimeInfo]? {
+        do {
+            _ = try await runner.runCapture(
+                ["xcrun", "--find", "simctl"],
+                env: nil,
+                cwd: nil
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            return nil
+        }
+        return try await listRuntimes(runner: runner)
+    }
+
     public static func findRuntime(version: String, build: String?, runner: CommandRunning) async throws -> RuntimeInfo {
         let matches = try await listRuntimes(runner: runner).filter { $0.version == version }
         guard !matches.isEmpty else {

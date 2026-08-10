@@ -975,7 +975,7 @@ func discoverPrivateHeaderKitInteractiveSources() async throws
 func discoverPrivateHeaderKitInteractiveSources(
     runner: CommandRunning
 ) async throws -> [PrivateHeaderKitInteractiveSource] {
-    var sources = try await Simctl.listRuntimes(runner: runner).map {
+    var sources = try await (Simctl.listRuntimesIfAvailable(runner: runner) ?? []).map {
         PrivateHeaderKitInteractiveSource(
             platform: .iOS,
             version: $0.version,
