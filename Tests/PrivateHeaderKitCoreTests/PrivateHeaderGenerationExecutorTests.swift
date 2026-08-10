@@ -414,6 +414,132 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(interruptedManifestTarget.failureSummary == "cancelled")
     }
 
+    @Test func cancellationInLastTargetFinishedPreservesCompletedTargetAndInterruptsRun() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let rawRunner = RecordingRawDumpRunner()
+        let progress = ProgressEventRecorder()
+        let plan = try fixture.makePlan(targetRequest: .query("Foo"))
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        let task = Task {
+            try await executor.run(.init(
+                plan: plan,
+                progressReporter: { event in
+                    progress.record(event)
+                    guard case .targetFinished = event else {
+                        return
+                    }
+                    withUnsafeCurrentTask { task in
+                        task?.cancel()
+                    }
+                }
+            ))
+        }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+
+        #expect(rawRunner.invocations.count == 1)
+        #expect(
+            fileExists(
+                plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")
+            )
+        )
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let run = try #require(try repository.readRun(id: "run-001"))
+        let manifest = try #require(try repository.readManifest())
+        let runTarget = try #require(run.targetResults.first)
+        let manifestTarget = try #require(manifest.targets.first)
+
+        #expect(run.status == .interrupted)
+        #expect(run.endedAt != nil)
+        #expect(runTarget.status == .completed)
+        #expect(runTarget.artifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
+        #expect(manifest.latestRunID == "run-001")
+        #expect(manifest.updatedAt == run.endedAt)
+        #expect(manifestTarget.status == .completed)
+        #expect(manifestTarget.artifacts.map(\.rawValue) == [
+            "Frameworks/Foo/Headers/Generated.h",
+        ])
+        #expect(progress.events.last == .runFinished(
+            runID: "run-001",
+            status: .interrupted
+        ))
+    }
+
+    @Test func cancellationAfterFirstDurableTargetDoesNotStartOrRecordNextTarget() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+        try fixture.createFramework("Bar.framework")
+
+        let rawRunner = RecordingRawDumpRunner()
+        let plan = try fixture.makePlan(
+            targetRequest: .identifiers([
+                "framework:Foo.framework",
+                "framework:Bar.framework",
+            ])
+        )
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        let task = Task {
+            try await executor.run(.init(
+                plan: plan,
+                progressReporter: { event in
+                    guard case .targetFinished(index: 1, total: 2, displayName: _, status: _) = event else {
+                        return
+                    }
+                    withUnsafeCurrentTask { task in
+                        task?.cancel()
+                    }
+                }
+            ))
+        }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+
+        #expect(rawRunner.invocations.count == 1)
+        #expect(
+            fileExists(
+                plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")
+            )
+        )
+        #expect(
+            !fileExists(
+                plan.artifactDirectory.appendingPathComponent("Frameworks/Bar/Headers/Generated.h")
+            )
+        )
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        let run = try #require(try repository.readRun(id: "run-001"))
+        let manifest = try #require(try repository.readManifest())
+        let runTarget = try #require(run.targetResults.first)
+        let manifestTarget = try #require(manifest.targets.first)
+
+        #expect(run.status == .interrupted)
+        #expect(run.endedAt != nil)
+        #expect(run.targetResults.count == 1)
+        #expect(runTarget.targetID == "framework:Foo.framework")
+        #expect(runTarget.status == .completed)
+        #expect(manifest.latestRunID == "run-001")
+        #expect(manifest.targets.count == 1)
+        #expect(manifestTarget.id == "framework:Foo.framework")
+        #expect(manifestTarget.status == .completed)
+    }
+
     @Test func cancellationPersistenceFailureIsNotMaskedAsCancellation() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
@@ -461,8 +587,9 @@ struct PrivateHeaderGenerationExecutorTests {
 
         #expect(rawRunner.invocations.isEmpty)
         let run = try #require(try repository.readRun(id: "run-001"))
-        #expect(run.status == .interrupted)
-        #expect(run.endedAt != nil)
+        #expect(run.status == .running)
+        #expect(run.endedAt == nil)
+        #expect(run.targetResults.first?.status == .interrupted)
     }
 
     @Test func rawDumpCancellationAfterOneCompletionPersistsProgressWithoutStartingLaterTarget() async throws {

@@ -321,7 +321,25 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         let previousCommitFailedAttempts = Self.commitFailedAttemptedArtifactsByTargetID(latestRun)
         var generatedTargetIDs: [String] = []
 
+        func persistCancellationAndThrow(
+            for runRecord: PrivateHeaderGeneration.RunRecord
+        ) throws -> Never {
+            try persistInterruptionAndThrow(
+                runRecord: runRecord,
+                plan: plan,
+                runPlan: runPlan,
+                runID: runID,
+                targetRecords: targetRecords,
+                repository: repository,
+                progressReporter: progressReporter
+            )
+        }
+
         for (offset, target) in targetsToRun.enumerated() {
+            if Task.isCancelled, !runRecord.targetResults.isEmpty {
+                try persistCancellationAndThrow(for: runRecord)
+            }
+
             let targetIndex = offset + 1
             progressReporter?(.targetStarted(
                 index: targetIndex,
@@ -357,13 +375,11 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 )
             }
 
-            let targetWasInterrupted = targetResult.runTarget.status == .interrupted
-            let targetEndedAt = targetWasInterrupted ? dateProvider() : nil
             runRecord = Self.runRecordByAppending(
                 targetResult.runTarget,
                 to: runRecord,
-                status: targetWasInterrupted ? .interrupted : .running,
-                endedAt: targetEndedAt
+                status: .running,
+                endedAt: nil
             )
             targetRecords = Self.upserting(targetResult.manifestTarget, in: targetRecords)
             try repository.writeRun(runRecord)
@@ -373,7 +389,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                     runPlan: runPlan,
                     runID: runID,
                     targetRecords: targetRecords,
-                    updatedAt: targetEndedAt ?? dateProvider()
+                    updatedAt: dateProvider()
                 )
             )
             progressReporter?(.targetFinished(
@@ -383,12 +399,8 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 status: targetResult.runTarget.status
             ))
 
-            if targetWasInterrupted {
-                progressReporter?(.runFinished(
-                    runID: runID,
-                    status: .interrupted
-                ))
-                throw CancellationError()
+            if targetResult.runTarget.status == .interrupted || Task.isCancelled {
+                try persistCancellationAndThrow(for: runRecord)
             }
 
             if targetResult.runTarget.status == .completed {
@@ -409,35 +421,35 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             )
         }
 
+        if Task.isCancelled {
+            try persistCancellationAndThrow(for: runRecord)
+        }
+
         let finalStatus = Self.finalRunStatus(for: runRecord.targetResults)
-        let endedAt = dateProvider()
-        runRecord = PrivateHeaderGeneration.RunRecord(
-            runID: runRecord.runID,
-            schemaVersion: runRecord.schemaVersion,
-            toolVersion: runRecord.toolVersion,
-            plan: runRecord.plan,
-            startedAt: runRecord.startedAt,
-            endedAt: endedAt,
+        runRecord = try persistTerminalRun(
+            runRecord: runRecord,
             status: finalStatus,
-            targetResults: runRecord.targetResults,
-            attemptedArtifacts: runRecord.targetResults.flatMap(\.attemptedArtifacts),
-            logs: runRecord.logs
+            plan: plan,
+            runPlan: runPlan,
+            runID: runID,
+            targetRecords: targetRecords,
+            repository: repository
         )
-        try repository.writeRun(runRecord)
-        try repository.writeManifest(
-            Self.manifest(
-                plan: plan,
-                runPlan: runPlan,
-                runID: runID,
-                targetRecords: targetRecords,
-                updatedAt: endedAt
-            )
-        )
+
+        if Task.isCancelled {
+            try persistCancellationAndThrow(for: runRecord)
+        }
+
         progressReporter?(.runFinished(
             runID: runID,
             status: finalStatus
         ))
+
         try repository.pruneRunHistory(from: repository.listRunSummaries())
+
+        if Task.isCancelled {
+            try persistCancellationAndThrow(for: runRecord)
+        }
 
         let failedTargetIDs = runRecord.targetResults
             .filter { !$0.status.isSuccessfulOrSkipped }
@@ -456,6 +468,66 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             manifestURL: repository.manifestURL,
             runRecordURL: try repository.runRecordURL(for: runID)
         )
+    }
+
+    func persistTerminalRun(
+        runRecord: PrivateHeaderGeneration.RunRecord,
+        status: PrivateHeaderGeneration.RunTargetStatus,
+        plan: PrivateHeaderGeneration.Plan,
+        runPlan: PrivateHeaderGeneration.RunPlanRecord,
+        runID: String,
+        targetRecords: [PrivateHeaderGeneration.TargetRecord],
+        repository: PrivateHeaderGeneration.RunRepository
+    ) throws -> PrivateHeaderGeneration.RunRecord {
+        let endedAt = dateProvider()
+        let terminalRunRecord = PrivateHeaderGeneration.RunRecord(
+            runID: runRecord.runID,
+            schemaVersion: runRecord.schemaVersion,
+            toolVersion: runRecord.toolVersion,
+            plan: runRecord.plan,
+            startedAt: runRecord.startedAt,
+            endedAt: endedAt,
+            status: status,
+            targetResults: runRecord.targetResults,
+            attemptedArtifacts: runRecord.targetResults.flatMap(\.attemptedArtifacts),
+            logs: runRecord.logs
+        )
+        try repository.writeRun(terminalRunRecord)
+        try repository.writeManifest(
+            Self.manifest(
+                plan: plan,
+                runPlan: runPlan,
+                runID: runID,
+                targetRecords: targetRecords,
+                updatedAt: endedAt
+            )
+        )
+        return terminalRunRecord
+    }
+
+    func persistInterruptionAndThrow(
+        runRecord: PrivateHeaderGeneration.RunRecord,
+        plan: PrivateHeaderGeneration.Plan,
+        runPlan: PrivateHeaderGeneration.RunPlanRecord,
+        runID: String,
+        targetRecords: [PrivateHeaderGeneration.TargetRecord],
+        repository: PrivateHeaderGeneration.RunRepository,
+        progressReporter: PrivateHeaderGeneration.GenerationExecutor.ProgressReporter?
+    ) throws -> Never {
+        _ = try persistTerminalRun(
+            runRecord: runRecord,
+            status: .interrupted,
+            plan: plan,
+            runPlan: runPlan,
+            runID: runID,
+            targetRecords: targetRecords,
+            repository: repository
+        )
+        progressReporter?(.runFinished(
+            runID: runID,
+            status: .interrupted
+        ))
+        throw CancellationError()
     }
 
     func executeTarget(
