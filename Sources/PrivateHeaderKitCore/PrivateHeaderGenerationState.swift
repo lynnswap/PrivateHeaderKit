@@ -485,6 +485,7 @@ public extension PrivateHeaderGeneration {
             deviceName: nil,
             deviceUDID: nil,
             clonePolicy: nil,
+            cacheUUID: nil,
             helperEnvironment: [:]
         )
 
@@ -493,6 +494,7 @@ public extension PrivateHeaderGeneration {
         public let deviceName: String?
         public let deviceUDID: String?
         public let clonePolicy: String?
+        public let cacheUUID: UUID?
         public let helperEnvironment: [String: String]
 
         public init(
@@ -501,6 +503,7 @@ public extension PrivateHeaderGeneration {
             deviceName: String?,
             deviceUDID: String?,
             clonePolicy: String?,
+            cacheUUID: UUID? = nil,
             helperEnvironment: [String: String]
         ) {
             self.mode = mode
@@ -508,6 +511,7 @@ public extension PrivateHeaderGeneration {
             self.deviceName = deviceName
             self.deviceUDID = deviceUDID
             self.clonePolicy = clonePolicy
+            self.cacheUUID = cacheUUID
             self.helperEnvironment = helperEnvironment
         }
 
@@ -521,6 +525,7 @@ public extension PrivateHeaderGeneration {
             self.deviceName = try container.decodeRequiredNullable(String.self, forKey: .deviceName)
             self.deviceUDID = try container.decodeRequiredNullable(String.self, forKey: .deviceUDID)
             self.clonePolicy = try container.decodeRequiredNullable(String.self, forKey: .clonePolicy)
+            self.cacheUUID = try container.decodeRequiredNullable(UUID.self, forKey: .cacheUUID)
             self.helperEnvironment = try container.decode([String: String].self, forKey: .helperEnvironment)
         }
 
@@ -531,6 +536,7 @@ public extension PrivateHeaderGeneration {
             try container.encodeRequired(deviceName, forKey: .deviceName)
             try container.encodeRequired(deviceUDID, forKey: .deviceUDID)
             try container.encodeRequired(clonePolicy, forKey: .clonePolicy)
+            try container.encodeRequired(cacheUUID, forKey: .cacheUUID)
             try container.encode(helperEnvironment, forKey: .helperEnvironment)
         }
 
@@ -540,6 +546,7 @@ public extension PrivateHeaderGeneration {
             case deviceName
             case deviceUDID
             case clonePolicy
+            case cacheUUID
             case helperEnvironment
         }
     }

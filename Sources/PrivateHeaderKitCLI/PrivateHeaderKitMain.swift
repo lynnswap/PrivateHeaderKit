@@ -197,6 +197,11 @@ typealias PrivateHeaderKitGenerationRunner = (
     PrivateHeaderKitGenerationRequest,
     @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
 ) async throws -> PrivateHeaderKitGenerationSummary
+typealias PrivateHeaderKitResumeSummaryProvider = (
+    PrivateHeaderGeneration.Source,
+    PrivateHeaderGeneration.Output,
+    PrivateHeaderGeneration.Options
+) async throws -> PrivateHeaderGeneration.ResumeSummary?
 
 struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     enum Platform: String, Sendable {
@@ -388,6 +393,7 @@ func runPrivateHeaderKitCommand(
     _ args: [String],
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationRunner: @escaping PrivateHeaderKitGenerationRunner = runPrivateHeaderGeneration,
+    resumeSummaryProvider: @escaping PrivateHeaderKitResumeSummaryProvider = loadPrivateHeaderKitResumeSummary,
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
     interactiveSourceProvider: @escaping PrivateHeaderKitInteractiveSourceProvider =
         discoverPrivateHeaderKitInteractiveSources,
@@ -410,6 +416,7 @@ func runPrivateHeaderKitCommand(
                 invokedProgramName: args.first ?? "privateheaderkit",
                 currentExecutableURL: currentExecutableURL,
                 generationRunner: generationRunner,
+                resumeSummaryProvider: resumeSummaryProvider,
                 simulatorResolver: simulatorResolver,
                 sourceProvider: interactiveSourceProvider,
                 outputBaseDirectoryProvider: interactiveOutputBaseDirectoryProvider,
@@ -444,6 +451,7 @@ private func runPrivateHeaderKitInteractiveGenerate(
     invokedProgramName: String,
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
+    resumeSummaryProvider: PrivateHeaderKitResumeSummaryProvider,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
     outputBaseDirectoryProvider: () -> String,
@@ -520,6 +528,7 @@ private func runPrivateHeaderKitInteractiveGenerate(
                             invokedProgramName: invokedProgramName,
                             currentExecutableURL: currentExecutableURL,
                             generationRunner: generationRunner,
+                            resumeSummaryProvider: resumeSummaryProvider,
                             simulatorResolver: simulatorResolver,
                             screenClearer: screenClearer,
                             inputReader: inputReader,
@@ -565,6 +574,7 @@ private func runPrivateHeaderKitInteractiveGenerate(
                         invokedProgramName: invokedProgramName,
                         currentExecutableURL: currentExecutableURL,
                         generationRunner: generationRunner,
+                        resumeSummaryProvider: resumeSummaryProvider,
                         simulatorResolver: simulatorResolver,
                         screenClearer: screenClearer,
                         inputReader: inputReader,
@@ -596,6 +606,7 @@ private func runPrivateHeaderKitInteractiveSelection(
     invokedProgramName: String,
     currentExecutableURL: URL?,
     generationRunner: PrivateHeaderKitGenerationRunner,
+    resumeSummaryProvider: PrivateHeaderKitResumeSummaryProvider,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
@@ -614,11 +625,12 @@ private func runPrivateHeaderKitInteractiveSelection(
             device: nil,
             simulatorHelperPath: nil
         )
-        let resumeDecision = try interactiveResumeDecision(
+        let resumeDecision = try await interactiveResumeDecision(
             for: command,
             invokedProgramName: invokedProgramName,
             currentExecutableURL: currentExecutableURL,
             simulatorResolver: simulatorResolver,
+            resumeSummaryProvider: resumeSummaryProvider,
             screenClearer: screenClearer,
             inputReader: inputReader,
             outputLogger: outputLogger
@@ -762,10 +774,11 @@ private func interactiveResumeDecision(
     invokedProgramName: String,
     currentExecutableURL: URL?,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    resumeSummaryProvider: PrivateHeaderKitResumeSummaryProvider,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: PrivateHeaderKitInputReader,
     outputLogger: (String) -> Void
-) throws -> PrivateHeaderKitInteractiveResumeDecision {
+) async throws -> PrivateHeaderKitInteractiveResumeDecision {
     let publicExecutableURL = privateHeaderKitExecutableURL(
         currentExecutableURL: currentExecutableURL,
         fallbackProgramName: invokedProgramName
@@ -789,10 +802,10 @@ private func interactiveResumeDecision(
             simulatorResolution: simulatorResolution
         )
     }
-    guard let summary = try PrivateHeaderGeneration.availableResumeSummary(
-        source: request.source,
-        output: request.output,
-        options: request.options
+    guard let summary = try await resumeSummaryProvider(
+        request.source,
+        request.output,
+        request.options
     ) else {
         return PrivateHeaderKitInteractiveResumeDecision(
             resumeBehavior: .fresh,
@@ -825,6 +838,18 @@ private func interactiveResumeDecision(
 private struct PrivateHeaderKitInteractiveResumeDecision {
     let resumeBehavior: PrivateHeaderGeneration.ResumeBehavior
     let simulatorResolution: PrivateHeaderKitSimulatorResolution?
+}
+
+private func loadPrivateHeaderKitResumeSummary(
+    source: PrivateHeaderGeneration.Source,
+    output: PrivateHeaderGeneration.Output,
+    options: PrivateHeaderGeneration.Options
+) async throws -> PrivateHeaderGeneration.ResumeSummary? {
+    try await PrivateHeaderGeneration.availableResumeSummary(
+        source: source,
+        output: output,
+        options: options
+    )
 }
 
 private struct PrivateHeaderKitGenerationResultScreen {
@@ -1483,7 +1508,7 @@ private func makePrivateHeaderGenerationRequest(
         helperURLs: helperURLs,
         executionMode: executionMode,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
-            useSharedCache: true,
+            useSharedCache: effectiveSource.useSharedCache,
             preferRuntimeMetadata: true,
             helperEnvironment: helperEnvironment
         ),
@@ -1501,6 +1526,7 @@ private func makePrivateHeaderGenerationRequest(
 private struct EffectiveSourceConfiguration {
     let build: String?
     let systemRoot: URL
+    let useSharedCache: Bool
 }
 
 private func effectiveSourceConfiguration(
@@ -1508,9 +1534,26 @@ private func effectiveSourceConfiguration(
     simulatorResolution: PrivateHeaderKitSimulatorResolution?
 ) throws -> EffectiveSourceConfiguration {
     if let systemRoot = command.systemRoot {
+        let systemRootURL = URL(fileURLWithPath: systemRoot, isDirectory: true)
+        let useSharedCache: Bool
+        switch command.platform {
+        case .macOS:
+            useSharedCache = systemRootURL.standardizedFileURL.path == "/"
+        case .iOS:
+            guard let simulatorResolution else {
+                throw PrivateHeaderKitCLIError.missingSimulatorResolution
+            }
+            let selectedRuntimeRoot = URL(
+                fileURLWithPath: simulatorResolution.resolvedRuntimeRoot,
+                isDirectory: true
+            )
+            useSharedCache = systemRootURL.standardizedFileURL.path
+                == selectedRuntimeRoot.standardizedFileURL.path
+        }
         return EffectiveSourceConfiguration(
             build: command.build,
-            systemRoot: URL(fileURLWithPath: systemRoot, isDirectory: true)
+            systemRoot: systemRootURL,
+            useSharedCache: useSharedCache
         )
     }
 
@@ -1526,7 +1569,8 @@ private func effectiveSourceConfiguration(
             systemRoot: URL(
                 fileURLWithPath: simulatorResolution.resolvedRuntimeRoot,
                 isDirectory: true
-            )
+            ),
+            useSharedCache: true
         )
     }
 }

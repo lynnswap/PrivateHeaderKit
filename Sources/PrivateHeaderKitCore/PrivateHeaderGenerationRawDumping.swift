@@ -1,9 +1,8 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 
 public extension PrivateHeaderGeneration {
     enum RawDumping {
-        static let helperSubcommand = "__raw-dump"
-
         public static func makeInvocation(_ request: Request) -> Invocation {
             let helperURL = request.executionMode.helperURL(from: request.helperURLs)
             let command = makeCommand(
@@ -23,6 +22,37 @@ public extension PrivateHeaderGeneration {
             )
         }
 
+        public static func makeSharedCacheInventoryInvocation(
+            helperURLs: HelperURLs,
+            executionMode: ExecutionMode,
+            helperEnvironment: [String: String] = [:]
+        ) -> SharedCacheInventoryInvocation {
+            let helperURL = executionMode.helperURL(from: helperURLs)
+            let commandPrefix: [String]
+            switch executionMode {
+            case .host:
+                commandPrefix = [helperURL.path]
+            case .simulator(let deviceUDID, _):
+                commandPrefix = [
+                    "xcrun",
+                    "simctl",
+                    "spawn",
+                    deviceUDID,
+                    helperURL.path,
+                ]
+            }
+            return SharedCacheInventoryInvocation(
+                phaseLabel: "shared-cache-inventory",
+                executionMode: executionMode,
+                helperURL: helperURL,
+                command: commandPrefix + [PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue],
+                environment: makeEnvironment(
+                    helperEnvironment: helperEnvironment,
+                    executionMode: executionMode
+                )
+            )
+        }
+
         private static func makeCommand(
             helperURL: URL,
             request: Request
@@ -32,7 +62,7 @@ public extension PrivateHeaderGeneration {
             case .host:
                 command = [
                     helperURL.path,
-                    helperSubcommand,
+                    PrivateHeaderKitHelperCommand.rawDump.rawValue,
                     "-o",
                     request.stagingOutputDirectory.path,
                 ]
@@ -43,7 +73,7 @@ public extension PrivateHeaderGeneration {
                     "spawn",
                     deviceUDID,
                     helperURL.path,
-                    helperSubcommand,
+                    PrivateHeaderKitHelperCommand.rawDump.rawValue,
                     "-o",
                     request.stagingOutputDirectory.path,
                 ]
@@ -55,6 +85,9 @@ public extension PrivateHeaderGeneration {
             }
             if request.options.useSharedCache {
                 command.append("-c")
+                if let expectedCacheUUID = request.expectedCacheUUID {
+                    command += ["--expected-cache-uuid", expectedCacheUUID.uuidString.lowercased()]
+                }
             }
             if request.options.verbose {
                 command.append("-D")
@@ -67,9 +100,19 @@ public extension PrivateHeaderGeneration {
         }
 
         private static func makeEnvironment(for request: Request) -> [String: String] {
-            var environment = request.options.helperEnvironment
+            makeEnvironment(
+                helperEnvironment: request.options.helperEnvironment,
+                executionMode: request.executionMode
+            )
+        }
 
-            if case .simulator(_, let runtimeRoot) = request.executionMode {
+        private static func makeEnvironment(
+            helperEnvironment: [String: String],
+            executionMode: ExecutionMode
+        ) -> [String: String] {
+            var environment = helperEnvironment
+
+            if case .simulator(_, let runtimeRoot) = executionMode {
                 environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = runtimeRoot
                 environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] = runtimeRoot
             }
@@ -139,19 +182,42 @@ public extension PrivateHeaderGeneration.RawDumping {
         public let inputPath: String
         public let stagingOutputDirectory: URL
         public let options: Options
+        public let expectedCacheUUID: UUID?
 
         public init(
             helperURLs: HelperURLs,
             executionMode: ExecutionMode,
             inputPath: String,
             stagingOutputDirectory: URL,
-            options: Options = Options()
-        ) {
+            options: Options = Options(),
+            expectedCacheUUID: UUID? = nil
+        ) throws {
+            guard options.useSharedCache == (expectedCacheUUID != nil) else {
+                if options.useSharedCache {
+                    throw ValidationError.missingExpectedCacheUUID
+                }
+                throw ValidationError.unexpectedCacheUUID
+            }
             self.helperURLs = helperURLs
             self.executionMode = executionMode
             self.inputPath = inputPath
             self.stagingOutputDirectory = stagingOutputDirectory
             self.options = options
+            self.expectedCacheUUID = expectedCacheUUID
+        }
+
+        public enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
+            case missingExpectedCacheUUID
+            case unexpectedCacheUUID
+
+            public var description: String {
+                switch self {
+                case .missingExpectedCacheUUID:
+                    "shared-cache raw dumping requires the inventoried cache UUID"
+                case .unexpectedCacheUUID:
+                    "a cache UUID is invalid when shared-cache raw dumping is disabled"
+                }
+            }
         }
     }
 
@@ -163,6 +229,35 @@ public extension PrivateHeaderGeneration.RawDumping {
         public let stagingOutputDirectory: URL
         public let command: [String]
         public let environment: [String: String]
+    }
+
+    struct SharedCacheInventoryInvocation: Hashable, Sendable {
+        public let phaseLabel: String
+        public let executionMode: ExecutionMode
+        public let helperURL: URL
+        public let command: [String]
+        public let environment: [String: String]
+    }
+
+    enum SharedCacheInventoryRunnerError: Error, Equatable, CustomStringConvertible, Sendable {
+        case exited(status: Int32, output: String?)
+        case terminatedBySignal(signal: Int32, output: String?)
+
+        public var description: String {
+            switch self {
+            case .exited(let status, let output):
+                Self.message("shared-cache inventory exited with status \(status)", output: output)
+            case .terminatedBySignal(let signal, let output):
+                Self.message("shared-cache inventory terminated by signal \(signal)", output: output)
+            }
+        }
+
+        private static func message(_ prefix: String, output: String?) -> String {
+            guard let output, !output.isEmpty else {
+                return prefix
+            }
+            return "\(prefix)\n\(output)"
+        }
     }
 
     struct Result: Hashable, Sendable {

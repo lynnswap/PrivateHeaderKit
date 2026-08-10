@@ -1,11 +1,12 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 import Testing
 
 @testable import PrivateHeaderKitCore
 
 @Suite
 struct PrivateHeaderGenerationRawDumpingTests {
-    @Test func hostInvocationUsesPrivateHeaderKitHiddenRawDumpModeAndStableFlags() {
+    @Test func hostInvocationUsesPrivateHeaderKitHiddenRawDumpModeAndStableFlags() throws {
         let inputPath = "/System/Library/PrivateFrameworks/Foo.framework"
         let stageDirectory = URL(
             fileURLWithPath: "/tmp/PrivateHeaderKit/.tmp-run",
@@ -13,7 +14,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
         )
 
         let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            PrivateHeaderGeneration.RawDumping.Request(
+            try PrivateHeaderGeneration.RawDumping.Request(
                 helperURLs: helperURLs(),
                 executionMode: .host,
                 inputPath: inputPath,
@@ -24,7 +25,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
                     verbose: true,
                     preferRuntimeMetadata: true,
                     helperEnvironment: ["PH_PROFILE": "1"]
-                )
+                ),
+                expectedCacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")
             )
         )
 
@@ -42,6 +44,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
             "-h",
             "-s",
             "-c",
+            "--expected-cache-uuid",
+            "11111111-2222-3333-4444-555555555555",
             "-D",
             "-R",
             "/System/Library/PrivateFrameworks/Foo.framework",
@@ -49,9 +53,9 @@ struct PrivateHeaderGenerationRawDumpingTests {
         #expect(invocation.environment == ["PH_PROFILE": "1"])
     }
 
-    @Test func hostInvocationDefaultsToOnlyRequiredHelperFlags() {
+    @Test func hostInvocationDefaultsToOnlyRequiredHelperFlags() throws {
         let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            PrivateHeaderGeneration.RawDumping.Request(
+            try PrivateHeaderGeneration.RawDumping.Request(
                 helperURLs: helperURLs(),
                 executionMode: .host,
                 inputPath: "/usr/lib/libobjc.A.dylib",
@@ -74,7 +78,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
         #expect(invocation.environment.isEmpty)
     }
 
-    @Test func simulatorInvocationUsesSimctlSpawnAndChildRuntimeEnvironment() {
+    @Test func simulatorInvocationUsesSimctlSpawnAndChildRuntimeEnvironment() throws {
         let runtimeRoot = "/Library/Developer/CoreSimulator/Volumes/iOS_27A/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot"
         let inputPath = "/System/Library/Frameworks/UIKit.framework"
         let stageDirectory = URL(
@@ -83,7 +87,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
         )
 
         let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            PrivateHeaderGeneration.RawDumping.Request(
+            try PrivateHeaderGeneration.RawDumping.Request(
                 helperURLs: helperURLs(),
                 executionMode: .simulator(
                     deviceUDID: "A1B2C3D4-E5F6-7890-ABCD-111111111111",
@@ -100,7 +104,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
                         "SIMCTL_CHILD_DYLD_ROOT_PATH": "/wrong/root",
                         "SIMCTL_CHILD_PH_PROFILE": "1",
                     ]
-                )
+                ),
+                expectedCacheUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
             )
         )
 
@@ -121,6 +126,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
             "-h",
             "-s",
             "-c",
+            "--expected-cache-uuid",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "-D",
             "/System/Library/Frameworks/UIKit.framework",
         ])
@@ -128,6 +135,44 @@ struct PrivateHeaderGenerationRawDumpingTests {
             "SIMCTL_CHILD_DYLD_ROOT_PATH": runtimeRoot,
             "SIMCTL_CHILD_PH_PROFILE": "1",
             "SIMCTL_CHILD_PH_RUNTIME_ROOT": runtimeRoot,
+        ])
+    }
+
+    @Test func sharedCacheInventoryInvocationUsesHostHelper() {
+        let invocation = PrivateHeaderGeneration.RawDumping.makeSharedCacheInventoryInvocation(
+            helperURLs: helperURLs(),
+            executionMode: .host,
+            helperEnvironment: ["PH_PROFILE": "1"]
+        )
+
+        #expect(invocation.phaseLabel == "shared-cache-inventory")
+        #expect(invocation.command == [
+            "/opt/privateheaderkit/bin/privateheaderkit",
+            PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue,
+        ])
+        #expect(invocation.environment == ["PH_PROFILE": "1"])
+    }
+
+    @Test func sharedCacheInventoryInvocationUsesSimulatorHelperAndRuntimeEnvironment() {
+        let runtimeRoot = "/Library/Developer/CoreSimulator/RuntimeRoot"
+        let invocation = PrivateHeaderGeneration.RawDumping.makeSharedCacheInventoryInvocation(
+            helperURLs: helperURLs(),
+            executionMode: .simulator(deviceUDID: "SIM-UDID", runtimeRoot: runtimeRoot),
+            helperEnvironment: ["SIMCTL_CHILD_PH_PROFILE": "1"]
+        )
+
+        #expect(invocation.command == [
+            "xcrun",
+            "simctl",
+            "spawn",
+            "SIM-UDID",
+            "/opt/privateheaderkit/bin/privateheaderkit-sim",
+            PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue,
+        ])
+        #expect(invocation.environment == [
+            "SIMCTL_CHILD_PH_PROFILE": "1",
+            "SIMCTL_CHILD_PH_RUNTIME_ROOT": runtimeRoot,
+            "SIMCTL_CHILD_DYLD_ROOT_PATH": runtimeRoot,
         ])
     }
 
@@ -154,6 +199,102 @@ struct PrivateHeaderGenerationRawDumpingTests {
         #expect(!result.wasKilled)
         #expect(result.failureSummary?.contains("raw dump exited with status 7") == true)
         #expect(result.failureSummary?.contains("offsetOutOfBounds") == true)
+    }
+
+    @Test func liveSharedCacheInventoryRunnerCapturesOnlyStandardOutput() async throws {
+        let invocation = PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation(
+            phaseLabel: "shared-cache-inventory",
+            executionMode: .host,
+            helperURL: URL(fileURLWithPath: "/bin/sh"),
+            command: [
+                "/bin/sh",
+                "-c",
+                "printf '{\"schemaVersion\":1}' ; printf 'diagnostic' >&2",
+            ],
+            environment: [:]
+        )
+
+        let data = try await PrivateHeaderGeneration.GenerationExecutor.liveSharedCacheInventoryRunner(
+            invocation: invocation
+        )
+
+        #expect(String(decoding: data, as: UTF8.self) == "{\"schemaVersion\":1}")
+    }
+
+    @Test func liveSharedCacheInventoryRunnerReportsTypedProcessFailureBeforeDecode() async throws {
+        let invocation = PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation(
+            phaseLabel: "shared-cache-inventory",
+            executionMode: .host,
+            helperURL: URL(fileURLWithPath: "/bin/sh"),
+            command: [
+                "/bin/sh",
+                "-c",
+                "printf 'broken cache' >&2; exit 9",
+            ],
+            environment: [:]
+        )
+
+        do {
+            _ = try await PrivateHeaderGeneration.GenerationExecutor.liveSharedCacheInventoryRunner(
+                invocation: invocation
+            )
+            Issue.record("expected inventory process failure")
+        } catch let error as PrivateHeaderGeneration.RawDumping.SharedCacheInventoryRunnerError {
+            #expect(error == .exited(status: 9, output: "broken cache"))
+        }
+    }
+
+    @Test func cancellingInFlightLiveInventoryRunnerKillsAndReapsProcess() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PrivateHeaderKit-inventory-cancel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let invocation = PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation(
+            phaseLabel: "shared-cache-inventory",
+            executionMode: .host,
+            helperURL: URL(fileURLWithPath: "/bin/sh"),
+            command: [
+                "/bin/sh",
+                "-c",
+                "touch '\(marker.path)'; trap '' TERM; while :; do :; done",
+            ],
+            environment: [:]
+        )
+        let task = Task {
+            return try await PrivateHeaderGeneration.GenerationExecutor.liveSharedCacheInventoryRunner(
+                invocation: invocation
+            )
+        }
+        for _ in 0..<100_000 where !FileManager.default.fileExists(atPath: marker.path) {
+            await Task.yield()
+        }
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+
+        task.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+    }
+
+    @Test func rawDumpRequestRejectsMissingInventoryCohort() {
+        #expect(throws: PrivateHeaderGeneration.RawDumping.Request.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.RawDumping.Request(
+                helperURLs: helperURLs(),
+                executionMode: .host,
+                inputPath: "/usr/lib/libobjc.A.dylib",
+                stagingOutputDirectory: URL(fileURLWithPath: "/tmp/stage", isDirectory: true),
+                options: .init(useSharedCache: true)
+            )
+        }
+
+        #expect(throws: PrivateHeaderGeneration.RawDumping.Request.ValidationError.self) {
+            _ = try PrivateHeaderGeneration.RawDumping.Request(
+                helperURLs: helperURLs(),
+                executionMode: .host,
+                inputPath: "/usr/lib/libobjc.A.dylib",
+                stagingOutputDirectory: URL(fileURLWithPath: "/tmp/stage", isDirectory: true),
+                expectedCacheUUID: UUID()
+            )
+        }
     }
 
     private func helperURLs() -> PrivateHeaderGeneration.RawDumping.HelperURLs {

@@ -355,6 +355,44 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         #expect(catalog.targets.isEmpty)
         #expect(catalog.resolverCandidates.isEmpty)
     }
+
+    @Test func discoversDirectUsrLibDylibsFromSharedCacheAndUnionsFilesystemEntries() throws {
+        let root = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        try writeFile("usr/lib/libFilesystem.dylib", in: root)
+        try writeFile("usr/lib/libBoth.dylib", in: root)
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+            in: root,
+            sharedCacheImagePaths: [
+                "/usr/lib/libCacheOnly.dylib",
+                "/usr/lib/libBoth.dylib",
+                "/usr/lib/libCacheOnly.dylib",
+                "/usr/lib/system/libNested.dylib",
+                "/System/Library/Frameworks/Foo.framework/Foo",
+                "/usr/lib/libNotDylib.tbd",
+            ]
+        )
+        let dylibs = catalog.targets.filter { $0.candidate.kind == .usrLibDylib }
+
+        #expect(dylibs.map(\.candidate.displayName) == [
+            "libBoth.dylib",
+            "libCacheOnly.dylib",
+            "libFilesystem.dylib",
+        ])
+        #expect(dylibs.map(\.inputPath) == [
+            root.appendingPathComponent("usr/lib/libBoth.dylib").path,
+            "/usr/lib/libCacheOnly.dylib",
+            root.appendingPathComponent("usr/lib/libFilesystem.dylib").path,
+        ])
+        #expect(dylibs.map(\.runtimeInputPath) == [
+            "/usr/lib/libBoth.dylib",
+            "/usr/lib/libCacheOnly.dylib",
+            "/usr/lib/libFilesystem.dylib",
+        ])
+    }
 }
 
 private func makeTemporaryDirectory() throws -> URL {

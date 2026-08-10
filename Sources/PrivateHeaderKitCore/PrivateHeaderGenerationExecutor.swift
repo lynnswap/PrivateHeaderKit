@@ -1,25 +1,36 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public extension PrivateHeaderGeneration {
     static func availableResumeSummary(
         source: Source,
         output: Output,
         options: Options = Options()
-    ) throws -> ResumeSummary? {
+    ) async throws -> ResumeSummary? {
         let plan = makePlan(
             source: source,
             output: output,
             options: options
         )
-        return try GenerationExecutor.availableResumeSummary(for: plan)
+        return try await GenerationExecutor().availableResumeSummary(for: plan)
     }
 }
 
 extension PrivateHeaderGeneration.GenerationExecutor {
-    static func availableResumeSummary(
+    func availableResumeSummary(
         for plan: PrivateHeaderGeneration.Plan
-    ) throws -> PrivateHeaderGeneration.ResumeSummary? {
+    ) async throws -> PrivateHeaderGeneration.ResumeSummary? {
         let options = plan.options
+        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
+        guard let manifest = try repository.readManifest() else {
+            return nil
+        }
 
         guard let systemRoot = options.systemRoot else {
             throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("systemRoot")
@@ -27,22 +38,22 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         guard let executionMode = options.executionMode else {
             throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
         }
+        guard let helperURLs = options.helperURLs else {
+            throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("helperURLs")
+        }
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
-            in: systemRoot,
-            includeNestedChildren: options.includeNestedChildren
+        let discoveredCatalog = try await discoverCatalog(
+            systemRoot: systemRoot,
+            helperURLs: helperURLs,
+            executionMode: executionMode,
+            options: options
         )
         let selectedTargets = try Self.selectedExecutionTargets(
             request: options.targetRequest,
-            catalog: catalog
+            catalog: discoveredCatalog.catalog
         )
         guard !selectedTargets.isEmpty else {
             throw PrivateHeaderGeneration.GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
-        }
-
-        let repository = PrivateHeaderGeneration.RunRepository(plan: plan)
-        guard let manifest = try repository.readManifest() else {
-            return nil
         }
 
         let latestRun = try repository.readLatestRun(from: manifest)
@@ -50,6 +61,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
             plan: plan,
             selectedTargets: selectedTargets,
             executionMode: executionMode,
+            cacheUUID: discoveredCatalog.cacheUUID,
             helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
                 for: executionMode
             )
@@ -84,6 +96,9 @@ public extension PrivateHeaderGeneration {
         public typealias RawDumpRunner = @Sendable (
             PrivateHeaderGeneration.RawDumping.Invocation
         ) async throws -> PrivateHeaderGeneration.RawDumping.Result
+        public typealias SharedCacheInventoryRunner = @Sendable (
+            PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
+        ) async throws -> Data
         public typealias ProgressReporter = @Sendable (
             PrivateHeaderGeneration.ProgressEvent
         ) -> Void
@@ -102,17 +117,20 @@ public extension PrivateHeaderGeneration {
         }
 
         public let rawDumpRunner: RawDumpRunner
+        public let sharedCacheInventoryRunner: SharedCacheInventoryRunner
         private let runIDGenerator: @Sendable () -> String
         private let dateProvider: @Sendable () -> Date
 
         public init(
             rawDumpRunner: @escaping RawDumpRunner = GenerationExecutor.liveRawDumpRunner,
+            sharedCacheInventoryRunner: @escaping SharedCacheInventoryRunner = GenerationExecutor.liveSharedCacheInventoryRunner,
             runIDGenerator: @escaping @Sendable () -> String = {
                 "run-\(UUID().uuidString.lowercased())"
             },
             dateProvider: @escaping @Sendable () -> Date = { Date() }
         ) {
             self.rawDumpRunner = rawDumpRunner
+            self.sharedCacheInventoryRunner = sharedCacheInventoryRunner
             self.runIDGenerator = runIDGenerator
             self.dateProvider = dateProvider
         }
@@ -131,13 +149,15 @@ public extension PrivateHeaderGeneration {
                 throw GenerationError.missingExecutionConfiguration("executionMode")
             }
 
-            let catalog = try TargetDiscovery.discover(
-                in: systemRoot,
-                includeNestedChildren: options.includeNestedChildren
+            let discoveredCatalog = try await discoverCatalog(
+                systemRoot: systemRoot,
+                helperURLs: helperURLs,
+                executionMode: executionMode,
+                options: options
             )
             let selectedTargets = try Self.selectedExecutionTargets(
                 request: options.targetRequest,
-                catalog: catalog
+                catalog: discoveredCatalog.catalog
             )
             guard !selectedTargets.isEmpty else {
                 throw GenerationError.noDiscoveredTargets(systemRoot: systemRoot.path)
@@ -154,6 +174,7 @@ public extension PrivateHeaderGeneration {
                     artifactStore: artifactStore,
                     helperURLs: helperURLs,
                     executionMode: executionMode,
+                    expectedCacheUUID: discoveredCatalog.cacheUUID,
                     progressReporter: configuration.progressReporter
                 )
             }
@@ -162,9 +183,58 @@ public extension PrivateHeaderGeneration {
 }
 
 private extension PrivateHeaderGeneration.GenerationExecutor {
+    struct DiscoveredCatalog: Sendable {
+        let catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
+        let cacheUUID: UUID?
+    }
+
     struct TargetExecutionResult {
         let runTarget: PrivateHeaderGeneration.RunTargetRecord
         let manifestTarget: PrivateHeaderGeneration.TargetRecord
+    }
+
+    func discoverCatalog(
+        systemRoot: URL,
+        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
+        executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+        options: PrivateHeaderGeneration.Options
+    ) async throws -> DiscoveredCatalog {
+        guard options.rawDumpingOptions.useSharedCache else {
+            return DiscoveredCatalog(
+                catalog: try PrivateHeaderGeneration.TargetDiscovery.discover(
+                    in: systemRoot,
+                    includeNestedChildren: options.includeNestedChildren
+                ),
+                cacheUUID: nil
+            )
+        }
+
+        try Task.checkCancellation()
+        let invocation = PrivateHeaderGeneration.RawDumping.makeSharedCacheInventoryInvocation(
+            helperURLs: helperURLs,
+            executionMode: executionMode,
+            helperEnvironment: options.rawDumpingOptions.helperEnvironment
+        )
+        let data = try await sharedCacheInventoryRunner(invocation)
+        try Task.checkCancellation()
+        let inventory = try JSONDecoder().decode(
+            PrivateHeaderKitSharedCacheInventory.self,
+            from: data
+        )
+        guard !inventory.imagePaths.isEmpty else {
+            throw PrivateHeaderGeneration.GenerationError.emptySharedCacheInventory(
+                cacheUUID: inventory.cacheUUID
+            )
+        }
+
+        return DiscoveredCatalog(
+            catalog: try PrivateHeaderGeneration.TargetDiscovery.discover(
+                in: systemRoot,
+                includeNestedChildren: options.includeNestedChildren,
+                sharedCacheImagePaths: inventory.imagePaths
+            ),
+            cacheUUID: inventory.cacheUUID
+        )
     }
 
     func runWithLockedState(
@@ -175,6 +245,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         artifactStore: PrivateHeaderGeneration.ArtifactStore,
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
         executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+        expectedCacheUUID: UUID?,
         progressReporter: PrivateHeaderGeneration.GenerationExecutor.ProgressReporter?
     ) async throws -> PrivateHeaderGeneration.Result {
         let existingManifest = try repository.readManifest()
@@ -183,6 +254,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             plan: plan,
             selectedTargets: selectedTargets,
             executionMode: executionMode,
+            cacheUUID: expectedCacheUUID,
             helperEnvironment: options.rawDumpingOptions.recordedHelperEnvironment(
                 for: executionMode
             )
@@ -264,6 +336,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 helperURLs: helperURLs,
                 executionMode: executionMode,
                 rawDumpingOptions: options.rawDumpingOptions,
+                expectedCacheUUID: expectedCacheUUID,
                 artifactStore: artifactStore,
                 previousTarget: previousTargetRecords[target.candidate.identifier],
                 previousCommitFailedAttempts: previousCommitFailedAttempts[target.candidate.identifier] ?? [],
@@ -373,6 +446,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
         executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options,
+        expectedCacheUUID: UUID?,
         artifactStore: PrivateHeaderGeneration.ArtifactStore,
         previousTarget: PrivateHeaderGeneration.TargetRecord?,
         previousCommitFailedAttempts: [PrivateHeaderGeneration.ArtifactPath],
@@ -426,12 +500,13 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             layout: plan.options.layout
         )
         let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            PrivateHeaderGeneration.RawDumping.Request(
+            try PrivateHeaderGeneration.RawDumping.Request(
                 helperURLs: helperURLs,
                 executionMode: executionMode,
                 inputPath: inputPath,
                 stagingOutputDirectory: targetStagingDirectory,
-                options: rawDumpingOptions
+                options: rawDumpingOptions,
+                expectedCacheUUID: expectedCacheUUID
             )
         )
 
@@ -985,6 +1060,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         plan: PrivateHeaderGeneration.Plan,
         selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
         executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+        cacheUUID: UUID? = nil,
         helperEnvironment: [String: String]
     ) -> PrivateHeaderGeneration.RunPlanRecord {
         PrivateHeaderGeneration.RunPlanRecord(
@@ -997,6 +1073,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             targetIDs: selectedTargets.map(\.candidate.identifier),
             execution: Self.executionRecord(
                 for: executionMode,
+                cacheUUID: cacheUUID,
                 helperEnvironment: helperEnvironment
             )
         )
@@ -1004,6 +1081,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
 
     static func executionRecord(
         for executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+        cacheUUID: UUID?,
         helperEnvironment: [String: String]
     ) -> PrivateHeaderGeneration.ExecutionRecord {
         switch executionMode {
@@ -1014,6 +1092,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 deviceName: nil,
                 deviceUDID: nil,
                 clonePolicy: nil,
+                cacheUUID: cacheUUID,
                 helperEnvironment: helperEnvironment
             )
         case .simulator(let deviceUDID, _):
@@ -1023,6 +1102,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
                 deviceName: nil,
                 deviceUDID: deviceUDID,
                 clonePolicy: nil,
+                cacheUUID: cacheUUID,
                 helperEnvironment: helperEnvironment
             )
         }
@@ -1154,6 +1234,70 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
         )
     }
 
+    static func liveSharedCacheInventoryRunner(
+        invocation: PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
+    ) async throws -> Data {
+        try Task.checkCancellation()
+
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        let outputCapture = ProcessDataCapture()
+        let errorCapture = RawDumpOutputCapture()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = invocation.command
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        if !invocation.environment.isEmpty {
+            var environment = ProcessInfo.processInfo.environment
+            invocation.environment.forEach { key, value in
+                environment[key] = value
+            }
+            process.environment = environment
+        }
+
+        standardOutput.fileHandleForReading.readabilityHandler = { handle in
+            outputCapture.append(handle.availableData)
+        }
+        standardError.fileHandleForReading.readabilityHandler = { handle in
+            errorCapture.append(handle.availableData)
+        }
+        defer {
+            standardOutput.fileHandleForReading.readabilityHandler = nil
+            standardError.fileHandleForReading.readabilityHandler = nil
+        }
+
+        let processController = CancellableProcessController(process: process)
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try processController.run()
+            process.waitUntilExit()
+        } onCancel: {
+            processController.cancel()
+        }
+        standardOutput.fileHandleForReading.readabilityHandler = nil
+        standardError.fileHandleForReading.readabilityHandler = nil
+        outputCapture.append(standardOutput.fileHandleForReading.readDataToEndOfFile())
+        errorCapture.append(standardError.fileHandleForReading.readDataToEndOfFile())
+        try Task.checkCancellation()
+
+        let failureOutput = errorCapture.lines().joined(separator: "\n")
+        let optionalFailureOutput = failureOutput.isEmpty ? nil : failureOutput
+        if process.terminationReason == .uncaughtSignal {
+            throw PrivateHeaderGeneration.RawDumping.SharedCacheInventoryRunnerError.terminatedBySignal(
+                signal: process.terminationStatus,
+                output: optionalFailureOutput
+            )
+        }
+        guard process.terminationStatus == 0 else {
+            throw PrivateHeaderGeneration.RawDumping.SharedCacheInventoryRunnerError.exited(
+                status: process.terminationStatus,
+                output: optionalFailureOutput
+            )
+        }
+        return outputCapture.data()
+    }
+
     static func rawDumpFailureSummary(
         terminationStatus: Int32,
         wasKilled: Bool,
@@ -1229,6 +1373,59 @@ private final class RawDumpOutputCapture: @unchecked Sendable {
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+}
+
+private final class ProcessDataCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else {
+            return
+        }
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        buffer.append(data)
+    }
+
+    func data() -> Data {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return buffer
+    }
+}
+
+private final class CancellableProcessController: @unchecked Sendable {
+    private let process: Process
+    private let lock = NSLock()
+    private var cancellationRequested = false
+
+    init(process: Process) {
+        self.process = process
+    }
+
+    func run() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancellationRequested else {
+            throw CancellationError()
+        }
+        try process.run()
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancellationRequested = true
+        guard process.isRunning else {
+            return
+        }
+        _ = kill(process.processIdentifier, SIGKILL)
     }
 }
 

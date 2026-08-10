@@ -161,6 +161,7 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(decoded.targetResults.first?.status == .commitFailed)
         #expect(decoded.attemptedArtifacts.map(\.rawValue) == ["Frameworks/Foo/Foo.h"])
         #expect(decoded.plan.execution.runtimeIdentifier == "com.apple.CoreSimulator.SimRuntime.iOS-27-0")
+        #expect(decoded.plan.execution.cacheUUID == UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
     }
 
     @Test func runRecordReadDefaultsMissingPlanExecutionForOldHistory() throws {
@@ -219,6 +220,7 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(json.contains("\"runtimeIdentifier\" : \"com.apple.CoreSimulator.SimRuntime.iOS-27-0\""))
         #expect(json.contains("\"deviceUDID\" : \"SIM-001\""))
         #expect(json.contains("\"clonePolicy\" : \"reuseOrCreate\""))
+        #expect(json.contains("\"cacheUUID\" : \"11111111-2222-3333-4444-555555555555\""))
         #expect(json.contains("\"execution\" : {"))
     }
 
@@ -246,7 +248,7 @@ struct PrivateHeaderGenerationRunRecordTests {
         let data = try PrivateHeaderGeneration.StateJSON.encode(plan)
         var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         var execution = try #require(object["execution"] as? [String: Any])
-        execution.removeValue(forKey: "runtimeIdentifier")
+        execution.removeValue(forKey: "cacheUUID")
         object["execution"] = execution
         let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 
@@ -454,6 +456,7 @@ private func makeExecutionRecord(
         deviceName: "iPhone 17",
         deviceUDID: deviceUDID,
         clonePolicy: "reuseOrCreate",
+        cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555"),
         helperEnvironment: [
             "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "max",
         ]

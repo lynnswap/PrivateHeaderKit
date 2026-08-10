@@ -637,6 +637,44 @@ struct PrivateHeaderKitCLIParsingTests {
                 recorder.request = request
                 return summaryFixture(for: request)
             },
+            resumeSummaryProvider: { source, output, options in
+                let plan = PrivateHeaderGeneration.makePlan(
+                    source: source,
+                    output: output,
+                    options: options
+                )
+                return PrivateHeaderGeneration.ResumeSummary(
+                    source: PrivateHeaderGeneration.SourceRecord(source: source),
+                    output: PrivateHeaderGeneration.OutputRecord(
+                        plan: plan,
+                        baseDirectory: output.artifactBaseDirectory
+                    ),
+                    layout: options.layout,
+                    latestRunID: "run-prev",
+                    startedAt: Date(timeIntervalSince1970: 100),
+                    updatedAt: Date(timeIntervalSince1970: 200),
+                    counts: PrivateHeaderGeneration.ResumeTargetCounts(
+                        total: 2,
+                        completed: 1,
+                        partial: 0,
+                        failed: 0,
+                        interrupted: 0,
+                        commitFailed: 0,
+                        stale: 0,
+                        pending: 1
+                    ),
+                    targets: [
+                        PrivateHeaderGeneration.ResumeTargetDecision(
+                            targetID: "framework:Foo.framework",
+                            status: .completed
+                        ),
+                        PrivateHeaderGeneration.ResumeTargetDecision(
+                            targetID: "framework:Bar.framework",
+                            status: .pending
+                        ),
+                    ]
+                )
+            },
             simulatorResolver: { _ in simulatorResolution(resolvedRuntimeRoot: runtimeRoot.path) },
             interactiveSourceProvider: {
                 [
@@ -887,6 +925,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.systemRoot?.path == "/Resolved/RuntimeRoot")
         #expect(request.simulatorRuntimeRoot == "/Resolved/RuntimeRoot")
         #expect(request.simulatorHelperURL?.path == simulatorHelper)
+        #expect(request.usesSharedCache)
     }
 
     @Test func iOSGenerateWithExplicitSystemRootDoesNotBorrowResolvedBuild() async throws {
@@ -924,6 +963,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.sourceDirectoryName == "ios-v1-27.0-b0")
         #expect(request.systemRoot?.path == "/Override/RuntimeRoot")
         #expect(request.simulatorRuntimeRoot == "/Override/RuntimeRoot")
+        #expect(!request.usesSharedCache)
     }
 
     @Test func iOSGenerateExplicitBuildWinsOverResolvedRuntimeBuild() async throws {
@@ -1000,6 +1040,42 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.hostHelperURL == rawDumpHelperURL)
         #expect(request.usesHostExecution)
         #expect(request.simulatorDeviceUDID == nil)
+        #expect(request.usesSharedCache)
+    }
+
+    @Test func macOSGenerateWithCustomSystemRootDisablesLoadedSharedCache() async throws {
+        let recorder = GenerationRequestRecorder()
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform",
+                "macOS",
+                "--version",
+                "16.0",
+                "--system-root",
+                "/Volumes/macOS/SystemRoot",
+                "--out",
+                "/tmp/PrivateHeaderKit",
+                "--target",
+                "AppKit",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit"),
+            generationRunner: { request, _ in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in
+                Issue.record("macOS generation should not resolve a simulator")
+                return simulatorResolution()
+            },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.systemRoot?.path == "/Volumes/macOS/SystemRoot")
+        #expect(!request.usesSharedCache)
     }
 
     @Test func generateResumeRequiredErrorReturnsGuidance() async throws {

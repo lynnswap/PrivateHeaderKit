@@ -65,7 +65,9 @@ let package = Package(
         ),
         .target(
             name: "PrivateHeaderKitCore",
-            dependencies: []
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+            ]
         ),
         .target(
             name: "PrivateHeaderKitInstall",
@@ -134,6 +136,7 @@ let package = Package(
             name: "PrivateHeaderKitCoreTests",
             dependencies: [
                 "PrivateHeaderKitCore",
+                "PrivateHeaderKitHelperProtocol",
             ]
         ),
         .testTarget(

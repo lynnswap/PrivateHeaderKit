@@ -335,6 +335,7 @@ public extension PrivateHeaderGeneration {
 
     enum GenerationError: Error, Equatable, CustomStringConvertible, Sendable {
         case missingExecutionConfiguration(String)
+        case emptySharedCacheInventory(cacheUUID: UUID)
         case noDiscoveredTargets(systemRoot: String)
         case unknownSelectedTargets([String])
         case unresolvedTargetQuery(String)
@@ -346,6 +347,8 @@ public extension PrivateHeaderGeneration {
             switch self {
             case .missingExecutionConfiguration(let field):
                 "private header generation requires \(field)"
+            case .emptySharedCacheInventory(let cacheUUID):
+                "loaded shared cache \(cacheUUID.uuidString.lowercased()) contains no images"
             case .noDiscoveredTargets(let systemRoot):
                 "no private header targets were discovered under \(systemRoot)"
             case .unknownSelectedTargets(let targetIDs):
