@@ -7,7 +7,7 @@ import Darwin
 import Glibc
 #endif
 
-@testable import PrivateHeaderKitCore
+import PrivateHeaderKitCore
 import PrivateHeaderKitTestSupport
 import PrivateHeaderKitTooling
 @testable import PrivateHeaderKitCLI
@@ -283,6 +283,8 @@ struct PrivateHeaderKitCLIExecutionTests {
 
     @Test func directRunMapsFreshModeAndRendersTypedResultAndWarnings() async throws {
         let requestBox = ThreadSafeRequestBox()
+        let preparationCount = ThreadSafeCounter()
+        let summaryInspectionCount = ThreadSafeCounter()
         let output = ThreadSafeStrings()
         let status = await runPrivateHeaderKitCommand(
             [
@@ -295,28 +297,35 @@ struct PrivateHeaderKitCLIExecutionTests {
                 "--fresh",
             ],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-            generationRunner: { request, progress in
-                requestBox.set(request)
-                progress(.runStarted(
-                    runID: PrivateHeaderGeneration.RunID(rawValue: "run-typed"),
-                    totalTargetCount: 3
-                ))
-                return resultFixture(
-                    for: request,
-                    counts: PrivateHeaderGeneration.TargetCounts(
-                        total: 3,
-                        skipped: 1,
-                        completed: 2
-                    ),
-                    warnings: [
-                        PrivateHeaderGeneration.GenerationWarning(
-                            kind: "opaque-path",
-                            relativePath: "Frameworks/AppKit/Headers/Generated.h",
-                            message: "preserved unowned artifact"
+            generationClient: testPrivateHeaderKitGenerationClient(
+                onPrepare: { _ in preparationCount.increment() },
+                summary: { _ in
+                    summaryInspectionCount.increment()
+                    return .noUnfinishedRun
+                },
+                run: { request, _, progress in
+                    requestBox.set(request)
+                    progress(.runStarted(
+                        runID: PrivateHeaderGeneration.RunID(rawValue: "run-typed"),
+                        totalTargetCount: 3
+                    ))
+                    return resultFixture(
+                        for: request,
+                        counts: PrivateHeaderGeneration.TargetCounts(
+                            total: 3,
+                            skipped: 1,
+                            completed: 2
                         ),
-                    ]
-                )
-            },
+                        warnings: [
+                            PrivateHeaderGeneration.GenerationWarning(
+                                kind: "opaque-path",
+                                relativePath: "Frameworks/AppKit/Headers/Generated.h",
+                                message: "preserved unowned artifact"
+                            ),
+                        ]
+                    )
+                }
+            ),
             helperResolver: testPrivateHeaderKitHelperResolver,
             outputLogger: output.append,
             errorLogger: output.append
@@ -327,6 +336,8 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.targetRequest == .query("AppKit,Foundation"))
         #expect(request.options.executionMode == .host)
         #expect(request.options.helperURLs?.host.path == "/cohort/privateheaderkit-raw-helper")
+        #expect(preparationCount.value == 1)
+        #expect(summaryInspectionCount.value == 0)
         #expect(output.text.contains("Generated  2"))
         #expect(output.text.contains("Skipped    1"))
         #expect(output.text.contains("opaque-path"))
@@ -347,19 +358,25 @@ struct PrivateHeaderKitCLIExecutionTests {
                 "--target", "AppKit",
             ],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-            generationRunner: { request, _ in
-                let summary = summaryFixture(
-                    for: request,
-                    status: .failed,
-                    counts: PrivateHeaderGeneration.TargetCounts(total: 2, completed: 1, failed: 1)
-                )
-                throw PrivateHeaderGeneration.GenerationError.runFailed(
-                    PrivateHeaderGeneration.RunFailure(
-                        summary: summary,
-                        failedTargetIDs: ["framework:AppKit.framework"]
+            generationClient: testPrivateHeaderKitGenerationClient(
+                run: { request, _, _ in
+                    let summary = summaryFixture(
+                        for: request,
+                        status: .failed,
+                        counts: PrivateHeaderGeneration.TargetCounts(
+                            total: 2,
+                            completed: 1,
+                            failed: 1
+                        )
                     )
-                )
-            },
+                    throw PrivateHeaderGeneration.GenerationError.runFailed(
+                        PrivateHeaderGeneration.RunFailure(
+                            summary: summary,
+                            failedTargetIDs: ["framework:AppKit.framework"]
+                        )
+                    )
+                }
+            ),
             helperResolver: testPrivateHeaderKitHelperResolver,
             outputLogger: output.append,
             errorLogger: output.append
@@ -387,28 +404,30 @@ struct PrivateHeaderKitCLIExecutionTests {
                     "--target", "all",
                 ],
                 currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-                generationRunner: { request, _ in
-                    let summary = summaryFixture(
-                        for: request,
-                        status: kind == .interrupted ? .interrupted : .failed,
-                        counts: PrivateHeaderGeneration.TargetCounts(
-                            total: 1,
-                            failed: kind == .infrastructure ? 1 : 0,
-                            interrupted: kind == .interrupted ? 1 : 0
+                generationClient: testPrivateHeaderKitGenerationClient(
+                    run: { request, _, _ in
+                        let summary = summaryFixture(
+                            for: request,
+                            status: kind == .interrupted ? .interrupted : .failed,
+                            counts: PrivateHeaderGeneration.TargetCounts(
+                                total: 1,
+                                failed: kind == .infrastructure ? 1 : 0,
+                                interrupted: kind == .interrupted ? 1 : 0
+                            )
                         )
-                    )
-                    if kind == .interrupted {
-                        throw PrivateHeaderGeneration.GenerationError.runInterrupted(
-                            PrivateHeaderGeneration.RunInterruption(summary: summary)
+                        if kind == .interrupted {
+                            throw PrivateHeaderGeneration.GenerationError.runInterrupted(
+                                PrivateHeaderGeneration.RunInterruption(summary: summary)
+                            )
+                        }
+                        throw PrivateHeaderGeneration.GenerationError.infrastructureFailed(
+                            PrivateHeaderGeneration.RunInfrastructureFailure(
+                                summary: summary,
+                                message: "database transaction could not commit"
+                            )
                         )
                     }
-                    throw PrivateHeaderGeneration.GenerationError.infrastructureFailed(
-                        PrivateHeaderGeneration.RunInfrastructureFailure(
-                            summary: summary,
-                            message: "database transaction could not commit"
-                        )
-                    )
-                },
+                ),
                 helperResolver: testPrivateHeaderKitHelperResolver,
                 outputLogger: output.append,
                 errorLogger: output.append
@@ -446,13 +465,16 @@ struct PrivateHeaderKitCLIExecutionTests {
         let status = await runPrivateHeaderKitCommand(
             ["privateheaderkit"],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-            generationRunner: { request, _ in
-                requestBox.set(request)
-                return resultFixture(
-                    for: request,
-                    counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
-                )
-            },
+            generationClient: testPrivateHeaderKitGenerationClient(
+                run: { request, resumeBehavior, _ in
+                    requestBox.set(request)
+                    #expect(resumeBehavior == .fresh)
+                    return resultFixture(
+                        for: request,
+                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                    )
+                }
+            ),
             helperResolver: { _, _, _ in
                 helperResolutionCount.increment()
                 return PrivateHeaderKitHelperPlan(
@@ -477,7 +499,10 @@ struct PrivateHeaderKitCLIExecutionTests {
             errorLogger: output.append
         )
         #expect(status == 0)
-        #expect(requestBox.value?.options.resumeBehavior == .fresh)
+        #expect(
+            requestBox.value?.options.resumeBehavior
+                == .requireExplicitResume(resumeRequested: false)
+        )
         #expect(requestBox.value?.options.helperURLs == helperURLs)
         #expect(requestBox.value?.options.toolCompatibilityIdentity == "test-tool-identity")
         #expect(helperResolutionCount.value == 1)
@@ -523,13 +548,19 @@ struct PrivateHeaderKitCLIExecutionTests {
         let status = await runPrivateHeaderKitCommand(
             ["privateheaderkit"],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-            generationRunner: { request, _ in
-                requestBox.set(request)
-                return resultFixture(
-                    for: request,
-                    counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
-                )
-            },
+            generationClient: testPrivateHeaderKitGenerationClient(
+                summary: { _ in
+                    .legacyState(path: legacyManifest.deletingLastPathComponent().path)
+                },
+                run: { request, resumeBehavior, _ in
+                    requestBox.set(request)
+                    #expect(resumeBehavior == .fresh)
+                    return resultFixture(
+                        for: request,
+                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                    )
+                }
+            ),
             simulatorResolver: { _ in
                 simulatorResolutionCount.increment()
                 return PrivateHeaderKitSimulatorResolution(
@@ -572,30 +603,85 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(helperResolutionCount.value == 1)
     }
 
-    @Test func resumeScreenUsesThePreparedSourceIdentity() {
+    @Test func interactiveResumeReusesPreparedRuntimeAndDisplaysResolvedSource() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outputBase = root.appendingPathComponent("Output", isDirectory: true)
+        let unfinishedSummary = try await unfinishedResumeSummaryFixture()
+        let input = ScriptedInput(["1", "1", "1"])
         let output = ThreadSafeStrings()
-        let summary = PrivateHeaderGeneration.ResumeSummary(
-            latestRunID: PrivateHeaderGeneration.RunID(rawValue: "run-previous"),
-            startedAt: Date(timeIntervalSince1970: 100),
-            updatedAt: Date(timeIntervalSince1970: 200),
-            targets: [
-                PrivateHeaderGeneration.ResumeTargetDecision(
-                    targetID: "framework:Foo.framework",
-                    status: .pending
-                ),
-            ]
+        let requestBox = ThreadSafeRequestBox()
+        let simulatorResolutionCount = ThreadSafeCounter()
+        let helperResolutionCount = ThreadSafeCounter()
+        let preparationCount = ThreadSafeCounter()
+
+        let generationClient = PrivateHeaderKitGenerationClient(
+            prepare: { request in
+                preparationCount.increment()
+                requestBox.set(request)
+                return PrivateHeaderKitPreparedGeneration(
+                    summary: { .unfinished(unfinishedSummary) },
+                    run: { resumeBehavior, _ in
+                        #expect(resumeBehavior == .resume)
+                        return resultFixture(
+                            for: request,
+                            counts: PrivateHeaderGeneration.TargetCounts(
+                                total: 1,
+                                completed: 1
+                            )
+                        )
+                    }
+                )
+            }
+        )
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: generationClient,
+            simulatorResolver: { _ in
+                simulatorResolutionCount.increment()
+                return PrivateHeaderKitSimulatorResolution(
+                    runtimeVersion: "27.0",
+                    runtimeBuild: "24A123",
+                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    resolvedRuntimeRoot: root.appendingPathComponent("RuntimeRoot").path,
+                    deviceName: "iPhone 17 Pro",
+                    deviceUDID: "SIM-001"
+                )
+            },
+            helperResolver: { _, _, _ in
+                helperResolutionCount.increment()
+                return PrivateHeaderKitHelperPlan(
+                    helperURLs: testPrivateHeaderKitHelperURLs,
+                    toolCompatibilityIdentity: "test-tool-identity"
+                )
+            },
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: nil,
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { outputBase.path },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
         )
 
-        renderInteractiveResumeScreen(
-            sourceDisplayName: "iOS 27.0 (24A123)",
-            summary: summary,
-            screenClearer: {},
-            outputLogger: output.append
-        )
-
+        #expect(status == 0)
+        #expect(requestBox.value?.source.build == "24A123")
         #expect(output.text.contains("Source: iOS 27.0 (24A123)"))
-        #expect(output.text.contains("Previous run: run-previous"))
+        #expect(output.text.contains("Previous run: run-unfinished"))
+        #expect(simulatorResolutionCount.value == 1)
+        #expect(helperResolutionCount.value == 1)
+        #expect(preparationCount.value == 1)
     }
+
 }
 
 private let testPrivateHeaderKitHelperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
@@ -1216,13 +1302,23 @@ struct PrivateHeaderKitAsyncInputTests {
             await runPrivateHeaderKitCommand(
                 ["privateheaderkit"],
                 currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-                generationRunner: { request, _ in
-                    generationCalled.setTrue()
-                    return resultFixture(
-                        for: request,
-                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
-                    )
-                },
+                generationClient: PrivateHeaderKitGenerationClient(
+                    prepare: { request in
+                        generationCalled.setTrue()
+                        return PrivateHeaderKitPreparedGeneration(
+                            summary: { .noUnfinishedRun },
+                            run: { _, _ in
+                                resultFixture(
+                                    for: request,
+                                    counts: PrivateHeaderGeneration.TargetCounts(
+                                        total: 1,
+                                        completed: 1
+                                    )
+                                )
+                            }
+                        )
+                    }
+                ),
                 interactiveSourceProvider: {
                     [
                         PrivateHeaderKitInteractiveSource(
@@ -1504,6 +1600,30 @@ private enum FailureKind {
     case infrastructure
 }
 
+private func testPrivateHeaderKitGenerationClient(
+    onPrepare: @escaping @Sendable (PrivateHeaderKitGenerationRequest) -> Void = { _ in },
+    summary: @escaping @Sendable (
+        PrivateHeaderKitGenerationRequest
+    ) async throws -> PrivateHeaderKitPreparedGeneration.Summary = { _ in .noUnfinishedRun },
+    run: @escaping @Sendable (
+        PrivateHeaderKitGenerationRequest,
+        PrivateHeaderGeneration.ResumeBehavior,
+        PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
+    ) async throws -> PrivateHeaderGeneration.Result
+) -> PrivateHeaderKitGenerationClient {
+    PrivateHeaderKitGenerationClient(
+        prepare: { request in
+            onPrepare(request)
+            return PrivateHeaderKitPreparedGeneration(
+                summary: { try await summary(request) },
+                run: { resumeBehavior, progressReporter in
+                    try await run(request, resumeBehavior, progressReporter)
+                }
+            )
+        }
+    )
+}
+
 private enum LegacyInputKind {
     case jsonState
     case artifactTree
@@ -1546,13 +1666,24 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
     let status = await runPrivateHeaderKitCommand(
         ["privateheaderkit"],
         currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-        generationRunner: { request, _ in
-            requestBox.set(request)
-            return resultFixture(
-                for: request,
-                counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
-            )
-        },
+        generationClient: testPrivateHeaderKitGenerationClient(
+            summary: { _ in
+                switch kind {
+                case .jsonState:
+                    .legacyState(path: detectedURL.deletingLastPathComponent().path)
+                case .artifactTree:
+                    .legacyArtifacts(path: detectedURL.deletingLastPathComponent().path)
+                }
+            },
+            run: { request, resumeBehavior, _ in
+                requestBox.set(request)
+                #expect(resumeBehavior == .fresh)
+                return resultFixture(
+                    for: request,
+                    counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                )
+            }
+        ),
         helperResolver: testPrivateHeaderKitHelperResolver,
         interactiveSourceProvider: {
             [
@@ -1572,7 +1703,10 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
     )
 
     #expect(status == 0)
-    #expect(requestBox.value?.options.resumeBehavior == .fresh)
+    #expect(
+        requestBox.value?.options.resumeBehavior
+            == .requireExplicitResume(resumeRequested: false)
+    )
     #expect(output.text.contains("Migrate and start fresh"))
     #expect(output.text.contains("[2] Back"))
     #expect(output.text.contains(outputBase.path))
@@ -1617,6 +1751,58 @@ private func resultFixture(
         targetCounts: counts,
         warnings: warnings
     )
+}
+
+private func unfinishedResumeSummaryFixture() async throws
+    -> PrivateHeaderGeneration.ResumeSummary
+{
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let systemRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: systemRoot.appendingPathComponent(
+            "System/Library/Frameworks/Foo.framework",
+            isDirectory: true
+        ),
+        withIntermediateDirectories: true
+    )
+    let source = try PrivateHeaderGeneration.Source(
+        platform: .macOS,
+        version: "16.0"
+    )
+    let plan = PrivateHeaderGeneration.makePlan(
+        source: source,
+        output: PrivateHeaderGeneration.Output(
+            baseDirectory: root.appendingPathComponent("Output", isDirectory: true)
+        ),
+        options: PrivateHeaderGeneration.Options(
+            targetRequest: .allAvailable,
+            systemRoot: systemRoot,
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            executionMode: .host,
+            resumeBehavior: .requireExplicitResume(resumeRequested: false),
+            toolCompatibilityIdentity: "test-tool-identity"
+        )
+    )
+    let executor = PrivateHeaderGeneration.GenerationExecutor(
+        rawDumpRunner: { _ in
+            PrivateHeaderGeneration.RawDumping.Result(
+                terminationStatus: 1,
+                failureSummary: "fixture failure"
+            )
+        },
+        runIDGenerator: { "run-unfinished" },
+        generationIDGenerator: { "generation-unfinished" }
+    )
+    let preparedPlan = try await executor.prepare(plan)
+    do {
+        _ = try await executor.run(preparedPlan)
+        Issue.record("expected fixture generation to fail")
+    } catch let error as PrivateHeaderGeneration.GenerationError {
+        guard case .runFailed = error else { throw error }
+    }
+    let summary = try await executor.availableResumeSummary(for: preparedPlan)
+    return try #require(summary)
 }
 
 private func summaryFixture(

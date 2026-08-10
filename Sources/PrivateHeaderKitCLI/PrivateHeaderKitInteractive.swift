@@ -56,7 +56,7 @@ private enum PrivateHeaderKitLegacyMigrationKind {
 func runPrivateHeaderKitInteractiveGenerate(
     invokedProgramName: String,
     currentExecutableURL: URL?,
-    generationRunner: PrivateHeaderKitGenerationRunner,
+    generationClient: PrivateHeaderKitGenerationClient,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     helperResolver: PrivateHeaderKitHelperResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
@@ -144,27 +144,29 @@ func runPrivateHeaderKitInteractiveGenerate(
                     simulatorHelperPath: nil
                 )
                 do {
-                    let decision = try await interactiveResumeDecision(
-                        for: command,
+                    let request = try await preparePrivateHeaderKitGenerationRequest(
+                        command,
                         invokedProgramName: invokedProgramName,
                         currentExecutableURL: currentExecutableURL,
                         simulatorResolver: simulatorResolver,
                         helperResolver: helperResolver,
+                        outputLogger: outputLogger
+                    )
+                    let preparedGeneration = try await generationClient.prepare(request)
+                    let resumeBehavior = try await interactiveResumeDecision(
+                        preparedGeneration: preparedGeneration,
+                        request: request,
+                        outputBaseDirectory: command.outputBaseDirectory,
                         screenClearer: screenClearer,
                         inputReader: inputReader,
                         outputLogger: outputLogger
                     )
                     try await inputFinalizer()
-                    return await runPrivateHeaderKitGenerateCommand(
-                        command,
-                        invokedProgramName: invokedProgramName,
-                        currentExecutableURL: currentExecutableURL,
-                        generationRunner: generationRunner,
-                        simulatorResolver: simulatorResolver,
-                        helperResolver: helperResolver,
-                        preResolvedSimulatorResolution: decision.simulatorResolution,
-                        preResolvedHelperPlan: decision.helperPlan,
-                        resumeBehaviorOverride: decision.resumeBehavior,
+                    return await runPrivateHeaderKitPreparedGeneration(
+                        preparedGeneration,
+                        request: request,
+                        targetQuery: command.targetQuery,
+                        resumeBehavior: resumeBehavior,
                         resultScreenClearer: screenClearer,
                         outputLogger: outputLogger,
                         errorLogger: errorLogger
@@ -186,59 +188,28 @@ func runPrivateHeaderKitInteractiveGenerate(
     }
 }
 
-private struct PrivateHeaderKitInteractiveResumeDecision {
-    let resumeBehavior: PrivateHeaderGeneration.ResumeBehavior
-    let simulatorResolution: PrivateHeaderKitSimulatorResolution?
-    let helperPlan: PrivateHeaderKitHelperPlan
-}
-
 private func interactiveResumeDecision(
-    for command: PrivateHeaderKitGenerateCommand,
-    invokedProgramName: String,
-    currentExecutableURL: URL?,
-    simulatorResolver: PrivateHeaderKitSimulatorResolver,
-    helperResolver: PrivateHeaderKitHelperResolver,
+    preparedGeneration: PrivateHeaderKitPreparedGeneration,
+    request: PrivateHeaderKitGenerationRequest,
+    outputBaseDirectory: String,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
     outputLogger: @escaping PrivateHeaderKitOutputLogger
-) async throws -> PrivateHeaderKitInteractiveResumeDecision {
-    let publicExecutableURL = privateHeaderKitExecutableURL(
-        currentExecutableURL: currentExecutableURL,
-        fallbackProgramName: invokedProgramName
-    )
-    let simulatorResolution = command.platform == .iOS ? try simulatorResolver(command) : nil
-    let helperPlan = try await helperResolver(
-        publicExecutableURL,
-        command.simulatorHelperPath,
-        command.platform == .iOS
-    )
-    let request = try makePrivateHeaderGenerationRequest(
-        from: command,
-        helperURLs: helperPlan.helperURLs,
-        toolCompatibilityIdentity: helperPlan.toolCompatibilityIdentity,
-        simulatorResolution: simulatorResolution,
-        resumeBehaviorOverride: .requireExplicitResume(resumeRequested: false)
-    )
-    let summary: PrivateHeaderGeneration.ResumeSummary?
-    do {
-        summary = try await PrivateHeaderGeneration.availableResumeSummary(
-            source: request.source,
-            output: request.output,
-            options: request.options
-        )
-    } catch let error as PrivateHeaderGeneration.GenerationError {
-        let legacyKind: PrivateHeaderKitLegacyMigrationKind
-        switch error {
-        case .legacyStateRequiresFresh(let path):
-            legacyKind = .state(path: path)
-        case .legacyArtifactsRequireFresh(let path):
-            legacyKind = .artifacts(path: path)
-        default:
-            throw error
-        }
+) async throws -> PrivateHeaderGeneration.ResumeBehavior {
+    let summary = try await preparedGeneration.summary()
+    let legacyKind: PrivateHeaderKitLegacyMigrationKind?
+    switch summary {
+    case .legacyState(let path):
+        legacyKind = .state(path: path)
+    case .legacyArtifacts(let path):
+        legacyKind = .artifacts(path: path)
+    case .noUnfinishedRun, .unfinished:
+        legacyKind = nil
+    }
+    if let legacyKind {
         let action = try await promptLegacyMigrationDecision(
             sourceDisplayName: request.source.label.displayName,
-            outputBaseDirectory: command.outputBaseDirectory,
+            outputBaseDirectory: outputBaseDirectory,
             kind: legacyKind,
             backupDirectory: request.output.baseDirectory
                 .appendingPathComponent(".privateheaderkit", isDirectory: true)
@@ -251,23 +222,15 @@ private func interactiveResumeDecision(
         guard action == .migrateAndStartFresh else {
             throw PrivateHeaderKitInteractiveNavigation.back
         }
-        return PrivateHeaderKitInteractiveResumeDecision(
-            resumeBehavior: .fresh,
-            simulatorResolution: simulatorResolution,
-            helperPlan: helperPlan
-        )
+        return .fresh
     }
-    guard let summary else {
-        return PrivateHeaderKitInteractiveResumeDecision(
-            resumeBehavior: .fresh,
-            simulatorResolution: simulatorResolution,
-            helperPlan: helperPlan
-        )
+    guard case .unfinished(let resumeSummary) = summary else {
+        return .fresh
     }
 
     renderInteractiveResumeScreen(
         sourceDisplayName: request.source.label.displayName,
-        summary: summary,
+        summary: resumeSummary,
         screenClearer: screenClearer,
         outputLogger: outputLogger
     )
@@ -277,11 +240,7 @@ private func interactiveResumeDecision(
         inputReader: inputReader,
         outputLogger: outputLogger
     )
-    return PrivateHeaderKitInteractiveResumeDecision(
-        resumeBehavior: action == .continuePrevious ? .resume : .fresh,
-        simulatorResolution: simulatorResolution,
-        helperPlan: helperPlan
-    )
+    return action == .continuePrevious ? .resume : .fresh
 }
 
 private func promptLegacyMigrationDecision(
@@ -374,7 +333,7 @@ private func renderInteractiveTargetInputScreen(
     outputLogger("Enter comma-separated target names, or press Escape to go back.")
 }
 
-func renderInteractiveResumeScreen(
+private func renderInteractiveResumeScreen(
     sourceDisplayName: String,
     summary: PrivateHeaderGeneration.ResumeSummary,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
