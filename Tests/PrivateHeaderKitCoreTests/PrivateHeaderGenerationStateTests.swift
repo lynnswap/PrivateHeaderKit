@@ -236,7 +236,7 @@ struct PrivateHeaderGenerationRunRecordTests {
         #expect(plan.execution == .unspecified)
     }
 
-    @Test func runPlanDecodingRejectsMissingExecutionRequiredNullableFields() throws {
+    @Test func runPlanDecodingDefaultsMissingCacheUUIDToNil() throws {
         let manifest = try makeManifest()
         let plan = PrivateHeaderGeneration.RunPlanRecord(
             source: manifest.source,
@@ -252,12 +252,28 @@ struct PrivateHeaderGenerationRunRecordTests {
         object["execution"] = execution
         let missingKeyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 
-        #expect(throws: DecodingError.self) {
-            _ = try PrivateHeaderGeneration.StateJSON.decode(
-                PrivateHeaderGeneration.RunPlanRecord.self,
-                from: missingKeyData
-            )
-        }
+        let decoded = try PrivateHeaderGeneration.StateJSON.decode(
+            PrivateHeaderGeneration.RunPlanRecord.self,
+            from: missingKeyData
+        )
+
+        #expect(decoded.execution.cacheUUID == nil)
+    }
+
+    @Test func runPlanEncodingKeepsNullCacheUUID() throws {
+        let manifest = try makeManifest()
+        let plan = PrivateHeaderGeneration.RunPlanRecord(
+            source: manifest.source,
+            output: manifest.output,
+            layout: manifest.layout,
+            targetIDs: ["framework:Foo"],
+            execution: makeExecutionRecord(cacheUUID: nil)
+        )
+
+        let data = try PrivateHeaderGeneration.StateJSON.encode(plan)
+        let json = try #require(String(data: data, encoding: .utf8))
+
+        #expect(json.contains("\"cacheUUID\" : null"))
     }
 
     @Test func runRecordEncodingKeepsRequiredNullFields() throws {
@@ -448,7 +464,8 @@ private func makeRunRecord() throws -> PrivateHeaderGeneration.RunRecord {
 }
 
 private func makeExecutionRecord(
-    deviceUDID: String = "SIM-001"
+    deviceUDID: String = "SIM-001",
+    cacheUUID: UUID? = UUID(uuidString: "11111111-2222-3333-4444-555555555555")
 ) -> PrivateHeaderGeneration.ExecutionRecord {
     PrivateHeaderGeneration.ExecutionRecord(
         mode: "simulator",
@@ -456,7 +473,7 @@ private func makeExecutionRecord(
         deviceName: "iPhone 17",
         deviceUDID: deviceUDID,
         clonePolicy: "reuseOrCreate",
-        cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555"),
+        cacheUUID: cacheUUID,
         helperEnvironment: [
             "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "max",
         ]

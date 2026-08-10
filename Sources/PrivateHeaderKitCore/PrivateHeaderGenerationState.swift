@@ -525,7 +525,11 @@ public extension PrivateHeaderGeneration {
             self.deviceName = try container.decodeRequiredNullable(String.self, forKey: .deviceName)
             self.deviceUDID = try container.decodeRequiredNullable(String.self, forKey: .deviceUDID)
             self.clonePolicy = try container.decodeRequiredNullable(String.self, forKey: .clonePolicy)
-            self.cacheUUID = try container.decodeRequiredNullable(UUID.self, forKey: .cacheUUID)
+            self.cacheUUID = if container.contains(.cacheUUID) {
+                try container.decodeRequiredNullable(UUID.self, forKey: .cacheUUID)
+            } else {
+                nil
+            }
             self.helperEnvironment = try container.decode([String: String].self, forKey: .helperEnvironment)
         }
 

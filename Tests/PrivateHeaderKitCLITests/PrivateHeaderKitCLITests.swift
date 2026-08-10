@@ -564,6 +564,8 @@ struct PrivateHeaderKitCLIParsingTests {
         ]
         var outputMessages: [String] = []
         var loggedMessages: [String] = []
+        var inputReadCount = 0
+        var helperPreparationCount = 0
 
         let exitCode = await runPrivateHeaderKitCommand(
             ["privateheaderkit"],
@@ -571,6 +573,18 @@ struct PrivateHeaderKitCLIParsingTests {
             generationRunner: { request, _ in
                 recorder.request = request
                 return summaryFixture(for: request)
+            },
+            resumeSummaryProvider: { _, _, _ in
+                Issue.record("manifest-free interactive generation should not load a resume summary")
+                return nil
+            },
+            helperPreparer: { _, _, _ in
+                helperPreparationCount += 1
+                #expect(inputReadCount == 2)
+                return .hostAndSimulator(
+                    host: URL(fileURLWithPath: "/prepared/host/privateheaderkit-raw-helper"),
+                    simulator: URL(fileURLWithPath: "/prepared/simulator/privateheaderkit-sim-helper")
+                )
             },
             simulatorResolver: { _ in simulatorResolution() },
             interactiveSourceProvider: {
@@ -585,7 +599,8 @@ struct PrivateHeaderKitCLIParsingTests {
             },
             interactiveScreenClearer: {},
             inputReader: {
-                inputs.isEmpty ? nil : inputs.removeFirst()
+                inputReadCount += 1
+                return inputs.isEmpty ? nil : inputs.removeFirst()
             },
             outputLogger: { outputMessages.append($0) },
             errorLogger: { loggedMessages.append($0) }
@@ -594,10 +609,57 @@ struct PrivateHeaderKitCLIParsingTests {
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
         #expect(loggedMessages.isEmpty)
+        #expect(helperPreparationCount == 1)
         #expect(request.targetQuery == "all")
         #expect(request.startsFresh)
         #expect(outputMessages.contains("      Generate every discoverable target."))
         #expect(!outputMessages.contains("Enter targets separated by commas."))
+    }
+
+    @Test func interactiveResumeDecisionWithoutManifestDoesNotPrepareHelpersOrLoadSummary() async throws {
+        let root = try makeCLITestTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let command = try PrivateHeaderKitGenerateCommand(
+            platform: .iOS,
+            version: "27.0",
+            build: nil,
+            systemRoot: nil,
+            outputBaseDirectory: root.path,
+            targetQuery: "all",
+            resume: false,
+            device: nil,
+            simulatorHelperPath: nil
+        )
+        var helperPreparationCount = 0
+        var resumeSummaryLoadCount = 0
+
+        let decision = try await interactiveResumeDecision(
+            for: command,
+            invokedProgramName: "privateheaderkit",
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit"),
+            simulatorResolver: { _ in simulatorResolution() },
+            resumeSummaryProvider: { _, _, _ in
+                resumeSummaryLoadCount += 1
+                return nil
+            },
+            helperPreparer: { _, _, _ in
+                helperPreparationCount += 1
+                return .hostAndSimulator(
+                    host: URL(fileURLWithPath: "/prepared/host/privateheaderkit-raw-helper"),
+                    simulator: URL(fileURLWithPath: "/prepared/simulator/privateheaderkit-sim-helper")
+                )
+            },
+            screenClearer: {},
+            inputReader: { nil },
+            outputLogger: { _ in }
+        )
+
+        #expect(decision.resumeBehavior == .fresh)
+        #expect(decision.preparedHelpers == nil)
+        #expect(helperPreparationCount == 0)
+        #expect(resumeSummaryLoadCount == 0)
     }
 
     @Test func noArgumentRunOffersContinueWhenAllExpandsPreviousSpecificTargetState() async throws {
@@ -629,15 +691,22 @@ struct PrivateHeaderKitCLIParsingTests {
         ]
         var outputMessages: [String] = []
         var loggedMessages: [String] = []
+        var helperPreparationCount = 0
+        let preparedHost = URL(fileURLWithPath: "/prepared/host/privateheaderkit-raw-helper")
+        let preparedSimulator = URL(fileURLWithPath: "/prepared/simulator/privateheaderkit-sim-helper")
 
         let exitCode = await runPrivateHeaderKitCommand(
             ["privateheaderkit"],
             currentExecutableURL: helperURL,
             generationRunner: { request, _ in
                 recorder.request = request
+                #expect(request.hostHelperURL == preparedHost)
+                #expect(request.simulatorHelperURL == preparedSimulator)
                 return summaryFixture(for: request)
             },
             resumeSummaryProvider: { source, output, options in
+                #expect(options.helperURLs?.host == preparedHost)
+                #expect(options.helperURLs?.simulator == preparedSimulator)
                 let plan = PrivateHeaderGeneration.makePlan(
                     source: source,
                     output: output,
@@ -675,6 +744,13 @@ struct PrivateHeaderKitCLIParsingTests {
                     ]
                 )
             },
+            helperPreparer: { _, _, _ in
+                helperPreparationCount += 1
+                return .hostAndSimulator(
+                    host: preparedHost,
+                    simulator: preparedSimulator
+                )
+            },
             simulatorResolver: { _ in simulatorResolution(resolvedRuntimeRoot: runtimeRoot.path) },
             interactiveSourceProvider: {
                 [
@@ -698,6 +774,7 @@ struct PrivateHeaderKitCLIParsingTests {
         let request = try #require(recorder.request)
         #expect(exitCode == 0)
         #expect(loggedMessages.isEmpty)
+        #expect(helperPreparationCount == 1)
         #expect(request.targetQuery == "all")
         #expect(request.source.build == "24A5355q")
         #expect(request.sourceDirectoryName == "ios-v1-27.0-b1-24~415355~71")
@@ -818,36 +895,92 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(request.simulatorHelperURL?.path == "/opt/libexec/privateheaderkit/privateheaderkit-sim-helper")
     }
 
-    @Test func helperDefaultsSupportSwiftPMBuildProducts() {
-        let publicCommandURL = URL(
+    @Test func iOSGenerateRejectsHostOnlyPreparedHelpers() async {
+        var generationRunCount = 0
+        var errors: [String] = []
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            validGenerateArguments(),
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit"),
+            generationRunner: { request, _ in
+                generationRunCount += 1
+                return summaryFixture(for: request)
+            },
+            helperPreparer: { _, _, _ in
+                .host(URL(fileURLWithPath: "/prepared/host/privateheaderkit-raw-helper"))
+            },
+            simulatorResolver: { _ in simulatorResolution() },
+            outputLogger: { _ in },
+            errorLogger: { errors.append($0) }
+        )
+
+        #expect(exitCode == 2)
+        #expect(generationRunCount == 0)
+        #expect(errors == ["error: iOS generation requires a prepared simulator helper"])
+    }
+
+    @Test func helperDefaultsRecognizeSwiftPMBuildProductLayouts() {
+        let tripleBuildCommandURL = URL(
             fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit",
             isDirectory: false
         )
-        let rawHelperURL = defaultRawDumpHelperURL(publicExecutableURL: publicCommandURL)
+        let xcodeBuildCommandURL = URL(
+            fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit",
+            isDirectory: false
+        )
+        let xcodeReleaseBuildCommandURL = URL(
+            fileURLWithPath: "/repo/.build/out/Products/Release/privateheaderkit",
+            isDirectory: false
+        )
 
-        #expect(rawHelperURL.path == "/repo/.build/arm64-apple-macosx/debug/privateheaderkit-raw-helper")
         #expect(
-            swiftPMBuildSimulatorHelperURL(
-                hostBuildExecutableURL: rawHelperURL,
-                simulatorTriple: "arm64-apple-ios-simulator"
-            )?.path == "/repo/.build/arm64-apple-ios-simulator/debug/privateheaderkit-sim-helper"
+            defaultRawDumpHelperURL(publicExecutableURL: tripleBuildCommandURL).path
+                == "/repo/.build/arm64-apple-macosx/debug/privateheaderkit-raw-helper"
+        )
+        #expect(
+            defaultRawDumpHelperURL(publicExecutableURL: xcodeBuildCommandURL).path
+                == "/repo/.build/out/Products/Debug/privateheaderkit-raw-helper"
+        )
+        #expect(
+            defaultRawDumpHelperURL(publicExecutableURL: xcodeReleaseBuildCommandURL).path
+                == "/repo/.build/out/Products/Release/privateheaderkit-raw-helper"
         )
     }
 
-    @Test func swiftPMBuildHelpersBuildMissingSourceTreeProducts() throws {
+    @Test func swiftPMBuildHelpersUseReportedHostAndSimulatorProductDirectories() throws {
         let publicCommandURL = URL(
-            fileURLWithPath: "/repo/.build/arm64-apple-macosx/debug/privateheaderkit",
+            fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit",
             isDirectory: false
         )
-        let runner = RecordingCommandRunner()
+        let runner = RecordingCommandRunner(capturedOutputs: [
+            "",
+            "/actual/host/products\n",
+            "/SDK/iPhoneSimulator\n",
+            "",
+            "/actual/simulator/products\n",
+        ])
+        let command = try PrivateHeaderKitGenerateCommand(
+            platform: .iOS,
+            version: "27.0",
+            build: nil,
+            systemRoot: nil,
+            outputBaseDirectory: "/tmp/PrivateHeaderKit",
+            targetQuery: "all",
+            resume: false,
+            device: nil,
+            simulatorHelperPath: nil
+        )
 
-        try ensureSwiftPMBuildHelpersIfNeeded(
-            publicExecutableURL: publicCommandURL,
-            includeSimulatorHelper: true,
+        let helpers = try preparePrivateHeaderKitHelpers(
+            command: command,
+            invokedProgramName: "privateheaderkit",
+            currentExecutableURL: publicCommandURL,
             runner: runner,
             simulatorTriple: "arm64-apple-ios-simulator"
         )
 
+        #expect(helpers.host.path == "/actual/host/products/privateheaderkit-raw-helper")
+        #expect(helpers.simulator?.path == "/actual/simulator/products/privateheaderkit-sim-helper")
         #expect(runner.commands == [
             RecordedCommand(
                 command: [
@@ -861,6 +994,10 @@ struct PrivateHeaderKitCLIParsingTests {
                 cwd: "/repo"
             ),
             RecordedCommand(
+                command: ["swift", "build", "-c", "debug", "--show-bin-path"],
+                cwd: "/repo"
+            ),
+            RecordedCommand(
                 command: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
                 cwd: nil
             ),
@@ -870,6 +1007,8 @@ struct PrivateHeaderKitCLIParsingTests {
                     "build",
                     "-c",
                     "debug",
+                    "--scratch-path",
+                    "/repo/.build/privateheaderkit-simulator/arm64-apple-ios-simulator",
                     "--sdk",
                     "/SDK/iPhoneSimulator",
                     "--triple",
@@ -877,6 +1016,126 @@ struct PrivateHeaderKitCLIParsingTests {
                     "--product",
                     "privateheaderkit-sim-helper",
                 ],
+                cwd: "/repo"
+            ),
+            RecordedCommand(
+                command: [
+                    "swift",
+                    "build",
+                    "-c",
+                    "debug",
+                    "--scratch-path",
+                    "/repo/.build/privateheaderkit-simulator/arm64-apple-ios-simulator",
+                    "--sdk",
+                    "/SDK/iPhoneSimulator",
+                    "--triple",
+                    "arm64-apple-ios-simulator",
+                    "--show-bin-path",
+                ],
+                cwd: "/repo"
+            ),
+        ])
+    }
+
+    @Test func swiftPMBuildHelpersRejectWhitespaceOnlyReportedProductDirectory() throws {
+        let command = try PrivateHeaderKitGenerateCommand(
+            platform: .macOS,
+            version: "16.0",
+            build: nil,
+            systemRoot: "/",
+            outputBaseDirectory: "/tmp/PrivateHeaderKit",
+            targetQuery: "all",
+            resume: false,
+            device: nil,
+            simulatorHelperPath: nil
+        )
+        let runner = RecordingCommandRunner(capturedOutputs: ["", " \n\t"])
+
+        #expect(throws: PrivateHeaderKitCLIError.invalidCommandPathOutput("swift build --show-bin-path")) {
+            _ = try preparePrivateHeaderKitHelpers(
+                command: command,
+                invokedProgramName: "privateheaderkit",
+                currentExecutableURL: URL(
+                    fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit",
+                    isDirectory: false
+                ),
+                runner: runner
+            )
+        }
+    }
+
+    @Test func swiftPMBuildHelpersRejectRelativeReportedProductDirectory() throws {
+        let command = try PrivateHeaderKitGenerateCommand(
+            platform: .macOS,
+            version: "16.0",
+            build: nil,
+            systemRoot: "/",
+            outputBaseDirectory: "/tmp/PrivateHeaderKit",
+            targetQuery: "all",
+            resume: false,
+            device: nil,
+            simulatorHelperPath: nil
+        )
+        let runner = RecordingCommandRunner(capturedOutputs: ["", ".build/debug\n"])
+
+        #expect(throws: PrivateHeaderKitCLIError.invalidCommandPathOutput("swift build --show-bin-path")) {
+            _ = try preparePrivateHeaderKitHelpers(
+                command: command,
+                invokedProgramName: "privateheaderkit",
+                currentExecutableURL: URL(
+                    fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit",
+                    isDirectory: false
+                ),
+                runner: runner
+            )
+        }
+    }
+
+    @Test func swiftPMBuildHelpersUseExplicitSimulatorHelperWithoutSimulatorBuild() throws {
+        let explicitSimulatorHelper = "/custom/privateheaderkit-sim-helper"
+        let command = try PrivateHeaderKitGenerateCommand(
+            platform: .iOS,
+            version: "27.0",
+            build: nil,
+            systemRoot: nil,
+            outputBaseDirectory: "/tmp/PrivateHeaderKit",
+            targetQuery: "all",
+            resume: false,
+            device: nil,
+            simulatorHelperPath: explicitSimulatorHelper
+        )
+        let runner = RecordingCommandRunner(capturedOutputs: [
+            "",
+            "/actual/host/products\n",
+        ])
+
+        let helpers = try preparePrivateHeaderKitHelpers(
+            command: command,
+            invokedProgramName: "privateheaderkit",
+            currentExecutableURL: URL(
+                fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit",
+                isDirectory: false
+            ),
+            runner: runner,
+            simulatorTriple: "arm64-apple-ios-simulator"
+        )
+
+        #expect(helpers.host.path == "/actual/host/products/privateheaderkit-raw-helper")
+        #expect(helpers.simulator?.path == explicitSimulatorHelper)
+        #expect(runner.commands == [
+            RecordedCommand(
+                command: [
+                    "swift",
+                    "build",
+                    "-c",
+                    "debug",
+                    "--product",
+                    "privateheaderkit-raw-helper",
+                ],
+                cwd: "/repo"
+            ),
+            RecordedCommand(
+                command: ["swift", "build", "-c", "debug", "--show-bin-path"],
                 cwd: "/repo"
             ),
         ])
@@ -966,6 +1225,53 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(!request.usesSharedCache)
     }
 
+    @Test func iOSGenerateCanonicalizesEquivalentExplicitAndResolvedRuntimeRoots() async throws {
+        let root = try makeCLITestTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        let runtimeRootAlias = root.appendingPathComponent("RuntimeRootAlias", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: runtimeRootAlias,
+            withDestinationURL: runtimeRoot
+        )
+        let recorder = GenerationRequestRecorder()
+
+        let exitCode = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform",
+                "iOS",
+                "--version",
+                "27.0",
+                "--system-root",
+                runtimeRootAlias.path,
+                "--out",
+                root.appendingPathComponent("Output", isDirectory: true).path,
+                "--target",
+                "SwiftUI",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/opt/privateheaderkit/bin/privateheaderkit"),
+            generationRunner: { request, _ in
+                recorder.request = request
+                return summaryFixture(for: request)
+            },
+            simulatorResolver: { _ in
+                simulatorResolution(resolvedRuntimeRoot: runtimeRoot.path)
+            },
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        let request = try #require(recorder.request)
+        #expect(exitCode == 0)
+        #expect(request.systemRoot == runtimeRoot.resolvingSymlinksInPath().standardizedFileURL)
+        #expect(request.simulatorRuntimeRoot == runtimeRoot.resolvingSymlinksInPath().standardizedFileURL.path)
+        #expect(request.usesSharedCache)
+    }
+
     @Test func iOSGenerateExplicitBuildWinsOverResolvedRuntimeBuild() async throws {
         let recorder = GenerationRequestRecorder()
         let exitCode = await runPrivateHeaderKitCommand(
@@ -1038,6 +1344,7 @@ struct PrivateHeaderKitCLIParsingTests {
         #expect(exitCode == 0)
         #expect(request.systemRoot?.path == "/")
         #expect(request.hostHelperURL == rawDumpHelperURL)
+        #expect(request.simulatorHelperURL == nil)
         #expect(request.usesHostExecution)
         #expect(request.simulatorDeviceUDID == nil)
         #expect(request.usesSharedCache)
@@ -1273,9 +1580,17 @@ private struct RecordedCommand: Equatable {
 
 private final class RecordingCommandRunner: CommandRunning {
     var commands: [RecordedCommand] = []
+    var capturedOutputs: [String]
+
+    init(capturedOutputs: [String] = []) {
+        self.capturedOutputs = capturedOutputs
+    }
 
     func runCapture(_ command: [String], env _: [String: String]?, cwd: URL?) throws -> String {
         commands.append(RecordedCommand(command: command, cwd: cwd?.path))
+        if !capturedOutputs.isEmpty {
+            return capturedOutputs.removeFirst()
+        }
         if command == ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"] {
             return "/SDK/iPhoneSimulator\n"
         }

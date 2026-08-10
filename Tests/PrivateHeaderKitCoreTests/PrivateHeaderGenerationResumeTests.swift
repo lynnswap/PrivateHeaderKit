@@ -265,6 +265,7 @@ struct PrivateHeaderGenerationResumeTests {
             makeExecutionRecord(deviceName: "iPhone 16"),
             makeExecutionRecord(deviceUDID: "SIM-002"),
             makeExecutionRecord(clonePolicy: "alwaysClone"),
+            makeExecutionRecord(cacheUUID: nil),
             makeExecutionRecord(helperEnvironment: [
                 "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "min",
             ]),
@@ -586,6 +587,7 @@ private func makeExecutionRecord(
     deviceName: String? = "iPhone 17",
     deviceUDID: String? = "SIM-001",
     clonePolicy: String? = "reuseOrCreate",
+    cacheUUID: UUID? = UUID(uuidString: "11111111-2222-3333-4444-555555555555"),
     helperEnvironment: [String: String] = [
         "SIMCTL_CHILD_PRIVATEHEADERKIT_DUMP_QUALITY": "max",
     ]
@@ -596,6 +598,7 @@ private func makeExecutionRecord(
         deviceName: deviceName,
         deviceUDID: deviceUDID,
         clonePolicy: clonePolicy,
+        cacheUUID: cacheUUID,
         helperEnvironment: helperEnvironment
     )
 }
