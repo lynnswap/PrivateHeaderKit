@@ -587,6 +587,32 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             targetFailureSummary = failureSummary
         }
 
+        let commitPlan: PrivateHeaderGeneration.ArtifactStore.CommitPlan
+        do {
+            commitPlan = try artifactStore.prepareCommit(
+                stagedSourceDirectory: stagedSourceDirectory,
+                artifactRoot: artifactRoot
+            )
+        } catch {
+            let failureSummary = "commit failed: \(error)"
+            return failedTargetResult(
+                target: target,
+                runID: runID,
+                status: .commitFailed,
+                phases: [
+                    rawDumpPhase,
+                    PrivateHeaderGeneration.PhaseRecord(
+                        name: "commit",
+                        status: .failed,
+                        failureSummary: failureSummary
+                    ),
+                ],
+                artifacts: preservedArtifacts,
+                attemptedArtifacts: attemptedArtifacts,
+                failureSummary: failureSummary
+            )
+        }
+
         do {
             try artifactStore.cleanupManagedArtifacts(
                 PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
@@ -615,11 +641,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         }
 
         do {
-            try Self.commit(
-                stagedSourceDirectory: stagedSourceDirectory,
-                artifactRoot: artifactRoot,
-                artifactDirectory: plan.artifactDirectory
-            )
+            try artifactStore.commit(commitPlan)
         } catch {
             let failureSummary = "commit failed: \(error)"
             return failedTargetResult(
@@ -988,18 +1010,6 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         }
 
         return artifacts.sorted { $0.rawValue < $1.rawValue }
-    }
-
-    static func commit(
-        stagedSourceDirectory: URL,
-        artifactRoot: PrivateHeaderGeneration.ArtifactPath,
-        artifactDirectory: URL
-    ) throws {
-        let destination = appendRelativePath(artifactRoot.rawValue, to: artifactDirectory)
-        try mergeDirectoryContents(
-            from: stagedSourceDirectory,
-            to: destination
-        )
     }
 
     static func artifactRoot(
@@ -1588,38 +1598,6 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
             url.appendPathComponent(String(component), isDirectory: true)
         }
         return url
-    }
-
-    static func mergeDirectoryContents(
-        from source: URL,
-        to destination: URL
-    ) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-        let entries = try fileManager.contentsOfDirectory(
-            at: source,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: []
-        )
-
-        for entry in entries {
-            let destinationEntry = destination.appendingPathComponent(
-                entry.lastPathComponent,
-                isDirectory: false
-            )
-            if isDirectory(entry) {
-                try mergeDirectoryContents(from: entry, to: destinationEntry)
-            } else {
-                if fileManager.fileExists(atPath: destinationEntry.path) {
-                    try fileManager.removeItem(at: destinationEntry)
-                }
-                try fileManager.createDirectory(
-                    at: destinationEntry.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try fileManager.moveItem(at: entry, to: destinationEntry)
-            }
-        }
     }
 
     static func isDirectory(_ url: URL) -> Bool {

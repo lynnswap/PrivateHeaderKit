@@ -250,6 +250,256 @@ struct PrivateHeaderGenerationArtifactStoreTests {
         #expect(directoryExists(realRoot))
         #expect(directoryExists(symlinkRoot))
     }
+
+    @Test func commitRejectsIntermediateSymlinkWithoutModifyingExternalDirectory() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try writeFile("Generated.h", in: staging)
+        try writeFile("sentinel", to: "Sentinel.txt", in: outside)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Frameworks"),
+            withDestinationURL: outside
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+            )
+        }
+
+        #expect(try fileContents("Sentinel.txt", in: outside) == "sentinel")
+        #expect(!pathExists("Foo/Headers/Generated.h", in: outside))
+        #expect(symbolicLinkExists("Frameworks", in: root))
+        #expect(pathExists("Generated.h", in: staging))
+    }
+
+    @Test func commitRejectsLeafSymlinkWithoutReplacingLinkOrExternalFile() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try writeFile("replacement", to: "Generated.h", in: staging)
+        try writeFile("external", to: "External.h", in: outside)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Frameworks/Foo/Headers", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Frameworks/Foo/Headers/Generated.h"),
+            withDestinationURL: outside.appendingPathComponent("External.h")
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+            )
+        }
+
+        #expect(try fileContents("External.h", in: outside) == "external")
+        #expect(symbolicLinkExists("Frameworks/Foo/Headers/Generated.h", in: root))
+        #expect(pathExists("Generated.h", in: staging))
+    }
+
+    @Test func commitPreflightsAllDestinationsBeforeWritingAnyArtifact() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try writeFile("alpha", to: "A.h", in: staging)
+        try writeFile("beta", to: "B.h", in: staging)
+        try writeFile("external", to: "External.h", in: outside)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Frameworks/Foo/Headers", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Frameworks/Foo/Headers/B.h"),
+            withDestinationURL: outside.appendingPathComponent("External.h")
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+            )
+        }
+
+        #expect(!pathExists("Frameworks/Foo/Headers/A.h", in: root))
+        #expect(symbolicLinkExists("Frameworks/Foo/Headers/B.h", in: root))
+        #expect(try fileContents("External.h", in: outside) == "external")
+        #expect(pathExists("A.h", in: staging))
+        #expect(pathExists("B.h", in: staging))
+    }
+
+    @Test func commitMovesStagedFilesIntoNormalDestination() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try writeFile("replacement", to: "Generated.h", in: staging)
+        try writeFile("swift", to: "Nested/Foo.swiftinterface", in: staging)
+        try writeFile(
+            "previous",
+            to: "Frameworks/Foo/Headers/Generated.h",
+            in: root
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        let plan = try store.prepareCommit(
+            stagedSourceDirectory: staging,
+            artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+        )
+        try store.commit(plan)
+
+        #expect(
+            try fileContents("Frameworks/Foo/Headers/Generated.h", in: root) == "replacement"
+        )
+        #expect(
+            try fileContents(
+                "Frameworks/Foo/Headers/Nested/Foo.swiftinterface",
+                in: root
+            ) == "swift"
+        )
+        #expect(!pathExists("Generated.h", in: staging))
+        #expect(!pathExists("Nested/Foo.swiftinterface", in: staging))
+    }
+
+    @Test func commitUsesSymlinkArtifactRootAsCanonicalBoundary() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let realRoot = base.appendingPathComponent("real-artifacts", isDirectory: true)
+        let symlinkRoot = base.appendingPathComponent("artifact-link", isDirectory: true)
+        try writeFile("generated", to: "Generated.h", in: staging)
+        try FileManager.default.createDirectory(at: realRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkRoot,
+            withDestinationURL: realRoot
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: symlinkRoot)
+
+        let plan = try store.prepareCommit(
+            stagedSourceDirectory: staging,
+            artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+        )
+        try store.commit(plan)
+
+        #expect(
+            try fileContents("Frameworks/Foo/Headers/Generated.h", in: realRoot) == "generated"
+        )
+        #expect(symbolicLinkExists("artifact-link", in: base))
+    }
+
+    @Test func commitRejectsSymlinkStagingRoot() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let realStaging = base.appendingPathComponent("real-staging", isDirectory: true)
+        let symlinkStaging = base.appendingPathComponent("staging-link", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try writeFile("generated", to: "Generated.h", in: realStaging)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkStaging,
+            withDestinationURL: realStaging
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagedSourceDirectory: symlinkStaging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+            )
+        }
+
+        #expect(try fileContents("Generated.h", in: realStaging) == "generated")
+        #expect(!pathExists("Frameworks/Foo/Headers/Generated.h", in: root))
+    }
+
+    @Test func commitRejectsSymlinkStagingDescendant() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try writeFile("external", to: "External.h", in: outside)
+        try FileManager.default.createSymbolicLink(
+            at: staging.appendingPathComponent("Linked.h"),
+            withDestinationURL: outside.appendingPathComponent("External.h")
+        )
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            _ = try store.prepareCommit(
+                stagedSourceDirectory: staging,
+                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+            )
+        }
+
+        #expect(try fileContents("External.h", in: outside) == "external")
+        #expect(!pathExists("Frameworks/Foo/Headers/Linked.h", in: root))
+    }
+
+    @Test func commitRechecksDestinationAfterPreflight() throws {
+        let base = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: base)
+        }
+        let staging = base.appendingPathComponent("staging", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        let root = base.appendingPathComponent("artifacts", isDirectory: true)
+        try writeFile("replacement", to: "Generated.h", in: staging)
+        try writeFile("external", to: "External.h", in: outside)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = PrivateHeaderGeneration.ArtifactStore(artifactRoot: root)
+        let plan = try store.prepareCommit(
+            stagedSourceDirectory: staging,
+            artifactRoot: try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers")
+        )
+        let destination = root.appendingPathComponent(
+            "Frameworks/Foo/Headers/Generated.h"
+        )
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: destination,
+            withDestinationURL: outside.appendingPathComponent("External.h")
+        )
+
+        #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
+            try store.commit(plan)
+        }
+
+        #expect(try fileContents("External.h", in: outside) == "external")
+        #expect(symbolicLinkExists("Frameworks/Foo/Headers/Generated.h", in: root))
+        #expect(pathExists("Generated.h", in: staging))
+    }
 }
 
 private func makeTemporaryDirectory() throws -> URL {
@@ -260,12 +510,20 @@ private func makeTemporaryDirectory() throws -> URL {
 }
 
 private func writeFile(_ relativePath: String, in root: URL) throws {
+    try writeFile("contents", to: relativePath, in: root)
+}
+
+private func writeFile(_ contents: String, to relativePath: String, in root: URL) throws {
     let url = root.appendingPathComponent(relativePath)
     try FileManager.default.createDirectory(
         at: url.deletingLastPathComponent(),
         withIntermediateDirectories: true
     )
-    try Data("contents".utf8).write(to: url)
+    try Data(contents.utf8).write(to: url)
+}
+
+private func fileContents(_ relativePath: String, in root: URL) throws -> String {
+    String(decoding: try Data(contentsOf: root.appendingPathComponent(relativePath)), as: UTF8.self)
 }
 
 private func pathExists(_ relativePath: String, in root: URL) -> Bool {
@@ -282,4 +540,15 @@ private func directoryExists(_ url: URL) -> Bool {
     var isDirectory = ObjCBool(false)
     return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
         && isDirectory.boolValue
+}
+
+private func symbolicLinkExists(_ relativePath: String, in root: URL) -> Bool {
+    do {
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: root.appendingPathComponent(relativePath).path
+        )
+        return attributes[.type] as? FileAttributeType == .typeSymbolicLink
+    } catch {
+        return false
+    }
 }

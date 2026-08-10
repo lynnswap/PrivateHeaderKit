@@ -647,6 +647,73 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(fileExists(plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")))
     }
 
+    @Test func unsafeCommitDestinationDoesNotCleanupPreservedArtifacts() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+
+        let targetID = "framework:Foo.framework"
+        let managed = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers/Old.h")
+        let plan = try fixture.makePlan(
+            targetRequest: .query("Foo"),
+            resumeBehavior: .resume
+        )
+        let outside = fixture.root.appendingPathComponent("outside", isDirectory: true)
+        let externalFile = outside.appendingPathComponent("External.h")
+        let unsafeDestination = plan.artifactDirectory
+            .appendingPathComponent("Frameworks/Foo/Headers/Generated.h")
+        try writeFile("managed", to: plan.artifactDirectory.appendingPathComponent(managed.rawValue))
+        try writeFile("external", to: externalFile)
+        try FileManager.default.createSymbolicLink(
+            at: unsafeDestination,
+            withDestinationURL: externalFile
+        )
+        try fixture.writeState(
+            plan: plan,
+            runID: "run-prev",
+            targetID: targetID,
+            status: .partial,
+            artifacts: [managed],
+            runStatus: .partial,
+            attemptedArtifacts: [managed]
+        )
+
+        let runner = RecordingRawDumpRunner()
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await runner.run(invocation) },
+            runIDGenerator: { "run-002" },
+            dateProvider: fixedDates()
+        )
+
+        await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+            _ = try await executor.run(.init(plan: plan))
+        }
+
+        #expect(
+            try String(
+                contentsOf: plan.artifactDirectory.appendingPathComponent(managed.rawValue),
+                encoding: .utf8
+            )
+                == "managed"
+        )
+        #expect(try String(contentsOf: externalFile, encoding: .utf8) == "external")
+        let attributes = try FileManager.default.attributesOfItem(atPath: unsafeDestination.path)
+        #expect(attributes[.type] as? FileAttributeType == .typeSymbolicLink)
+
+        let manifest = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.Manifest.self,
+            from: plan.stateDirectory.appendingPathComponent("manifest.json")
+        )
+        let run = try PrivateHeaderGeneration.StateJSON.read(
+            PrivateHeaderGeneration.RunRecord.self,
+            from: plan.stateDirectory.appendingPathComponent("runs/run-002/run.json")
+        )
+        #expect(manifest.targets.first?.artifacts == [managed])
+        #expect(run.targetResults.first?.status == .commitFailed)
+        #expect(run.targetResults.first?.artifacts.isEmpty == true)
+        #expect(run.targetResults.first?.phases.map(\.name) == ["raw-header-dump", "commit"])
+    }
+
     @Test func simulatorExecutionUsesRuntimeInputPathAndCommitsHeaderAndSwiftInterfaceArtifacts() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
