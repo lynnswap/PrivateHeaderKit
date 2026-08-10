@@ -60,6 +60,7 @@ need awk
 need curl
 need mktemp
 need shasum
+need sw_vers
 need tar
 need uname
 
@@ -78,6 +79,19 @@ elif [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
 fi
 if [ "$arm64_capable" != "1" ]; then
   echo "GitHub release archives support macOS arm64 only; build from source on ${os}/${architecture}." >&2
+  exit 1
+fi
+
+macos_version="$(sw_vers -productVersion)"
+macos_major="${macos_version%%.*}"
+case "$macos_major" in
+  ''|*[!0-9]*)
+    echo "Could not determine the macOS major version: ${macos_version:-<missing>}" >&2
+    exit 1
+    ;;
+esac
+if [ "$macos_major" -lt 14 ]; then
+  echo "GitHub release archives require macOS 14 or newer; build from source on macOS ${macos_version}." >&2
   exit 1
 fi
 

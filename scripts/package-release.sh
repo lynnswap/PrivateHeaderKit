@@ -136,43 +136,62 @@ if ! cmp -s "$temporary_directory/release.json" "$stage_root/cohort/release.json
   exit 1
 fi
 
+output_existed=0
 if [[ -e "$output_base" || -L "$output_base" ]]; then
   if [[ ! -d "$output_base" || -L "$output_base" ]]; then
     echo "Release output must be a real directory: $output_base" >&2
     exit 1
   fi
-else
-  mkdir -p "$output_base"
+  output_existed=1
 fi
 expected_assets="$(printf '%s\n' \
   "SHA256SUMS.txt" \
   "install.sh" \
   "privateheaderkit-darwin-arm64.tar.gz")"
-existing_assets="$(find "$output_base" -mindepth 1 -maxdepth 1 -print \
-  | sed 's|.*/||' \
-  | LC_ALL=C sort)"
-if [[ -n "$existing_assets" && "$existing_assets" != "$expected_assets" ]]; then
-  echo "Refusing to replace an output directory containing unknown entries: $output_base" >&2
-  printf 'Actual:\n%s\n' "$existing_assets" >&2
-  exit 1
-fi
-if [[ -n "$existing_assets" ]]; then
-  for asset in \
-    "$output_base/SHA256SUMS.txt" \
-    "$output_base/install.sh" \
-    "$output_base/privateheaderkit-darwin-arm64.tar.gz"
-  do
-    if [[ ! -f "$asset" || -L "$asset" ]]; then
-      echo "Refusing to replace an unowned release asset: $asset" >&2
-      exit 1
-    fi
-  done
+if [[ "$output_existed" == "1" ]]; then
+  while IFS= read -r asset; do
+    [[ -n "$asset" ]] || continue
+    asset_name="${asset##*/}"
+    case "$asset_name" in
+      SHA256SUMS.txt|install.sh|privateheaderkit-darwin-arm64.tar.gz)
+        if [[ ! -f "$asset" || -L "$asset" ]]; then
+          echo "Refusing to replace an unowned release asset: $asset" >&2
+          exit 1
+        fi
+        ;;
+      *)
+        echo "Refusing to replace an output directory containing unknown entries: $output_base" >&2
+        echo "Unknown entry: $asset_name" >&2
+        exit 1
+        ;;
+    esac
+  done < <(find "$output_base" -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort)
 fi
 
-archive="$output_base/privateheaderkit-darwin-arm64.tar.gz"
-install_script="$output_base/install.sh"
-checksum_file="$output_base/SHA256SUMS.txt"
-rm -f "$archive" "$install_script" "$checksum_file"
+output_parent="$(dirname "$output_base")"
+mkdir -p "$output_parent"
+output_parent="$(cd "$output_parent" && pwd -P)"
+output_name="$(basename "$output_base")"
+output_base="$output_parent/$output_name"
+output_work="$(mktemp -d "$output_parent/.${output_name}.staging.XXXXXX")"
+output_backup=""
+cleanup_output() {
+  if [[ -n "${output_work:-}" && -d "$output_work" ]]; then
+    rm -rf "$output_work"
+  fi
+  if [[ -n "${output_backup:-}" && -d "$output_backup" ]]; then
+    if [[ ! -e "$output_base" && ! -L "$output_base" ]]; then
+      mv "$output_backup" "$output_base"
+    else
+      rm -rf "$output_backup"
+    fi
+  fi
+  rm -rf "$temporary_directory"
+}
+trap cleanup_output EXIT
+
+archive="$output_work/privateheaderkit-darwin-arm64.tar.gz"
+install_script="$output_work/install.sh"
 
 COPYFILE_DISABLE=1 tar -C "$stage_root" -czf "$archive" \
   "bin/privateheaderkit-install" \
@@ -188,18 +207,32 @@ COPYFILE_DISABLE=1 tar -C "$stage_root" -czf "$archive" \
   --output "$install_script"
 
 (
-  cd "$output_base"
+  cd "$output_work"
   shasum -a 256 \
     "privateheaderkit-darwin-arm64.tar.gz" \
     "install.sh" > "SHA256SUMS.txt"
 )
 
-actual_assets="$(find "$output_base" -mindepth 1 -maxdepth 1 -print \
+actual_assets="$(find "$output_work" -mindepth 1 -maxdepth 1 -print \
   | sed 's|.*/||' \
   | LC_ALL=C sort)"
 if [[ "$actual_assets" != "$expected_assets" ]]; then
   echo "Release asset set is not exact." >&2
   exit 1
 fi
+
+if [[ "$output_existed" == "1" ]]; then
+  output_backup="$(mktemp -d "$output_parent/.${output_name}.backup.XXXXXX")"
+  rmdir "$output_backup"
+  mv "$output_base" "$output_backup"
+fi
+mv "$output_work" "$output_base"
+output_work=""
+if [[ -n "$output_backup" ]]; then
+  rm -rf "$output_backup"
+  output_backup=""
+fi
+trap - EXIT
+rm -rf "$temporary_directory"
 
 echo "Created exact release assets at: $output_base"

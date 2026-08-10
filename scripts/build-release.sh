@@ -62,6 +62,12 @@ if [[ "$dist_root" = /* ]]; then
 else
   dist_base="$repo_root/$dist_root"
 fi
+mkdir -p "$dist_base"
+dist_base="$(cd "$dist_base" && pwd -P)"
+if [[ "$dist_base" == "$repo_root" ]]; then
+  echo "Release dist root must not be the repository root." >&2
+  exit 1
+fi
 stage_root="$dist_base/arm64"
 expected_entries="$(printf '%s\n' \
   "bin" \
@@ -105,13 +111,41 @@ validate_replaceable_stage() {
   done
 }
 
-actual_head="$(git -C "$repo_root" rev-parse HEAD)"
-if [[ "$actual_head" != "$commit" ]]; then
-  echo "Requested commit is not the checked-out HEAD." >&2
-  echo "Expected: $commit" >&2
-  echo "Actual:   $actual_head" >&2
-  exit 1
-fi
+source_changes() {
+  local pathspecs=(
+    "."
+    ":(exclude).build/**"
+  )
+  if [[ "$dist_base/" == "$repo_root/"* ]]; then
+    local dist_relative="${dist_base#"$repo_root/"}"
+    pathspecs+=(
+      ":(exclude)$dist_relative/arm64/**"
+      ":(exclude)$dist_relative/.arm64.staging.*/**"
+    )
+  fi
+  git -C "$repo_root" status --porcelain=v1 --untracked-files=all -- "${pathspecs[@]}"
+}
+
+validate_source_snapshot() {
+  local phase="$1"
+  local actual_head
+  local changes
+  actual_head="$(git -C "$repo_root" rev-parse HEAD)"
+  if [[ "$actual_head" != "$commit" ]]; then
+    echo "Release source HEAD changed $phase." >&2
+    echo "Expected: $commit" >&2
+    echo "Actual:   $actual_head" >&2
+    exit 1
+  fi
+  changes="$(source_changes)"
+  if [[ -n "$changes" ]]; then
+    echo "Release source must be clean $phase." >&2
+    printf '%s\n' "$changes" >&2
+    exit 1
+  fi
+}
+
+validate_source_snapshot "before building"
 
 for tool in swift xcrun; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -160,6 +194,8 @@ simulator_bin="$(swift build -c release \
   --show-bin-path)"
 popd >/dev/null
 
+validate_source_snapshot "after building"
+
 for product in "${host_products[@]}"; do
   if [[ ! -f "$host_bin/$product" ]]; then
     echo "Built artifact is missing: $host_bin/$product" >&2
@@ -171,7 +207,6 @@ if [[ ! -f "$simulator_bin/$simulator_product" ]]; then
   exit 1
 fi
 
-mkdir -p "$dist_base"
 stage_work="$(mktemp -d "$dist_base/.arm64.staging.XXXXXX")"
 cleanup_stage() {
   if [[ -n "${stage_work:-}" ]]; then
