@@ -2,6 +2,12 @@ import Foundation
 import PrivateHeaderKitHelperProtocol
 import Testing
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 @testable import PrivateHeaderKitCore
 
 @Suite
@@ -199,6 +205,45 @@ struct PrivateHeaderGenerationRawDumpingTests {
         #expect(!result.wasKilled)
         #expect(result.failureSummary?.contains("raw dump exited with status 7") == true)
         #expect(result.failureSummary?.contains("offsetOutOfBounds") == true)
+    }
+
+    @Test func cancellingInFlightLiveRawDumpRunnerKillsAndReapsProcess() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PrivateHeaderKit-raw-dump-cancel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let invocation = PrivateHeaderGeneration.RawDumping.Invocation(
+            phaseLabel: "raw-header-dump",
+            executionMode: .host,
+            helperURL: URL(fileURLWithPath: "/bin/sh"),
+            inputPath: "/tmp/Foo.framework",
+            stagingOutputDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit/.tmp-run", isDirectory: true),
+            command: [
+                "/bin/sh",
+                "-c",
+                "printf '%s' $$ > '\(marker.path)'; trap '' TERM; while :; do :; done",
+            ],
+            environment: [:]
+        )
+        let task = Task {
+            try await PrivateHeaderGeneration.GenerationExecutor.liveRawDumpRunner(
+                invocation: invocation
+            )
+        }
+        for _ in 0..<100_000 where !FileManager.default.fileExists(atPath: marker.path) {
+            await Task.yield()
+        }
+        let pidText = try String(contentsOf: marker, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try #require(Int32(pidText))
+
+        task.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+
+        errno = 0
+        #expect(kill(pid, 0) == -1)
+        #expect(errno == ESRCH)
     }
 
     @Test func liveSharedCacheInventoryRunnerCapturesOnlyStandardOutput() async throws {

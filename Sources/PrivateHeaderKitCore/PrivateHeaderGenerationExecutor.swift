@@ -322,6 +322,7 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         var generatedTargetIDs: [String] = []
 
         for (offset, target) in targetsToRun.enumerated() {
+            try Task.checkCancellation()
             let targetIndex = offset + 1
             progressReporter?(.targetStarted(
                 index: targetIndex,
@@ -513,6 +514,9 @@ private extension PrivateHeaderGeneration.GenerationExecutor {
         let rawResult: PrivateHeaderGeneration.RawDumping.Result
         do {
             rawResult = try await rawDumpRunner(invocation)
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             let failureSummary = String(describing: error)
             return failedTargetResult(
@@ -1191,6 +1195,8 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
     static func liveRawDumpRunner(
         invocation: PrivateHeaderGeneration.RawDumping.Invocation
     ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
+        try Task.checkCancellation()
+
         let process = Process()
         let outputPipe = Pipe()
         let outputCapture = RawDumpOutputCapture()
@@ -1216,10 +1222,10 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
             outputPipe.fileHandleForReading.readabilityHandler = nil
         }
 
-        try process.run()
-        process.waitUntilExit()
+        try await runCancellableProcessAndWaitUntilExit(process)
         outputPipe.fileHandleForReading.readabilityHandler = nil
         outputCapture.append(outputPipe.fileHandleForReading.readDataToEndOfFile())
+        try Task.checkCancellation()
         let wasKilled = process.terminationReason == .uncaughtSignal
         let terminationStatus = process.terminationStatus
         let failureSummary = Self.rawDumpFailureSummary(
@@ -1267,14 +1273,7 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
             standardError.fileHandleForReading.readabilityHandler = nil
         }
 
-        let processController = CancellableProcessController(process: process)
-        try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            try processController.run()
-            process.waitUntilExit()
-        } onCancel: {
-            processController.cancel()
-        }
+        try await runCancellableProcessAndWaitUntilExit(process)
         standardOutput.fileHandleForReading.readabilityHandler = nil
         standardError.fileHandleForReading.readabilityHandler = nil
         outputCapture.append(standardOutput.fileHandleForReading.readDataToEndOfFile())
@@ -1340,6 +1339,17 @@ public extension PrivateHeaderGeneration.GenerationExecutor {
         default:
             return nil
         }
+    }
+}
+
+private func runCancellableProcessAndWaitUntilExit(_ process: Process) async throws {
+    let processController = CancellableProcessController(process: process)
+    try await withTaskCancellationHandler {
+        try Task.checkCancellation()
+        try processController.run()
+        process.waitUntilExit()
+    } onCancel: {
+        processController.cancel()
     }
 }
 

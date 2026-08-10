@@ -353,6 +353,41 @@ struct PrivateHeaderGenerationExecutorTests {
         #expect(rawRunner.invocations.isEmpty)
     }
 
+    @Test func rawDumpCancellationDoesNotCommitArtifactsOrStartLaterTargets() async throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        try fixture.createFramework("Foo.framework")
+        try fixture.createFramework("Bar.framework")
+        let rawRunner = CancellableRawDumpRunner()
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in try await rawRunner.run(invocation) },
+            runIDGenerator: { "run-001" },
+            dateProvider: fixedDates()
+        )
+        let plan = try fixture.makePlan(targetRequest: .query("Foo,Bar"))
+        let task = Task {
+            try await executor.run(.init(plan: plan))
+        }
+        await rawRunner.waitUntilStarted()
+
+        task.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+
+        #expect(rawRunner.invocations.count == 1)
+        #expect(
+            !fileExists(
+                plan.artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h")
+            )
+        )
+        #expect(
+            !fileExists(
+                plan.artifactDirectory.appendingPathComponent("Frameworks/Bar/Headers/Generated.h")
+            )
+        )
+    }
+
     @Test func availableResumeSummaryUsesInventoryAndRejectsChangedCacheCohort() async throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }
@@ -806,6 +841,91 @@ private final class RecordingRawDumpRunner: @unchecked Sendable {
             .appendingPathComponent("Headers", isDirectory: true)
         }
         return stagingDirectory.appendingPathComponent("Headers", isDirectory: true)
+    }
+}
+
+private final class CancellableRawDumpRunner: @unchecked Sendable {
+    typealias Result = PrivateHeaderGeneration.RawDumping.Result
+
+    private let lock = NSLock()
+    private let startedStream: AsyncStream<Void>
+    private let startedContinuation: AsyncStream<Void>.Continuation
+    private var recordedInvocations: [PrivateHeaderGeneration.RawDumping.Invocation] = []
+    private var resultContinuation: CheckedContinuation<Result, any Error>?
+    private var cancellationRequested = false
+
+    init() {
+        let started = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        startedStream = started.stream
+        startedContinuation = started.continuation
+    }
+
+    var invocations: [PrivateHeaderGeneration.RawDumping.Invocation] {
+        lock.withLock { recordedInvocations }
+    }
+
+    func waitUntilStarted() async {
+        for await _ in startedStream {
+            return
+        }
+    }
+
+    func run(
+        _ invocation: PrivateHeaderGeneration.RawDumping.Invocation
+    ) async throws -> Result {
+        try writeStagedArtifact(for: invocation)
+        lock.withLock {
+            recordedInvocations.append(invocation)
+        }
+        startedContinuation.yield()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let wasAlreadyCancelled = lock.withLock {
+                    if cancellationRequested {
+                        return true
+                    }
+                    precondition(resultContinuation == nil)
+                    resultContinuation = continuation
+                    return false
+                }
+                if wasAlreadyCancelled {
+                    continuation.resume(throwing: CancellationError())
+                }
+            }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    private func cancel() {
+        let continuation = lock.withLock {
+            cancellationRequested = true
+            defer { resultContinuation = nil }
+            return resultContinuation
+        }
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    private func writeStagedArtifact(
+        for invocation: PrivateHeaderGeneration.RawDumping.Invocation
+    ) throws {
+        let marker = "/System/Library/"
+        let range = try #require(invocation.inputPath.range(of: marker))
+        let relativePath = String(invocation.inputPath[range.upperBound...])
+        let outputDirectory = appendRelativePath(
+            relativePath,
+            to: invocation.stagingOutputDirectory
+                .appendingPathComponent("System", isDirectory: true)
+                .appendingPathComponent("Library", isDirectory: true)
+        )
+        .appendingPathComponent("Headers", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outputDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("// generated\n".utf8)
+            .write(to: outputDirectory.appendingPathComponent("Generated.h"))
     }
 }
 
