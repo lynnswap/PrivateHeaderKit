@@ -118,7 +118,8 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: fixture.outputBase.path))
   }
 
-  @Test func preparedPlanCanChangeOnlyInteractiveResumeBehaviorWithoutReloadingCohort() async throws {
+  @Test func preparedPlanCanChangeOnlyInteractiveResumeBehaviorWithoutReloadingCohort() async throws
+  {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
@@ -251,15 +252,136 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(result.generatedTargets.map(\.identifier) == ["framework:Foo.framework"])
     #expect(result.targetCounts.completed == 1)
     #expect(result.warnings.isEmpty)
+    #expect(result.artifactDirectory == fixture.liveURL)
+    #expect(try fixture.readLiveHeader() == "first")
     #expect(try fixture.readStableHeader() == "first")
     let publisher = try fixture.publisher()
     let publication = try publisher.inspect()
     #expect(publication.currentGenerationID == .init(rawValue: "generation-001"))
-    let store = try GenerationStore(databaseURL: result.stateDatabaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: result.stateDatabaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(result.runID).status == .completed)
     #expect(
       try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
         == result.runID)
+  }
+
+  @Test func completedTargetIsVisibleWhenItsFinishedEventIsReported() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try fixture.createFramework("Bar.framework")
+    let observation = LiveArtifactObservation()
+
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "generated"),
+      runID: "run-visible",
+      generationID: "generation-visible"
+    ).run(
+      plan: try fixture.plan(
+        .identifiers(["framework:Foo.framework", "framework:Bar.framework"])
+      ),
+      progressReporter: { event in
+        if case .targetFinished(_, _, "Foo", .completed, _) = event {
+          observation.observe(fixture.liveHeaderURL(framework: "Foo"))
+        }
+      }
+    )
+
+    #expect(observation.contents == "generated")
+    #expect(observation.errorDescription == nil)
+  }
+
+  @Test func laterInfrastructureFailureKeepsCompletedTargetVisibleAndResumeSkipsIt()
+    async throws
+  {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try fixture.createFramework("Bar.framework")
+    let plan = try fixture.plan(
+      .identifiers(["framework:Foo.framework", "framework:Bar.framework"]),
+      resumeBehavior: .resume
+    )
+
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(
+          contents: "first-run",
+          hiddenPayloadFramework: "Bar.framework"
+        ),
+        runID: "run-partial",
+        generationID: "generation-partial"
+      ).run(plan: plan)
+      Issue.record("invalid second target unexpectedly completed")
+    } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
+      #expect(failure.summary.targetCounts.completed == 1)
+      #expect(failure.summary.targetCounts.failed == 1)
+      #expect(failure.summary.targetFailures.map(\.displayName) == ["Bar"])
+    }
+
+    #expect(try fixture.readLiveHeader(framework: "Foo") == "first-run")
+    #expect(!FileManager.default.fileExists(atPath: fixture.liveHeaderURL(framework: "Bar").path))
+    let firstStore = try GenerationStore(
+      databaseURL: fixture.databaseURL,
+      toolCompatibilityIdentity: "test"
+    )
+    #expect(
+      try await firstStore.targetSnapshot(targetID: "framework:Foo.framework")?
+        .lastSuccessfulRunID == .init(rawValue: "run-partial")
+    )
+
+    let resumedRunner = RecordingRunner(contents: "resumed")
+    let result = try await fixture.executor(
+      runner: resumedRunner,
+      runID: "run-resumed",
+      generationID: "generation-resumed"
+    ).run(plan: plan)
+
+    #expect(await resumedRunner.invocationCount == 1)
+    #expect(await resumedRunner.invocations.first?.inputPath.hasSuffix("/Bar.framework") == true)
+    #expect(result.targetCounts.skipped == 1)
+    #expect(result.targetCounts.completed == 1)
+    #expect(try fixture.readLiveHeader(framework: "Foo") == "first-run")
+    #expect(try fixture.readLiveHeader(framework: "Bar") == "resumed")
+    #expect(try fixture.readStableHeader(framework: "Foo") == "first-run")
+    #expect(try fixture.readStableHeader(framework: "Bar") == "resumed")
+  }
+
+  @Test func resumeRemovesAttemptedOrphansAfterCrashBetweenLiveCopyAndDatabaseCommit()
+    async throws
+  {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let plan = try fixture.plan(.query("Foo"), resumeBehavior: .resume)
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "first", additionalHeaderName: "Stale.h"),
+        runID: "run-crashed",
+        generationID: "generation-crashed",
+        storeFaultInjector: { point in
+          if point == .afterRunTargetWrite { throw InjectedFault.stop }
+        }
+      ).run(plan: plan)
+    }
+    let staleHeader = fixture.liveURL.appendingPathComponent(
+      "Frameworks/Foo/Headers/Stale.h"
+    )
+    #expect(FileManager.default.fileExists(atPath: staleHeader.path))
+    try FileManager.default.removeItem(at: fixture.liveHeaderURL())
+
+    let resumedRunner = RecordingRunner(contents: "second")
+    _ = try await fixture.executor(
+      runner: resumedRunner,
+      runID: "run-recovered",
+      generationID: "generation-recovered"
+    ).run(plan: plan)
+
+    #expect(await resumedRunner.invocationCount == 1)
+    #expect(try fixture.readLiveHeader() == "second")
+    #expect(!FileManager.default.fileExists(atPath: staleHeader.path))
   }
 
   @Test func compatibleResumeSkipsCurrentCompletedTarget() async throws {
@@ -313,14 +435,16 @@ struct PrivateHeaderGenerationExecutorTests {
       #expect(failure.summary.runID == .init(rawValue: "run-002"))
       #expect(failure.summary.status == .partial)
       #expect(failure.summary.targetCounts.partial == 1)
-      #expect(failure.summary.artifactDirectory == fixture.stableURL)
+      #expect(failure.summary.artifactDirectory == fixture.liveURL)
       #expect(failure.summary.stateDatabaseURL == fixture.databaseURL)
       #expect(failure.failedTargetIDs == ["framework:Foo.framework"])
     }
 
     #expect(try fixture.publisher().inspect().currentGenerationID == oldCurrent)
+    #expect(try fixture.readLiveHeader() == "old")
     #expect(try fixture.readStableHeader() == "old")
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-002")).status == .partial)
     #expect(
       try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
@@ -343,7 +467,8 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(try fixture.publisher().inspect().currentGenerationID == nil)
     #expect(!FileManager.default.fileExists(atPath: fixture.stableURL.path))
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-failed")).status == .failed)
   }
 
@@ -378,9 +503,12 @@ struct PrivateHeaderGenerationExecutorTests {
     }
 
     #expect(await runner.invocationCount == 2)
+    #expect(try fixture.readLiveHeader(framework: "Foo") == "generated")
+    #expect(!FileManager.default.fileExists(atPath: fixture.liveHeaderURL(framework: "Bar").path))
     #expect(try fixture.readStableHeader(framework: "Foo") == "generated")
     #expect(!FileManager.default.fileExists(atPath: fixture.stableHeaderURL(framework: "Bar").path))
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     let run = try await store.runSnapshot(.init(rawValue: "run-cancelled"))
     #expect(run.status == .interrupted)
     let statuses = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0.status) })
@@ -394,7 +522,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(summary.status == .interrupted)
     #expect(summary.targetCounts.completed == 1)
     #expect(summary.targetCounts.interrupted == 1)
-    #expect(summary.artifactDirectory == fixture.stableURL)
+    #expect(summary.artifactDirectory == fixture.liveURL)
     #expect(summary.stateDatabaseURL == fixture.databaseURL)
   }
 
@@ -429,11 +557,12 @@ struct PrivateHeaderGenerationExecutorTests {
     let interruption = try #require(capturedInterruption)
     #expect(interruption.summary.status == .interrupted)
     #expect(interruption.summary.targetCounts.completed == 1)
-    #expect(interruption.summary.artifactDirectory == fixture.stableURL)
+    #expect(interruption.summary.artifactDirectory == fixture.liveURL)
 
     #expect(await runner.invocationCount == 1)
     #expect(try fixture.readStableHeader() == "generated")
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-interrupted")).status == .interrupted)
     #expect(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-interrupted"))?
@@ -565,7 +694,8 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(await secondRunner.invocationCount == 0)
     #expect(try fixture.readStableHeader() == "recoverable")
-    let store = try GenerationStore(databaseURL: result.stateDatabaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: result.stateDatabaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-001")).status == .completed)
     #expect(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-001"))?.state
@@ -605,23 +735,26 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-002"
     ).run(plan: plan)
 
-    let shouldRerun = faultPoint == .afterPrepared || faultPoint == .afterGenerationMove
-    #expect(await secondRunner.invocationCount == (shouldRerun ? 1 : 0))
+    let firstSnapshotWasAborted =
+      faultPoint == .afterPrepared || faultPoint == .afterGenerationMove
+    #expect(await secondRunner.invocationCount == 0)
     let expectedGeneration = PrivateHeaderGeneration.GenerationID(
-      rawValue: shouldRerun ? "generation-002" : "generation-001"
+      rawValue: firstSnapshotWasAborted ? "generation-002" : "generation-001"
     )
     let publication = try fixture.publisher().inspect()
     #expect(publication.currentGenerationID == expectedGeneration)
-    #expect(try fixture.readStableHeader() == (shouldRerun ? "second-attempt" : "first-attempt"))
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    #expect(try fixture.readLiveHeader() == "first-attempt")
+    #expect(try fixture.readStableHeader() == "first-attempt")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     let firstIntent = try #require(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-001"))
     )
-    #expect(firstIntent.state == (shouldRerun ? .aborted : .committed))
+    #expect(firstIntent.state == (firstSnapshotWasAborted ? .aborted : .committed))
     #expect(
       try await store.runSnapshot(.init(rawValue: "run-001")).status
-        == (shouldRerun ? .interrupted : .completed))
-    if shouldRerun {
+        == (firstSnapshotWasAborted ? .interrupted : .completed))
+    if firstSnapshotWasAborted {
       #expect(!publication.validGenerationIDs.contains(.init(rawValue: "generation-001")))
       #expect(
         try await store.publicationIntent(generationID: .init(rawValue: "generation-002"))?.state
@@ -633,7 +766,7 @@ struct PrivateHeaderGenerationExecutorTests {
     PrivateHeaderGeneration.PublicationFaultPoint.afterPrepared,
     .afterGenerationMove,
   ])
-  func abortedPublicationWithSameArtifactPathsRerunsInsteadOfReusingOldContent(
+  func abortedFinalSnapshotKeepsPublishedTargetAndResumeDoesNotRerun(
     _ faultPoint: PrivateHeaderGeneration.PublicationFaultPoint
   ) async throws {
     let fixture = try ExecutorFixture()
@@ -663,8 +796,9 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-resumed"
     ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
 
-    #expect(await resumedRunner.invocationCount == 1)
-    #expect(try fixture.readStableHeader() == "resumed-content")
+    #expect(await resumedRunner.invocationCount == 0)
+    #expect(try fixture.readLiveHeader() == "unpublished-content")
+    #expect(try fixture.readStableHeader() == "unpublished-content")
     #expect(
       try fixture.publisher().inspect().currentGenerationID
         == .init(rawValue: "generation-resumed")
@@ -675,7 +809,7 @@ struct PrivateHeaderGenerationExecutorTests {
     )
     #expect(
       try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
-        == .init(rawValue: "run-resumed")
+        == .init(rawValue: "run-unpublished")
     )
   }
 
@@ -711,17 +845,20 @@ struct PrivateHeaderGenerationExecutorTests {
       Issue.record("missing prepared generation unexpectedly moved and committed")
     } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
       #expect(failure.summary.status == .failed)
-      #expect(failure.summary.targetCounts.failed == 1)
+      #expect(failure.summary.targetCounts.completed == 1)
+      #expect(failure.summary.targetCounts.failed == 0)
       #expect(failure.message.contains("rename"))
     }
 
     #expect(mutation.message == nil)
     #expect(try fixture.publisher().inspect().currentGenerationID == previousGenerationID)
+    #expect(try fixture.readLiveHeader() == "new")
     #expect(try fixture.readStableHeader() == "old")
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     let run = try await store.runSnapshot(.init(rawValue: "run-002"))
     #expect(run.status == .failed)
-    #expect(run.targets.first?.status == .failed)
+    #expect(run.targets.first?.status == .completed)
     #expect(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-002"))?.state
         == .aborted)
@@ -828,7 +965,8 @@ struct PrivateHeaderGenerationExecutorTests {
     }
 
     #expect(try fixture.publisher().inspect().currentGenerationID == nil)
-    let store = try GenerationStore(databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL, toolCompatibilityIdentity: "test")
     #expect(try await store.runSnapshot(.init(rawValue: "run-hidden")).status == .failed)
   }
 
@@ -992,6 +1130,30 @@ private final class FileMutationRecorder: @unchecked Sendable {
   }
 }
 
+private final class LiveArtifactObservation: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedContents: String?
+  private var storedErrorDescription: String?
+
+  var contents: String? {
+    lock.withLock { storedContents }
+  }
+
+  var errorDescription: String? {
+    lock.withLock { storedErrorDescription }
+  }
+
+  func observe(_ url: URL) {
+    lock.withLock {
+      do {
+        storedContents = try String(contentsOf: url, encoding: .utf8)
+      } catch {
+        storedErrorDescription = String(describing: error)
+      }
+    }
+  }
+}
+
 private func captureInterruption(
   operation: @escaping @Sendable () async throws -> PrivateHeaderGeneration.Result
 ) async -> PrivateHeaderGeneration.RunInterruption? {
@@ -1015,6 +1177,8 @@ private actor RecordingRunner {
   let result: PrivateHeaderGeneration.RawDumping.Result
   let thrownError: (any Error & Sendable)?
   let writesHiddenPayload: Bool
+  let hiddenPayloadFramework: String?
+  let additionalHeaderName: String?
   let cancelsForFramework: String?
   let afterRun: @Sendable () -> Void
 
@@ -1023,6 +1187,8 @@ private actor RecordingRunner {
     result: PrivateHeaderGeneration.RawDumping.Result = .init(terminationStatus: 0),
     thrownError: (any Error & Sendable)? = nil,
     writesHiddenPayload: Bool = false,
+    hiddenPayloadFramework: String? = nil,
+    additionalHeaderName: String? = nil,
     cancelsForFramework: String? = nil,
     afterRun: @escaping @Sendable () -> Void = {}
   ) {
@@ -1030,6 +1196,8 @@ private actor RecordingRunner {
     self.result = result
     self.thrownError = thrownError
     self.writesHiddenPayload = writesHiddenPayload
+    self.hiddenPayloadFramework = hiddenPayloadFramework
+    self.additionalHeaderName = additionalHeaderName
     self.cancelsForFramework = cancelsForFramework
     self.afterRun = afterRun
   }
@@ -1048,7 +1216,12 @@ private actor RecordingRunner {
       let output = outputDirectory(for: invocation)
       try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
       try Data(contents.utf8).write(to: output.appendingPathComponent("Generated.h"))
-      if writesHiddenPayload {
+      if let additionalHeaderName {
+        try Data(contents.utf8).write(to: output.appendingPathComponent(additionalHeaderName))
+      }
+      if writesHiddenPayload
+        || hiddenPayloadFramework.map({ invocation.inputPath.hasSuffix("/\($0)") }) == true
+      {
         try Data("hidden".utf8).write(
           to: invocation.stagingOutputDirectory.appendingPathComponent(".unexpected")
         )
@@ -1077,9 +1250,8 @@ private actor RecordingRunner {
 
 private actor RecordingInventoryRunner {
   private var data: Data
-  private(set) var invocations: [
-    PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
-  ] = []
+  private(set) var invocations:
+    [PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation] = []
 
   init(data: Data) {
     self.data = data
@@ -1099,8 +1271,8 @@ private actor RecordingInventoryRunner {
   }
 }
 
-private extension PrivateHeaderGeneration.GenerationExecutor {
-  func run(
+extension PrivateHeaderGeneration.GenerationExecutor {
+  fileprivate func run(
     plan: PrivateHeaderGeneration.Plan,
     progressReporter: ProgressReporter? = nil
   ) async throws -> PrivateHeaderGeneration.Result {
@@ -1137,6 +1309,12 @@ private struct ExecutorFixture {
 
   var sourceLabel: String { source.storageIdentifier }
   var stableURL: URL { outputBase.appendingPathComponent(sourceLabel, isDirectory: false) }
+  var liveURL: URL {
+    outputBase.appendingPathComponent(
+      "generated-headers/\(sourceLabel)",
+      isDirectory: true
+    )
+  }
   var stateDirectory: URL {
     outputBase.appendingPathComponent(".state/\(sourceLabel)", isDirectory: true)
   }
@@ -1189,9 +1367,10 @@ private struct ExecutorFixture {
 
   func executor(
     runner: RecordingRunner,
-    inventoryRunner: @escaping PrivateHeaderGeneration.GenerationExecutor.SharedCacheInventoryRunner = { _ in
-      throw ExecutorFixtureError.unexpectedSharedCacheInventory
-    },
+    inventoryRunner:
+      @escaping PrivateHeaderGeneration.GenerationExecutor.SharedCacheInventoryRunner = { _ in
+        throw ExecutorFixtureError.unexpectedSharedCacheInventory
+      },
     runID: String,
     generationID: String,
     storeFaultInjector: @escaping GenerationStore.FaultInjector = { _ in },
@@ -1217,8 +1396,16 @@ private struct ExecutorFixture {
     stableURL.appendingPathComponent("Frameworks/\(framework)/Headers/Generated.h")
   }
 
+  func liveHeaderURL(framework: String = "Foo") -> URL {
+    liveURL.appendingPathComponent("Frameworks/\(framework)/Headers/Generated.h")
+  }
+
   func readStableHeader(framework: String = "Foo") throws -> String {
     try String(contentsOf: stableHeaderURL(framework: framework), encoding: .utf8)
+  }
+
+  func readLiveHeader(framework: String = "Foo") throws -> String {
+    try String(contentsOf: liveHeaderURL(framework: framework), encoding: .utf8)
   }
 }
 

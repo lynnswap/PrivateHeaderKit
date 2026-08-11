@@ -1,9 +1,9 @@
 import Foundation
 
 #if canImport(Darwin)
-import Darwin
+  import Darwin
 #elseif canImport(Glibc)
-import Glibc
+  import Glibc
 #endif
 
 package enum PrivateHeaderGeneration {
@@ -27,7 +27,8 @@ extension PrivateHeaderGeneration {
       guard !version.isEmpty else {
         throw ValidationError.emptyComponent(field: "version")
       }
-      let build = build
+      let build =
+        build
         .map(\.precomposedStringWithCanonicalMapping)
         .flatMap { $0.isEmpty ? nil : $0 }
       let storageIdentifier = Self.makeStorageIdentifier(
@@ -149,7 +150,13 @@ extension PrivateHeaderGeneration {
   package enum ProgressEvent: Equatable, Sendable {
     case runStarted(runID: RunID, totalTargetCount: Int)
     case targetStarted(index: Int, total: Int, displayName: String)
-    case targetFinished(index: Int, total: Int, displayName: String, status: RunTargetStatus)
+    case targetFinished(
+      index: Int,
+      total: Int,
+      displayName: String,
+      status: RunTargetStatus,
+      failureSummary: String?
+    )
     case warning(GenerationWarning)
     case runFinished(RunSummary)
   }
@@ -173,6 +180,7 @@ extension PrivateHeaderGeneration {
     package let artifactDirectory: URL
     package let stateDatabaseURL: URL
     package let warnings: [GenerationWarning]
+    package let targetFailures: [TargetFailure]
 
     package init(
       runID: RunID,
@@ -180,7 +188,8 @@ extension PrivateHeaderGeneration {
       targetCounts: TargetCounts,
       artifactDirectory: URL,
       stateDatabaseURL: URL,
-      warnings: [GenerationWarning] = []
+      warnings: [GenerationWarning] = [],
+      targetFailures: [TargetFailure] = []
     ) {
       self.runID = runID
       self.status = status
@@ -188,6 +197,26 @@ extension PrivateHeaderGeneration {
       self.artifactDirectory = artifactDirectory
       self.stateDatabaseURL = stateDatabaseURL
       self.warnings = warnings
+      self.targetFailures = targetFailures
+    }
+  }
+
+  package struct TargetFailure: Hashable, Sendable {
+    package let targetID: String
+    package let displayName: String
+    package let status: RunTargetStatus
+    package let message: String?
+
+    package init(
+      targetID: String,
+      displayName: String,
+      status: RunTargetStatus,
+      message: String?
+    ) {
+      self.targetID = targetID
+      self.displayName = displayName
+      self.status = status
+      self.message = message
     }
   }
 
@@ -274,7 +303,9 @@ extension PrivateHeaderGeneration {
       self.baseDirectory = baseDirectory
     }
 
-    package var artifactBaseDirectory: URL { baseDirectory }
+    package var artifactBaseDirectory: URL {
+      baseDirectory.appendingPathComponent("generated-headers", isDirectory: true)
+    }
     package var stateBaseDirectory: URL {
       baseDirectory.appendingPathComponent(".state", isDirectory: true)
     }
