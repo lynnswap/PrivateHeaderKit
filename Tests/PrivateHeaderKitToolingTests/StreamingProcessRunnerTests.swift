@@ -693,10 +693,62 @@ struct StreamingProcessRunnerTests {
         #expect(output.allSatisfy { $0 == "x" })
     }
 
-    @Test func precancelledTasksNeverSpawnCaptureOrStreamingChildren() async throws {
+    @Test func chunkedCaptureForwardsCompleteStandardOutput() async throws {
+        let helper = try testHelperExecutableURL()
+        let captured = LockedDataBox()
+
+        try await ProcessRunner().runCaptureChunks(
+            [helper.path, "large-capture"],
+            env: nil,
+            cwd: nil,
+            consumeStandardOutput: { captured.append($0) }
+        )
+
+        let output = captured.snapshot()
+        #expect(output.count == 256 * 1024)
+        #expect(output.allSatisfy { $0 == UInt8(ascii: "x") })
+    }
+
+    @Test func chunkedCaptureFailureKeepsStatusAndBoundedStandardErrorTail() async throws {
+        let helper = try testHelperExecutableURL()
+        let command = [
+            helper.path,
+            "large-stderr-failure",
+            String(StreamingOutputCollector.maximumLineByteCount + 4_096),
+        ]
+
+        do {
+            try await ProcessRunner().runCaptureChunks(
+                command,
+                env: nil,
+                cwd: nil,
+                consumeStandardOutput: { _ in }
+            )
+            Issue.record("expected command failure")
+        } catch let error as ToolingError {
+            guard case .commandFailed(let failedCommand, let status, let standardError) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(failedCommand == command)
+            #expect(status == 19)
+            #expect(standardError.hasPrefix("[truncated 4096 bytes] "))
+            #expect(standardError.hasSuffix("\nfinal-diagnostic"))
+            #expect(
+                standardError.utf8.count
+                    == StreamingOutputCollector.maximumLineByteCount
+                        + "[truncated 4096 bytes] \nfinal-diagnostic".utf8.count
+            )
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test func precancelledTasksNeverSpawnCaptureChunkedOrStreamingChildren() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let captureMarker = directory.appendingPathComponent("capture-started").path
+        let chunkedMarker = directory.appendingPathComponent("chunked-started").path
         let streamingMarker = directory.appendingPathComponent("streaming-started").path
 
         let captureTask = Task {
@@ -705,6 +757,15 @@ struct StreamingProcessRunnerTests {
                 ["/usr/bin/touch", captureMarker],
                 env: nil,
                 cwd: nil
+            )
+        }
+        let chunkedTask = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await ProcessRunner().runCaptureChunks(
+                ["/usr/bin/touch", chunkedMarker],
+                env: nil,
+                cwd: nil,
+                consumeStandardOutput: { _ in }
             )
         }
         let streamingTask = Task {
@@ -725,6 +786,14 @@ struct StreamingProcessRunnerTests {
             Issue.record("unexpected capture error: \(error)")
         }
         do {
+            try await chunkedTask.value
+            Issue.record("expected chunked capture cancellation")
+        } catch is CancellationError {
+            // Cancellation wins before configuration or spawn.
+        } catch {
+            Issue.record("unexpected chunked capture error: \(error)")
+        }
+        do {
             _ = try await streamingTask.value
             Issue.record("expected streaming cancellation")
         } catch is CancellationError {
@@ -733,6 +802,7 @@ struct StreamingProcessRunnerTests {
             Issue.record("unexpected streaming error: \(error)")
         }
         #expect(!FileManager.default.fileExists(atPath: captureMarker))
+        #expect(!FileManager.default.fileExists(atPath: chunkedMarker))
         #expect(!FileManager.default.fileExists(atPath: streamingMarker))
     }
 
@@ -825,6 +895,28 @@ struct StreamingProcessRunnerTests {
             cwd: nil
         )
         let childPID = try processIdentifier(from: output)
+        #expect(try recordedProcessIdentifier(at: childLock) == childPID)
+        #expect(try processIsLive(childPID) == false)
+    }
+
+    @Test func chunkedCaptureNormalLeaderExitCompletesOwnedProcessGroup() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let childLock = directory.appendingPathComponent("normal-chunked-child.lock").path
+        defer { terminateRecordedProcessIfLive(at: childLock) }
+        let helper = try testHelperExecutableURL()
+        let captured = LockedDataBox()
+
+        try await ProcessRunner().runCaptureChunks(
+            [helper.path, "process-group-normal-leader-exit", childLock],
+            env: nil,
+            cwd: nil,
+            consumeStandardOutput: { captured.append($0) }
+        )
+
+        let childPID = try processIdentifier(
+            from: String(decoding: captured.snapshot(), as: UTF8.self)
+        )
         #expect(try recordedProcessIdentifier(at: childLock) == childPID)
         #expect(try processIsLive(childPID) == false)
     }

@@ -1683,6 +1683,23 @@ private actor MutatingCaptureRunner: CommandRunning {
         return output
     }
 
+    func runCaptureChunks(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        consumeStandardOutput: @escaping CommandStandardOutputConsumer
+    ) async throws {
+        try await base.runCaptureChunks(
+            command,
+            env: env,
+            cwd: cwd,
+            consumeStandardOutput: consumeStandardOutput
+        )
+        if command == self.command {
+            try mutation()
+        }
+    }
+
     func runSimple(
         _ command: [String],
         env: [String: String]?,
@@ -2107,6 +2124,18 @@ private struct CaptureOnlyCommandRunner: CommandRunning {
         cwd: URL?
     ) async throws -> String {
         try await capture(command, env, cwd)
+    }
+
+    func runCaptureChunks(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        consumeStandardOutput: @escaping CommandStandardOutputConsumer
+    ) async throws {
+        let output = try await capture(command, env, cwd)
+        try Task.checkCancellation()
+        try await consumeStandardOutput(Data(output.utf8))
+        try Task.checkCancellation()
     }
 
     func runSimple(

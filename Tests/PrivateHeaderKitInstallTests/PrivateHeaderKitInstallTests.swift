@@ -1,4 +1,5 @@
 #if os(macOS)
+import CryptoKit
 import Foundation
 import Testing
 import os
@@ -1590,6 +1591,125 @@ struct SourceBuildResolutionTests {
         #expect(second.effectiveVersion == "v1.0.1")
     }
 
+    @Test func streamedSourceFingerprintPreservesCanonicalBytesAcrossChunkBoundaries() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let paths = [
+            "Sources/f.swift",
+            "Sources/e\u{301}.swift",
+        ]
+        let contentsByPath = [
+            paths[0]: "f-input",
+            paths[1]: "decomposed-input",
+        ]
+        for path in paths {
+            try writeExecutable(
+                try #require(contentsByPath[path]),
+                to: repoRoot.appendingPathComponent(path)
+            )
+        }
+
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            String(repeating: "c", count: 40) + "\n",
+            for: ["git", "rev-parse", "HEAD"]
+        )
+        await runner.setCaptureChunks(
+            [Data("v1.".utf8), Data("2.3\n".utf8)],
+            for: ["git", "tag", "--points-at", "HEAD"]
+        )
+        let trackedDiff = "diff --git a/Sources/Input.swift b/Sources/Input.swift\n+é\n"
+        let trackedBytes = Array(trackedDiff.utf8)
+        await runner.setCaptureChunks(
+            [
+                Data(trackedBytes[..<17]),
+                Data(trackedBytes[17...]),
+            ],
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
+        )
+        let untrackedBytes = Array((paths.joined(separator: "\0") + "\0").utf8)
+        let combiningScalarStart = try #require(untrackedBytes.firstIndex(of: 0xcc))
+        await runner.setCaptureChunks(
+            [
+                Data(untrackedBytes[..<untrackedBytes.index(after: combiningScalarStart)]),
+                Data(untrackedBytes[untrackedBytes.index(after: combiningScalarStart)...]),
+            ],
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
+
+        let snapshot = try await captureSourceSnapshot(
+            repoRoot: repoRoot,
+            environment: [:],
+            runner: runner,
+            fileManager: .default
+        )
+
+        let expectedRecords = try paths.sorted {
+            $0.utf8.lexicographicallyPrecedes($1.utf8)
+        }.map { path in
+            let contents = try Data(
+                contentsOf: repoRoot.appendingPathComponent(path)
+            )
+            return ExpectedUntrackedSourceRecord(
+                path: path,
+                kind: "regular",
+                sha256: SHA256.hash(data: contents)
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var expectedCanonical = Data(trackedDiff.utf8)
+        expectedCanonical.append(0)
+        expectedCanonical.append(try encoder.encode(expectedRecords))
+        let expectedFingerprint = SHA256.hash(data: expectedCanonical)
+            .map { String(format: "%02x", $0) }
+            .joined()
+
+        #expect(snapshot.dirtyInputFingerprint == expectedFingerprint)
+        #expect(snapshot.releaseTags == ["v1.2.3"])
+        #expect(snapshot.effectiveVersion == "v1.2.3")
+    }
+
+    @Test func sourceFingerprintRejectsOverlongGitPathBeforeFilesystemAccess() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            String(repeating: "e", count: 40) + "\n",
+            for: ["git", "rev-parse", "HEAD"]
+        )
+        await runner.setCaptureChunks(
+            [],
+            for: ["git", "tag", "--points-at", "HEAD"]
+        )
+        await runner.setCaptureChunks(
+            [],
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
+        )
+        await runner.setCaptureChunks(
+            [Data(repeating: UInt8(ascii: "a"), count: Int(PATH_MAX) + 1)],
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
+
+        do {
+            _ = try await captureSourceSnapshot(
+                repoRoot: repoRoot,
+                environment: [:],
+                runner: runner,
+                fileManager: .default
+            )
+            Issue.record("expected overlong Git path failure")
+        } catch let error as InstallError {
+            #expect(error.description == "Git reported an overlong untracked source path")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     @Test func sourceMutationDuringProductBuildFailsBeforeCohortCreation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
@@ -1708,26 +1828,49 @@ struct InstallCancellationTests {
     }
 
     @Test func sourcePathSortingChecksCancellationBetweenBoundedRuns() throws {
-        let paths = (0..<1_537).map { index in
-            "Sources/Generated/\(1_537 - index).swift"
+        let paths = (0..<20_001).map { index in
+            "Sources/Generated/\(20_001 - index).swift"
         }
+        let cancellationCheck = 10_000
         var checkCount = 0
 
         #expect(throws: CancellationError.self) {
-            _ = try cancellationAwareSortedSourcePaths(paths) {
+            _ = try cancellationAwareSortedStrings(paths) {
                 checkCount += 1
-                if checkCount == 3 {
+                if checkCount == cancellationCheck {
                     throw CancellationError()
                 }
             }
         }
-        #expect(checkCount == 3)
+        #expect(checkCount == cancellationCheck)
+    }
+
+    @Test func sourcePathSortingUsesRawUTF8Ordering() throws {
+        let decomposedPath = "Sources/e\u{301}.swift"
+        let fPath = "Sources/f.swift"
+        var paths = (0..<4_097).reversed().map { index in
+            "Sources/Generated/\(index).swift"
+        }
+        paths.append(contentsOf: [fPath, decomposedPath])
+        let expected = paths.sorted {
+            $0.utf8.lexicographicallyPrecedes($1.utf8)
+        }
+        let decomposedIndex = try #require(expected.firstIndex(of: decomposedPath))
+        let fIndex = try #require(expected.firstIndex(of: fPath))
+
+        #expect(decomposedIndex < fIndex)
+        #expect(try cancellationAwareSortedStrings(paths) == expected)
     }
 
     @Test func sourceFileHashingChecksCancellationBetweenBoundedReads() throws {
         let directories = try makeTemporaryTestDirectories()
         let inputURL = directories.root.appendingPathComponent("large-untracked-input")
-        try Data(repeating: 0x5a, count: 3 * 1024 * 1024 + 17).write(to: inputURL)
+        let input = Data(repeating: 0x5a, count: 3 * 1024 * 1024 + 17)
+        try input.write(to: inputURL)
+        let expectedHash = SHA256.hash(data: input)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        #expect(try sourceSHA256Hex(ofFileAt: inputURL) == expectedHash)
         var checkCount = 0
 
         #expect(throws: CancellationError.self) {
@@ -1739,6 +1882,49 @@ struct InstallCancellationTests {
             }
         }
         #expect(checkCount == 3)
+    }
+
+    @Test func sourceFingerprintStreamObservesCancellationAtAChunkBoundary() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            String(repeating: "d", count: 40) + "\n",
+            for: ["git", "rev-parse", "HEAD"]
+        )
+        let fingerprintingStarted = CancellationTestLatch()
+        let releaseFingerprinting = CancellationTestLatch()
+        await runner.setCaptureChunksHandler { command, _, _, consumeStandardOutput in
+            switch command {
+            case ["git", "tag", "--points-at", "HEAD"]:
+                return
+            case ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]:
+                fingerprintingStarted.open()
+                await releaseFingerprinting.wait()
+                try await consumeStandardOutput(Data("tracked-diff".utf8))
+            default:
+                throw ToolingError.message(
+                    "unexpected runCaptureChunks command: \(command.joined(separator: " "))"
+                )
+            }
+        }
+
+        let snapshot = Task {
+            try await captureSourceSnapshot(
+                repoRoot: repoRoot,
+                environment: [:],
+                runner: runner,
+                fileManager: .default
+            )
+        }
+        await fingerprintingStarted.wait()
+        snapshot.cancel()
+        releaseFingerprinting.open()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await snapshot.value
+        }
     }
 
     @Test func releaseManifestInspectionPreservesCancellation() async {
@@ -2012,6 +2198,12 @@ private func assertCompletedLegacyRecovery(
         atPath: fixture.layout.binDir.path
     )
     #expect(binEntries == ["privateheaderkit"])
+}
+
+private struct ExpectedUntrackedSourceRecord: Encodable {
+    let path: String
+    let kind: String
+    let sha256: String
 }
 
 private func testLayout(in root: URL) throws -> InstallLayout {

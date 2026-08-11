@@ -17,6 +17,11 @@ private struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertib
     }
 }
 
+private enum CapturedCommandStreamResult: Sendable {
+    case standardOutputComplete
+    case standardErrorComplete([String])
+}
+
 private func processGroupTeardownError(
     operation: String,
     processGroupID: pid_t,
@@ -238,8 +243,16 @@ public struct StreamingCommandResult: Equatable, Sendable {
     }
 }
 
+public typealias CommandStandardOutputConsumer = @Sendable (Data) async throws -> Void
+
 public protocol CommandRunning: Sendable {
     func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) async throws -> String
+    func runCaptureChunks(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        consumeStandardOutput: @escaping CommandStandardOutputConsumer
+    ) async throws
     func runSimple(_ command: [String], env: [String: String]?, cwd: URL?) async throws
     func runStreaming(
         _ command: [String],
@@ -290,6 +303,103 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     )
                 }
                 return standardOutput
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as ProcessGroupTeardownError {
+                throw mapProcessGroupTeardownError(error, command: command)
+            } catch let error as SubprocessError {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                guard isRetryableExecutableLaunchError(error) else {
+                    throw mapSubprocessError(error, command: command)
+                }
+                lastRetryableLaunchError = error
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                throw error
+            }
+        }
+        guard let lastRetryableLaunchError else {
+            preconditionFailure("process configuration produced no executable candidates")
+        }
+        throw mapSubprocessError(lastRetryableLaunchError, command: command)
+    }
+
+    public func runCaptureChunks(
+        _ command: [String],
+        env: [String: String]? = nil,
+        cwd: URL? = nil,
+        consumeStandardOutput: @escaping CommandStandardOutputConsumer
+    ) async throws {
+        try Task.checkCancellation()
+        let configurations = try processConfigurations(command, env: env, cwd: cwd)
+        var lastRetryableLaunchError: SubprocessError?
+        for configuration in configurations {
+            try Task.checkCancellation()
+            do {
+                let result = try await withOwnedProcessGroup { ownedProcessGroup in
+                    try await Subprocess.run(
+                        configuration,
+                        input: .none,
+                        output: .sequence,
+                        error: .sequence
+                    ) { execution in
+                        ownedProcessGroup.recordLaunch(
+                            processIdentifier: execution.processIdentifier.value
+                        )
+                        return try await withThrowingTaskGroup(
+                            of: CapturedCommandStreamResult.self
+                        ) { group in
+                            group.addTask {
+                                for try await buffer in execution.standardOutput {
+                                    try Task.checkCancellation()
+                                    let bytes = buffer.withUnsafeBytes { Array($0) }
+                                    if !bytes.isEmpty {
+                                        try await consumeStandardOutput(Data(bytes))
+                                    }
+                                }
+                                return .standardOutputComplete
+                            }
+                            group.addTask {
+                                var collector = StreamingOutputCollector()
+                                for try await buffer in execution.standardError {
+                                    try Task.checkCancellation()
+                                    collector.consume(buffer.withUnsafeBytes { Array($0) })
+                                }
+                                collector.finish()
+                                return .standardErrorComplete(collector.lastLines)
+                            }
+
+                            var standardErrorLines: [String] = []
+                            while let streamResult = try await group.next() {
+                                if case .standardErrorComplete(let lines) = streamResult {
+                                    standardErrorLines = lines
+                                }
+                            }
+                            return standardErrorLines
+                        }
+                    }
+                }
+                try Task.checkCancellation()
+                let termination = commandTermination(result.terminationStatus)
+                var standardErrorLines = result.closureResult
+                if termination.wasKilled {
+                    appendLastLine(
+                        "Terminated by signal \(termination.status)",
+                        to: &standardErrorLines
+                    )
+                }
+                guard termination.status == 0, !termination.wasKilled else {
+                    throw ToolingError.commandFailed(
+                        command: command,
+                        status: termination.status,
+                        stderr: standardErrorLines.joined(separator: "\n")
+                    )
+                }
+                return
             } catch is CancellationError {
                 throw CancellationError()
             } catch let error as ProcessGroupTeardownError {
@@ -605,6 +715,15 @@ public struct ProcessRunner: CommandRunning, Sendable {
         env: [String: String]?,
         cwd: URL?
     ) async throws -> String {
+        throw ToolingError.unsupported("process execution is not available on this platform")
+    }
+
+    public func runCaptureChunks(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        consumeStandardOutput: @escaping CommandStandardOutputConsumer
+    ) async throws {
         throw ToolingError.unsupported("process execution is not available on this platform")
     }
 

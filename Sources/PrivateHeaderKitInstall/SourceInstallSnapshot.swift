@@ -17,7 +17,7 @@ struct SourceSnapshot: Equatable, Sendable {
     let effectiveVersion: String
 }
 
-private struct UntrackedSourceRecord: Codable {
+private struct UntrackedSourceRecord: Codable, Sendable {
     let path: String
     let kind: String
     let sha256: String
@@ -26,6 +26,11 @@ private struct UntrackedSourceRecord: Codable {
 private let sourceFingerprintChunkByteCount = 1024 * 1024
 private let sourcePathSortChunkCount = 512
 private let sourcePathMergeCheckInterval = 256
+#if canImport(Darwin)
+private let sourcePathMaximumByteCount = Int(PATH_MAX)
+#else
+private let sourcePathMaximumByteCount = 4096
+#endif
 
 func captureSourceSnapshot(
     repoRoot: URL,
@@ -39,13 +44,10 @@ func captureSourceSnapshot(
         environment: environment,
         head: head
     ).lowercased()
-    let tagOutput = try await runner.runCapture(
-        ["git", "tag", "--points-at", "HEAD"],
-        env: nil,
-        cwd: repoRoot
+    let releaseTags = try await sourceReleaseTags(
+        repoRoot: repoRoot,
+        runner: runner
     )
-    try Task.checkCancellation()
-    let releaseTags = sourceReleaseTags(from: tagOutput)
     let effectiveVersion = try sourceVersion(
         environment: environment,
         commit: effectiveCommit,
@@ -82,16 +84,14 @@ func sourceVersion(
     runner: CommandRunning,
     commit: String
 ) async throws -> String {
-    let output = try await runner.runCapture(
-        ["git", "tag", "--points-at", "HEAD"],
-        env: nil,
-        cwd: repoRoot
+    let releaseTags = try await sourceReleaseTags(
+        repoRoot: repoRoot,
+        runner: runner
     )
-    try Task.checkCancellation()
     return try sourceVersion(
         environment: environment,
         commit: commit,
-        releaseTags: sourceReleaseTags(from: output)
+        releaseTags: releaseTags
     )
 }
 
@@ -139,25 +139,25 @@ private func sourceDirtyInputFingerprint(
     runner: CommandRunning,
     fileManager: FileManager
 ) async throws -> String {
-    let trackedDiff = try await runner.runCapture(
+    let canonicalHasher = SourceFingerprintCanonicalHasher()
+    try await runner.runCaptureChunks(
         ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"],
         env: nil,
-        cwd: repoRoot
+        cwd: repoRoot,
+        consumeStandardOutput: { chunk in
+            try await canonicalHasher.consumeTrackedDiff(chunk)
+        }
     )
-    try Task.checkCancellation()
-    let untrackedOutput = try await runner.runCapture(
+    try await canonicalHasher.finishTrackedDiff()
+    try await runner.runCaptureChunks(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         env: nil,
-        cwd: repoRoot
+        cwd: repoRoot,
+        consumeStandardOutput: { chunk in
+            try await canonicalHasher.consumeUntrackedPathBytes(chunk)
+        }
     )
-    try Task.checkCancellation()
-    let untrackedPaths = try cancellationAwareSortedSourcePaths(
-        untrackedOutput
-        .split(separator: "\0", omittingEmptySubsequences: true)
-        .map(String.init)
-    )
-    var records: [UntrackedSourceRecord] = []
-    records.reserveCapacity(untrackedPaths.count)
+    let untrackedPaths = try await canonicalHasher.finishUntrackedPaths()
     for path in untrackedPaths {
         try Task.checkCancellation()
         guard !path.hasPrefix("/"),
@@ -197,42 +197,309 @@ private func sourceDirtyInputFingerprint(
             "source input fingerprinting is unavailable on this platform"
         )
 #endif
-        records.append(UntrackedSourceRecord(
+        try await canonicalHasher.appendUntrackedRecord(UntrackedSourceRecord(
             path: path,
             kind: kind,
             sha256: sha256
         ))
     }
-
-    try Task.checkCancellation()
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-    let untrackedData = try encoder.encode(records)
-    var canonical = Data(trackedDiff.utf8)
-    canonical.append(0)
-    canonical.append(untrackedData)
-    return try sourceSHA256Hex(canonical)
+    return try await canonicalHasher.finalize()
 }
 
-func cancellationAwareSortedSourcePaths(
-    _ paths: [String],
+private actor SourceReleaseTagCollector {
+    private var pendingBytes = Data()
+    private var releaseTags = CancellationAwareStringMergeSorter()
+
+    func consume(_ chunk: Data) throws {
+        try Task.checkCancellation()
+        var chunkStart = chunk.startIndex
+        while chunkStart < chunk.endIndex {
+            try Task.checkCancellation()
+            let chunkEnd = chunk.index(
+                chunkStart,
+                offsetBy: min(
+                    sourceFingerprintChunkByteCount,
+                    chunk.distance(from: chunkStart, to: chunk.endIndex)
+                )
+            )
+            var segmentStart = chunkStart
+            while let separator = chunk[segmentStart..<chunkEnd].firstIndex(
+                of: UInt8(ascii: "\n")
+            ) {
+                try appendPendingBytes(chunk[segmentStart..<separator])
+                try appendPendingTag()
+                segmentStart = chunk.index(after: separator)
+            }
+            try appendPendingBytes(chunk[segmentStart..<chunkEnd])
+            chunkStart = chunkEnd
+        }
+        try Task.checkCancellation()
+    }
+
+    func finish() throws -> [String] {
+        try Task.checkCancellation()
+        try appendPendingTag()
+        return try releaseTags.finish()
+    }
+
+    private func appendPendingBytes(_ bytes: Data.SubSequence) throws {
+        guard !bytes.isEmpty else { return }
+        guard bytes.count <= sourcePathMaximumByteCount,
+              pendingBytes.count <= sourcePathMaximumByteCount - bytes.count
+        else {
+            throw InstallError.message("Git reported an overlong release tag")
+        }
+        pendingBytes.append(contentsOf: bytes)
+    }
+
+    private func appendPendingTag() throws {
+        try Task.checkCancellation()
+        guard !pendingBytes.isEmpty else { return }
+        let tag = String(decoding: pendingBytes, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingBytes.removeAll(keepingCapacity: true)
+        guard tag.range(
+            of: #"^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$"#,
+            options: .regularExpression
+        ) != nil else {
+            return
+        }
+        try releaseTags.append(tag)
+    }
+}
+
+private actor SourceFingerprintCanonicalHasher {
+    private enum Phase: Equatable {
+        case trackedDiff
+        case untrackedPaths
+        case untrackedRecords
+        case finalized
+    }
+
+#if canImport(CryptoKit)
+    private var hasher = SHA256()
+#endif
+    private var phase = Phase.trackedDiff
+    private var pendingUntrackedPathBytes = Data()
+    private var untrackedPaths = CancellationAwareStringMergeSorter()
+    private var untrackedRecordCount = 0
+
+    func consumeTrackedDiff(_ chunk: Data) throws {
+        precondition(phase == .trackedDiff)
+        try updateHash(with: chunk)
+    }
+
+    func finishTrackedDiff() throws {
+        precondition(phase == .trackedDiff)
+        try updateHash(with: Data([0]))
+        phase = .untrackedPaths
+    }
+
+    func consumeUntrackedPathBytes(_ chunk: Data) throws {
+        precondition(phase == .untrackedPaths)
+        try Task.checkCancellation()
+        var chunkStart = chunk.startIndex
+        while chunkStart < chunk.endIndex {
+            try Task.checkCancellation()
+            let chunkEnd = chunk.index(
+                chunkStart,
+                offsetBy: min(
+                    sourceFingerprintChunkByteCount,
+                    chunk.distance(from: chunkStart, to: chunk.endIndex)
+                )
+            )
+            var segmentStart = chunkStart
+            while let separator = chunk[segmentStart..<chunkEnd].firstIndex(of: 0) {
+                try appendPendingPathBytes(chunk[segmentStart..<separator])
+                try appendPendingPath()
+                segmentStart = chunk.index(after: separator)
+            }
+            try appendPendingPathBytes(chunk[segmentStart..<chunkEnd])
+            chunkStart = chunkEnd
+        }
+        try Task.checkCancellation()
+    }
+
+    func finishUntrackedPaths() throws -> [String] {
+        precondition(phase == .untrackedPaths)
+        try Task.checkCancellation()
+        try appendPendingPath()
+        let result = try untrackedPaths.finish()
+        try updateHash(with: Data("[".utf8))
+        phase = .untrackedRecords
+        return result
+    }
+
+    func appendUntrackedRecord(_ record: UntrackedSourceRecord) throws {
+        precondition(phase == .untrackedRecords)
+        try Task.checkCancellation()
+        if untrackedRecordCount > 0 {
+            try updateHash(with: Data([UInt8(ascii: ",")]))
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try updateHash(with: encoder.encode(record))
+        untrackedRecordCount += 1
+    }
+
+    func finalize() throws -> String {
+        precondition(phase == .untrackedRecords)
+        try updateHash(with: Data("]".utf8))
+        try Task.checkCancellation()
+        phase = .finalized
+#if canImport(CryptoKit)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+#else
+        throw InstallError.message(
+            "source input fingerprinting is unavailable on this platform"
+        )
+#endif
+    }
+
+    private func appendPendingPathBytes(_ bytes: Data.SubSequence) throws {
+        guard !bytes.isEmpty else { return }
+        guard bytes.count <= sourcePathMaximumByteCount,
+              pendingUntrackedPathBytes.count
+                <= sourcePathMaximumByteCount - bytes.count
+        else {
+            throw InstallError.message(
+                "Git reported an overlong untracked source path"
+            )
+        }
+        pendingUntrackedPathBytes.append(contentsOf: bytes)
+    }
+
+    private func appendPendingPath() throws {
+        try Task.checkCancellation()
+        guard !pendingUntrackedPathBytes.isEmpty else { return }
+        try untrackedPaths.append(
+            String(decoding: pendingUntrackedPathBytes, as: UTF8.self)
+        )
+        pendingUntrackedPathBytes.removeAll(keepingCapacity: true)
+    }
+
+    private func updateHash(with data: Data) throws {
+#if canImport(CryptoKit)
+        try Task.checkCancellation()
+        var chunkStart = data.startIndex
+        while chunkStart < data.endIndex {
+            try Task.checkCancellation()
+            let chunkEnd = data.index(
+                chunkStart,
+                offsetBy: min(
+                    sourceFingerprintChunkByteCount,
+                    data.distance(from: chunkStart, to: data.endIndex)
+                )
+            )
+            hasher.update(data: data[chunkStart..<chunkEnd])
+            chunkStart = chunkEnd
+        }
+        try Task.checkCancellation()
+#else
+        throw InstallError.message(
+            "source input fingerprinting is unavailable on this platform"
+        )
+#endif
+    }
+}
+
+private struct CancellationAwareStringMergeSorter {
+    private var buffer: [String] = []
+    private var runs: [[String]?] = Array(
+        repeating: nil,
+        count: Int.bitWidth
+    )
+
+    init() {
+        buffer.reserveCapacity(sourcePathSortChunkCount)
+    }
+
+    mutating func append(
+        _ value: String,
+        checkCancellation: () throws -> Void = { try Task.checkCancellation() }
+    ) throws {
+        try checkCancellation()
+        buffer.append(value)
+        if buffer.count == sourcePathSortChunkCount {
+            try flushBuffer(checkCancellation: checkCancellation)
+        }
+    }
+
+    mutating func finish(
+        checkCancellation: () throws -> Void = { try Task.checkCancellation() }
+    ) throws -> [String] {
+        try flushBuffer(checkCancellation: checkCancellation)
+        var result: [String] = []
+        for run in runs {
+            try checkCancellation()
+            guard let run else { continue }
+            if result.isEmpty {
+                result = run
+            } else {
+                result = try mergeSortedSourcePaths(
+                    run,
+                    result,
+                    checkCancellation: checkCancellation
+                )
+            }
+        }
+        try checkCancellation()
+        runs = Array(repeating: nil, count: Int.bitWidth)
+        return result
+    }
+
+    private mutating func flushBuffer(
+        checkCancellation: () throws -> Void
+    ) throws {
+        guard !buffer.isEmpty else { return }
+        var carry = try cancellationAwareSortedBuffer(
+            buffer,
+            checkCancellation: checkCancellation
+        )
+        buffer.removeAll(keepingCapacity: true)
+        var level = 0
+        while true {
+            try checkCancellation()
+            guard level < runs.count else {
+                preconditionFailure("source string count exceeds Int capacity")
+            }
+            guard let run = runs[level] else {
+                runs[level] = carry
+                return
+            }
+            runs[level] = nil
+            carry = try mergeSortedSourcePaths(
+                run,
+                carry,
+                checkCancellation: checkCancellation
+            )
+            level += 1
+        }
+    }
+}
+
+func cancellationAwareSortedStrings(
+    _ values: [String],
     checkCancellation: () throws -> Void = { try Task.checkCancellation() }
 ) throws -> [String] {
-    guard paths.count > 1 else {
-        try checkCancellation()
-        return paths
+    var sorter = CancellationAwareStringMergeSorter()
+    for value in values {
+        try sorter.append(value, checkCancellation: checkCancellation)
     }
+    return try sorter.finish(checkCancellation: checkCancellation)
+}
 
+private func cancellationAwareSortedBuffer(
+    _ values: [String],
+    checkCancellation: () throws -> Void
+) throws -> [String] {
     var runs: [[String]] = []
-    runs.reserveCapacity(
-        (paths.count + sourcePathSortChunkCount - 1) / sourcePathSortChunkCount
-    )
-    for start in stride(from: 0, to: paths.count, by: sourcePathSortChunkCount) {
+    runs.reserveCapacity(values.count)
+    for value in values {
         try checkCancellation()
-        let end = min(start + sourcePathSortChunkCount, paths.count)
-        runs.append(paths[start..<end].sorted(by: sourcePathPrecedes))
+        runs.append([value])
     }
-
+    guard !runs.isEmpty else { return [] }
     while runs.count > 1 {
         var mergedRuns: [[String]] = []
         mergedRuns.reserveCapacity((runs.count + 1) / 2)
@@ -299,17 +566,20 @@ private func sourcePathPrecedes(_ lhs: String, _ rhs: String) -> Bool {
     lhs.utf8.lexicographicallyPrecedes(rhs.utf8)
 }
 
-private func sourceReleaseTags(from output: String) -> [String] {
-    output
-        .split(whereSeparator: \Character.isNewline)
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter {
-            $0.range(
-                of: #"^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$"#,
-                options: .regularExpression
-            ) != nil
+private func sourceReleaseTags(
+    repoRoot: URL,
+    runner: CommandRunning
+) async throws -> [String] {
+    let collector = SourceReleaseTagCollector()
+    try await runner.runCaptureChunks(
+        ["git", "tag", "--points-at", "HEAD"],
+        env: nil,
+        cwd: repoRoot,
+        consumeStandardOutput: { chunk in
+            try await collector.consume(chunk)
         }
-        .sorted()
+    )
+    return try await collector.finish()
 }
 
 private func sourceVersion(

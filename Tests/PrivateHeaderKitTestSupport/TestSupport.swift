@@ -1,6 +1,13 @@
 import Foundation
 import PrivateHeaderKitTooling
 
+public typealias TestCaptureChunksHandler = @Sendable (
+    [String],
+    [String: String]?,
+    URL?,
+    CommandStandardOutputConsumer
+) async throws -> Void
+
 public struct RecordedCommand: Equatable, Sendable {
     public let command: [String]
     public let env: [String: String]?
@@ -20,6 +27,8 @@ public actor RecordingCommandRunner: CommandRunning {
 
     private var captureOutputs: [String: String] = [:]
     private var captureOutputQueues: [String: [String]] = [:]
+    private var captureChunks: [String: [Data]] = [:]
+    private var captureChunksHandler: TestCaptureChunksHandler?
     private var simpleHandler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
     private var streamingHandler:
         (@Sendable ([String], [String: String]?, URL?) async throws -> StreamingCommandResult)?
@@ -32,6 +41,14 @@ public actor RecordingCommandRunner: CommandRunning {
 
     public func setCaptureOutputs(_ outputs: [String], for command: [String]) {
         captureOutputQueues[key(for: command)] = outputs
+    }
+
+    public func setCaptureChunks(_ chunks: [Data], for command: [String]) {
+        captureChunks[key(for: command)] = chunks
+    }
+
+    public func setCaptureChunksHandler(_ handler: TestCaptureChunksHandler?) {
+        captureChunksHandler = handler
     }
 
     public func setSimpleHandler(
@@ -64,17 +81,33 @@ public actor RecordingCommandRunner: CommandRunning {
         env: [String: String]?,
         cwd: URL?
     ) async throws -> String {
-        captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+        try captureOutput(command, env: env, cwd: cwd)
+    }
+
+    public func runCaptureChunks(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?,
+        consumeStandardOutput: @escaping CommandStandardOutputConsumer
+    ) async throws {
+        if let captureChunksHandler {
+            captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+            try await captureChunksHandler(command, env, cwd, consumeStandardOutput)
+            return
+        }
         let commandKey = key(for: command)
-        if var outputs = captureOutputQueues[commandKey], !outputs.isEmpty {
-            let output = outputs.removeFirst()
-            captureOutputQueues[commandKey] = outputs
-            return output
+        let chunks: [Data]
+        if let configuredChunks = captureChunks[commandKey] {
+            captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+            chunks = configuredChunks
+        } else {
+            chunks = [Data(try captureOutput(command, env: env, cwd: cwd).utf8)]
         }
-        guard let output = captureOutputs[key(for: command)] else {
-            throw ToolingError.message("unexpected runCapture command: \(command.joined(separator: " "))")
+        for chunk in chunks {
+            try Task.checkCancellation()
+            try await consumeStandardOutput(chunk)
         }
-        return output
+        try Task.checkCancellation()
     }
 
     public func runSimple(
@@ -100,6 +133,26 @@ public actor RecordingCommandRunner: CommandRunning {
 
     private func key(for command: [String]) -> String {
         command.joined(separator: "\u{1f}")
+    }
+
+    private func captureOutput(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) throws -> String {
+        captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+        let commandKey = key(for: command)
+        if var outputs = captureOutputQueues[commandKey], !outputs.isEmpty {
+            let output = outputs.removeFirst()
+            captureOutputQueues[commandKey] = outputs
+            return output
+        }
+        guard let output = captureOutputs[commandKey] else {
+            throw ToolingError.message(
+                "unexpected runCapture command: \(command.joined(separator: " "))"
+            )
+        }
+        return output
     }
 }
 

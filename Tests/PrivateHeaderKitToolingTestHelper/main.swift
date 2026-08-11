@@ -33,6 +33,12 @@ private struct PrivateHeaderKitToolingTestHelper {
 #endif
             case "large-capture":
                 FileHandle.standardOutput.write(Data(repeating: UInt8(ascii: "x"), count: 256 * 1024))
+            case "large-stderr-failure":
+                let arguments = Array(CommandLine.arguments.dropFirst(2))
+                guard arguments.count == 1, let byteCount = Int(arguments[0]) else {
+                    throw HelperError.invalidCommand(command)
+                }
+                try writeLargeStandardErrorFailure(byteCount: byteCount)
             case "chunked-output":
                 try writeChunkedOutput()
             case "process-group":
@@ -98,6 +104,15 @@ private struct PrivateHeaderKitToolingTestHelper {
         try writeAll([0xF0, 0x9F], to: STDOUT_FILENO)
         try writeAll([0x98, 0x80], to: STDOUT_FILENO)
         try writeAll(Array("\nline-10\n".utf8), to: STDOUT_FILENO)
+    }
+
+    private static func writeLargeStandardErrorFailure(byteCount: Int) throws -> Never {
+        try writeAll(
+            Array(repeating: UInt8(ascii: "x"), count: byteCount),
+            to: STDERR_FILENO
+        )
+        try writeAll(Array("\nfinal-diagnostic\n".utf8), to: STDERR_FILENO)
+        exit(19)
     }
 
     private static func writeAll(_ bytes: [UInt8], to descriptor: Int32) throws {
