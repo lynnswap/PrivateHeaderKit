@@ -45,6 +45,69 @@ assert_prerelease_classification "v1.2.3.4" true
 expect_failure "Release tag must look like v1.2.3." \
   "$repo_root/scripts/release-version-is-prerelease.sh" "v1.2"
 
+draft_stub_bin="$temporary_directory/draft-stubs"
+mkdir -p "$draft_stub_bin"
+cat > "$draft_stub_bin/git" <<'EOF'
+#!/bin/sh
+if [ "$1" != "ls-remote" ]; then
+  printf 'unexpected git invocation: %s\n' "$*" >&2
+  exit 1
+fi
+if [ -n "${STUB_TAG_TARGET:-}" ]; then
+  printf '%s\t%s\n' "$STUB_TAG_TARGET" "$4"
+fi
+EOF
+cat > "$draft_stub_bin/gh" <<'EOF'
+#!/bin/sh
+if [ "${STUB_RELEASE_STATE:-draft}" = "missing" ]; then
+  printf 'release not found\n' >&2
+  exit 1
+fi
+printf '%s\t%s\t%s\n' \
+  "${STUB_IS_DRAFT:-true}" \
+  "${STUB_IS_PRERELEASE:-false}" \
+  "${STUB_TARGET_COMMITISH:-}"
+EOF
+chmod 755 "$draft_stub_bin/git" "$draft_stub_bin/gh"
+draft_commit="0000000000000000000000000000000000000001"
+draft_state="$(
+  env \
+    PATH="$draft_stub_bin:/usr/bin:/bin" \
+    STUB_TARGET_COMMITISH="$draft_commit" \
+    "$repo_root/scripts/inspect-draft-release.sh" \
+      --version v1.2.3 \
+      --commit "$draft_commit" \
+      --repo lynnswap/PrivateHeaderKit
+)"
+[[ "$draft_state" == $'draft\tfalse' ]] || fail "unexpected draft state: $draft_state"
+missing_state="$(
+  env \
+    PATH="$draft_stub_bin:/usr/bin:/bin" \
+    STUB_RELEASE_STATE=missing \
+    "$repo_root/scripts/inspect-draft-release.sh" \
+      --version v1.2.3 \
+      --commit "$draft_commit" \
+      --repo lynnswap/PrivateHeaderKit
+)"
+[[ "$missing_state" == "missing" ]] || fail "unexpected missing release state: $missing_state"
+expect_failure "Draft release targets a different commit" \
+  env \
+    PATH="$draft_stub_bin:/usr/bin:/bin" \
+    STUB_TARGET_COMMITISH=0000000000000000000000000000000000000002 \
+    "$repo_root/scripts/inspect-draft-release.sh" \
+      --version v1.2.3 \
+      --commit "$draft_commit" \
+      --repo lynnswap/PrivateHeaderKit
+expect_failure "Release tag targets a different commit" \
+  env \
+    PATH="$draft_stub_bin:/usr/bin:/bin" \
+    STUB_TAG_TARGET=0000000000000000000000000000000000000002 \
+    STUB_TARGET_COMMITISH="$draft_commit" \
+    "$repo_root/scripts/inspect-draft-release.sh" \
+      --version v1.2.3 \
+      --commit "$draft_commit" \
+      --repo lynnswap/PrivateHeaderKit
+
 installer="$temporary_directory/install.sh"
 "$repo_root/scripts/render-install-script.sh" \
   --version v1.2.3 \
