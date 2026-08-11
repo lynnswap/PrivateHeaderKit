@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 extension PrivateHeaderGeneration {
@@ -19,6 +20,7 @@ extension PrivateHeaderGeneration {
 
     enum ArtifactStoreError: Error, Equatable, CustomStringConvertible, Sendable {
         case nonFileArtifactRoot(String)
+        case artifactRootTypeMismatch(path: String, actual: String)
         case nonFileStagingDirectory(String)
         case artifactPathEscapesRoot(
             artifactPath: ArtifactPath, artifactRoot: String, resolvedPath: String)
@@ -40,7 +42,12 @@ extension PrivateHeaderGeneration {
         case destinationVolumeCaseSensitivityChanged(root: String, expected: Bool, actual: Bool)
         case stagingDirectoryChanged(String)
         case artifactRootChanged(expected: String, actual: String)
+        case artifactContentChanged(artifactPath: ArtifactPath, path: String)
+        case artifactInventoryFailed(path: String, description: String)
+        case invalidArtifactDigestSet(String)
+        case replacementVolumeMismatch(liveRoot: String, transactionRoot: String)
         case invalidReplacementManifest(String)
+        case cleanupSynchronizationFailed(primary: String, synchronization: String)
         case replacementPreparationCleanupFailed(primary: String, cleanup: String)
         case replacementRollbackFailed(primary: String, rollback: String)
 
@@ -48,6 +55,8 @@ extension PrivateHeaderGeneration {
             switch self {
             case .nonFileArtifactRoot(let artifactRoot):
                 "artifact root must be a file URL: \(artifactRoot)"
+            case .artifactRootTypeMismatch(let path, let actual):
+                "artifact root must be a directory or missing: \(path), found \(actual)"
             case .nonFileStagingDirectory(let stagingDirectory):
                 "staging directory must be a file URL: \(stagingDirectory)"
             case .artifactPathEscapesRoot(let artifactPath, let artifactRoot, let resolvedPath):
@@ -84,8 +93,18 @@ extension PrivateHeaderGeneration {
                 "staging directory changed after commit preflight: \(path)"
             case .artifactRootChanged(let expected, let actual):
                 "artifact root changed after commit preflight: expected \(expected), found \(actual)"
+            case .artifactContentChanged(let artifactPath, let path):
+                "artifact contents changed after replacement preparation: \(artifactPath.rawValue) at \(path)"
+            case .artifactInventoryFailed(let path, let description):
+                "artifact inventory failed at \(path): \(description)"
+            case .invalidArtifactDigestSet(let description):
+                "invalid artifact digest set: \(description)"
+            case .replacementVolumeMismatch(let liveRoot, let transactionRoot):
+                "artifact replacement requires one filesystem volume: \(liveRoot) and \(transactionRoot)"
             case .invalidReplacementManifest(let message):
                 "invalid artifact replacement manifest: \(message)"
+            case .cleanupSynchronizationFailed(let primary, let synchronization):
+                "artifact cleanup failed: \(primary); synchronizing prior deletions also failed: \(synchronization)"
             case .replacementPreparationCleanupFailed(let primary, let cleanup):
                 "artifact replacement preparation failed: \(primary); cleanup also failed: \(cleanup)"
             case .replacementRollbackFailed(let primary, let rollback):
@@ -95,6 +114,8 @@ extension PrivateHeaderGeneration {
     }
 
     struct ArtifactStore: Sendable {
+        private static let replacementManifestVersion = 1
+
         internal struct CommitPlan: Sendable {
             fileprivate let root: ArtifactRootURLs
             fileprivate let stagingDirectory: URL
@@ -111,12 +132,38 @@ extension PrivateHeaderGeneration {
             fileprivate let directory: URL
             fileprivate let incomingRoot: URL
             fileprivate let backupRoot: URL
+            fileprivate let restoreRoot: URL
             internal let runID: PrivateHeaderGeneration.RunID
             internal let targetID: String
             fileprivate let artifactRoot: ArtifactPath
             internal let incomingArtifacts: [ArtifactPath]
             fileprivate let mutationArtifacts: [ArtifactPath]
+            fileprivate let mutationPathKinds: [ArtifactPath: MutationPathKind]
             fileprivate let backedUpArtifacts: [ArtifactPath]
+            fileprivate let incomingDigests: [ArtifactPath: String]
+            fileprivate let backedUpDigests: [ArtifactPath: String]
+            fileprivate let artifactRootIdentity: FileSystemIdentity
+
+            internal var artifactDigests: [ArtifactPath: String] { incomingDigests }
+        }
+
+        fileprivate enum MutationPathKind: String, Codable, Equatable, Sendable {
+            case missing
+            case regularFile
+            case directory
+            case occupiedByRegularFile
+        }
+
+        private struct PreparedMutation {
+            let backedUpArtifacts: [ArtifactPath]
+            let pathKinds: [ArtifactPath: MutationPathKind]
+        }
+
+        fileprivate struct FileSystemIdentity: Codable, Equatable, Sendable {
+            let device: UInt64
+            let inode: UInt64
+
+            var description: String { "\(device):\(inode)" }
         }
 
         private struct ReplacementManifest: Codable {
@@ -126,7 +173,40 @@ extension PrivateHeaderGeneration {
             let artifactRoot: String
             let incomingArtifacts: [String]
             let mutationArtifacts: [String]
+            let mutationPathKinds: [String: MutationPathKind]
             let backedUpArtifacts: [String]
+            let incomingDigests: [String: String]
+            let backedUpDigests: [String: String]
+            let artifactRootIdentity: FileSystemIdentity
+        }
+
+        private struct ReplacementManifestVersion: Decodable {
+            let version: Int
+        }
+
+        private struct RestorationPlan {
+            let sourceRoot: ArtifactRootURLs
+            let destinationRoot: ArtifactRootURLs
+            let entries: [RestorationEntry]
+        }
+
+        private struct RestorationEntry {
+            let artifact: ArtifactPath
+            let source: URL
+            let destination: URL
+            let digest: String
+        }
+
+        private struct IncomingRollbackPlan {
+            let root: ArtifactRootURLs
+            let stagedRoot: ArtifactRootURLs
+            let installedArtifacts: [ArtifactPath]
+        }
+
+        private struct RollbackPlan {
+            let incoming: IncomingRollbackPlan
+            let replacementDirectories: [ArtifactPath]
+            let restoration: RestorationPlan?
         }
 
         public let artifactRoot: URL
@@ -139,7 +219,10 @@ extension PrivateHeaderGeneration {
             _ artifact: ArtifactPath,
             fileManager: FileManager = .default
         ) throws -> Bool {
-            let root = try Self.artifactRootURLs(for: artifactRoot)
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
             switch try Self.inspectArtifactPath(
                 artifact,
                 root: root,
@@ -149,6 +232,210 @@ extension PrivateHeaderGeneration {
                 return true
             case .missingParent, .occupiedParent, .symbolicLinkParent, .leaf:
                 return false
+            }
+        }
+
+        internal func inventoryRegularArtifacts(
+            fileManager: FileManager = .default
+        ) throws -> [ArtifactPath] {
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            guard
+                try Self.artifactItemKind(
+                    at: root.unresolved,
+                    fileManager: fileManager
+                ) == .directory
+            else {
+                throw ArtifactStoreError.artifactRootTypeMismatch(
+                    path: root.unresolved.path,
+                    actual: "missing"
+                )
+            }
+            var enumerationFailure: (URL, any Error)?
+            guard
+                let enumerator = fileManager.enumerator(
+                    at: root.unresolved,
+                    includingPropertiesForKeys: nil,
+                    options: [],
+                    errorHandler: { url, error in
+                        enumerationFailure = (url, error)
+                        return false
+                    }
+                )
+            else {
+                throw ArtifactStoreError.artifactInventoryFailed(
+                    path: root.unresolved.path,
+                    description: "could not enumerate directory"
+                )
+            }
+
+            let rootPath = root.unresolved.path
+            var artifacts: [ArtifactPath] = []
+            for case let url as URL in enumerator {
+                let standardized = url.standardizedFileURL
+                guard standardized.path.hasPrefix(rootPath + "/") else {
+                    throw ArtifactStoreError.artifactInventoryFailed(
+                        path: standardized.path,
+                        description: "enumerated item escapes artifact root"
+                    )
+                }
+                let relativePath = String(standardized.path.dropFirst(rootPath.count + 1))
+                let artifact = try ArtifactPath(relativePath)
+                guard
+                    let kind = try Self.artifactItemKind(
+                        at: standardized,
+                        fileManager: fileManager
+                    )
+                else {
+                    throw ArtifactStoreError.artifactInventoryFailed(
+                        path: standardized.path,
+                        description: "item disappeared during enumeration"
+                    )
+                }
+                switch kind {
+                case .directory:
+                    continue
+                case .regularFile:
+                    if standardized.lastPathComponent == ".DS_Store" { continue }
+                    artifacts.append(artifact)
+                case .symbolicLink:
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: artifact,
+                        symbolicLinkPath: standardized.path
+                    )
+                case .other:
+                    throw ArtifactStoreError.artifactInventoryFailed(
+                        path: standardized.path,
+                        description: "unsupported filesystem item"
+                    )
+                }
+            }
+            if let (url, error) = enumerationFailure {
+                throw ArtifactStoreError.artifactInventoryFailed(
+                    path: url.path,
+                    description: "directory enumeration failed: \(error)"
+                )
+            }
+            return artifacts.sorted { $0.rawValue < $1.rawValue }
+        }
+
+        internal func artifactsExcludingEquivalentPaths(
+            _ candidates: [ArtifactPath],
+            retainedArtifacts: [ArtifactPath],
+            fileManager: FileManager = .default
+        ) throws -> [ArtifactPath] {
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            let volumeSupportsCaseSensitiveNames =
+                try Self.destinationVolumeSupportsCaseSensitiveNames(
+                    for: root,
+                    fileManager: fileManager
+                )
+            let retainedKeys = Set(retainedArtifacts.map {
+                Self.artifactPathIdentityKey(
+                    for: $0,
+                    volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+                )
+            })
+            return Self.cleanupCandidates(
+                manifestArtifacts: candidates.filter {
+                    !retainedKeys.contains(
+                        Self.artifactPathIdentityKey(
+                            for: $0,
+                            volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+                        )
+                    )
+                }
+            )
+        }
+
+        internal func artifactsMatchDigests(
+            _ artifacts: [ArtifactPath],
+            digests: [ArtifactPath: String],
+            fileManager: FileManager = .default
+        ) throws -> Bool {
+            guard !digests.isEmpty else { return false }
+            guard Set(digests.keys) == Set(artifacts), digests.values.allSatisfy(Self.isValidSHA256)
+            else {
+                throw ArtifactStoreError.invalidArtifactDigestSet(
+                    "digest paths or values do not match the target artifact set"
+                )
+            }
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            for artifact in artifacts {
+                guard
+                    case .leaf(let url, .some(.regularFile)) = try Self.inspectArtifactPath(
+                        artifact,
+                        root: root,
+                        fileManager: fileManager
+                    ),
+                    let expectedDigest = digests[artifact]
+                else {
+                    return false
+                }
+                guard try Self.sha256(of: url) == expectedDigest else { return false }
+            }
+            return true
+        }
+
+        internal func validateExistingArtifacts(
+            _ artifacts: [ArtifactPath],
+            digests: [ArtifactPath: String],
+            fileManager: FileManager = .default
+        ) throws {
+            guard Set(digests.keys) == Set(artifacts), digests.values.allSatisfy(Self.isValidSHA256)
+            else {
+                throw ArtifactStoreError.invalidArtifactDigestSet(
+                    "digest paths or values do not match the artifact set"
+                )
+            }
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            for artifact in artifacts {
+                let inspection = try Self.inspectArtifactPath(
+                    artifact,
+                    root: root,
+                    fileManager: fileManager
+                )
+                switch inspection {
+                case .missingParent, .leaf(_, nil):
+                    continue
+                case .leaf(let url, .some(.regularFile)):
+                    guard let expectedDigest = digests[artifact],
+                        try Self.sha256(of: url) == expectedDigest
+                    else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: url.path
+                        )
+                    }
+                case .symbolicLinkParent(let url):
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: artifact,
+                        symbolicLinkPath: url.path
+                    )
+                case .occupiedParent(let url, let kind):
+                    throw ArtifactStoreError.cleanupParentTypeMismatch(
+                        artifactPath: artifact,
+                        parentPath: url.path,
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                case .leaf(_, .some(let kind)):
+                    throw ArtifactStoreError.commitDestinationTypeMismatch(
+                        artifactPath: artifact,
+                        expected: "regular file or missing",
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                }
             }
         }
 
@@ -164,6 +451,138 @@ extension PrivateHeaderGeneration {
             )
         }
 
+        internal func restoreArtifact(
+            _ artifact: ArtifactPath,
+            from source: URL,
+            stagingDirectory: URL,
+            synchronizeExistingArtifact: Bool,
+            fileManager: FileManager = .default
+        ) throws {
+            guard
+                try Self.artifactItemKind(at: source, fileManager: fileManager) == .regularFile
+            else {
+                throw ArtifactStoreError.stagedArtifactIsNotRegularFile(source.path)
+            }
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            let destination = Self.artifactURL(artifact, under: root.unresolved)
+            if let existing = try Self.restorableArtifactURL(
+                artifact,
+                root: root,
+                fileManager: fileManager
+            ) {
+                if fileManager.contentsEqual(atPath: source.path, andPath: existing.path) {
+                    if synchronizeExistingArtifact {
+                        try ManagedFileSystem.syncFile(existing)
+                        try ManagedFileSystem.syncDirectory(
+                            existing.deletingLastPathComponent().standardizedFileURL
+                        )
+                    }
+                    return
+                }
+            }
+
+            let destinationDirectory = destination.deletingLastPathComponent().standardizedFileURL
+            try ManagedFileSystem.ensureRealDirectory(destinationDirectory)
+            let refreshedRoot = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            guard refreshedRoot == root else {
+                throw ArtifactStoreError.artifactRootChanged(
+                    expected: root.resolved.path,
+                    actual: refreshedRoot.resolved.path
+                )
+            }
+            if let existing = try Self.restorableArtifactURL(
+                artifact,
+                root: refreshedRoot,
+                fileManager: fileManager
+            ) {
+                if fileManager.contentsEqual(atPath: source.path, andPath: existing.path) {
+                    if synchronizeExistingArtifact {
+                        try ManagedFileSystem.syncFile(existing)
+                        try ManagedFileSystem.syncDirectory(
+                            existing.deletingLastPathComponent().standardizedFileURL
+                        )
+                    }
+                    return
+                }
+            }
+
+            guard try ManagedFileSystem.itemKind(at: stagingDirectory) == .directory else {
+                throw ArtifactStoreError.stagedArtifactIsNotDirectory(stagingDirectory.path)
+            }
+            let temporary = stagingDirectory.appendingPathComponent(
+                "artifact-\(UUID().uuidString.lowercased())",
+                isDirectory: false
+            )
+            do {
+                try fileManager.copyItem(at: source, to: temporary)
+                try ManagedFileSystem.syncFile(temporary)
+                try ManagedFileSystem.atomicRename(from: temporary, to: destination)
+                try ManagedFileSystem.syncFile(destination)
+                try ManagedFileSystem.syncDirectory(destinationDirectory)
+                try ManagedFileSystem.syncDirectory(stagingDirectory)
+            } catch {
+                try? fileManager.removeItem(at: temporary)
+                throw error
+            }
+            guard fileManager.contentsEqual(atPath: source.path, andPath: destination.path) else {
+                throw ArtifactStoreError.artifactContentChanged(
+                    artifactPath: artifact,
+                    path: destination.path
+                )
+            }
+        }
+
+        private static func restorableArtifactURL(
+            _ artifact: ArtifactPath,
+            root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws -> URL? {
+            switch try inspectArtifactPath(
+                artifact,
+                root: root,
+                fileManager: fileManager
+            ) {
+            case .missingParent, .leaf(_, nil):
+                return nil
+            case .leaf(let existing, .some(.regularFile)):
+                return existing
+            case .occupiedParent(let path, let kind):
+                throw ArtifactStoreError.cleanupParentTypeMismatch(
+                    artifactPath: artifact,
+                    parentPath: path.path,
+                    actual: artifactItemKindDescription(kind)
+                )
+            case .symbolicLinkParent(let path):
+                throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                    artifactPath: artifact,
+                    symbolicLinkPath: path.path
+                )
+            case .leaf(let path, .some(.symbolicLink)):
+                throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                    artifactPath: artifact,
+                    symbolicLinkPath: path.path
+                )
+            case .leaf(_, .some(.directory)):
+                throw ArtifactStoreError.commitDestinationTypeMismatch(
+                    artifactPath: artifact,
+                    expected: "regular file or missing",
+                    actual: "directory"
+                )
+            case .leaf(_, .some(.other)):
+                throw ArtifactStoreError.commitDestinationTypeMismatch(
+                    artifactPath: artifact,
+                    expected: "regular file or missing",
+                    actual: "special file"
+                )
+            }
+        }
+
         internal func prepareCommit(
             stagingDirectory: URL,
             stagedSourceDirectory: URL,
@@ -171,7 +590,28 @@ extension PrivateHeaderGeneration {
             artifacts: [ArtifactPath],
             fileManager: FileManager = .default
         ) throws -> CommitPlan {
-            let root = try Self.artifactRootURLs(for: self.artifactRoot)
+            let plan = try makeCommitPlan(
+                stagingDirectory: stagingDirectory,
+                stagedSourceDirectory: stagedSourceDirectory,
+                artifactRoot: artifactRoot,
+                artifacts: artifacts,
+                fileManager: fileManager
+            )
+            try preflightCommit(plan, fileManager: fileManager)
+            return plan
+        }
+
+        private func makeCommitPlan(
+            stagingDirectory: URL,
+            stagedSourceDirectory: URL,
+            artifactRoot: ArtifactPath,
+            artifacts: [ArtifactPath],
+            fileManager: FileManager
+        ) throws -> CommitPlan {
+            let root = try Self.artifactRootURLs(
+                for: self.artifactRoot,
+                fileManager: fileManager
+            )
             let destinationVolumeSupportsCaseSensitiveNames =
                 try Self
                 .destinationVolumeSupportsCaseSensitiveNames(
@@ -205,7 +645,6 @@ extension PrivateHeaderGeneration {
                 destinationVolumeSupportsCaseSensitiveNames:
                     destinationVolumeSupportsCaseSensitiveNames
             )
-            try preflightCommit(plan, fileManager: fileManager)
             return plan
         }
 
@@ -224,28 +663,44 @@ extension PrivateHeaderGeneration {
         }
 
         internal func prepareReplacement(
-            _ plan: CommitPlan,
+            stagingDirectory: URL,
+            stagedSourceDirectory: URL,
+            artifactRoot: ArtifactPath,
+            artifacts: [ArtifactPath],
             removing artifactsToRemove: [ArtifactPath],
             runID: PrivateHeaderGeneration.RunID,
             targetID: String,
             at transactionDirectory: URL,
-            fileManager: FileManager = .default
+            fileManager: FileManager = .default,
+            exclusiveRename: (URL, URL) throws -> Void =
+                ManagedFileSystem.atomicRenameExclusively
         ) throws -> Replacement {
-            try preflightCommit(plan, fileManager: fileManager)
+            let plan = try makeCommitPlan(
+                stagingDirectory: stagingDirectory,
+                stagedSourceDirectory: stagedSourceDirectory,
+                artifactRoot: artifactRoot,
+                artifacts: artifacts,
+                fileManager: fileManager
+            )
+            try preflightCommitInputs(plan, fileManager: fileManager)
+            let artifactRootIdentity = try Self.directoryIdentity(
+                at: plan.root.unresolved,
+                fileManager: fileManager
+            )
             let incomingArtifacts = plan.artifacts.sorted { $0.rawValue < $1.rawValue }
             let mutationArtifacts = Self.cleanupCandidates(
                 manifestArtifacts: artifactsToRemove,
                 attemptedArtifacts: incomingArtifacts
             )
-            _ = try Self.cleanupArtifactInspections(
-                for: mutationArtifacts,
-                root: plan.root,
-                fileManager: fileManager
-            )
 
             let directory = transactionDirectory.standardizedFileURL
             let incomingRoot = directory.appendingPathComponent("incoming", isDirectory: true)
             let backupRoot = directory.appendingPathComponent("backup", isDirectory: true)
+            let restoreRoot = directory.appendingPathComponent("restore", isDirectory: true)
+            let durableAncestor = try Self.nearestExistingRealDirectory(
+                startingAt: directory.deletingLastPathComponent(),
+                fileManager: fileManager
+            )
             do {
                 guard try Self.artifactItemKind(at: directory, fileManager: fileManager) == nil else {
                     throw ArtifactStoreError.invalidReplacementManifest(
@@ -263,6 +718,21 @@ extension PrivateHeaderGeneration {
                     at: backupRoot,
                     withIntermediateDirectories: true
                 )
+                try fileManager.createDirectory(
+                    at: restoreRoot,
+                    withIntermediateDirectories: true
+                )
+                try Self.validateReplacementVolumes(
+                    liveRoot: plan.root.unresolved,
+                    liveRootIdentity: artifactRootIdentity,
+                    transactionRoots: [incomingRoot, restoreRoot],
+                    fileManager: fileManager
+                )
+                try Self.validateExclusiveRenameSupport(
+                    in: directory,
+                    fileManager: fileManager,
+                    exclusiveRename: exclusiveRename
+                )
 
                 let incomingStore = ArtifactStore(artifactRoot: incomingRoot)
                 let incomingPlan = try incomingStore.prepareCommit(
@@ -273,25 +743,59 @@ extension PrivateHeaderGeneration {
                     fileManager: fileManager
                 )
                 try incomingStore.copy(incomingPlan, fileManager: fileManager)
-
-                let backedUpArtifacts = try backupExistingArtifacts(
-                    mutationArtifacts,
-                    from: plan.root,
-                    to: backupRoot,
+                let incomingDigests = try Self.artifactDigests(
+                    for: incomingArtifacts,
+                    under: incomingRoot,
                     fileManager: fileManager
                 )
+
+                let preparedMutation = try prepareMutation(
+                    mutationArtifacts,
+                    preferring: artifactsToRemove,
+                    from: plan.root,
+                    to: backupRoot,
+                    volumeSupportsCaseSensitiveNames:
+                        plan.destinationVolumeSupportsCaseSensitiveNames,
+                    fileManager: fileManager
+                )
+                let backedUpArtifacts = preparedMutation.backedUpArtifacts
+                let backedUpDigests = try Self.artifactDigests(
+                    for: backedUpArtifacts,
+                    under: backupRoot,
+                    fileManager: fileManager
+                )
+                try Self.copyArtifacts(
+                    backedUpArtifacts,
+                    from: backupRoot,
+                    to: restoreRoot,
+                    expectedDigests: backedUpDigests,
+                    fileManager: fileManager
+                )
+                try Self.syncTree(at: incomingRoot, fileManager: fileManager)
+                try Self.syncTree(at: backupRoot, fileManager: fileManager)
+                try Self.syncTree(at: restoreRoot, fileManager: fileManager)
                 let replacement = Replacement(
                     directory: directory,
                     incomingRoot: incomingRoot,
                     backupRoot: backupRoot,
+                    restoreRoot: restoreRoot,
                     runID: runID,
                     targetID: targetID,
                     artifactRoot: plan.artifactRoot,
                     incomingArtifacts: incomingArtifacts,
                     mutationArtifacts: mutationArtifacts,
-                    backedUpArtifacts: backedUpArtifacts
+                    mutationPathKinds: preparedMutation.pathKinds,
+                    backedUpArtifacts: backedUpArtifacts,
+                    incomingDigests: incomingDigests,
+                    backedUpDigests: backedUpDigests,
+                    artifactRootIdentity: artifactRootIdentity
                 )
                 try writeManifest(for: replacement, fileManager: fileManager)
+                try Self.syncDirectoryChain(
+                    from: directory,
+                    through: durableAncestor,
+                    fileManager: fileManager
+                )
                 return replacement
             } catch {
                 let primary = error
@@ -313,7 +817,13 @@ extension PrivateHeaderGeneration {
             _ replacement: Replacement,
             fileManager: FileManager = .default
         ) throws {
+            try preflightReplacementApply(replacement, fileManager: fileManager)
+            try markReplacementApplyStarted(replacement, fileManager: fileManager)
             do {
+                _ = try cleanupManagedArtifacts(
+                    replacement.backedUpArtifacts,
+                    fileManager: fileManager
+                )
                 let incomingSourceDirectory = Self.artifactURL(
                     replacement.artifactRoot,
                     under: replacement.incomingRoot
@@ -326,11 +836,12 @@ extension PrivateHeaderGeneration {
                     fileManager: fileManager
                 )
                 try applyPreparedIncoming(incomingPlan, fileManager: fileManager)
-                let incomingArtifactSet = Set(replacement.incomingArtifacts)
-                let obsoleteArtifacts = replacement.mutationArtifacts.filter {
-                    !incomingArtifactSet.contains($0)
-                }
-                _ = try cleanupManagedArtifacts(obsoleteArtifacts, fileManager: fileManager)
+                try synchronizeReplacementMutations(
+                    replacement,
+                    sourceRoot: replacement.incomingRoot,
+                    sourceArtifacts: replacement.incomingArtifacts,
+                    fileManager: fileManager
+                )
             } catch {
                 let primary = error
                 do {
@@ -349,28 +860,879 @@ extension PrivateHeaderGeneration {
             _ replacement: Replacement,
             fileManager: FileManager = .default
         ) throws {
+            guard try replacementApplyHasStarted(replacement, fileManager: fileManager) else {
+                return
+            }
+            try validateReplacementArtifactRoot(replacement, fileManager: fileManager)
+            try validateReplacementVolumes(replacement, fileManager: fileManager)
+            let plan = try prepareRollbackPlan(replacement, fileManager: fileManager)
+            try cleanupInstalledIncomingArtifacts(
+                plan.incoming,
+                expectedDigests: replacement.incomingDigests,
+                fileManager: fileManager
+            )
+            try cleanupReplacementDirectories(
+                plan.replacementDirectories,
+                root: plan.incoming.root,
+                fileManager: fileManager
+            )
             _ = try cleanupManagedArtifacts(
-                replacement.mutationArtifacts,
+                plan.restoration?.entries.map(\.artifact) ?? [],
                 fileManager: fileManager
             )
-            guard !replacement.backedUpArtifacts.isEmpty else { return }
-            let backupSourceDirectory = Self.artifactURL(
-                replacement.artifactRoot,
-                under: replacement.backupRoot
-            )
-            let restorePlan = try prepareCommit(
-                stagingDirectory: replacement.backupRoot,
-                stagedSourceDirectory: backupSourceDirectory,
-                artifactRoot: replacement.artifactRoot,
-                artifacts: replacement.backedUpArtifacts,
+            if let restoration = plan.restoration {
+                try restoreBackedUpArtifacts(
+                    restoration,
+                    fileManager: fileManager
+                )
+            }
+            try synchronizeReplacementMutations(
+                replacement,
+                sourceRoot: plan.restoration?.sourceRoot.unresolved,
+                sourceArtifacts: replacement.backedUpArtifacts,
                 fileManager: fileManager
             )
-            try copy(restorePlan, fileManager: fileManager)
+        }
+
+        private func preflightReplacementApply(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws {
+            try validateReplacementArtifactRoot(replacement, fileManager: fileManager)
+            try validateReplacementVolumes(replacement, fileManager: fileManager)
+            try validateTransactionArtifacts(replacement, fileManager: fileManager)
+            guard try !replacementApplyHasStarted(replacement, fileManager: fileManager) else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "replacement apply already started at \(replacement.directory.path)"
+                )
+            }
+
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            let volumeSupportsCaseSensitiveNames =
+                try Self.destinationVolumeSupportsCaseSensitiveNames(
+                    for: root,
+                    fileManager: fileManager
+                )
+            let currentMutationPathKinds = try Self.mutationPathKinds(
+                for: replacement.mutationArtifacts,
+                root: root,
+                fileManager: fileManager
+            )
+            for artifact in replacement.mutationArtifacts {
+                guard
+                    currentMutationPathKinds[artifact]
+                        == replacement.mutationPathKinds[artifact]
+                else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: Self.artifactURL(artifact, under: artifactRoot).path
+                    )
+                }
+            }
+            for artifact in replacement.backedUpArtifacts {
+                guard
+                    case .leaf(let url, .some(.regularFile)) = try Self.inspectArtifactPath(
+                        artifact,
+                        root: root,
+                        fileManager: fileManager
+                    ),
+                    try Self.sha256(of: url) == replacement.backedUpDigests[artifact]
+                else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: Self.artifactURL(artifact, under: artifactRoot).path
+                    )
+                }
+            }
+
+            for artifact in replacement.incomingArtifacts {
+                switch try Self.inspectArtifactPath(
+                    artifact,
+                    root: root,
+                    fileManager: fileManager
+                ) {
+                case .missingParent, .leaf(_, nil):
+                    continue
+                case .leaf(let url, .some(.regularFile)):
+                    guard
+                        let backedUpArtifact = replacement.backedUpArtifacts.first(where: {
+                            Self.artifactPathsAreEquivalent(
+                                $0,
+                                artifact,
+                                volumeSupportsCaseSensitiveNames:
+                                    volumeSupportsCaseSensitiveNames
+                            )
+                        }),
+                        try Self.sha256(of: url)
+                            == replacement.backedUpDigests[backedUpArtifact]
+                    else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: url.path
+                        )
+                    }
+                case .occupiedParent(_, .regularFile):
+                    guard replacement.backedUpArtifacts.contains(where: {
+                        Self.pathIsAncestor(
+                            $0,
+                            of: artifact,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames
+                        )
+                    }) else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: Self.artifactURL(artifact, under: artifactRoot).path
+                        )
+                    }
+                case .leaf(_, .some(.directory)):
+                    guard replacement.backedUpArtifacts.contains(where: {
+                        Self.pathIsAncestor(
+                            artifact,
+                            of: $0,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames
+                        )
+                    }) else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: Self.artifactURL(artifact, under: artifactRoot).path
+                        )
+                    }
+                case .occupiedParent(let url, let kind):
+                    throw ArtifactStoreError.cleanupParentTypeMismatch(
+                        artifactPath: artifact,
+                        parentPath: url.path,
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: artifact,
+                        symbolicLinkPath: url.path
+                    )
+                case .leaf(let url, .some(.other)):
+                    throw ArtifactStoreError.commitDestinationTypeMismatch(
+                        artifactPath: artifact,
+                        expected: "regular file, directory, or missing",
+                        actual: "special file at \(url.path)"
+                    )
+                }
+            }
+        }
+
+        private func prepareRollbackPlan(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws -> RollbackPlan {
+            let restoration = try prepareBackedUpArtifactRestoration(
+                replacement,
+                fileManager: fileManager
+            )
+            let incoming = try prepareIncomingRollback(
+                replacement,
+                fileManager: fileManager
+            )
+            let replacementDirectories = try validateBackedUpLiveArtifactsForRollback(
+                replacement,
+                installedIncomingArtifacts: incoming.installedArtifacts,
+                fileManager: fileManager
+            )
+            return RollbackPlan(
+                incoming: incoming,
+                replacementDirectories: replacementDirectories,
+                restoration: restoration
+            )
+        }
+
+        private func prepareIncomingRollback(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws -> IncomingRollbackPlan {
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            let stagedRoot = try Self.artifactRootURLs(
+                for: replacement.incomingRoot,
+                fileManager: fileManager
+            )
+            try Self.validateStagedRoot(stagedRoot, fileManager: fileManager)
+            let volumeSupportsCaseSensitiveNames =
+                try Self.destinationVolumeSupportsCaseSensitiveNames(
+                    for: root,
+                    fileManager: fileManager
+                )
+            var installedArtifacts: [ArtifactPath] = []
+
+            for artifact in Self.cleanupOperationOrder(replacement.incomingArtifacts) {
+                let expectedDigest = try Self.requiredDigest(
+                    for: artifact,
+                    in: replacement.incomingDigests
+                )
+                switch try Self.inspectArtifactPath(
+                    artifact,
+                    root: stagedRoot,
+                    fileManager: fileManager
+                ) {
+                case .leaf(let source, .some(.regularFile)):
+                    guard try Self.sha256(of: source) == expectedDigest else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: source.path
+                        )
+                    }
+                case .missingParent, .leaf(_, nil):
+                    switch try Self.inspectArtifactPath(
+                        artifact,
+                        root: root,
+                        fileManager: fileManager
+                    ) {
+                    case .missingParent, .leaf(_, nil):
+                        break
+                    case .leaf(let destination, .some(.regularFile)):
+                        let actualDigest = try Self.sha256(of: destination)
+                        let matchesBackedUpArtifact = replacement.backedUpDigests.contains(where: {
+                            Self.artifactPathsAreEquivalent(
+                                $0.key,
+                                artifact,
+                                volumeSupportsCaseSensitiveNames:
+                                    volumeSupportsCaseSensitiveNames
+                            ) && $0.value == actualDigest
+                        })
+                        if matchesBackedUpArtifact {
+                            break
+                        }
+                        if actualDigest == expectedDigest {
+                            installedArtifacts.append(artifact)
+                        } else {
+                            throw ArtifactStoreError.artifactContentChanged(
+                                artifactPath: artifact,
+                                path: destination.path
+                            )
+                        }
+                    case .leaf(_, .some(.directory)):
+                        guard replacement.backedUpArtifacts.contains(where: {
+                            Self.pathIsAncestor(
+                                artifact,
+                                of: $0,
+                                volumeSupportsCaseSensitiveNames:
+                                    volumeSupportsCaseSensitiveNames
+                            )
+                        }) else {
+                            throw ArtifactStoreError.artifactContentChanged(
+                                artifactPath: artifact,
+                                path: Self.artifactURL(artifact, under: artifactRoot).path
+                            )
+                        }
+                    case .occupiedParent(_, .regularFile):
+                        guard replacement.backedUpArtifacts.contains(where: {
+                            Self.pathIsAncestor(
+                                $0,
+                                of: artifact,
+                                volumeSupportsCaseSensitiveNames:
+                                    volumeSupportsCaseSensitiveNames
+                            )
+                        }) else {
+                            throw ArtifactStoreError.artifactContentChanged(
+                                artifactPath: artifact,
+                                path: Self.artifactURL(artifact, under: artifactRoot).path
+                            )
+                        }
+                    case .occupiedParent(let url, let kind):
+                        throw ArtifactStoreError.cleanupParentTypeMismatch(
+                            artifactPath: artifact,
+                            parentPath: url.path,
+                            actual: Self.artifactItemKindDescription(kind)
+                        )
+                    case .symbolicLinkParent(let url),
+                        .leaf(let url, .some(.symbolicLink)):
+                        throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                            artifactPath: artifact,
+                            symbolicLinkPath: url.path
+                        )
+                    case .leaf(let url, .some(.other)):
+                        throw ArtifactStoreError.commitDestinationTypeMismatch(
+                            artifactPath: artifact,
+                            expected: "regular file, directory, or missing",
+                            actual: "special file at \(url.path)"
+                        )
+                    }
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInStagingDirectory(url.path)
+                case .occupiedParent(let url, _), .leaf(let url, .some(.directory)),
+                    .leaf(let url, .some(.other)):
+                    throw ArtifactStoreError.stagedArtifactIsNotRegularFile(url.path)
+                }
+            }
+            return IncomingRollbackPlan(
+                root: root,
+                stagedRoot: stagedRoot,
+                installedArtifacts: installedArtifacts
+            )
+        }
+
+        private func validateBackedUpLiveArtifactsForRollback(
+            _ replacement: Replacement,
+            installedIncomingArtifacts: [ArtifactPath],
+            fileManager: FileManager
+        ) throws -> [ArtifactPath] {
+            let root = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            let volumeSupportsCaseSensitiveNames =
+                try Self.destinationVolumeSupportsCaseSensitiveNames(
+                    for: root,
+                    fileManager: fileManager
+                )
+            var replacementDirectories = Set<ArtifactPath>()
+            for artifact in replacement.backedUpArtifacts {
+                switch try Self.inspectArtifactPath(
+                    artifact,
+                    root: root,
+                    fileManager: fileManager
+                ) {
+                case .missingParent, .leaf(_, nil):
+                    continue
+                case .leaf(let url, .some(.regularFile)):
+                    let actualDigest = try Self.sha256(of: url)
+                    if actualDigest == replacement.backedUpDigests[artifact] {
+                        continue
+                    }
+                    guard installedIncomingArtifacts.contains(where: {
+                        Self.artifactPathsAreEquivalent(
+                            artifact,
+                            $0,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames
+                        ) && replacement.incomingDigests[$0] == actualDigest
+                    }) else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: url.path
+                        )
+                    }
+                case .leaf(let directory, .some(.directory)):
+                    guard replacement.incomingArtifacts.contains(where: {
+                        Self.pathIsAncestor(
+                            artifact,
+                            of: $0,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames
+                        )
+                    }) else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: Self.artifactURL(artifact, under: artifactRoot).path
+                        )
+                    }
+                    replacementDirectories.formUnion(
+                        try validateReplacementDirectoryContents(
+                            at: directory,
+                            artifact: artifact,
+                            incomingArtifacts: replacement.incomingArtifacts,
+                            installedIncomingArtifacts: installedIncomingArtifacts,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames,
+                            fileManager: fileManager
+                        )
+                    )
+                case .occupiedParent(_, .regularFile):
+                    guard installedIncomingArtifacts.contains(where: {
+                        Self.pathIsAncestor(
+                            $0,
+                            of: artifact,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames
+                        )
+                    }) else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: Self.artifactURL(artifact, under: artifactRoot).path
+                        )
+                    }
+                case .occupiedParent(let url, let kind):
+                    throw ArtifactStoreError.cleanupParentTypeMismatch(
+                        artifactPath: artifact,
+                        parentPath: url.path,
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: artifact,
+                        symbolicLinkPath: url.path
+                    )
+                case .leaf(let url, .some(.other)):
+                    throw ArtifactStoreError.commitDestinationTypeMismatch(
+                        artifactPath: artifact,
+                        expected: "regular file, directory, or missing",
+                        actual: "special file at \(url.path)"
+                    )
+                }
+            }
+            return replacementDirectories.sorted {
+                let leftDepth = Self.pathDepth($0)
+                let rightDepth = Self.pathDepth($1)
+                return leftDepth == rightDepth
+                    ? $0.rawValue < $1.rawValue
+                    : leftDepth > rightDepth
+            }
+        }
+
+        private func validateReplacementDirectoryContents(
+            at directory: URL,
+            artifact: ArtifactPath,
+            incomingArtifacts: [ArtifactPath],
+            installedIncomingArtifacts: [ArtifactPath],
+            volumeSupportsCaseSensitiveNames: Bool,
+            fileManager: FileManager
+        ) throws -> Set<ArtifactPath> {
+            var directories: Set<ArtifactPath> = [artifact]
+            var pending: [(url: URL, artifact: ArtifactPath)] = [(directory, artifact)]
+            while let current = pending.popLast() {
+                for childURL in try fileManager.contentsOfDirectory(
+                    at: current.url,
+                    includingPropertiesForKeys: nil,
+                    options: []
+                ) {
+                    let child = try ArtifactPath(
+                        current.artifact.rawValue + "/" + childURL.lastPathComponent
+                    )
+                    guard let kind = try Self.artifactItemKind(
+                        at: childURL,
+                        fileManager: fileManager
+                    ) else { continue }
+                    switch kind {
+                    case .directory:
+                        guard incomingArtifacts.contains(where: {
+                            Self.pathIsAncestor(
+                                child,
+                                of: $0,
+                                volumeSupportsCaseSensitiveNames:
+                                    volumeSupportsCaseSensitiveNames
+                            )
+                        }) else {
+                            throw ArtifactStoreError.artifactContentChanged(
+                                artifactPath: child,
+                                path: childURL.path
+                            )
+                        }
+                        directories.insert(child)
+                        pending.append((childURL, child))
+                    case .regularFile:
+                        guard installedIncomingArtifacts.contains(where: {
+                            Self.artifactPathsAreEquivalent(
+                                child,
+                                $0,
+                                volumeSupportsCaseSensitiveNames:
+                                    volumeSupportsCaseSensitiveNames
+                            )
+                        }) else {
+                            throw ArtifactStoreError.artifactContentChanged(
+                                artifactPath: child,
+                                path: childURL.path
+                            )
+                        }
+                    case .symbolicLink:
+                        throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                            artifactPath: child,
+                            symbolicLinkPath: childURL.path
+                        )
+                    case .other:
+                        throw ArtifactStoreError.commitDestinationTypeMismatch(
+                            artifactPath: child,
+                            expected: "generated replacement contents",
+                            actual: "special file at \(childURL.path)"
+                        )
+                    }
+                }
+            }
+            return directories
+        }
+
+        private func cleanupReplacementDirectories(
+            _ directories: [ArtifactPath],
+            root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws {
+            for directory in directories {
+                switch try Self.inspectArtifactPath(
+                    directory,
+                    root: root,
+                    fileManager: fileManager
+                ) {
+                case .missingParent, .leaf(_, nil):
+                    continue
+                case .leaf(let url, .some(.directory)):
+                    guard try fileManager.contentsOfDirectory(atPath: url.path).isEmpty else {
+                        throw ArtifactStoreError.cleanupDirectoryNotEmpty(
+                            artifactPath: directory,
+                            directoryPath: url.path
+                        )
+                    }
+                    try fileManager.removeItem(at: url)
+                case .occupiedParent(let url, let kind):
+                    throw ArtifactStoreError.cleanupParentTypeMismatch(
+                        artifactPath: directory,
+                        parentPath: url.path,
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: directory,
+                        symbolicLinkPath: url.path
+                    )
+                case .leaf(let url, .some(let kind)):
+                    throw ArtifactStoreError.commitDestinationTypeMismatch(
+                        artifactPath: directory,
+                        expected: "empty directory or missing",
+                        actual: "\(Self.artifactItemKindDescription(kind)) at \(url.path)"
+                    )
+                }
+            }
+        }
+
+        private func cleanupInstalledIncomingArtifacts(
+            _ plan: IncomingRollbackPlan,
+            expectedDigests: [ArtifactPath: String],
+            fileManager: FileManager
+        ) throws {
+            try Self.validateStagedRoot(plan.stagedRoot, fileManager: fileManager)
+            let candidates = Self.cleanupCandidates(
+                manifestArtifacts: plan.installedArtifacts
+            )
+            let candidateSet = Set(candidates)
+
+            for artifact in candidates {
+                guard
+                    case .leaf(let url, .some(.regularFile)) = try Self.inspectArtifactPath(
+                        artifact,
+                        root: plan.root,
+                        fileManager: fileManager
+                    ),
+                    try Self.sha256(of: url)
+                        == Self.requiredDigest(for: artifact, in: expectedDigests)
+                else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: Self.artifactURL(artifact, under: artifactRoot).path
+                    )
+                }
+            }
+
+            for artifact in Self.cleanupOperationOrder(candidates) {
+                guard
+                    case .leaf(let url, .some(.regularFile)) = try Self.inspectArtifactPath(
+                        artifact,
+                        root: plan.root,
+                        fileManager: fileManager
+                    ),
+                    try Self.sha256(of: url)
+                        == Self.requiredDigest(for: artifact, in: expectedDigests)
+                else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: Self.artifactURL(artifact, under: artifactRoot).path
+                    )
+                }
+                try fileManager.removeItem(at: url)
+                _ = try Self.pruneEmptyParentDirectories(
+                    afterDeleting: artifact,
+                    root: plan.root,
+                    cleanupCandidates: candidateSet,
+                    fileManager: fileManager
+                )
+            }
+        }
+
+        private func prepareBackedUpArtifactRestoration(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws -> RestorationPlan? {
+            guard !replacement.backedUpArtifacts.isEmpty else { return nil }
+            let backupSourceRoot = try Self.artifactRootURLs(
+                for: replacement.backupRoot,
+                fileManager: fileManager
+            )
+            let sourceRoot = try Self.artifactRootURLs(
+                for: replacement.restoreRoot,
+                fileManager: fileManager
+            )
+            let destinationRoot = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
+            try Self.validateStagedRoot(backupSourceRoot, fileManager: fileManager)
+            try Self.validateStagedRoot(sourceRoot, fileManager: fileManager)
+            let artifacts = Self.cleanupCandidates(
+                manifestArtifacts: replacement.backedUpArtifacts
+            )
+            try Self.validateDestinationCollisions(artifacts)
+            let volumeSupportsCaseSensitiveNames =
+                try Self.destinationVolumeSupportsCaseSensitiveNames(
+                    for: destinationRoot,
+                    fileManager: fileManager
+                )
+            var entries: [RestorationEntry] = []
+            entries.reserveCapacity(artifacts.count)
+
+            for artifact in artifacts {
+                let backupInspection = try Self.inspectArtifactPath(
+                    artifact,
+                    root: backupSourceRoot,
+                    fileManager: fileManager
+                )
+                let backupSource: URL
+                switch backupInspection {
+                case .leaf(let url, .some(.regularFile)):
+                    backupSource = url
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInStagingDirectory(url.path)
+                case .missingParent, .leaf(_, nil):
+                    throw ArtifactStoreError.missingStagedArtifact(
+                        Self.artifactURL(artifact, under: replacement.backupRoot).path
+                    )
+                case .occupiedParent(let url, _), .leaf(let url, .some(.directory)),
+                    .leaf(let url, .some(.other)):
+                    throw ArtifactStoreError.stagedArtifactIsNotRegularFile(url.path)
+                }
+                let expectedDigest = try Self.requiredDigest(
+                    for: artifact,
+                    in: replacement.backedUpDigests
+                )
+                guard try Self.sha256(of: backupSource) == expectedDigest else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: backupSource.path
+                    )
+                }
+
+                let restoreSource: URL?
+                switch try Self.inspectArtifactPath(
+                    artifact,
+                    root: sourceRoot,
+                    fileManager: fileManager
+                ) {
+                case .leaf(let url, .some(.regularFile)):
+                    guard try Self.sha256(of: url) == expectedDigest else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: url.path
+                        )
+                    }
+                    restoreSource = url
+                case .missingParent, .leaf(_, nil):
+                    restoreSource = nil
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInStagingDirectory(url.path)
+                case .occupiedParent(let url, _), .leaf(let url, .some(.directory)),
+                    .leaf(let url, .some(.other)):
+                    throw ArtifactStoreError.stagedArtifactIsNotRegularFile(url.path)
+                }
+                let destination = try Self.commitDestinationURL(
+                    for: artifact,
+                    root: destinationRoot,
+                    fileManager: fileManager
+                )
+                let destinationAlreadyRestored: Bool
+                switch try Self.inspectArtifactPath(
+                    artifact,
+                    root: destinationRoot,
+                    fileManager: fileManager
+                ) {
+                case .leaf(let url, .some(.regularFile)):
+                    destinationAlreadyRestored = try Self.sha256(of: url) == expectedDigest
+                case .missingParent, .occupiedParent, .symbolicLinkParent, .leaf:
+                    destinationAlreadyRestored = false
+                }
+                if restoreSource == nil, destinationAlreadyRestored {
+                    continue
+                }
+                guard let restoreSource else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: destination.path
+                    )
+                }
+                guard !Self.pathsOverlap(
+                    restoreSource,
+                    destination,
+                    volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+                ) else {
+                    throw ArtifactStoreError.commitSourceDestinationOverlap(
+                        source: restoreSource.path,
+                        destination: destination.path
+                    )
+                }
+                entries.append(
+                    RestorationEntry(
+                        artifact: artifact,
+                        source: restoreSource,
+                        destination: destination,
+                        digest: expectedDigest
+                    )
+                )
+            }
+            return RestorationPlan(
+                sourceRoot: sourceRoot,
+                destinationRoot: destinationRoot,
+                entries: entries
+            )
+        }
+
+        private func restoreBackedUpArtifacts(
+            _ plan: RestorationPlan,
+            fileManager: FileManager
+        ) throws {
+            try Self.validateStagedRoot(plan.sourceRoot, fileManager: fileManager)
+            var preparedDestinationDirectories: Set<URL> = []
+            for entry in plan.entries {
+                guard
+                    case .leaf(let source, .some(.regularFile)) = try Self.inspectArtifactPath(
+                        entry.artifact,
+                        root: plan.sourceRoot,
+                        fileManager: fileManager
+                    ),
+                    try Self.sha256(of: source) == entry.digest
+                else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: entry.artifact,
+                        path: entry.source.path
+                    )
+                }
+                switch try Self.inspectArtifactPath(
+                    entry.artifact,
+                    root: plan.destinationRoot,
+                    fileManager: fileManager
+                ) {
+                case .missingParent, .leaf(_, nil):
+                    break
+                case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: entry.artifact,
+                        symbolicLinkPath: url.path
+                    )
+                case .occupiedParent(let url, let kind):
+                    throw ArtifactStoreError.cleanupParentTypeMismatch(
+                        artifactPath: entry.artifact,
+                        parentPath: url.path,
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                case .leaf(_, .some(let kind)):
+                    throw ArtifactStoreError.commitDestinationTypeMismatch(
+                        artifactPath: entry.artifact,
+                        expected: "missing destination",
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                }
+            }
+
+            for entry in plan.entries {
+                try Self.validateStagedRoot(plan.sourceRoot, fileManager: fileManager)
+                guard
+                    case .leaf(let source, .some(.regularFile)) = try Self.inspectArtifactPath(
+                        entry.artifact,
+                        root: plan.sourceRoot,
+                        fileManager: fileManager
+                    ),
+                    try Self.sha256(of: source) == entry.digest
+                else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: entry.artifact,
+                        path: entry.source.path
+                    )
+                }
+                let destinationDirectory =
+                    entry.destination.deletingLastPathComponent().standardizedFileURL
+                if preparedDestinationDirectories.insert(destinationDirectory).inserted {
+                    try ManagedFileSystem.ensureRealDirectory(destinationDirectory)
+                }
+                guard
+                    case .leaf(_, nil) = try Self.inspectArtifactPath(
+                        entry.artifact,
+                        root: plan.destinationRoot,
+                        fileManager: fileManager
+                    )
+                else {
+                    throw ArtifactStoreError.commitDestinationTypeMismatch(
+                        artifactPath: entry.artifact,
+                        expected: "missing destination",
+                        actual: "changed destination"
+                    )
+                }
+                try ManagedFileSystem.atomicRenameExclusively(
+                    from: entry.source,
+                    to: entry.destination
+                )
+            }
+        }
+
+        private static func validateStagedRoot(
+            _ root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws {
+            try validateStagedItem(
+                at: root.unresolved,
+                expectedKind: .directory,
+                fileManager: fileManager
+            )
+            guard
+                root.unresolved.resolvingSymlinksInPath().standardizedFileURL.path
+                    == root.resolved.path
+            else {
+                throw ArtifactStoreError.stagingDirectoryChanged(root.unresolved.path)
+            }
+        }
+
+        private func markReplacementApplyStarted(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws {
+            let markerURL = replacement.directory.appendingPathComponent(
+                "apply.started",
+                isDirectory: false
+            )
+            guard try Self.artifactItemKind(at: markerURL, fileManager: fileManager) == nil else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "replacement apply marker already exists at \(markerURL.path)"
+                )
+            }
+            try Data("started\n".utf8).write(to: markerURL, options: .withoutOverwriting)
+            try ManagedFileSystem.syncFile(markerURL)
+            try ManagedFileSystem.syncDirectory(replacement.directory)
+        }
+
+        private func replacementApplyHasStarted(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws -> Bool {
+            let markerURL = replacement.directory.appendingPathComponent(
+                "apply.started",
+                isDirectory: false
+            )
+            guard let kind = try Self.artifactItemKind(at: markerURL, fileManager: fileManager)
+            else { return false }
+            guard kind == .regularFile else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "replacement apply marker is not a regular file at \(markerURL.path)"
+                )
+            }
+            return true
         }
 
         internal func finalizeReplacement(
             _ replacement: Replacement,
             fileManager: FileManager = .default
+        ) throws {
+            try removeReplacementTransaction(replacement, fileManager: fileManager)
+        }
+
+        private func removeReplacementTransaction(
+            _ replacement: Replacement,
+            fileManager: FileManager
         ) throws {
             guard
                 let kind = try Self.artifactItemKind(
@@ -382,6 +1744,22 @@ extension PrivateHeaderGeneration {
                 throw ArtifactStoreError.invalidReplacementManifest(
                     "transaction is not a directory at \(replacement.directory.path)"
                 )
+            }
+            let manifestURL = replacement.directory.appendingPathComponent(
+                "manifest.json",
+                isDirectory: false
+            )
+            if let manifestKind = try Self.artifactItemKind(
+                at: manifestURL,
+                fileManager: fileManager
+            ) {
+                guard manifestKind == .regularFile else {
+                    throw ArtifactStoreError.invalidReplacementManifest(
+                        "manifest is not a regular file at \(manifestURL.path)"
+                    )
+                }
+                try fileManager.removeItem(at: manifestURL)
+                try ManagedFileSystem.syncDirectory(replacement.directory)
             }
             try fileManager.removeItem(at: replacement.directory)
         }
@@ -461,6 +1839,7 @@ extension PrivateHeaderGeneration {
             fileManager: FileManager
         ) throws {
             try preflightCommit(plan, fileManager: fileManager)
+            try validateIncomingDestinationsAreMissing(plan, fileManager: fileManager)
             for entry in plan.entries where entry.kind == .directory {
                 let destination = try revalidate(entry, in: plan, fileManager: fileManager)
                 try fileManager.createDirectory(
@@ -470,42 +1849,148 @@ extension PrivateHeaderGeneration {
             }
             for entry in plan.entries where entry.kind == .file {
                 let destination = try revalidate(entry, in: plan, fileManager: fileManager)
-                try ManagedFileSystem.atomicRename(from: entry.source, to: destination)
+                try ManagedFileSystem.atomicRenameExclusively(
+                    from: entry.source,
+                    to: destination
+                )
             }
         }
 
-        private func backupExistingArtifacts(
+        private func validateIncomingDestinationsAreMissing(
+            _ plan: CommitPlan,
+            fileManager: FileManager
+        ) throws {
+            for entry in plan.entries where entry.kind == .file {
+                let destination = try Self.commitDestinationURL(
+                    for: entry.artifact,
+                    root: plan.root,
+                    fileManager: fileManager
+                )
+                guard
+                    let kind = try Self.artifactItemKind(
+                        at: destination,
+                        fileManager: fileManager
+                    )
+                else { continue }
+                if kind == .symbolicLink {
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: entry.artifact,
+                        symbolicLinkPath: destination.path
+                    )
+                }
+                throw ArtifactStoreError.commitDestinationTypeMismatch(
+                    artifactPath: entry.artifact,
+                    expected: "missing destination",
+                    actual: Self.artifactItemKindDescription(kind)
+                )
+            }
+        }
+
+        private func prepareMutation(
             _ artifacts: [ArtifactPath],
+            preferring preferredArtifacts: [ArtifactPath],
             from root: ArtifactRootURLs,
             to backupRoot: URL,
+            volumeSupportsCaseSensitiveNames: Bool,
             fileManager: FileManager
-        ) throws -> [ArtifactPath] {
+        ) throws -> PreparedMutation {
             var backedUpArtifacts: [ArtifactPath] = []
-            for artifact in artifacts {
-                let inspection = try Self.preflightCleanupArtifact(
-                    for: artifact,
+            var pathKinds: [ArtifactPath: MutationPathKind] = [:]
+            var sourceByPortablePath:
+                [String: (artifact: ArtifactPath, canonicalSourcePath: String)] = [:]
+            let preferredArtifacts = Set(preferredArtifacts)
+            let candidates = Self.cleanupCandidates(manifestArtifacts: artifacts).sorted {
+                let leftDepth = Self.pathDepth($0)
+                let rightDepth = Self.pathDepth($1)
+                if leftDepth == rightDepth {
+                    let leftIsPreferred = preferredArtifacts.contains($0)
+                    let rightIsPreferred = preferredArtifacts.contains($1)
+                    if leftIsPreferred != rightIsPreferred {
+                        return leftIsPreferred
+                    }
+                    return $0.rawValue < $1.rawValue
+                }
+                return leftDepth < rightDepth
+            }
+            for artifact in candidates {
+                let inspection = try Self.inspectArtifactPath(
+                    artifact,
                     root: root,
                     fileManager: fileManager
+                )
+                pathKinds[artifact] = try Self.mutationPathKind(
+                    for: inspection,
+                    artifact: artifact
                 )
                 switch inspection {
                 case .missingParent, .leaf(_, nil):
                     continue
-                case .occupiedParent, .symbolicLinkParent:
-                    preconditionFailure("preflightCleanupArtifact rejects invalid parents")
+                case .occupiedParent(_, .regularFile):
+                    guard backedUpArtifacts.contains(where: {
+                        Self.pathIsAncestor(
+                            $0,
+                            of: artifact,
+                            volumeSupportsCaseSensitiveNames:
+                                volumeSupportsCaseSensitiveNames
+                        )
+                    }) else {
+                        throw ArtifactStoreError.artifactContentChanged(
+                            artifactPath: artifact,
+                            path: Self.artifactURL(artifact, under: root.unresolved).path
+                        )
+                    }
+                case .occupiedParent(let url, let kind):
+                    throw ArtifactStoreError.cleanupParentTypeMismatch(
+                        artifactPath: artifact,
+                        parentPath: url.path,
+                        actual: Self.artifactItemKindDescription(kind)
+                    )
+                case .symbolicLinkParent(let url):
+                    throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                        artifactPath: artifact,
+                        symbolicLinkPath: url.path
+                    )
                 case .leaf(let source, .some(.regularFile)):
+                    let portablePath = Self.portableCollisionKey(for: artifact.rawValue)
+                    let canonicalSourcePath =
+                        source.resolvingSymlinksInPath().standardizedFileURL.path
+                    if let existing = sourceByPortablePath[portablePath] {
+                        guard existing.canonicalSourcePath == canonicalSourcePath else {
+                            throw ArtifactStoreError.commitDestinationCollision(
+                                first: existing.artifact,
+                                second: artifact
+                            )
+                        }
+                        continue
+                    }
                     let destination = Self.artifactURL(artifact, under: backupRoot)
                     try fileManager.createDirectory(
                         at: destination.deletingLastPathComponent(),
                         withIntermediateDirectories: true
                     )
                     try fileManager.copyItem(at: source, to: destination)
+                    sourceByPortablePath[portablePath] = (artifact, canonicalSourcePath)
                     backedUpArtifacts.append(artifact)
                 case .leaf(let source, .some(.symbolicLink)):
                     throw ArtifactStoreError.symbolicLinkInArtifactPath(
                         artifactPath: artifact,
                         symbolicLinkPath: source.path
                     )
-                case .leaf(_, .some(.directory)), .leaf(_, .some(.other)):
+                case .leaf(_, .some(.directory)):
+                    guard candidates.contains(where: {
+                        Self.pathIsAncestor(
+                            artifact,
+                            of: $0,
+                            volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+                        )
+                    }) else {
+                        throw ArtifactStoreError.commitDestinationTypeMismatch(
+                            artifactPath: artifact,
+                            expected: "regular file",
+                            actual: Self.artifactItemKindDescription(.directory)
+                        )
+                    }
+                case .leaf(_, .some(.other)):
                     throw ArtifactStoreError.commitDestinationTypeMismatch(
                         artifactPath: artifact,
                         expected: "regular file",
@@ -513,7 +1998,77 @@ extension PrivateHeaderGeneration {
                     )
                 }
             }
-            return backedUpArtifacts
+            return PreparedMutation(
+                backedUpArtifacts: backedUpArtifacts.sorted { $0.rawValue < $1.rawValue },
+                pathKinds: pathKinds
+            )
+        }
+
+        private static func mutationPathKind(
+            for inspection: ArtifactPathInspection,
+            artifact: ArtifactPath
+        ) throws -> MutationPathKind {
+            switch inspection {
+            case .missingParent, .leaf(_, nil):
+                return .missing
+            case .occupiedParent(_, .regularFile):
+                return .occupiedByRegularFile
+            case .leaf(_, .some(.regularFile)):
+                return .regularFile
+            case .leaf(_, .some(.directory)):
+                return .directory
+            case .occupiedParent(let url, let kind):
+                throw ArtifactStoreError.cleanupParentTypeMismatch(
+                    artifactPath: artifact,
+                    parentPath: url.path,
+                    actual: artifactItemKindDescription(kind)
+                )
+            case .symbolicLinkParent(let url), .leaf(let url, .some(.symbolicLink)):
+                throw ArtifactStoreError.symbolicLinkInArtifactPath(
+                    artifactPath: artifact,
+                    symbolicLinkPath: url.path
+                )
+            case .leaf(let url, .some(.other)):
+                throw ArtifactStoreError.commitDestinationTypeMismatch(
+                    artifactPath: artifact,
+                    expected: "regular file, directory, or missing",
+                    actual: "special file at \(url.path)"
+                )
+            }
+        }
+
+        private static func mutationPathKinds(
+            for artifacts: [ArtifactPath],
+            root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws -> [ArtifactPath: MutationPathKind] {
+            var kinds: [ArtifactPath: MutationPathKind] = [:]
+            kinds.reserveCapacity(artifacts.count)
+            for artifact in artifacts {
+                kinds[artifact] = try mutationPathKind(
+                    for: inspectArtifactPath(
+                        artifact,
+                        root: root,
+                        fileManager: fileManager
+                    ),
+                    artifact: artifact
+                )
+            }
+            return kinds
+        }
+
+        private static func pathIsAncestor(
+            _ ancestor: ArtifactPath,
+            of descendant: ArtifactPath,
+            volumeSupportsCaseSensitiveNames: Bool
+        ) -> Bool {
+            let ancestorKey = volumeSupportsCaseSensitiveNames
+                ? ancestor.rawValue.precomposedStringWithCanonicalMapping
+                : portableCollisionKey(for: ancestor.rawValue)
+            let descendantKey = volumeSupportsCaseSensitiveNames
+                ? descendant.rawValue.precomposedStringWithCanonicalMapping
+                : portableCollisionKey(for: descendant.rawValue)
+            return descendantKey.hasPrefix(ancestorKey + "/")
         }
 
         private func writeManifest(
@@ -529,16 +2084,45 @@ extension PrivateHeaderGeneration {
                     "manifest already exists at \(manifestURL.path)"
                 )
             }
-            let manifest = ReplacementManifest(
-                version: 1,
+            try persistManifest(
+                replacementManifest(for: replacement),
+                at: manifestURL,
+                transactionDirectory: replacement.directory
+            )
+        }
+
+        private func replacementManifest(
+            for replacement: Replacement
+        ) throws -> ReplacementManifest {
+            return ReplacementManifest(
+                version: Self.replacementManifestVersion,
                 runID: replacement.runID.rawValue,
                 targetID: replacement.targetID,
                 artifactRoot: replacement.artifactRoot.rawValue,
                 incomingArtifacts: replacement.incomingArtifacts.map(\.rawValue),
                 mutationArtifacts: replacement.mutationArtifacts.map(\.rawValue),
-                backedUpArtifacts: replacement.backedUpArtifacts.map(\.rawValue)
+                mutationPathKinds: Dictionary(uniqueKeysWithValues:
+                    replacement.mutationPathKinds.map { ($0.key.rawValue, $0.value) }
+                ),
+                backedUpArtifacts: replacement.backedUpArtifacts.map(\.rawValue),
+                incomingDigests: Dictionary(uniqueKeysWithValues:
+                    replacement.incomingDigests.map { ($0.key.rawValue, $0.value) }
+                ),
+                backedUpDigests: Dictionary(uniqueKeysWithValues:
+                    replacement.backedUpDigests.map { ($0.key.rawValue, $0.value) }
+                ),
+                artifactRootIdentity: replacement.artifactRootIdentity
             )
+        }
+
+        private func persistManifest(
+            _ manifest: ReplacementManifest,
+            at manifestURL: URL,
+            transactionDirectory: URL
+        ) throws {
             try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
+            try ManagedFileSystem.syncFile(manifestURL)
+            try ManagedFileSystem.syncDirectory(transactionDirectory)
         }
 
         private static func loadReplacement(
@@ -553,20 +2137,39 @@ extension PrivateHeaderGeneration {
                     "manifest is not a regular file at \(manifestURL.path)"
                 )
             }
-            let manifest: ReplacementManifest
+            let manifestData: Data
             do {
-                manifest = try JSONDecoder().decode(
-                    ReplacementManifest.self,
-                    from: Data(contentsOf: manifestURL)
+                manifestData = try Data(contentsOf: manifestURL)
+            } catch {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "could not read \(manifestURL.path): \(error)"
                 )
+            }
+            let version: Int
+            do {
+                version = try JSONDecoder().decode(
+                    ReplacementManifestVersion.self,
+                    from: manifestData
+                ).version
             } catch {
                 throw ArtifactStoreError.invalidReplacementManifest(
                     "could not decode \(manifestURL.path): \(error)"
                 )
             }
-            guard manifest.version == 1 else {
+            guard version == Self.replacementManifestVersion else {
                 throw ArtifactStoreError.invalidReplacementManifest(
-                    "unsupported version \(manifest.version) at \(manifestURL.path)"
+                    "unsupported version \(version) at \(manifestURL.path)"
+                )
+            }
+            let manifest: ReplacementManifest
+            do {
+                manifest = try JSONDecoder().decode(
+                    ReplacementManifest.self,
+                    from: manifestData
+                )
+            } catch {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "could not decode \(manifestURL.path): \(error)"
                 )
             }
             let runID = try PrivateHeaderGeneration.RunID(manifest.runID)
@@ -583,12 +2186,42 @@ extension PrivateHeaderGeneration {
             let artifactRootPath = try ArtifactPath(manifest.artifactRoot)
             let incomingArtifacts = try manifest.incomingArtifacts.map { try ArtifactPath($0) }
             let mutationArtifacts = try manifest.mutationArtifacts.map { try ArtifactPath($0) }
+            var mutationPathKinds: [ArtifactPath: MutationPathKind] = [:]
+            mutationPathKinds.reserveCapacity(manifest.mutationPathKinds.count)
+            for (rawPath, kind) in manifest.mutationPathKinds {
+                let artifact = try ArtifactPath(rawPath)
+                guard mutationPathKinds[artifact] == nil else {
+                    throw ArtifactStoreError.invalidReplacementManifest(
+                        "manifest contains duplicate mutation path kinds at \(manifestURL.path)"
+                    )
+                }
+                mutationPathKinds[artifact] = kind
+            }
             let backedUpArtifacts = try manifest.backedUpArtifacts.map {
                 try ArtifactPath($0)
             }
+            guard Set(incomingArtifacts).count == incomingArtifacts.count,
+                Set(mutationArtifacts).count == mutationArtifacts.count,
+                Set(backedUpArtifacts).count == backedUpArtifacts.count
+            else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "manifest contains duplicate paths at \(manifestURL.path)"
+                )
+            }
+            let incomingDigests = try decodeDigests(
+                manifest.incomingDigests,
+                expectedArtifacts: incomingArtifacts,
+                manifestURL: manifestURL
+            )
+            let backedUpDigests = try decodeDigests(
+                manifest.backedUpDigests,
+                expectedArtifacts: backedUpArtifacts,
+                manifestURL: manifestURL
+            )
             let mutationSet = Set(mutationArtifacts)
             guard incomingArtifacts.allSatisfy(mutationSet.contains),
-                backedUpArtifacts.allSatisfy(mutationSet.contains)
+                backedUpArtifacts.allSatisfy(mutationSet.contains),
+                Set(mutationPathKinds.keys) == mutationSet
             else {
                 throw ArtifactStoreError.invalidReplacementManifest(
                     "manifest paths do not form one mutation set at \(manifestURL.path)"
@@ -596,18 +2229,439 @@ extension PrivateHeaderGeneration {
             }
             let incomingRoot = directory.appendingPathComponent("incoming", isDirectory: true)
             let backupRoot = directory.appendingPathComponent("backup", isDirectory: true)
-            _ = try artifactRootURLs(for: artifactRoot)
+            let restoreRoot = directory.appendingPathComponent("restore", isDirectory: true)
             return Replacement(
                 directory: directory,
                 incomingRoot: incomingRoot,
                 backupRoot: backupRoot,
+                restoreRoot: restoreRoot,
                 runID: runID,
                 targetID: manifest.targetID,
                 artifactRoot: artifactRootPath,
                 incomingArtifacts: incomingArtifacts,
                 mutationArtifacts: mutationArtifacts,
-                backedUpArtifacts: backedUpArtifacts
+                mutationPathKinds: mutationPathKinds,
+                backedUpArtifacts: backedUpArtifacts,
+                incomingDigests: incomingDigests,
+                backedUpDigests: backedUpDigests,
+                artifactRootIdentity: manifest.artifactRootIdentity
             )
+        }
+
+        private func validateReplacementArtifactRoot(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws {
+            try Self.validateDirectoryIdentity(
+                replacement.artifactRootIdentity,
+                at: artifactRoot,
+                fileManager: fileManager
+            )
+        }
+
+        private func validateTransactionArtifacts(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws {
+            try Self.validateArtifactDigests(
+                replacement.incomingDigests,
+                for: replacement.incomingArtifacts,
+                under: replacement.incomingRoot,
+                fileManager: fileManager
+            )
+            try Self.validateArtifactDigests(
+                replacement.backedUpDigests,
+                for: replacement.backedUpArtifacts,
+                under: replacement.backupRoot,
+                fileManager: fileManager
+            )
+            try Self.validateArtifactDigests(
+                replacement.backedUpDigests,
+                for: replacement.backedUpArtifacts,
+                under: replacement.restoreRoot,
+                fileManager: fileManager
+            )
+        }
+
+        private static func artifactDigests(
+            for artifacts: [ArtifactPath],
+            under rootURL: URL,
+            fileManager: FileManager
+        ) throws -> [ArtifactPath: String] {
+            let root = try artifactRootURLs(for: rootURL, fileManager: fileManager)
+            try validateStagedRoot(root, fileManager: fileManager)
+            var digests: [ArtifactPath: String] = [:]
+            digests.reserveCapacity(artifacts.count)
+            for artifact in artifacts {
+                guard
+                    case .leaf(let url, .some(.regularFile)) = try inspectArtifactPath(
+                        artifact,
+                        root: root,
+                        fileManager: fileManager
+                    )
+                else {
+                    throw ArtifactStoreError.missingStagedArtifact(
+                        artifactURL(artifact, under: rootURL).path
+                    )
+                }
+                digests[artifact] = try sha256(of: url)
+            }
+            return digests
+        }
+
+        private static func copyArtifacts(
+            _ artifacts: [ArtifactPath],
+            from sourceRoot: URL,
+            to destinationRoot: URL,
+            expectedDigests: [ArtifactPath: String],
+            fileManager: FileManager
+        ) throws {
+            var preparedDestinationDirectories: Set<URL> = []
+            for artifact in artifacts {
+                let source = artifactURL(artifact, under: sourceRoot)
+                let destination = artifactURL(artifact, under: destinationRoot)
+                let expectedDigest = try requiredDigest(for: artifact, in: expectedDigests)
+                guard try sha256(of: source) == expectedDigest else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: source.path
+                    )
+                }
+                let destinationDirectory =
+                    destination.deletingLastPathComponent().standardizedFileURL
+                if preparedDestinationDirectories.insert(destinationDirectory).inserted {
+                    try ManagedFileSystem.ensureRealDirectory(destinationDirectory)
+                }
+                try fileManager.copyItem(at: source, to: destination)
+                guard try sha256(of: destination) == expectedDigest else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: destination.path
+                    )
+                }
+            }
+        }
+
+        private static func validateArtifactDigests(
+            _ expectedDigests: [ArtifactPath: String],
+            for artifacts: [ArtifactPath],
+            under rootURL: URL,
+            fileManager: FileManager
+        ) throws {
+            let actualDigests = try artifactDigests(
+                for: artifacts,
+                under: rootURL,
+                fileManager: fileManager
+            )
+            for artifact in artifacts {
+                guard actualDigests[artifact] == expectedDigests[artifact] else {
+                    throw ArtifactStoreError.artifactContentChanged(
+                        artifactPath: artifact,
+                        path: artifactURL(artifact, under: rootURL).path
+                    )
+                }
+            }
+        }
+
+        private static func requiredDigest(
+            for artifact: ArtifactPath,
+            in digests: [ArtifactPath: String]
+        ) throws -> String {
+            guard let digest = digests[artifact] else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "missing digest for \(artifact.rawValue)"
+                )
+            }
+            return digest
+        }
+
+        private static func decodeDigests(
+            _ rawDigests: [String: String],
+            expectedArtifacts: [ArtifactPath],
+            manifestURL: URL
+        ) throws -> [ArtifactPath: String] {
+            var digests: [ArtifactPath: String] = [:]
+            digests.reserveCapacity(rawDigests.count)
+            for (rawPath, digest) in rawDigests {
+                let artifact = try ArtifactPath(rawPath)
+                guard digests[artifact] == nil, isValidSHA256(digest) else {
+                    throw ArtifactStoreError.invalidReplacementManifest(
+                        "invalid digest entry for \(rawPath) at \(manifestURL.path)"
+                    )
+                }
+                digests[artifact] = digest
+            }
+            guard Set(digests.keys) == Set(expectedArtifacts) else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "digest paths do not match artifact paths at \(manifestURL.path)"
+                )
+            }
+            return digests
+        }
+
+        private static func sha256(of url: URL) throws -> String {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { handle.closeFile() }
+            var hasher = SHA256()
+            while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }
+
+        private static func isValidSHA256(_ digest: String) -> Bool {
+            digest.utf8.count == 64 && digest.utf8.allSatisfy {
+                (48...57).contains($0) || (97...102).contains($0)
+            }
+        }
+
+        private static func directoryIdentity(
+            at url: URL,
+            fileManager: FileManager
+        ) throws -> FileSystemIdentity {
+            guard try artifactItemKind(at: url, fileManager: fileManager) == .directory else {
+                throw ArtifactStoreError.artifactRootTypeMismatch(
+                    path: url.path,
+                    actual: "missing or non-directory"
+                )
+            }
+            let attributes = try fileManager.attributesOfItem(atPath: url.path)
+            guard let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+                let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+            else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "filesystem identity is unavailable at \(url.path)"
+                )
+            }
+            return FileSystemIdentity(device: device, inode: inode)
+        }
+
+        private static func validateDirectoryIdentity(
+            _ expected: FileSystemIdentity,
+            at url: URL,
+            fileManager: FileManager
+        ) throws {
+            let actual = try directoryIdentity(at: url, fileManager: fileManager)
+            guard actual == expected else {
+                throw ArtifactStoreError.artifactRootChanged(
+                    expected: expected.description,
+                    actual: actual.description
+                )
+            }
+        }
+
+        private func validateReplacementVolumes(
+            _ replacement: Replacement,
+            fileManager: FileManager
+        ) throws {
+            try Self.validateReplacementVolumes(
+                liveRoot: artifactRoot,
+                liveRootIdentity: replacement.artifactRootIdentity,
+                transactionRoots: [replacement.incomingRoot, replacement.restoreRoot],
+                fileManager: fileManager
+            )
+        }
+
+        private static func validateReplacementVolumes(
+            liveRoot: URL,
+            liveRootIdentity: FileSystemIdentity,
+            transactionRoots: [URL],
+            fileManager: FileManager
+        ) throws {
+            for transactionRoot in transactionRoots {
+                let transactionIdentity = try directoryIdentity(
+                    at: transactionRoot,
+                    fileManager: fileManager
+                )
+                guard transactionIdentity.device == liveRootIdentity.device else {
+                    throw ArtifactStoreError.replacementVolumeMismatch(
+                        liveRoot: liveRoot.path,
+                        transactionRoot: transactionRoot.path
+                    )
+                }
+            }
+        }
+
+        private static func validateExclusiveRenameSupport(
+            in transactionDirectory: URL,
+            fileManager: FileManager,
+            exclusiveRename: (URL, URL) throws -> Void
+        ) throws {
+            let probeID = UUID().uuidString.lowercased()
+            let source = transactionDirectory.appendingPathComponent(
+                ".rename-excl-source-\(probeID)",
+                isDirectory: false
+            )
+            let destination = transactionDirectory.appendingPathComponent(
+                ".rename-excl-destination-\(probeID)",
+                isDirectory: false
+            )
+            try Data("probe\n".utf8).write(to: source, options: .withoutOverwriting)
+            try exclusiveRename(source, destination)
+            try fileManager.removeItem(at: destination)
+        }
+
+        private static func artifactPathsAreEquivalent(
+            _ first: ArtifactPath,
+            _ second: ArtifactPath,
+            volumeSupportsCaseSensitiveNames: Bool
+        ) -> Bool {
+            artifactPathIdentityKey(
+                for: first,
+                volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+            ) == artifactPathIdentityKey(
+                for: second,
+                volumeSupportsCaseSensitiveNames: volumeSupportsCaseSensitiveNames
+            )
+        }
+
+        private static func artifactPathIdentityKey(
+            for artifact: ArtifactPath,
+            volumeSupportsCaseSensitiveNames: Bool
+        ) -> String {
+            let normalized = artifact.rawValue.precomposedStringWithCanonicalMapping
+            guard !volumeSupportsCaseSensitiveNames else { return normalized }
+            return portableCollisionKey(for: normalized)
+        }
+
+        private func synchronizeReplacementMutations(
+            _ replacement: Replacement,
+            sourceRoot: URL?,
+            sourceArtifacts: [ArtifactPath],
+            fileManager: FileManager
+        ) throws {
+            var directories = Self.mutationDirectories(
+                for: replacement.mutationArtifacts,
+                under: artifactRoot
+            )
+            if let sourceRoot {
+                directories.formUnion(
+                    Self.mutationDirectories(
+                        for: sourceArtifacts,
+                        under: sourceRoot
+                    )
+                )
+            }
+            try Self.syncExistingMutationDirectories(
+                directories,
+                fileManager: fileManager
+            )
+        }
+
+        private static func mutationDirectories(
+            for artifacts: [ArtifactPath],
+            under root: URL
+        ) -> Set<URL> {
+            let root = root.standardizedFileURL
+            var directories: Set<URL> = [root]
+            for artifact in artifacts {
+                var directory = root
+                for component in artifact.rawValue.split(separator: "/").dropLast() {
+                    directory.appendPathComponent(String(component), isDirectory: true)
+                    directories.insert(directory.standardizedFileURL)
+                }
+            }
+            return directories
+        }
+
+        private static func syncExistingMutationDirectories(
+            _ directories: Set<URL>,
+            fileManager: FileManager
+        ) throws {
+            for directory in directories.sorted(by: {
+                let leftDepth = $0.standardizedFileURL.pathComponents.count
+                let rightDepth = $1.standardizedFileURL.pathComponents.count
+                return leftDepth == rightDepth ? $0.path < $1.path : leftDepth > rightDepth
+            }) {
+                switch try artifactItemKind(at: directory, fileManager: fileManager) {
+                case nil, .some(.regularFile):
+                    continue
+                case .some(.directory):
+                    try ManagedFileSystem.syncDirectory(directory)
+                case .some(.symbolicLink):
+                    throw ArtifactStoreError.symbolicLinkInStagingDirectory(directory.path)
+                case .some(.other):
+                    throw ArtifactStoreError.stagedArtifactIsNotDirectory(directory.path)
+                }
+            }
+        }
+
+        private static func syncTree(
+            at root: URL,
+            fileManager: FileManager
+        ) throws {
+            guard try artifactItemKind(at: root, fileManager: fileManager) == .directory else {
+                throw ArtifactStoreError.stagedArtifactIsNotDirectory(root.path)
+            }
+            for child in try fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: nil,
+                options: []
+            ) {
+                switch try artifactItemKind(at: child, fileManager: fileManager) {
+                case .some(.directory):
+                    try syncTree(at: child, fileManager: fileManager)
+                case .some(.regularFile):
+                    try ManagedFileSystem.syncFile(child)
+                case .some(.symbolicLink):
+                    throw ArtifactStoreError.symbolicLinkInStagingDirectory(child.path)
+                case .some(.other):
+                    throw ArtifactStoreError.stagedArtifactIsNotRegularFile(child.path)
+                case nil:
+                    throw ArtifactStoreError.missingStagedArtifact(child.path)
+                }
+            }
+            try ManagedFileSystem.syncDirectory(root)
+        }
+
+        private static func nearestExistingRealDirectory(
+            startingAt url: URL,
+            fileManager: FileManager
+        ) throws -> URL {
+            var candidate = url.standardizedFileURL
+            while true {
+                if let kind = try artifactItemKind(at: candidate, fileManager: fileManager) {
+                    guard kind == .directory else {
+                        throw ArtifactStoreError.artifactRootTypeMismatch(
+                            path: candidate.path,
+                            actual: artifactItemKindDescription(kind)
+                        )
+                    }
+                    return candidate
+                }
+                let parent = candidate.deletingLastPathComponent().standardizedFileURL
+                guard parent.path != candidate.path else {
+                    throw ArtifactStoreError.artifactRootTypeMismatch(
+                        path: candidate.path,
+                        actual: "missing"
+                    )
+                }
+                candidate = parent
+            }
+        }
+
+        private static func syncDirectoryChain(
+            from directory: URL,
+            through ancestor: URL,
+            fileManager: FileManager
+        ) throws {
+            let ancestor = ancestor.standardizedFileURL
+            var current = directory.standardizedFileURL
+            guard isSameOrDescendant(current, of: ancestor) else {
+                throw ArtifactStoreError.invalidReplacementManifest(
+                    "directory \(current.path) is outside durable ancestor \(ancestor.path)"
+                )
+            }
+            while true {
+                guard try artifactItemKind(at: current, fileManager: fileManager) == .directory else {
+                    throw ArtifactStoreError.stagedArtifactIsNotDirectory(current.path)
+                }
+                try ManagedFileSystem.syncDirectory(current)
+                if current.path == ancestor.path {
+                    return
+                }
+                current = current.deletingLastPathComponent().standardizedFileURL
+            }
         }
 
         private static func artifactURL(_ artifact: ArtifactPath, under root: URL) -> URL {
@@ -658,7 +2712,7 @@ extension PrivateHeaderGeneration {
             artifacts: [ArtifactPath],
             fileManager: FileManager = .default
         ) throws -> ArtifactCleanupResult {
-            let root = try artifactRootURLs(for: artifactRoot)
+            let root = try artifactRootURLs(for: artifactRoot, fileManager: fileManager)
             let candidates = cleanupCandidates(manifestArtifacts: artifacts)
             let candidateSet = Set(candidates)
             let artifactInspections = try cleanupArtifactInspections(
@@ -670,41 +2724,113 @@ extension PrivateHeaderGeneration {
             var missingArtifacts: [ArtifactPath] = []
             var prunedDirectories: [ArtifactPath] = []
             var prunedDirectorySet = Set<ArtifactPath>()
+            var mutatedParentDirectories: [URL] = []
 
-            for artifact in cleanupOperationOrder(candidates) {
-                guard case .leaf = artifactInspections[artifact]! else {
-                    missingArtifacts.append(artifact)
-                    continue
-                }
-                let inspection = try preflightCleanupArtifact(
-                    for: artifact,
-                    root: root,
-                    fileManager: fileManager
-                )
-                guard case .leaf(let artifactURL, .some(_)) = inspection else {
-                    missingArtifacts.append(artifact)
-                    continue
-                }
+            do {
+                for artifact in cleanupOperationOrder(candidates) {
+                    guard case .leaf = artifactInspections[artifact]! else {
+                        missingArtifacts.append(artifact)
+                        mutatedParentDirectories.append(
+                            Self.artifactURL(artifact, under: root.unresolved)
+                                .deletingLastPathComponent()
+                                .standardizedFileURL
+                        )
+                        continue
+                    }
+                    let inspection = try preflightCleanupArtifact(
+                        for: artifact,
+                        root: root,
+                        fileManager: fileManager
+                    )
+                    guard case .leaf(let artifactURL, .some(_)) = inspection else {
+                        missingArtifacts.append(artifact)
+                        mutatedParentDirectories.append(
+                            Self.artifactURL(artifact, under: root.unresolved)
+                                .deletingLastPathComponent()
+                                .standardizedFileURL
+                        )
+                        continue
+                    }
 
-                try fileManager.removeItem(at: artifactURL)
-                deletedArtifacts.append(artifact)
+                    try fileManager.removeItem(at: artifactURL)
+                    deletedArtifacts.append(artifact)
+                    mutatedParentDirectories.append(
+                        artifactURL.deletingLastPathComponent().standardizedFileURL
+                    )
 
-                let pruned = try pruneEmptyParentDirectories(
-                    afterDeleting: artifact,
-                    root: root,
-                    cleanupCandidates: candidateSet,
-                    fileManager: fileManager
-                )
-                for directory in pruned where prunedDirectorySet.insert(directory).inserted {
-                    prunedDirectories.append(directory)
+                    let pruned = try pruneEmptyParentDirectories(
+                        afterDeleting: artifact,
+                        root: root,
+                        cleanupCandidates: candidateSet,
+                        fileManager: fileManager
+                    )
+                    for directory in pruned where prunedDirectorySet.insert(directory).inserted {
+                        prunedDirectories.append(directory)
+                    }
                 }
+            } catch {
+                let primary = error
+                do {
+                    try synchronizeCleanupDirectories(
+                        mutatedParentDirectories,
+                        root: root,
+                        fileManager: fileManager
+                    )
+                } catch {
+                    throw ArtifactStoreError.cleanupSynchronizationFailed(
+                        primary: String(describing: primary),
+                        synchronization: String(describing: error)
+                    )
+                }
+                throw primary
             }
+            try synchronizeCleanupDirectories(
+                mutatedParentDirectories,
+                root: root,
+                fileManager: fileManager
+            )
 
             return ArtifactCleanupResult(
                 deletedArtifacts: cleanupCandidates(manifestArtifacts: deletedArtifacts),
                 missingArtifacts: cleanupCandidates(manifestArtifacts: missingArtifacts),
                 prunedDirectories: cleanupCandidates(manifestArtifacts: prunedDirectories)
             )
+        }
+
+        private static func synchronizeCleanupDirectories(
+            _ directories: [URL],
+            root: ArtifactRootURLs,
+            fileManager: FileManager
+        ) throws {
+            var survivingDirectories: Set<URL> = []
+            for directory in directories {
+                var current = directory
+                while true {
+                    switch try artifactItemKind(at: current, fileManager: fileManager) {
+                    case .directory:
+                        survivingDirectories.insert(current)
+                        break
+                    case nil:
+                        guard current.path != root.unresolved.path else {
+                            throw ArtifactStoreError.artifactRootTypeMismatch(
+                                path: root.unresolved.path,
+                                actual: "missing"
+                            )
+                        }
+                        current = current.deletingLastPathComponent().standardizedFileURL
+                        continue
+                    case .some(let kind):
+                        throw ArtifactStoreError.artifactRootTypeMismatch(
+                            path: current.path,
+                            actual: artifactItemKindDescription(kind)
+                        )
+                    }
+                    break
+                }
+            }
+            for directory in survivingDirectories.sorted(by: { $0.path < $1.path }) {
+                try ManagedFileSystem.syncDirectory(directory)
+            }
         }
 
         public static func cleanupCandidates(
@@ -750,12 +2876,23 @@ extension PrivateHeaderGeneration {
             case regularFile
         }
 
-        private static func artifactRootURLs(for artifactRoot: URL) throws -> ArtifactRootURLs {
+        private static func artifactRootURLs(
+            for artifactRoot: URL,
+            fileManager: FileManager
+        ) throws -> ArtifactRootURLs {
             guard artifactRoot.isFileURL else {
                 throw ArtifactStoreError.nonFileArtifactRoot(artifactRoot.absoluteString)
             }
 
             let unresolved = artifactRoot.standardizedFileURL
+            if let kind = try artifactItemKind(at: unresolved, fileManager: fileManager),
+                kind != .directory
+            {
+                throw ArtifactStoreError.artifactRootTypeMismatch(
+                    path: unresolved.path,
+                    actual: artifactItemKindDescription(kind)
+                )
+            }
             return ArtifactRootURLs(
                 unresolved: unresolved,
                 resolved: unresolved.resolvingSymlinksInPath().standardizedFileURL
@@ -1122,22 +3259,7 @@ extension PrivateHeaderGeneration {
             _ plan: CommitPlan,
             fileManager: FileManager
         ) throws {
-            try validateArtifactRoot(of: plan)
-            try validateDestinationVolumeSemantics(of: plan, fileManager: fileManager)
-            try validateStagingBoundary(of: plan, fileManager: fileManager)
-            let currentEntries = try Self.commitEntries(
-                stagingDirectory: plan.stagingDirectory,
-                stagedSourceDirectory: plan.stagedSourceDirectory,
-                artifactRoot: plan.artifactRoot,
-                artifacts: plan.artifacts,
-                fileManager: fileManager
-            )
-            guard currentEntries == plan.entries else {
-                throw ArtifactStoreError.stagingDirectoryChanged(
-                    plan.stagedSourceDirectory.path
-                )
-            }
-            try Self.validateSourceDestinationDisjoint(plan)
+            try preflightCommitInputs(plan, fileManager: fileManager)
 
             for entry in plan.entries {
                 let destination = try Self.commitDestinationURL(
@@ -1153,12 +3275,34 @@ extension PrivateHeaderGeneration {
             }
         }
 
+        private func preflightCommitInputs(
+            _ plan: CommitPlan,
+            fileManager: FileManager
+        ) throws {
+            try validateArtifactRoot(of: plan, fileManager: fileManager)
+            try validateDestinationVolumeSemantics(of: plan, fileManager: fileManager)
+            try validateStagingBoundary(of: plan, fileManager: fileManager)
+            let currentEntries = try Self.commitEntries(
+                stagingDirectory: plan.stagingDirectory,
+                stagedSourceDirectory: plan.stagedSourceDirectory,
+                artifactRoot: plan.artifactRoot,
+                artifacts: plan.artifacts,
+                fileManager: fileManager
+            )
+            guard currentEntries == plan.entries else {
+                throw ArtifactStoreError.stagingDirectoryChanged(
+                    plan.stagedSourceDirectory.path
+                )
+            }
+            try Self.validateSourceDestinationDisjoint(plan)
+        }
+
         private func revalidate(
             _ entry: CommitEntry,
             in plan: CommitPlan,
             fileManager: FileManager
         ) throws -> URL {
-            try validateArtifactRoot(of: plan)
+            try validateArtifactRoot(of: plan, fileManager: fileManager)
             try validateDestinationVolumeSemantics(of: plan, fileManager: fileManager)
             try validateStagingBoundary(of: plan, fileManager: fileManager)
             guard
@@ -1304,8 +3448,14 @@ extension PrivateHeaderGeneration {
             }
         }
 
-        private func validateArtifactRoot(of plan: CommitPlan) throws {
-            let current = try Self.artifactRootURLs(for: artifactRoot)
+        private func validateArtifactRoot(
+            of plan: CommitPlan,
+            fileManager: FileManager
+        ) throws {
+            let current = try Self.artifactRootURLs(
+                for: artifactRoot,
+                fileManager: fileManager
+            )
             guard current.unresolved.path == plan.root.unresolved.path,
                 current.resolved.path == plan.root.resolved.path
             else {

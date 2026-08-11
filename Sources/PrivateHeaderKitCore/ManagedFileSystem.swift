@@ -1,10 +1,5 @@
+import Darwin
 import Foundation
-
-#if canImport(Darwin)
-  import Darwin
-#elseif canImport(Glibc)
-  import Glibc
-#endif
 
 package enum ManagedFileSystem {
   package enum ItemKind: String, Equatable, Sendable {
@@ -50,6 +45,11 @@ package enum ManagedFileSystem {
       guard kind == .directory else {
         throw Failure.unexpectedKind(path: url.path, expected: "directory", actual: kind)
       }
+      try syncDirectory(url)
+      let parent = url.deletingLastPathComponent()
+      if parent.path != url.path {
+        try syncDirectory(parent)
+      }
       return
     }
     let parent = url.deletingLastPathComponent()
@@ -59,9 +59,15 @@ package enum ManagedFileSystem {
     try ensureRealDirectory(parent)
     guard mkdir(url.path, mode_t(0o755)) == 0 else {
       let code = errno
-      if code == EEXIST, try itemKind(at: url) == .directory { return }
+      if code == EEXIST, try itemKind(at: url) == .directory {
+        try syncDirectory(url)
+        try syncDirectory(parent)
+        return
+      }
       throw Failure.posix(operation: "mkdir", path: url.path, errno: code)
     }
+    try syncDirectory(url)
+    try syncDirectory(parent)
   }
 
   package static func atomicRename(from source: URL, to destination: URL) throws {
@@ -71,6 +77,38 @@ package enum ManagedFileSystem {
         path: "\(source.path) -> \(destination.path)",
         errno: errno
       )
+    }
+  }
+
+  package static func atomicRenameExclusively(from source: URL, to destination: URL) throws {
+    guard renamex_np(source.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+      throw Failure.posix(
+        operation: "renamex_np(RENAME_EXCL)",
+        path: "\(source.path) -> \(destination.path)",
+        errno: errno
+      )
+    }
+  }
+
+  package static func syncDirectory(_ url: URL) throws {
+    let descriptor = open(url.path, O_RDONLY)
+    guard descriptor >= 0 else {
+      throw Failure.posix(operation: "open", path: url.path, errno: errno)
+    }
+    defer { _ = close(descriptor) }
+    guard fsync(descriptor) == 0 else {
+      throw Failure.posix(operation: "fsync", path: url.path, errno: errno)
+    }
+  }
+
+  package static func syncFile(_ url: URL) throws {
+    let descriptor = open(url.path, O_RDONLY)
+    guard descriptor >= 0 else {
+      throw Failure.posix(operation: "open", path: url.path, errno: errno)
+    }
+    defer { _ = close(descriptor) }
+    guard fsync(descriptor) == 0 else {
+      throw Failure.posix(operation: "fsync", path: url.path, errno: errno)
     }
   }
 

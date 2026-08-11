@@ -468,6 +468,36 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     )
   }
 
+  @Test func opaqueClaimsUseExactUTF8PathIdentity() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let composed = PrivateHeaderGeneration.ArtifactPath(
+      rawValue: "Frameworks/F\u{00E9}/Headers/Generated.h"
+    )
+    let decomposed = PrivateHeaderGeneration.ArtifactPath(
+      rawValue: "Frameworks/Fe\u{301}/Headers/Generated.h"
+    )
+    let unrelated = PrivateHeaderGeneration.ArtifactPath(
+      rawValue: "Frameworks/Bar/Headers/Generated.h"
+    )
+
+    #expect(
+      ArtifactPublisher.unclaimedOpaquePaths([decomposed], claimedBy: [composed])
+        == [decomposed]
+    )
+    #expect(
+      ArtifactPublisher.unclaimedOpaquePaths([decomposed], claimedBy: [decomposed]).isEmpty
+    )
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.validateTargetReplacement(
+        targetID: "framework:Bar",
+        artifacts: [unrelated],
+        existingArtifactsByTarget: ["framework:Foo": [composed]],
+        opaquePaths: [decomposed]
+      )
+    }
+  }
+
   @Test func applyAllowsIdenticalSharedDirectoryComponents() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
@@ -939,6 +969,51 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
       prepared.marker.artifactsByTarget["framework:Foo"] == [
         .init(rawValue: "Frameworks/Foo/Foo.h")
       ])
+  }
+
+  @Test func inspectRejectsGenerationWhoseArtifactContentsChanged() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      try fixture.prepare(
+        generationID: .init(rawValue: "generation-content-authentication"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "original"
+      )
+    )
+    try Data("tampered".utf8).write(
+      to: fixture.publisher.stableURL.appendingPathComponent("Frameworks/Foo/Foo.h")
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.inspect()
+    }
+  }
+
+  @Test func prepareGenerationRejectsUnexpectedPublishedTargetBytes() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    var draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-expected-digest"),
+      allowLegacyMigration: false
+    )
+    let path = PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h")
+    draft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:Foo",
+      files: [path: try fixture.sourceFile(contents: "actual")],
+      to: draft
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.prepareGeneration(
+        draft,
+        planFingerprint: "fingerprint",
+        expectedArtifactDigestsByTarget: [
+          "framework:Foo": [path: String(repeating: "0", count: 64)]
+        ]
+      )
+    }
   }
 
   @Test func inventoryMismatchDescriptionIsBoundedAndShowsTheDifference() {
