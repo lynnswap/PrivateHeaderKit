@@ -41,6 +41,12 @@ private struct PrivateHeaderKitToolingTestHelper {
                 try writeLargeStandardErrorFailure(byteCount: byteCount)
             case "chunked-output":
                 try writeChunkedOutput()
+            case "buffered-output":
+#if os(macOS)
+                try await runBufferedOutputCheck()
+#else
+                throw HelperError.invalidCommand(command)
+#endif
             case "process-group":
 #if os(macOS)
                 let arguments = Array(CommandLine.arguments.dropFirst(2))
@@ -136,6 +142,26 @@ private struct PrivateHeaderKitToolingTestHelper {
     }
 
 #if os(macOS)
+    private static func runBufferedOutputCheck() async throws {
+        let result = try await ProcessRunner().runBuffered(
+            [
+                "/bin/zsh", "-lc",
+                "print -r -- buffered-stdout; print -u2 -- buffered-stderr; exit 19",
+            ],
+            env: nil,
+            cwd: nil
+        )
+        guard result.status == 19,
+              !result.wasKilled,
+              result.lastLines == ["buffered-stdout", "buffered-stderr"]
+        else {
+            throw ToolingError.message(
+                "status=\(result.status) killed=\(result.wasKilled) lines=\(result.lastLines)"
+            )
+        }
+        print("buffered-ok")
+    }
+
     private static func writeCurrentProcessIdentity(to descriptor: Int32) throws {
         var info = proc_bsdinfo()
         let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)

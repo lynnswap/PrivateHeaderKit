@@ -100,11 +100,11 @@ private func preparePrivateHeaderGeneration(
     )
 }
 
-private func runPrivateHeaderKitRawDump(
+func runPrivateHeaderKitRawDump(
     _ invocation: PrivateHeaderGeneration.RawDumping.Invocation,
     processRunner: any CommandRunning
 ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
-    let processResult = try await processRunner.runStreaming(
+    let processResult = try await processRunner.runBuffered(
         invocation.command,
         env: invocation.environment,
         cwd: nil
