@@ -181,7 +181,10 @@ private func sourceDirtyInputFingerprint(
         switch metadata.st_mode & mode_t(S_IFMT) {
         case mode_t(S_IFREG):
             kind = "regular"
-            sha256 = try sourceSHA256Hex(ofFileAt: url)
+            sha256 = try sourceSHA256Hex(
+                ofFileAt: url,
+                checkCancellation: { try Task.checkCancellation() }
+            )
         case mode_t(S_IFLNK):
             kind = "symlink"
             sha256 = try sourceSHA256Hex(
@@ -616,43 +619,13 @@ private func sourceSHA256Hex(_ data: Data) throws -> String {
 
 func sourceSHA256Hex(
     ofFileAt url: URL,
-    checkCancellation: () throws -> Void = { try Task.checkCancellation() }
+    checkCancellation: () throws -> Void
 ) throws -> String {
-#if canImport(CryptoKit)
-    try checkCancellation()
-    let handle: FileHandle
-    do {
-        handle = try FileHandle(forReadingFrom: url)
-    } catch {
-        throw InstallError.message(
-            "failed to open untracked source input at \(url.path): \(error)"
-        )
-    }
-    defer { try? handle.close() }
-
-    var hasher = SHA256()
-    while true {
-        try checkCancellation()
-        let chunk: Data
-        do {
-            chunk = try handle.read(upToCount: sourceFingerprintChunkByteCount) ?? Data()
-        } catch {
-            throw InstallError.message(
-                "failed to read untracked source input at \(url.path): \(error)"
-            )
-        }
-        if chunk.isEmpty {
-            break
-        }
-        hasher.update(data: chunk)
-    }
-    try checkCancellation()
-    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-#else
-    throw InstallError.message(
-        "source input fingerprinting is unavailable on this platform"
+    try fileSHA256Hex(
+        ofFileAt: url,
+        context: .untrackedSourceInput,
+        checkCancellation: checkCancellation
     )
-#endif
 }
 
 private func nonEmptySourceValue(_ value: String?) -> String? {

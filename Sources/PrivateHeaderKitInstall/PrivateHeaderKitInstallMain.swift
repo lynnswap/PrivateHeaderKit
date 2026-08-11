@@ -84,7 +84,10 @@ package func executeInstallerCommand(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) async throws {
     let runner = ProcessRunner()
-    let inspector = LiveReleaseArtifactInspector(runner: runner)
+    let inspector = LiveReleaseArtifactInspector(
+        runner: runner,
+        checkCancellation: { try Task.checkCancellation() }
+    )
     switch command {
     case .install(let options):
         try await runInstall(

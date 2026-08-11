@@ -217,12 +217,13 @@ typealias ReleaseArtifactInspector = @Sendable (
 
 struct LiveReleaseArtifactInspector: Sendable {
     let runner: CommandRunning
+    let checkCancellation: @Sendable () throws -> Void
 
     func inspect(
         artifact: InstallArtifactName,
         at url: URL
     ) async throws -> ReleaseArtifactInspection {
-        try Task.checkCancellation()
+        try checkCancellation()
         let resourceValues = try url.resourceValues(
             forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
         )
@@ -244,7 +245,7 @@ struct LiveReleaseArtifactInspector: Sendable {
             env: nil,
             cwd: nil
         )
-        try Task.checkCancellation()
+        try checkCancellation()
         let architectures = architectureOutput
             .split(whereSeparator: \Character.isWhitespace)
             .map(String.init)
@@ -260,7 +261,7 @@ struct LiveReleaseArtifactInspector: Sendable {
             env: nil,
             cwd: nil
         )
-        try Task.checkCancellation()
+        try checkCancellation()
         let rawPlatforms = Set(
             buildOutput
                 .split(whereSeparator: \Character.isNewline)
@@ -290,21 +291,26 @@ struct LiveReleaseArtifactInspector: Sendable {
             env: nil,
             cwd: nil
         )
-        try Task.checkCancellation()
+        try checkCancellation()
 
         return ReleaseArtifactInspection(
-            sha256: try Self.sha256(of: url),
+            sha256: try Self.sha256(
+                of: url,
+                checkCancellation: checkCancellation
+            ),
             architectures: architectures,
             platform: platform
         )
     }
 
-    static func sha256(of url: URL) throws -> String {
-#if canImport(CryptoKit)
-        let digest = SHA256.hash(data: try Data(contentsOf: url))
-        return digest.map { String(format: "%02x", $0) }.joined()
-#else
-        throw InstallError.message("SHA-256 validation is unavailable on this platform")
-#endif
+    static func sha256(
+        of url: URL,
+        checkCancellation: () throws -> Void
+    ) throws -> String {
+        try fileSHA256Hex(
+            ofFileAt: url,
+            context: .artifactValidation,
+            checkCancellation: checkCancellation
+        )
     }
 }

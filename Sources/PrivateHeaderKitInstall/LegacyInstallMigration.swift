@@ -731,7 +731,12 @@ private func legacyFileIdentity(at url: URL) throws -> LegacyFileIdentity {
 
     let before = try readMetadata()
     let beforePermissions = UInt16(before.st_mode & mode_t(0o7777))
-    let digest = try LiveReleaseArtifactInspector.sha256(of: url)
+    // Legacy identity checks are also used while completing durable recovery and rollback.
+    // Cancellation is observed at those operations' safe boundaries, not during repair.
+    let digest = try LiveReleaseArtifactInspector.sha256(
+        of: url,
+        checkCancellation: {}
+    )
     let after = try readMetadata()
     let afterPermissions = UInt16(after.st_mode & mode_t(0o7777))
     guard before.st_dev == after.st_dev,

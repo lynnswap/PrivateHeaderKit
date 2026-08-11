@@ -1862,26 +1862,94 @@ struct InstallCancellationTests {
         #expect(try cancellationAwareSortedStrings(paths) == expected)
     }
 
-    @Test func sourceFileHashingChecksCancellationBetweenBoundedReads() throws {
+    @Test func fileHashingPreservesDigestsAndChecksCancellationBetweenBoundedReads() throws {
         let directories = try makeTemporaryTestDirectories()
-        let inputURL = directories.root.appendingPathComponent("large-untracked-input")
+        let inputURL = directories.root.appendingPathComponent("large-input")
         let input = Data(repeating: 0x5a, count: 3 * 1024 * 1024 + 17)
         try input.write(to: inputURL)
         let expectedHash = SHA256.hash(data: input)
             .map { String(format: "%02x", $0) }
             .joined()
-        #expect(try sourceSHA256Hex(ofFileAt: inputURL) == expectedHash)
+        #expect(
+            try sourceSHA256Hex(
+                ofFileAt: inputURL,
+                checkCancellation: {}
+            ) == expectedHash
+        )
+        #expect(
+            try LiveReleaseArtifactInspector.sha256(
+                of: inputURL,
+                checkCancellation: {}
+            ) == expectedHash
+        )
         var checkCount = 0
 
         #expect(throws: CancellationError.self) {
-            _ = try sourceSHA256Hex(ofFileAt: inputURL) {
-                checkCount += 1
-                if checkCount == 3 {
-                    throw CancellationError()
+            _ = try LiveReleaseArtifactInspector.sha256(
+                of: inputURL,
+                checkCancellation: {
+                    checkCount += 1
+                    if checkCount == 3 {
+                        throw CancellationError()
+                    }
                 }
-            }
+            )
         }
         #expect(checkCount == 3)
+    }
+
+    @Test func liveArtifactInspectionUsesCancellationAwareHashing() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let inputURL = directories.root.appendingPathComponent("large-artifact")
+        try Data(repeating: 0x5a, count: 3 * 1024 * 1024 + 17).write(to: inputURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: inputURL.path
+        )
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            "arm64\n",
+            for: ["/usr/bin/lipo", "-archs", inputURL.path]
+        )
+        await runner.setCaptureOutput(
+            "platform MACOS\n",
+            for: ["/usr/bin/vtool", "-show-build", inputURL.path]
+        )
+        let cancellation = DeterministicCancellationCheck(cancellationCheck: 7)
+        let inspector = LiveReleaseArtifactInspector(
+            runner: runner,
+            checkCancellation: cancellation.check
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await inspector.inspect(artifact: .publicCommand, at: inputURL)
+        }
+        #expect(cancellation.count == 7)
+    }
+
+    @Test func legacyIdentityVerificationCompletesInACancelledTask() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        let installer = testInstaller(layout: layout)
+        guard case .complete(let legacyLayout) = try installer.classifyLegacyDirectLayout(
+            current: .absent
+        ) else {
+            Issue.record("expected a complete legacy layout")
+            return
+        }
+
+        try await Task {
+            withUnsafeCurrentTask { task in
+                task?.cancel()
+            }
+            #expect(Task.isCancelled)
+            try installer.requireLegacyIdentity(
+                legacyLayout.publicCommand,
+                at: layout.publicCommandURL,
+                label: "legacy public command"
+            )
+        }.value
     }
 
     @Test func sourceFingerprintStreamObservesCancellationAtAChunkBoundary() async throws {
@@ -2233,7 +2301,10 @@ private func testArtifactInspector(
         throw InstallError.message("artifact is not executable: \(url.path)")
     }
     return ReleaseArtifactInspection(
-        sha256: try LiveReleaseArtifactInspector.sha256(of: url),
+        sha256: try LiveReleaseArtifactInspector.sha256(
+            of: url,
+            checkCancellation: {}
+        ),
         architectures: ["arm64"],
         platform: artifact.expectedPlatform
     )
@@ -2338,6 +2409,29 @@ private final class CancellationTestLatch: Sendable {
         }
         for waiter in waiters {
             waiter.resume()
+        }
+    }
+}
+
+private final class DeterministicCancellationCheck: Sendable {
+    private let cancellationCheck: Int
+    private let checkCount = OSAllocatedUnfairLock(initialState: 0)
+
+    init(cancellationCheck: Int) {
+        self.cancellationCheck = cancellationCheck
+    }
+
+    var count: Int {
+        checkCount.withLock { $0 }
+    }
+
+    func check() throws {
+        let shouldCancel = checkCount.withLock { count in
+            count += 1
+            return count == cancellationCheck
+        }
+        if shouldCancel {
+            throw CancellationError()
         }
     }
 }
