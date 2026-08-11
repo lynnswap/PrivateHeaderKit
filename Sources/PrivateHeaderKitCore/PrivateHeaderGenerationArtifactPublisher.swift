@@ -492,7 +492,24 @@ package struct ArtifactPublisher: Sendable {
     _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
     to draft: Draft
   ) throws -> Draft {
-    guard !filesByTarget.isEmpty else { return draft }
+    try applyCompletedTargets(filesByTarget, to: draft, removesAbsentTargets: false)
+  }
+
+  package func replaceCompletedTargets(
+    _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
+    in draft: Draft
+  ) throws -> Draft {
+    try applyCompletedTargets(filesByTarget, to: draft, removesAbsentTargets: true)
+  }
+
+  private func applyCompletedTargets(
+    _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
+    to draft: Draft,
+    removesAbsentTargets: Bool
+  ) throws -> Draft {
+    if filesByTarget.isEmpty, !removesAbsentTargets {
+      return draft
+    }
     guard try itemKind(at: draft.directory) == .directory else {
       throw PublisherError.unexpectedItem(
         path: draft.directory.path,
@@ -500,11 +517,12 @@ package struct ArtifactPublisher: Sendable {
       )
     }
 
-    var artifactsByTarget = draft.artifactsByTarget
+    var artifactsByTarget = removesAbsentTargets ? [:] : draft.artifactsByTarget
     var incomingFiles:
       [(targetID: String, path: PrivateHeaderGeneration.ArtifactPath, source: URL)] = []
     var incomingPathKeys: Set<[UInt8]> = []
-    var pathsToRemove: [PrivateHeaderGeneration.ArtifactPath] = []
+    var pathsToRemove: [PrivateHeaderGeneration.ArtifactPath] =
+      removesAbsentTargets ? draft.artifactsByTarget.values.flatMap { $0 } : []
 
     for targetID in filesByTarget.keys.sorted() {
       guard let files = filesByTarget[targetID], !files.isEmpty else {
