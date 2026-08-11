@@ -527,6 +527,18 @@ struct StreamingProcessRunnerTests {
         #expect(forwarded.contains("tail-line"))
     }
 
+    @Test func bufferedRunnerRetainsCombinedTailWithoutForwardingOutput() async throws {
+        let helper = try testHelperExecutableURL()
+
+        let output = try await ProcessRunner().runCapture(
+            [helper.path, "buffered-output"],
+            env: nil,
+            cwd: nil
+        )
+
+        #expect(output == "buffered-ok\n")
+    }
+
     @Test func helperUsesNullDeviceWhenParentStdinIsClosed() async throws {
         let helper = try testHelperExecutableURL()
         let output = try await ProcessRunner().runCapture(
