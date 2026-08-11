@@ -44,7 +44,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
-            "0.14.1" ..< "0.15.0"
+            "0.15.1" ..< "0.16.0"
         ),
     ],
     targets: [
