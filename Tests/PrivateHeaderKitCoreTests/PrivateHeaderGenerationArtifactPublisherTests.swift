@@ -991,6 +991,67 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     }
   }
 
+  @Test func retainedGenerationContentsAreAuthenticatedOnlyWhenUsed() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let oldID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let old = try fixture.prepare(
+      generationID: oldID,
+      targetID: "framework:Foo",
+      relativePath: "Frameworks/Foo/Foo.h",
+      contents: "old"
+    )
+    try fixture.publish(old)
+    let currentID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-current")
+    try fixture.publish(
+      fixture.prepare(
+        generationID: currentID,
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    try Data("tampered".utf8).write(
+      to: old.finalDirectory.appendingPathComponent("Frameworks/Foo/Foo.h")
+    )
+
+    #expect(try fixture.publisher.inspect().currentGenerationID == currentID)
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      try fixture.publisher.switchCurrent(to: oldID)
+    }
+    #expect(try fixture.publisher.inspect().currentGenerationID == currentID)
+
+    try fixture.publisher.discardGeneration(oldID)
+    #expect(!FileManager.default.fileExists(atPath: old.finalDirectory.path))
+  }
+
+  @Test func inspectStillRejectsRetainedGenerationInventoryChanges() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let old = try fixture.prepare(
+      generationID: .init(rawValue: "generation-old"),
+      targetID: "framework:Foo",
+      relativePath: "Frameworks/Foo/Foo.h",
+      contents: "old"
+    )
+    try fixture.publish(old)
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-current"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    try Data("unexpected".utf8).write(
+      to: old.finalDirectory.appendingPathComponent("Frameworks/Foo/Unexpected.h")
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.inspect()
+    }
+  }
+
   @Test func prepareGenerationRejectsUnexpectedPublishedTargetBytes() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }

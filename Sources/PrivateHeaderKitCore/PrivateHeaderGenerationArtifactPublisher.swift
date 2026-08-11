@@ -105,6 +105,11 @@ package struct ArtifactPublisher: Sendable {
     let persistedContentDigests: [PrivateHeaderGeneration.ArtifactPath: String]?
   }
 
+  fileprivate struct InspectedGeneration {
+    let decodedMarker: DecodedGenerationMarker
+    let files: [(path: PrivateHeaderGeneration.ArtifactPath, url: URL)]
+  }
+
   fileprivate struct OwnedArtifact {
     let path: PrivateHeaderGeneration.ArtifactPath
     let owner: String
@@ -399,8 +404,13 @@ package struct ArtifactPublisher: Sendable {
   package func inspect() throws -> PrivateHeaderGeneration.PublicationSnapshot {
     try validateBaseURL()
     let stableState = try stablePathState()
-    let markers = try generationMarkers()
     let currentGenerationID = try readCurrentGenerationID()
+    let markers = try generationMarkers(authenticatingContentsOf: currentGenerationID)
+    guard stableState == (try stablePathState()),
+      currentGenerationID == (try readCurrentGenerationID())
+    else {
+      throw PublisherError.markerMismatch("publication pointers changed during inspection")
+    }
     if let currentGenerationID, markers[currentGenerationID] == nil {
       throw PublisherError.markerMismatch(
         "current points to generation without a valid marker: \(currentGenerationID.rawValue)"
@@ -851,7 +861,7 @@ package struct ArtifactPublisher: Sendable {
     }
     let url = generationURL(generationID)
     if try itemKind(at: url) != nil {
-      _ = try validateGeneration(at: url, expectedID: generationID)
+      _ = try inspectGeneration(at: url, expectedID: generationID)
       try FileManager.default.removeItem(at: url)
       try syncDirectory(generationsURL)
     }
@@ -1220,7 +1230,10 @@ extension ArtifactPublisher {
     return try PrivateHeaderGeneration.GenerationID(components[1])
   }
 
-  fileprivate func generationMarkers() throws -> [PrivateHeaderGeneration.GenerationID:
+  fileprivate func generationMarkers(
+    authenticatingContentsOf authenticatedGenerationID:
+      PrivateHeaderGeneration.GenerationID? = nil
+  ) throws -> [PrivateHeaderGeneration.GenerationID:
     PrivateHeaderGeneration.GenerationMarkerSnapshot]
   {
     guard try itemKind(at: generationsURL) != nil else { return [:] }
@@ -1237,7 +1250,12 @@ extension ArtifactPublisher {
           path: entry.path, description: "generation entry is not a directory")
       }
       let id = try PrivateHeaderGeneration.GenerationID(entry.lastPathComponent)
-      markers[id] = try validateGeneration(at: entry, expectedID: id)
+      let inspected = try inspectGeneration(at: entry, expectedID: id)
+      if id == authenticatedGenerationID {
+        markers[id] = try authenticateGenerationContents(inspected, expectedID: id)
+      } else {
+        markers[id] = inspected.decodedMarker.snapshot
+      }
     }
     return markers
   }
@@ -1246,9 +1264,18 @@ extension ArtifactPublisher {
     at directory: URL,
     expectedID: PrivateHeaderGeneration.GenerationID
   ) throws -> PrivateHeaderGeneration.GenerationMarkerSnapshot {
+    try authenticateGenerationContents(
+      inspectGeneration(at: directory, expectedID: expectedID),
+      expectedID: expectedID
+    )
+  }
+
+  fileprivate func inspectGeneration(
+    at directory: URL,
+    expectedID: PrivateHeaderGeneration.GenerationID
+  ) throws -> InspectedGeneration {
     let decodedMarker = try decodeGenerationMarker(at: directory, expectedID: expectedID)
     let marker = decodedMarker.snapshot
-    let markerContentDigests = decodedMarker.persistedContentDigests
     let files = try inventoryRegularFiles(at: directory, allowHidden: true, allowedExtensions: nil)
       .filter { $0.path.rawValue != Self.markerName }
     let actual = Set(files.map(\.path))
@@ -1259,12 +1286,20 @@ extension ArtifactPublisher {
         actual: actual.map(\.rawValue).sorted()
       )
     }
+    return InspectedGeneration(decodedMarker: decodedMarker, files: files)
+  }
+
+  fileprivate func authenticateGenerationContents(
+    _ inspected: InspectedGeneration,
+    expectedID: PrivateHeaderGeneration.GenerationID
+  ) throws -> PrivateHeaderGeneration.GenerationMarkerSnapshot {
+    let marker = inspected.decodedMarker.snapshot
     let actualContentDigests = try Dictionary(
-      uniqueKeysWithValues: files.map { item in
+      uniqueKeysWithValues: inspected.files.map { item in
         (item.path, try Self.sha256(of: item.url))
       }
     )
-    if let markerContentDigests {
+    if let markerContentDigests = inspected.decodedMarker.persistedContentDigests {
       for (artifact, expectedDigest) in markerContentDigests {
         guard actualContentDigests[artifact] == expectedDigest else {
           throw PublisherError.markerMismatch(
