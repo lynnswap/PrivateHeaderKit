@@ -177,7 +177,10 @@ private func canAcquireExclusiveLock(at path: String) -> Bool {
 
 private func processIdentifier(from output: String, prefix: String = "CHILD_PID=") throws -> pid_t {
     for line in output.split(whereSeparator: \.isNewline) {
-        guard line.hasPrefix(prefix), let processIdentifier = pid_t(line.dropFirst(prefix.count)) else {
+        guard line.hasPrefix(prefix),
+              let processIdentifier = pid_t(line.dropFirst(prefix.count)),
+              processIdentifier > 0
+        else {
             continue
         }
         return processIdentifier
@@ -185,19 +188,49 @@ private func processIdentifier(from output: String, prefix: String = "CHILD_PID=
     throw ToolingError.message("process-group helper did not report its child PID")
 }
 
-private func recordedProcessIdentifier(at path: String) throws -> pid_t {
-    let data = try Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false))
-    return try processIdentifier(from: String(decoding: data, as: UTF8.self), prefix: "PID=")
+private struct RecordedProcessIdentity: Equatable {
+    let processIdentifier: pid_t
+    let startSeconds: UInt64
+    let startMicroseconds: UInt64
 }
 
-private func processIsLive(_ processIdentifier: pid_t) throws -> Bool {
-    var info = proc_bsdshortinfo()
-    let expectedSize = Int32(MemoryLayout<proc_bsdshortinfo>.size)
+private func recordedProcessIdentity(at path: String) throws -> RecordedProcessIdentity {
+    let data = try Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false))
+    let output = String(decoding: data, as: UTF8.self)
+    let processIdentifier = try processIdentifier(from: output, prefix: "PID=")
+    for line in output.split(whereSeparator: \.isNewline) {
+        guard line.hasPrefix("START=") else { continue }
+        let components = line
+            .dropFirst("START=".count)
+            .split(separator: ":", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              let startSeconds = UInt64(components[0]),
+              let startMicroseconds = UInt64(components[1])
+        else {
+            break
+        }
+        return RecordedProcessIdentity(
+            processIdentifier: processIdentifier,
+            startSeconds: startSeconds,
+            startMicroseconds: startMicroseconds
+        )
+    }
+    throw ToolingError.message("process-group helper did not report its process start identity")
+}
+
+private func recordedProcessIdentifier(at path: String) throws -> pid_t {
+    try recordedProcessIdentity(at: path).processIdentifier
+}
+
+private func liveProcessIdentity(_ processIdentifier: pid_t) throws -> RecordedProcessIdentity? {
+    guard processIdentifier > 0 else { return nil }
+    var info = proc_bsdinfo()
+    let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
     errno = 0
     let actualSize = withUnsafeMutablePointer(to: &info) { pointer in
         proc_pidinfo(
             processIdentifier,
-            PROC_PIDT_SHORTBSDINFO,
+            PROC_PIDTBSDINFO,
             0,
             pointer,
             expectedSize
@@ -205,23 +238,45 @@ private func processIsLive(_ processIdentifier: pid_t) throws -> Bool {
     }
     let errorCode = errno
     if actualSize == expectedSize {
-        return info.pbsi_status != UInt32(SZOMB)
+        guard info.pbi_status != UInt32(SZOMB) else { return nil }
+        return RecordedProcessIdentity(
+            processIdentifier: processIdentifier,
+            startSeconds: info.pbi_start_tvsec,
+            startMicroseconds: info.pbi_start_tvusec
+        )
     }
     if actualSize <= 0, errorCode == 0 || errorCode == ESRCH {
-        return false
+        return nil
     }
     throw ToolingError.message(
         "inspect process \(processIdentifier) failed (errno \(errorCode == 0 ? EIO : errorCode))"
     )
 }
 
+private func processIsLive(_ processIdentifier: pid_t) throws -> Bool {
+    try liveProcessIdentity(processIdentifier) != nil
+}
+
+private func fixtureStillHoldsExclusiveLock(at path: String) -> Bool {
+    let descriptor = path.withCString { open($0, O_RDWR) }
+    guard descriptor >= 0 else { return false }
+    defer { _ = close(descriptor) }
+    errno = 0
+    guard flock(descriptor, LOCK_EX | LOCK_NB) != 0 else {
+        _ = flock(descriptor, LOCK_UN)
+        return false
+    }
+    return errno == EWOULDBLOCK || errno == EAGAIN
+}
+
 private func terminateRecordedProcessIfLive(at path: String) {
-    guard let processIdentifier = try? recordedProcessIdentifier(at: path),
-          (try? processIsLive(processIdentifier)) == true
+    guard let recordedIdentity = try? recordedProcessIdentity(at: path),
+          fixtureStillHoldsExclusiveLock(at: path),
+          (try? liveProcessIdentity(recordedIdentity.processIdentifier)) == recordedIdentity
     else {
         return
     }
-    _ = kill(processIdentifier, SIGKILL)
+    _ = kill(recordedIdentity.processIdentifier, SIGKILL)
 }
 
 private func waitForProcessGroupLocks(parent: String, child: String) async throws {
@@ -880,6 +935,13 @@ struct StreamingProcessRunnerTests {
         #expect(result.status == SIGTERM)
         #expect(result.wasKilled)
         #expect(result.lastLines == ["Terminated by signal \(SIGTERM)"])
+    }
+
+    @Test(arguments: ["CHILD_PID=0\n", "CHILD_PID=-1\n"])
+    func processIdentifierRejectsNonpositiveValues(_ output: String) {
+        #expect(throws: ToolingError.self) {
+            try processIdentifier(from: output)
+        }
     }
 
     @Test func captureNormalLeaderExitCompletesOwnedProcessGroup() async throws {

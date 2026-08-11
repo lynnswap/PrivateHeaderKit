@@ -136,6 +136,33 @@ private struct PrivateHeaderKitToolingTestHelper {
     }
 
 #if os(macOS)
+    private static func writeCurrentProcessIdentity(to descriptor: Int32) throws {
+        var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        errno = 0
+        let actualSize = withUnsafeMutablePointer(to: &info) { pointer in
+            proc_pidinfo(
+                getpid(),
+                PROC_PIDTBSDINFO,
+                0,
+                pointer,
+                expectedSize
+            )
+        }
+        guard actualSize == expectedSize else {
+            throw HelperError.posix(
+                operation: "inspect current process",
+                code: errno == 0 ? EIO : errno
+            )
+        }
+        try writeAll(
+            Array(
+                "PID=\(getpid())\nSTART=\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)\n".utf8
+            ),
+            to: descriptor
+        )
+    }
+
     private static func runClosedStdinCheck() async throws {
         _ = close(STDIN_FILENO)
         let result = try await ProcessRunner().runStreaming(
@@ -173,7 +200,7 @@ private struct PrivateHeaderKitToolingTestHelper {
             _ = close(parentLock)
             throw HelperError.posix(operation: "open child lock", code: code)
         }
-        try writeAll(Array("PID=\(getpid())\n".utf8), to: parentLock)
+        try writeCurrentProcessIdentity(to: parentLock)
         guard flock(parentLock, LOCK_EX) == 0 else {
             let code = errno
             _ = close(parentLock)
@@ -219,7 +246,7 @@ private struct PrivateHeaderKitToolingTestHelper {
         guard lockDescriptor >= 0 else {
             throw HelperError.posix(operation: "open child lock", code: errno)
         }
-        try writeAll(Array("PID=\(getpid())\n".utf8), to: lockDescriptor)
+        try writeCurrentProcessIdentity(to: lockDescriptor)
         guard flock(lockDescriptor, LOCK_EX) == 0 else {
             throw HelperError.posix(operation: "lock child", code: errno)
         }
@@ -303,7 +330,7 @@ private struct PrivateHeaderKitToolingTestHelper {
         guard lockDescriptor >= 0 else {
             throw HelperError.posix(operation: "open child lock", code: errno)
         }
-        try writeAll(Array("PID=\(getpid())\n".utf8), to: lockDescriptor)
+        try writeCurrentProcessIdentity(to: lockDescriptor)
         guard flock(lockDescriptor, LOCK_EX) == 0 else {
             throw HelperError.posix(operation: "lock child", code: errno)
         }
