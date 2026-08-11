@@ -1,9 +1,11 @@
 import Foundation
+import MachOKit
+import PrivateHeaderKitHelperProtocol
 import Testing
-#if canImport(HeaderDumpRuntimeObjC)
-import HeaderDumpRuntimeObjC
+#if canImport(PrivateHeaderKitRawDumpRuntimeObjC)
+import PrivateHeaderKitRawDumpRuntimeObjC
 #endif
-@testable import HeaderDumpCore
+@testable import PrivateHeaderKitRawDumpCore
 import PrivateHeaderKitTestSupport
 
 #if canImport(Darwin)
@@ -18,8 +20,16 @@ private struct FakeFileManager: FileExistenceChecking {
     }
 }
 
+private enum FakeRawMachOLoadError: Error, CustomStringConvertible {
+    case invalidFixture
+
+    var description: String {
+        "invalid fixture"
+    }
+}
+
 @Suite
-struct HeaderDumpArgumentTests {
+struct PrivateHeaderKitRawDumpArgumentTests {
     @Test func parseArgumentsPopulatesOptions() {
         let args = [
             "-o", "/tmp/out",
@@ -29,6 +39,7 @@ struct HeaderDumpArgumentTests {
             "-s",
             "-j", "OnlyClass",
             "-c",
+            "--expected-cache-uuid", "11111111-2222-3333-4444-555555555555",
             "-D",
             "-R",
             "/tmp/input"
@@ -45,6 +56,7 @@ struct HeaderDumpArgumentTests {
         #expect(parsed?.options.skipExisting == true)
         #expect(parsed?.options.onlyOneClass == "OnlyClass")
         #expect(parsed?.options.useSharedCache == true)
+        #expect(parsed?.options.expectedCacheUUID == UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         #expect(parsed?.options.verbose == true)
         #expect(parsed?.options.useRuntimeFallback == true)
     }
@@ -57,6 +69,22 @@ struct HeaderDumpArgumentTests {
     @Test func parseArgumentsReturnsNilWithoutInput() {
         let parsed = parseArguments(["-r"], environment: [:])
         #expect(parsed == nil)
+    }
+
+    @Test func sharedCacheArgumentsRequireValidExpectedUUID() {
+        #expect(parseArguments(["-c", "/tmp/input"], environment: [:]) == nil)
+        #expect(
+            parseArguments(
+                ["-c", "--expected-cache-uuid", "not-a-uuid", "/tmp/input"],
+                environment: [:]
+            ) == nil
+        )
+        #expect(
+            parseArguments(
+                ["--expected-cache-uuid", "11111111-2222-3333-4444-555555555555", "/tmp/input"],
+                environment: [:]
+            ) == nil
+        )
     }
 
     @Test func parseArgumentsHelpCallsExit() {
@@ -76,7 +104,7 @@ struct HeaderDumpArgumentTests {
 }
 
 @Suite
-struct HeaderDumpEnvironmentTests {
+struct PrivateHeaderKitRawDumpEnvironmentTests {
     @Test func resolvesRuntimeFallbackFromInjectedEnvironment() {
         #expect(shouldUseRuntimeFallback(environment: ["PH_RUNTIME_ROOT": "/tmp/runtime"]) == true)
         #expect(shouldUseRuntimeFallback(environment: ["SIMCTL_CHILD_PH_RUNTIME_ROOT": "/tmp/runtime"]) == true)
@@ -96,7 +124,7 @@ struct HeaderDumpEnvironmentTests {
 }
 
 @Suite
-struct HeaderDumpPathTests {
+struct PrivateHeaderKitRawDumpPathTests {
     @Test func resolveRuntimeURLUsesInjectedRuntimeRootAndFileManager() {
         let runtimeRoot = "/Runtime"
         let inputPath = "/System/Library/Frameworks/Foo.framework/Foo"
@@ -138,6 +166,7 @@ struct HeaderDumpPathTests {
 
         #expect(paths.first == "/Runtime/System/Library/Frameworks/Foo.framework/Foo")
         #expect(paths.contains("/System/Library/Frameworks/Foo.framework/Foo"))
+        #expect(paths.contains("/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
         #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/Current/Foo"))
         #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
         #expect(Set(paths).count == paths.count)
@@ -162,20 +191,253 @@ struct HeaderDumpPathTests {
     }
     #endif
 
-    @Test func sharedCachePathUsesInjectedFileManagerAndEnvironment() {
-        let simCache = "/Runtime/System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64e"
-        let fake = FakeFileManager(existing: [simCache])
-        let resolved = sharedCachePath(fileManager: fake, environment: ["PH_RUNTIME_ROOT": "/Runtime"])
-        #expect(resolved == simCache)
+}
 
-        let empty = FakeFileManager(existing: [])
-        let fallback = sharedCachePath(fileManager: empty, environment: [:])
-        #expect(fallback == "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
+@Suite
+struct PrivateHeaderKitRawDumpSharedCacheTests {
+    @Test func cacheLookupSelectsTheExactLightweightDescriptor() throws {
+        let headers = UnsafeMutablePointer<mach_header>.allocate(capacity: 2)
+        headers.initialize(
+            repeating: mach_header(
+                magic: 0,
+                cputype: 0,
+                cpusubtype: 0,
+                filetype: 0,
+                ncmds: 0,
+                sizeofcmds: 0,
+                flags: 0
+            ),
+            count: 2
+        )
+        defer {
+            headers.deinitialize(count: 2)
+            headers.deallocate()
+        }
+        let firstHeader = UnsafePointer(headers)
+        let secondHeader = UnsafePointer(headers.advanced(by: 1))
+        let uuid = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let access = DyldSharedCacheAccess(
+            cacheUUID: uuid,
+            images: [
+                LoadedDyldCacheImage(
+                    logicalPath: "/usr/lib/libz.dylib",
+                    headerPointer: firstHeader
+                ),
+                LoadedDyldCacheImage(
+                    logicalPath: "/usr/lib/libexact.dylib",
+                    headerPointer: secondHeader
+                ),
+                LoadedDyldCacheImage(
+                    logicalPath: "/usr/lib/libexact.dylib",
+                    headerPointer: firstHeader
+                ),
+            ]
+        )
+
+        let inventory = try makeSharedCacheInventory(access: access)
+        #expect(inventory.imagePaths == [
+            "/usr/lib/libexact.dylib",
+            "/usr/lib/libz.dylib",
+        ])
+        #expect(access.image(matching: ["libexact.dylib"]) == nil)
+
+        let matched = try #require(
+            access.image(matching: ["/usr/lib/libexact.dylib"])
+        )
+        #expect(matched.headerPointer == secondHeader)
+        #expect(matched.machO.ptr == UnsafeRawPointer(secondHeader))
+    }
+
+    @Test func loadedImageAddressValidationUsesCheckedSlideArithmetic() throws {
+        let path = "/usr/lib/libinvalid.dylib"
+
+        #expect(throws: DyldSharedCacheAccessError.invalidImageAddress(path: path)) {
+            _ = try validatedLoadedImageHeaderPointer(
+                address: UInt64.max,
+                slide: 0,
+                logicalPath: path
+            )
+        }
+        #expect(throws: DyldSharedCacheAccessError.invalidImageAddress(path: path)) {
+            _ = try validatedLoadedImageHeaderPointer(
+                address: UInt64(Int.max),
+                slide: 1,
+                logicalPath: path
+            )
+        }
+        #expect(throws: DyldSharedCacheAccessError.invalidImageAddress(path: path)) {
+            _ = try validatedLoadedImageHeaderPointer(
+                address: 0,
+                slide: 0,
+                logicalPath: path
+            )
+        }
+
+        let negativelySlidPointer = try validatedLoadedImageHeaderPointer(
+            address: 0x2000,
+            slide: -0x100,
+            logicalPath: "/usr/lib/libvalid.dylib"
+        )
+        #expect(Int(bitPattern: negativelySlidPointer) == 0x1F00)
+    }
+
+    @Test func expectedCacheUUIDMismatchIsTyped() throws {
+        let expected = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let actual = try #require(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+
+        #expect(throws: DyldSharedCacheAccessError.expectedUUIDMismatch(expected: expected, actual: actual)) {
+            try validateExpectedCacheUUID(expected, actual: actual)
+        }
+        try validateExpectedCacheUUID(nil, actual: actual)
+        try validateExpectedCacheUUID(actual, actual: actual)
+    }
+
+    @Test func loaderRejectsSharedCacheWithoutExpectedUUID() {
+        var options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        options.useSharedCache = true
+
+        #expect(throws: DyldSharedCacheAccessError.missingExpectedUUID) {
+            _ = try RawMachOLoader(
+                options: options,
+                environment: [:],
+                sharedCacheFactory: { _ in
+                    Issue.record("shared-cache factory must not run without an expected UUID")
+                    throw DyldSharedCacheAccessError.unavailable
+                }
+            )
+        }
+    }
+
+    @Test func cacheMissAndDiskFailureSurfaceTypedContext() throws {
+        let cacheUUID = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        var options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        options.useSharedCache = true
+        options.expectedCacheUUID = cacheUUID
+        let loader = try RawMachOLoader(
+            options: options,
+            environment: [:],
+            sharedCacheFactory: { _ in
+                DyldSharedCacheAccess(cacheUUID: cacheUUID, images: [])
+            },
+            diskLoader: { _ in
+                throw FakeRawMachOLoadError.invalidFixture
+            }
+        )
+        let inputURL = URL(fileURLWithPath: "/usr/lib/libMissing.dylib")
+
+        #expect(
+            throws: RawMachOLoadError.sharedCacheMissAndDiskLoadFailed(
+                inputPath: inputURL.path,
+                cacheUUID: cacheUUID,
+                normalizedCandidates: [inputURL.path],
+                diskError: "invalid fixture"
+            )
+        ) {
+            _ = try loader.load(url: inputURL)
+        }
+    }
+
+    @Test func diskParseFailureSurfacesWithoutSharedCache() throws {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let loader = try RawMachOLoader(
+            options: options,
+            environment: [:],
+            diskLoader: { _ in
+                throw FakeRawMachOLoadError.invalidFixture
+            }
+        )
+        let inputURL = URL(fileURLWithPath: "/tmp/invalid-mach-o")
+
+        #expect(
+            throws: RawMachOLoadError.diskLoadFailed(
+                inputPath: inputURL.path,
+                diskError: "invalid fixture"
+            )
+        ) {
+            _ = try loader.load(url: inputURL)
+        }
+    }
+
+    @Test func unsupportedCPUIsTheOnlyIntentionalDiskNilResult() throws {
+        let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
+        let loader = try RawMachOLoader(
+            options: options,
+            environment: [:],
+            diskLoader: { _ in nil }
+        )
+
+        #expect(try loader.load(url: URL(fileURLWithPath: "/tmp/unsupported-mach-o")) == nil)
+    }
+
+    @Test func loadedCacheEnvironmentRequiresTheRunningSimulatorRuntime() {
+        #expect(throws: DyldSharedCacheAccessError.missingSimulatorRuntimeRoot) {
+            try validateLoadedCacheEnvironment(["SIMULATOR_ROOT": "/Runtime"])
+        }
+        #expect(
+            throws: DyldSharedCacheAccessError.simulatorRuntimeRootMismatch(
+                expected: "/Runtime",
+                actual: "/OtherRuntime"
+            )
+        ) {
+            try validateLoadedCacheEnvironment([
+                "SIMULATOR_ROOT": "/Runtime",
+                "PH_RUNTIME_ROOT": "/OtherRuntime",
+            ])
+        }
+        #expect(throws: DyldSharedCacheAccessError.unsupportedHostRuntimeRoot("/Runtime")) {
+            try validateLoadedCacheEnvironment(["PH_RUNTIME_ROOT": "/Runtime"])
+        }
+    }
+
+    @Test func loadedCacheEnvironmentAcceptsCurrentHostAndSimulatorRoots() throws {
+        try validateLoadedCacheEnvironment([:])
+        try validateLoadedCacheEnvironment(["PH_RUNTIME_ROOT": "/"])
+        try validateLoadedCacheEnvironment([
+            "SIMULATOR_ROOT": "/Runtime/./",
+            "PH_RUNTIME_ROOT": "/Runtime",
+        ])
+    }
+
+    @Test func loadedCacheEnvironmentAcceptsSymlinkAliasForSameRuntime() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let runtimeRoot = dirs.root.appendingPathComponent("CanonicalRuntime", isDirectory: true)
+        let runtimeAlias = dirs.root.appendingPathComponent("RuntimeAlias", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: runtimeAlias.path,
+            withDestinationPath: runtimeRoot.path
+        )
+
+        try validateLoadedCacheEnvironment([
+            "SIMULATOR_ROOT": runtimeRoot.path,
+            "PH_RUNTIME_ROOT": runtimeAlias.path,
+        ])
+    }
+
+    @Test func inventoryRejectsCustomHostRootBeforeOpeningLoadedCache() {
+        #expect(throws: DyldSharedCacheAccessError.unsupportedHostRuntimeRoot("/Runtime")) {
+            _ = try makeSharedCacheInventory(environment: ["PH_RUNTIME_ROOT": "/Runtime"])
+        }
+    }
+
+    @Test func inventoryEncodingMatchesHelperWireSchema() throws {
+        let uuid = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let data = try encodeSharedCacheInventory(
+            try PrivateHeaderKitSharedCacheInventory(
+                cacheUUID: uuid,
+                imagePaths: ["/usr/lib/libobjc.A.dylib"]
+            )
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["cacheUUID"] as? String == uuid.uuidString)
+        #expect(object["imagePaths"] as? [String] == ["/usr/lib/libobjc.A.dylib"])
     }
 }
 
 @Suite
-struct HeaderDumpBundlePathTests {
+struct PrivateHeaderKitRawDumpBundlePathTests {
     @Test func writeDirectoryBuildsBundlePaths() {
         let outputRoot = URL(fileURLWithPath: "/tmp/out")
         var options = DumpOptions(outputDir: outputRoot)
@@ -308,7 +570,7 @@ struct HeaderDumpBundlePathTests {
 }
 
 @Suite
-struct HeaderDumpObjCHeaderNameTests {
+struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
     @Test func isSaneObjCTypeNameRejectsReplacementAndControl() {
         #expect(isSaneObjCTypeName("ASAuthorization") == true)
         #expect(isSaneObjCTypeName("") == false)
@@ -392,7 +654,7 @@ struct HeaderDumpObjCHeaderNameTests {
 }
 
 @Suite
-struct HeaderDumpSwiftInterfaceTests {
+struct PrivateHeaderKitRawDumpSwiftInterfaceTests {
     @Test func shouldSkipSwiftInterfaceUsesInjectedFileExistence() {
         let outputDir = URL(fileURLWithPath: "/tmp/out", isDirectory: true)
         let outputPath = outputDir.appendingPathComponent("FixtureSkip.swiftinterface").path
@@ -478,11 +740,31 @@ struct HeaderDumpSwiftInterfaceTests {
         #expect(FileManager.default.fileExists(atPath: outputURL.path) == true)
         #expect(try String(contentsOf: outputURL, encoding: .utf8) == "public struct Foo {}")
     }
+
+    @Test func dumpSwiftInterfacePropagatesBuildFailure() async throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let outputDir = dirs.root.appendingPathComponent("out", isDirectory: true)
+        let options = DumpOptions(outputDir: outputDir)
+
+        await #expect(throws: FixtureSwiftInterfaceError.self) {
+            try await dumpSwiftInterface(
+                imagePath: "/tmp/FixtureFailure",
+                outputDir: outputDir,
+                options: options,
+                fileManager: FileManager.default,
+                buildInterface: { throw FixtureSwiftInterfaceError.failed }
+            )
+        }
+    }
+
+    private enum FixtureSwiftInterfaceError: Error {
+        case failed
+    }
 }
 
 @Suite
-struct HeaderDumpRuntimeInspectorTests {
-    #if canImport(ObjectiveC) && canImport(HeaderDumpRuntimeObjC)
+struct PrivateHeaderKitRawDumpRuntimeInspectorTests {
+    #if canImport(ObjectiveC) && canImport(PrivateHeaderKitRawDumpRuntimeObjC)
     @Test func runtimeInspectorBuildsNSObjectSnapshot() {
         var failedStage: NSString?
         let snapshot = PHRuntimeObjCInspector.snapshot(for: NSObject.self, failedStage: &failedStage)

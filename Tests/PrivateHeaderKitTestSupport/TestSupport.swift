@@ -19,6 +19,7 @@ public final class RecordingCommandRunner: CommandRunning {
     public private(set) var streamingCommands: [RecordedCommand] = []
 
     public var captureOutputs: [String: String] = [:]
+    private var captureOutputQueues: [String: [String]] = [:]
     public var simpleHandler: (([String], [String: String]?, URL?) throws -> Void)?
     public var streamingHandler: (([String], [String: String]?, URL?) throws -> StreamingCommandResult)?
 
@@ -28,8 +29,18 @@ public final class RecordingCommandRunner: CommandRunning {
         captureOutputs[key(for: command)] = output
     }
 
+    public func setCaptureOutputs(_ outputs: [String], for command: [String]) {
+        captureOutputQueues[key(for: command)] = outputs
+    }
+
     public func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) throws -> String {
         captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+        let commandKey = key(for: command)
+        if var outputs = captureOutputQueues[commandKey], !outputs.isEmpty {
+            let output = outputs.removeFirst()
+            captureOutputQueues[commandKey] = outputs
+            return output
+        }
         guard let output = captureOutputs[key(for: command)] else {
             throw ToolingError.message("unexpected runCapture command: \(command.joined(separator: " "))")
         }
@@ -106,7 +117,7 @@ public func makeTemporaryTestDirectories() throws -> TestDirectories {
     return dirs
 }
 
-public final class HeaderdumpFixtureRunner {
+public final class RawDumpFixtureRunner {
     public private(set) var sourcePaths: [String] = []
     public var failingSourceSuffixes: Set<String>
 
@@ -115,7 +126,7 @@ public final class HeaderdumpFixtureRunner {
     }
 
     public func handle(command: [String], env _: [String: String]?, cwd _: URL?) throws -> StreamingCommandResult {
-        let parsed = try parseHeaderdumpCommand(command)
+        let parsed = try parseRawDumpCommand(command)
         sourcePaths.append(parsed.sourcePath)
 
         if failingSourceSuffixes.contains(where: { parsed.sourcePath.hasSuffix($0) }) {
@@ -133,9 +144,9 @@ public final class HeaderdumpFixtureRunner {
         return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
     }
 
-    private func parseHeaderdumpCommand(_ command: [String]) throws -> (stageDir: URL, sourcePath: String) {
+    private func parseRawDumpCommand(_ command: [String]) throws -> (stageDir: URL, sourcePath: String) {
         guard let outIndex = command.firstIndex(of: "-o"), outIndex + 1 < command.count else {
-            throw ToolingError.message("headerdump command missing -o: \(command.joined(separator: " "))")
+            throw ToolingError.message("raw dump command missing -o: \(command.joined(separator: " "))")
         }
         let stageDir = URL(fileURLWithPath: command[outIndex + 1], isDirectory: true)
         let tail = Array(command.dropFirst(outIndex + 2))
@@ -145,7 +156,7 @@ public final class HeaderdumpFixtureRunner {
         } else if let firstPath = tail.first(where: { !$0.hasPrefix("-") }) {
             sourcePath = firstPath
         } else {
-            throw ToolingError.message("headerdump command missing source path: \(command.joined(separator: " "))")
+            throw ToolingError.message("raw dump command missing source path: \(command.joined(separator: " "))")
         }
         return (stageDir, sourcePath)
     }

@@ -1,4 +1,4 @@
-#import "HeaderDumpRuntimeObjC.h"
+#import "PrivateHeaderKitRawDumpRuntimeObjC.h"
 
 static NSString * const PHRuntimeStageName = @"name";
 static NSString * const PHRuntimeStageImage = @"imageName";

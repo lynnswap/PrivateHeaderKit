@@ -25,6 +25,8 @@ private final class LockedDataBox: @unchecked Sendable {
     }
 }
 
+private final class ToolingTestBundleMarker: NSObject {}
+
 private func shellCommand(_ script: String) -> [String] {
     ["/bin/zsh", "-lc", script]
 }
@@ -63,6 +65,15 @@ private func testHelperExecutableURL() throws -> URL {
         }
 
         return nil
+    }
+
+    let testProductsDirectory = Bundle(for: ToolingTestBundleMarker.self)
+        .bundleURL
+        .deletingLastPathComponent()
+    let bundledHelper = testProductsDirectory
+        .appendingPathComponent(helperName, isDirectory: false)
+    if fileManager.isExecutableFile(atPath: bundledHelper.path) {
+        return bundledHelper
     }
 
     let configuredBuildPaths = [

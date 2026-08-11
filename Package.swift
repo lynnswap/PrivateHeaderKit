@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -8,71 +8,108 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
-        .executable(name: "headerdump", targets: ["HeaderDumpCLI"]),
-        .executable(name: "privateheaderkit-dump", targets: ["PrivateHeaderKitDump"]),
-        .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstall"]),
+        .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
+        .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstallCLI"]),
+        .executable(name: "privateheaderkit-raw-helper", targets: ["PrivateHeaderKitRawDumpHelper"]),
+        .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
     ],
     dependencies: [
         .package(
-            url: "https://github.com/lynnswap/MachOKit.git",
-            from: "0.47.0"
+            url: "https://github.com/apple/swift-argument-parser.git",
+            exact: "1.8.2"
         ),
         .package(
-            url: "https://github.com/lynnswap/MachOObjCSection.git",
-            revision: "3dbf6a856cbdc856d4d7c1fe6bbf81161e0fbe9c"
+            url: "https://github.com/groue/GRDB.swift.git",
+            from: "7.11.1"
         ),
         .package(
-            url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "2fbb1a78e316a2beaf2911488ecda6455e205f84"
+            url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+            from: "0.46.100"
         ),
         .package(
-            url: "https://github.com/p-x9/swift-objc-dump.git",
-            from: "0.8.0"
+            url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
+            from: "0.6.100"
+        ),
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
+            from: "0.8.100"
+        ),
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
+            revision: "f17bc65b57f372b461fe45687298671c3400909e"
         ),
     ],
     targets: [
         .target(
-            name: "HeaderDumpRuntimeObjC",
+            name: "PrivateHeaderKitHelperProtocol",
+            dependencies: []
+        ),
+        .target(
+            name: "PrivateHeaderKitRawDumpRuntimeObjC",
             dependencies: [],
-            path: "Sources/HeaderDumpRuntimeObjC",
+            path: "Sources/PrivateHeaderKitRawDumpRuntimeObjC",
             publicHeadersPath: "include"
         ),
         .target(
-            name: "HeaderDumpCore",
+            name: "PrivateHeaderKitRawDumpCore",
             dependencies: [
+                "PrivateHeaderKitHelperProtocol",
                 .target(
-                    name: "HeaderDumpRuntimeObjC",
+                    name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
+                .product(name: "SwiftDeclaration", package: "MachOSwiftSection"),
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
             ],
-            path: "Sources/HeaderDumpCore"
+            path: "Sources/PrivateHeaderKitRawDumpCore"
         ),
         .target(
             name: "PrivateHeaderKitTooling",
             dependencies: []
         ),
-        .executableTarget(
-            name: "HeaderDumpCLI",
+        .target(
+            name: "PrivateHeaderKitCore",
             dependencies: [
-                "HeaderDumpCore",
-            ],
-            path: "Sources/HeaderDumpCLI"
+                "PrivateHeaderKitHelperProtocol",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
-        .executableTarget(
-            name: "PrivateHeaderKitDump",
+        .target(
+            name: "PrivateHeaderKitInstall",
             dependencies: [
                 "PrivateHeaderKitTooling",
             ]
         ),
         .executableTarget(
-            name: "PrivateHeaderKitInstall",
+            name: "PrivateHeaderKitCLI",
             dependencies: [
+                "PrivateHeaderKitCore",
                 "PrivateHeaderKitTooling",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitInstallCLI",
+            dependencies: [
+                "PrivateHeaderKitInstall",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitRawDumpHelper",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitRawDumpCore",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitSimulatorHelper",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitRawDumpCore",
             ]
         ),
         .executableTarget(
@@ -90,22 +127,30 @@ let package = Package(
             path: "Tests/PrivateHeaderKitTestSupport"
         ),
         .testTarget(
-            name: "HeaderDumpCLITests",
+            name: "PrivateHeaderKitHelperProtocolTests",
             dependencies: [
-                "HeaderDumpCore",
+                "PrivateHeaderKitHelperProtocol",
+            ]
+        ),
+        .testTarget(
+            name: "PrivateHeaderKitRawDumpTests",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitTestSupport",
                 .target(
-                    name: "HeaderDumpRuntimeObjC",
+                    name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
             ]
         ),
         .testTarget(
-            name: "PrivateHeaderKitDumpTests",
+            name: "PrivateHeaderKitCoreTests",
             dependencies: [
-                "PrivateHeaderKitDump",
-                "PrivateHeaderKitTestSupport",
+                "PrivateHeaderKitCore",
+                "PrivateHeaderKitHelperProtocol",
+                .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
         .testTarget(
@@ -124,6 +169,15 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitInstall",
                 "PrivateHeaderKitTestSupport",
+            ]
+        ),
+        .testTarget(
+            name: "PrivateHeaderKitCLITests",
+            dependencies: [
+                "PrivateHeaderKitCLI",
+                "PrivateHeaderKitCore",
+                "PrivateHeaderKitTestSupport",
+                "PrivateHeaderKitTooling",
             ]
         ),
     ]

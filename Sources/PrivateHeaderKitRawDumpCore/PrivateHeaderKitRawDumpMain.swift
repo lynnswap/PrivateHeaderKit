@@ -2,8 +2,10 @@ import Foundation
 import Dispatch
 import MachOKit
 import MachOObjCSection
-import ObjCDump
 import MachOSwiftSection
+import ObjCDump
+import PrivateHeaderKitHelperProtocol
+import SwiftDeclaration
 @_spi(Support) import SwiftInterface
 #if canImport(Darwin)
 import Darwin
@@ -12,7 +14,7 @@ import Glibc
 #endif
 #if canImport(ObjectiveC)
 import ObjectiveC
-import HeaderDumpRuntimeObjC
+import PrivateHeaderKitRawDumpRuntimeObjC
 #endif
 
 protocol FileExistenceChecking {
@@ -28,15 +30,16 @@ protocol SwiftInterfaceBuilding {
 
 protocol SwiftInterfaceBuildingFactory {
     func makeBuilder(machO: MachOFile) throws -> SwiftInterfaceBuilding
+    func makeBuilder(machO: MachOImage) throws -> SwiftInterfaceBuilding
 }
 
 struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
     let configuration: SwiftInterfaceBuilderConfiguration
-    let eventHandlers: [SwiftInterfaceEvents.Handler]
+    let eventHandlers: [SwiftIndexEvents.Handler]
 
     init(
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
-        eventHandlers: [SwiftInterfaceEvents.Handler] = []
+        eventHandlers: [SwiftIndexEvents.Handler] = []
     ) {
         self.configuration = configuration
         self.eventHandlers = eventHandlers
@@ -49,15 +52,23 @@ struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
             eventHandlers: eventHandlers
         )
     }
+
+    func makeBuilder(machO: MachOImage) throws -> SwiftInterfaceBuilding {
+        try SwiftInterfaceBuilderAdapter(
+            machO: machO,
+            configuration: configuration,
+            eventHandlers: eventHandlers
+        )
+    }
 }
 
-struct SwiftInterfaceBuilderAdapter: SwiftInterfaceBuilding {
-    private let builder: SwiftInterfaceBuilder<MachOFile>
+struct SwiftInterfaceBuilderAdapter<MachO: MachOSwiftSectionRepresentableWithCache>: SwiftInterfaceBuilding {
+    private let builder: SwiftInterfaceBuilder<MachO>
 
     init(
-        machO: MachOFile,
+        machO: MachO,
         configuration: SwiftInterfaceBuilderConfiguration = .init(),
-        eventHandlers: [SwiftInterfaceEvents.Handler] = []
+        eventHandlers: [SwiftIndexEvents.Handler] = []
     ) throws {
         self.builder = try SwiftInterfaceBuilder(configuration: configuration, eventHandlers: eventHandlers, in: machO)
     }
@@ -79,6 +90,7 @@ struct DumpOptions {
     var skipExisting: Bool = false
     var onlyOneClass: String? = nil
     var useSharedCache: Bool = false
+    var expectedCacheUUID: UUID? = nil
     var verbose: Bool = false
     var useRuntimeFallback: Bool = false
     var logSkippedClasses: Bool = false
@@ -86,9 +98,26 @@ struct DumpOptions {
     var logSwiftEvents: Bool = false
 }
 
-public struct HeaderDumpCLI {
+public struct PrivateHeaderKitRawDumpCLI {
     public static func main() async {
-        let args = Array(CommandLine.arguments.dropFirst())
+        await main(arguments: Array(CommandLine.arguments.dropFirst()))
+    }
+
+    public static func main(arguments args: [String]) async {
+        if args == [PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue] {
+            do {
+                let data = try encodeSharedCacheInventory(makeSharedCacheInventory())
+                guard let payload = String(data: data, encoding: .utf8) else {
+                    throw CocoaError(.fileReadInapplicableStringEncoding)
+                }
+                print(payload)
+            } catch {
+                fputs("privateheaderkit __shared-cache-inventory: error: \(error)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+            return
+        }
+
         guard let parsed = parseArguments(args) else {
             printUsage()
             exit(EXIT_FAILURE)
@@ -97,7 +126,7 @@ public struct HeaderDumpCLI {
         do {
             try await run(parsed: parsed)
         } catch {
-            fputs("headerdump: error: \(error)\n", stderr)
+            fputs("privateheaderkit __raw-dump: error: \(error)\n", stderr)
             exit(EXIT_FAILURE)
         }
     }
@@ -144,6 +173,13 @@ func parseArguments(
             index += 1
         case "-c":
             options.useSharedCache = true
+        case "--expected-cache-uuid":
+            let nextIndex = index + 1
+            guard nextIndex < args.count,
+                  let uuid = UUID(uuidString: args[nextIndex])
+            else { return nil }
+            options.expectedCacheUUID = uuid
+            index += 1
         case "-D":
             options.verbose = true
         case "-R":
@@ -159,6 +195,9 @@ func parseArguments(
     }
 
     guard let inputPath else { return nil }
+    guard options.useSharedCache == (options.expectedCacheUUID != nil) else {
+        return nil
+    }
     if !options.useRuntimeFallback {
         options.useRuntimeFallback = shouldUseRuntimeFallback(environment: environment)
     }
@@ -170,8 +209,8 @@ func parseArguments(
 
 private func printUsage() {
     let text = """
-    Usage: headerdump [<options>] <filename|framework>
-           headerdump [<options>] -r <sourcePath>
+    Usage: privateheaderkit __raw-dump [<options>] <filename|framework>
+           privateheaderkit __raw-dump [<options>] -r <sourcePath>
 
     Options:
         -o   Output directory
@@ -181,6 +220,8 @@ private func printUsage() {
         -s   Skip already found files
         -j   Only dump a single class/protocol name
         -c   Use dyld shared cache when dumping (recommended for simulator runtimes)
+        --expected-cache-uuid <uuid>
+             Require the helper process to use the expected dyld shared cache
         -D   Verbose logging
         -R   Prefer Objective-C runtime metadata (auto-enabled in simulator)
     """
@@ -241,15 +282,31 @@ func run(parsed: ParsedArguments) async throws {
     let options = parsed.options
     let inputPath = parsed.inputPath
     let fileManager = FileManager.default
+    let machOLoader = try RawMachOLoader(options: options)
 
     if options.recursive {
-        try await dumpRecursive(inputPath: inputPath, options: options, fileManager: fileManager)
+        try await dumpRecursive(
+            inputPath: inputPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
     } else {
-        try await dumpSingle(inputPath: inputPath, options: options, fileManager: fileManager)
+        try await dumpSingle(
+            inputPath: inputPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
     }
 }
 
-private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager: FileManager) async throws {
+private func dumpRecursive(
+    inputPath: String,
+    options: DumpOptions,
+    fileManager: FileManager,
+    machOLoader: RawMachOLoader
+) async throws {
     let inputURL = URL(fileURLWithPath: inputPath).standardizedFileURL
     let rootURL = resolveRuntimeURL(inputURL)
     guard let enumerator = fileManager.enumerator(
@@ -257,7 +314,7 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
         includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
         options: [.skipsHiddenFiles]
     ) else {
-        throw NSError(domain: "headerdump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
+        throw NSError(domain: "privateheaderkit.raw-dump", code: 1, userInfo: [NSLocalizedDescriptionKey: "Directory not found: \(inputPath)"])
     }
 
     while let url = enumerator.nextObject() as? URL {
@@ -265,7 +322,13 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
             enumerator.skipDescendants()
             if let executableURL = resolveBundleExecutableURL(url, fileManager: fileManager) {
                 let originalPath = stripRuntimeRoot(from: executableURL.path)
-                try await dumpImage(executableURL, originalPath: originalPath, options: options, fileManager: fileManager)
+                try await dumpImage(
+                    executableURL,
+                    originalPath: originalPath,
+                    options: options,
+                    fileManager: fileManager,
+                    machOLoader: machOLoader
+                )
             }
             continue
         }
@@ -276,20 +339,43 @@ private func dumpRecursive(inputPath: String, options: DumpOptions, fileManager:
         else { continue }
 
         let originalPath = stripRuntimeRoot(from: url.path)
-        try await dumpImage(url, originalPath: originalPath, options: options, fileManager: fileManager)
+        try await dumpImage(
+            url,
+            originalPath: originalPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
     }
 }
 
-private func dumpSingle(inputPath: String, options: DumpOptions, fileManager: FileManager) async throws {
+private func dumpSingle(
+    inputPath: String,
+    options: DumpOptions,
+    fileManager: FileManager,
+    machOLoader: RawMachOLoader
+) async throws {
     let originalURL = URL(fileURLWithPath: inputPath)
     let resolvedURL = resolveRuntimeURL(originalURL)
     if isBundleDirectory(resolvedURL), let executableURL = resolveBundleExecutableURL(resolvedURL, fileManager: fileManager) {
         let originalPath = stripRuntimeRoot(from: executableURL.path)
-        try await dumpImage(executableURL, originalPath: originalPath, options: options, fileManager: fileManager)
+        try await dumpImage(
+            executableURL,
+            originalPath: originalPath,
+            options: options,
+            fileManager: fileManager,
+            machOLoader: machOLoader
+        )
         return
     }
     let originalPath = stripRuntimeRoot(from: resolvedURL.path)
-    try await dumpImage(resolvedURL, originalPath: originalPath, options: options, fileManager: fileManager)
+    try await dumpImage(
+        resolvedURL,
+        originalPath: originalPath,
+        options: options,
+        fileManager: fileManager,
+        machOLoader: machOLoader
+    )
 }
 
 func isBundleDirectory(_ url: URL) -> Bool {
@@ -358,13 +444,14 @@ private func dumpImage(
     _ url: URL,
     originalPath: String,
     options: DumpOptions,
-    fileManager: FileManager
+    fileManager: FileManager,
+    machOLoader: RawMachOLoader
 ) async throws {
     let loadStart = profileNowNanoseconds(enabled: options.profile)
-    guard let machO = loadMachOFile(url: url, options: options) else {
+    guard let machO = try machOLoader.load(url: url) else {
         return
     }
-    profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "loadMachOFile", since: loadStart)
+    profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "loadMachO", since: loadStart)
 
     let outputDir = writeDirectory(for: originalPath, outputRoot: options.outputDir, options: options)
     if options.verbose {
@@ -372,48 +459,136 @@ private func dumpImage(
     }
 
     let objcStart = profileNowNanoseconds(enabled: options.profile)
-    try dumpObjC(machO: machO, imagePath: originalPath, outputDir: outputDir, options: options, fileManager: fileManager)
+    try dumpObjC(
+        machO: machO,
+        imagePath: originalPath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
     profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "dumpObjC", since: objcStart)
-
-    let swiftFactory: SwiftInterfaceBuildingFactory
-    if options.logSwiftEvents {
-        let moduleName = URL(fileURLWithPath: originalPath).lastPathComponent
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory(
-            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
-        )
-    } else {
-        swiftFactory = DefaultSwiftInterfaceBuilderFactory()
-    }
 
     try await dumpSwift(
         machO: machO,
         imagePath: originalPath,
         outputDir: outputDir,
         options: options,
-        interfaceBuilderFactory: swiftFactory,
+        interfaceBuilderFactory: defaultSwiftInterfaceBuilderFactory(
+            imagePath: originalPath,
+            options: options
+        ),
         fileManager: fileManager
     )
 }
 
-private func loadMachOFile(url: URL, options: DumpOptions) -> MachOFile? {
-    if options.useSharedCache, let cached = loadFromSharedCache(imagePath: url.path) {
-        return cached
+private func defaultSwiftInterfaceBuilderFactory(
+    imagePath: String,
+    options: DumpOptions
+) -> SwiftInterfaceBuildingFactory {
+    if options.logSwiftEvents {
+        let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
+        return DefaultSwiftInterfaceBuilderFactory(
+            eventHandlers: [SwiftInterfaceTimingHandler(label: moduleName)]
+        )
     }
-    do {
-        let file = try loadFromFile(url: url)
-        switch file {
-        case .machO(let machO):
-            return isSupported(machO) ? machO : nil
-        case .fat(let fat):
-            let machOFiles = try fat.machOFiles()
-            if let match = machOFiles.first(where: { isSupported($0) }) {
-                return match
-            }
-            return nil
+    return DefaultSwiftInterfaceBuilderFactory()
+}
+
+enum RawMachO {
+    case file(MachOFile)
+    case loaded(MachOImage)
+}
+
+enum RawMachOLoadError: Error, Equatable, CustomStringConvertible, Sendable {
+    case sharedCacheMissAndDiskLoadFailed(
+        inputPath: String,
+        cacheUUID: UUID,
+        normalizedCandidates: [String],
+        diskError: String
+    )
+    case diskLoadFailed(inputPath: String, diskError: String)
+
+    var description: String {
+        switch self {
+        case .sharedCacheMissAndDiskLoadFailed(
+            let inputPath,
+            let cacheUUID,
+            let normalizedCandidates,
+            let diskError
+        ):
+            "raw Mach-O target was absent from shared cache and could not be loaded from disk: input=\(inputPath) cacheUUID=\(cacheUUID.uuidString.lowercased()) candidates=\(normalizedCandidates.joined(separator: ",")) diskError=\(diskError)"
+        case .diskLoadFailed(let inputPath, let diskError):
+            "raw Mach-O target could not be loaded from disk: input=\(inputPath) diskError=\(diskError)"
         }
-    } catch {
+    }
+}
+
+struct RawMachOLoader {
+    private let sharedCache: DyldSharedCacheAccess?
+    private let environment: [String: String]
+    private let diskLoader: (URL) throws -> RawMachO?
+
+    init(
+        options: DumpOptions,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sharedCacheFactory: (UUID?) throws -> DyldSharedCacheAccess = DyldSharedCacheAccess.current,
+        diskLoader: @escaping (URL) throws -> RawMachO? = loadSupportedDiskMachO
+    ) throws {
+        self.environment = environment
+        self.diskLoader = diskLoader
         if options.useSharedCache {
-            return loadFromSharedCache(imagePath: url.path)
+            guard let expectedCacheUUID = options.expectedCacheUUID else {
+                throw DyldSharedCacheAccessError.missingExpectedUUID
+            }
+            try validateLoadedCacheEnvironment(environment)
+            self.sharedCache = try sharedCacheFactory(expectedCacheUUID)
+        } else {
+            self.sharedCache = nil
+        }
+    }
+
+    func load(url: URL) throws -> RawMachO? {
+        if let sharedCache {
+            let candidates = normalizedCacheImagePaths(
+                for: url.path,
+                environment: environment
+            )
+            if let loaded = sharedCache.image(matching: candidates) {
+                return .loaded(loaded.machO)
+            }
+
+            do {
+                return try diskLoader(url)
+            } catch {
+                throw RawMachOLoadError.sharedCacheMissAndDiskLoadFailed(
+                    inputPath: url.path,
+                    cacheUUID: sharedCache.cacheUUID,
+                    normalizedCandidates: candidates,
+                    diskError: String(describing: error)
+                )
+            }
+        }
+
+        do {
+            return try diskLoader(url)
+        } catch {
+            throw RawMachOLoadError.diskLoadFailed(
+                inputPath: url.path,
+                diskError: String(describing: error)
+            )
+        }
+    }
+}
+
+private func loadSupportedDiskMachO(url: URL) throws -> RawMachO? {
+    let file = try loadFromFile(url: url)
+    switch file {
+    case .machO(let machO):
+        return isSupported(machO) ? .file(machO) : nil
+    case .fat(let fat):
+        let machOFiles = try fat.machOFiles()
+        if let match = machOFiles.first(where: { isSupported($0) }) {
+            return .file(match)
         }
         return nil
     }
@@ -428,43 +603,11 @@ private func isSupported(_ machO: MachOFile) -> Bool {
     }
 }
 
-private func loadFromSharedCache(imagePath: String) -> MachOFile? {
-    let cachePath = sharedCachePath()
-    guard let fullCache = try? FullDyldCache(url: URL(fileURLWithPath: cachePath)) else {
-        return nil
-    }
-    let candidates = normalizedCacheImagePaths(for: imagePath)
-    if let match = fullCache.machOFiles().first(where: { candidates.contains($0.imagePath) }) {
-        return match
-    }
-    for candidate in candidates {
-        if let match = fullCache.machOFiles().first(where: { $0.imagePath.hasSuffix(candidate) }) {
-            return match
-        }
-    }
-    return nil
-}
-
 func normalizedCacheImagePaths(
     for path: String,
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> [String] {
-    var results: [String] = [path]
-
-    // On macOS, cache entries for frameworks frequently use versioned image paths
-    // (e.g. ".../Foo.framework/Versions/A/Foo"), while callers may provide
-    // ".../Foo.framework/Foo". Include common versioned variants so cache lookup
-    // still resolves when the unversioned symlink target is absent.
-    if let frameworkRange = path.range(of: ".framework/"), !path.contains(".framework/Versions/") {
-        let frameworkPrefix = String(path[..<frameworkRange.upperBound])
-        let imageName = URL(fileURLWithPath: path).lastPathComponent
-        if !imageName.isEmpty {
-            results.append(frameworkPrefix + "Versions/Current/" + imageName)
-            results.append(frameworkPrefix + "Versions/A/" + imageName)
-            results.append(frameworkPrefix + "Versions/B/" + imageName)
-            results.append(frameworkPrefix + "Versions/C/" + imageName)
-        }
-    }
+    var basePaths: [String] = [path]
 
     let rootCandidates = [
         environment["PH_RUNTIME_ROOT"],
@@ -477,16 +620,32 @@ func normalizedCacheImagePaths(
         if path.hasPrefix(trimmedRoot + "/") {
             let suffix = String(path.dropFirst(trimmedRoot.count))
             if !suffix.isEmpty {
-                results.append(suffix)
+                basePaths.append(suffix)
             }
         }
     }
 
     if let range = path.range(of: "/System/Library/") {
-        results.append(String(path[range.lowerBound...]))
+        basePaths.append(String(path[range.lowerBound...]))
     }
     if let range = path.range(of: "/usr/lib/") {
-        results.append(String(path[range.lowerBound...]))
+        basePaths.append(String(path[range.lowerBound...]))
+    }
+
+    var results = basePaths
+    for basePath in basePaths {
+        // Shared-cache framework identities are commonly versioned even when the
+        // filesystem-facing source path uses the unversioned bundle symlink.
+        guard let frameworkRange = basePath.range(of: ".framework/"),
+              !basePath.contains(".framework/Versions/")
+        else { continue }
+        let frameworkPrefix = String(basePath[..<frameworkRange.upperBound])
+        let imageName = URL(fileURLWithPath: basePath).lastPathComponent
+        guard !imageName.isEmpty else { continue }
+        results.append(frameworkPrefix + "Versions/Current/" + imageName)
+        results.append(frameworkPrefix + "Versions/A/" + imageName)
+        results.append(frameworkPrefix + "Versions/B/" + imageName)
+        results.append(frameworkPrefix + "Versions/C/" + imageName)
     }
 
     var unique: [String] = []
@@ -494,62 +653,6 @@ func normalizedCacheImagePaths(
         unique.append(item)
     }
     return unique
-}
-
-func sharedCachePath(
-    fileManager: FileExistenceChecking = FileManager.default,
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> String {
-    let rootCandidates = [
-        environment["PH_RUNTIME_ROOT"],
-        environment["DYLD_ROOT_PATH"],
-        environment["SIMCTL_CHILD_DYLD_ROOT_PATH"]
-    ].compactMap { $0 }
-
-    for runtimeRoot in rootCandidates {
-        let simArm64eCandidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64e")
-        if fileManager.fileExists(atPath: simArm64eCandidate.path) {
-            return simArm64eCandidate.path
-        }
-
-        let simArm64Candidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64")
-        if fileManager.fileExists(atPath: simArm64Candidate.path) {
-            return simArm64Candidate.path
-        }
-
-        let candidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
-        if fileManager.fileExists(atPath: candidate.path) {
-            return candidate.path
-        }
-
-        let arm64Candidate = URL(fileURLWithPath: runtimeRoot)
-            .appendingPathComponent("System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64")
-        if fileManager.fileExists(atPath: arm64Candidate.path) {
-            return arm64Candidate.path
-        }
-    }
-
-    let primary = "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e"
-    if fileManager.fileExists(atPath: primary) {
-        return primary
-    }
-
-    let candidates = [
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64",
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_x86_64",
-        "/private/var/db/dyld/dyld_shared_cache_arm64e",
-        "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
-        "/private/var/db/dyld/dyld_shared_cache_x86_64",
-        "/private/var/db/dyld/dyld_shared_cache_arm64"
-    ]
-    for candidate in candidates where fileManager.fileExists(atPath: candidate) {
-        return candidate
-    }
-    return primary
 }
 
 func writeDirectory(for imagePath: String, outputRoot: URL, options: DumpOptions) -> URL {
@@ -713,28 +816,28 @@ private func profileLogDuration(
     let seconds = Double(delta) / 1_000_000_000.0
     // Intentionally stderr so `withSilencedStdout` doesn't hide it.
     let secondsText = String(format: "%.3fs", seconds)
-    fputs("headerdump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
+    fputs("privateheaderkit __raw-dump: profile \(name) \(secondsText) \(imagePath)\n", stderr)
 }
 
-private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
+private final class SwiftInterfaceTimingHandler: SwiftIndexEvents.Handler {
     private struct OpKey: Hashable {
-        let phase: SwiftInterfaceEvents.Phase
-        let operation: SwiftInterfaceEvents.PhaseOperation
+        let phase: SwiftIndexEvents.Phase
+        let operation: SwiftIndexEvents.PhaseOperation
     }
 
     private let label: String
     private let startNanos: UInt64
     private let lock = NSLock()
-    private var phaseStart: [SwiftInterfaceEvents.Phase: UInt64] = [:]
+    private var phaseStart: [SwiftIndexEvents.Phase: [UInt64]] = [:]
     private var opStart: [OpKey: UInt64] = [:]
-    private var extractionSectionStart: [SwiftInterfaceEvents.Section: UInt64] = [:]
+    private var extractionSectionStart: [SwiftIndexEvents.Section: UInt64] = [:]
 
     init(label: String) {
         self.label = label
         self.startNanos = DispatchTime.now().uptimeNanoseconds
     }
 
-    func handle(event: SwiftInterfaceEvents.Payload) {
+    func handle(event: SwiftIndexEvents.Payload) {
         switch event {
         case .phaseTransition(let phase, let state):
             handlePhaseTransition(phase: phase, state: state)
@@ -754,44 +857,42 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
             handlePhaseTransition(phase: .moduleCollection, state: .started)
         case .moduleCollectionCompleted(result: _):
             handlePhaseTransition(phase: .moduleCollection, state: .completed)
-        case .dependencyLoadingStarted(input: _):
-            handlePhaseTransition(phase: .dependencyLoading, state: .started)
-        case .dependencyLoadingCompleted(result: _):
-            handlePhaseTransition(phase: .dependencyLoading, state: .completed)
-        case .dependencyLoadingFailed(failure: let failure):
-            handlePhaseTransition(phase: .dependencyLoading, state: .failed(failure.error))
-        case .typeDatabaseIndexingStarted(input: _):
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .started)
-        case .typeDatabaseIndexingCompleted:
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .completed)
-        case .typeDatabaseIndexingFailed(error: let error):
-            handlePhaseTransition(phase: .typeDatabaseIndexing, state: .failed(error))
-        case .diagnostic(message: let message):
-            handleDiagnostic(message: message)
         default:
             break
         }
     }
 
-    private func handlePhaseTransition(phase: SwiftInterfaceEvents.Phase, state: SwiftInterfaceEvents.State) {
+    private func handlePhaseTransition(phase: SwiftIndexEvents.Phase, state: SwiftIndexEvents.State) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         defer { lock.unlock() }
 
         switch state {
         case .started:
-            phaseStart[phase] = now
+            phaseStart[phase, default: []].append(now)
             log(now: now, message: "\(phaseName(phase)) started")
         case .completed:
-            let start = phaseStart.removeValue(forKey: phase) ?? now
+            let start = popPhaseStart(for: phase) ?? now
             log(now: now, message: "\(phaseName(phase)) completed (\(formatDurationSeconds(now &- start)))")
         case .failed(let error):
-            let start = phaseStart.removeValue(forKey: phase) ?? now
+            let start = popPhaseStart(for: phase) ?? now
             log(now: now, message: "\(phaseName(phase)) failed (\(formatDurationSeconds(now &- start))): \(String(describing: error))")
         }
     }
 
-    private func handleOpStarted(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation) {
+    private func popPhaseStart(for phase: SwiftIndexEvents.Phase) -> UInt64? {
+        guard var starts = phaseStart[phase], let start = starts.popLast() else {
+            return nil
+        }
+        if starts.isEmpty {
+            phaseStart.removeValue(forKey: phase)
+        } else {
+            phaseStart[phase] = starts
+        }
+        return start
+    }
+
+    private func handleOpStarted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -800,7 +901,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleOpCompleted(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation) {
+    private func handleOpCompleted(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -809,7 +910,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleOpFailed(phase: SwiftInterfaceEvents.Phase, operation: SwiftInterfaceEvents.PhaseOperation, error: any Error) {
+    private func handleOpFailed(phase: SwiftIndexEvents.Phase, operation: SwiftIndexEvents.PhaseOperation, error: any Error) {
         let now = DispatchTime.now().uptimeNanoseconds
         let key = OpKey(phase: phase, operation: operation)
         lock.lock()
@@ -818,7 +919,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionStarted(section: SwiftInterfaceEvents.Section) {
+    private func handleExtractionStarted(section: SwiftIndexEvents.Section) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         extractionSectionStart[section] = now
@@ -826,7 +927,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionCompleted(result: SwiftInterfaceEvents.ExtractionResult) {
+    private func handleExtractionCompleted(result: SwiftIndexEvents.ExtractionResult) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let start = extractionSectionStart.removeValue(forKey: result.section) ?? now
@@ -837,7 +938,7 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleExtractionFailed(section: SwiftInterfaceEvents.Section, error: any Error) {
+    private func handleExtractionFailed(section: SwiftIndexEvents.Section, error: any Error) {
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let start = extractionSectionStart.removeValue(forKey: section) ?? now
@@ -848,64 +949,41 @@ private final class SwiftInterfaceTimingHandler: SwiftInterfaceEvents.Handler {
         lock.unlock()
     }
 
-    private func handleDiagnostic(message: SwiftInterfaceEvents.DiagnosticMessage) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        lock.lock()
-        var text = "diagnostic.\(diagnosticLevelName(message.level)) \(message.message)"
-        if let error = message.error {
-            text += " error=\(String(describing: error))"
-        }
-        log(now: now, message: text)
-        lock.unlock()
-    }
-
     private func log(now: UInt64, message: String) {
         let rel = formatDurationSeconds(now &- startNanos)
-        fputs("headerdump: swift-events [\(label)] +\(rel) \(message)\n", stderr)
+        fputs("privateheaderkit __raw-dump: swift-events [\(label)] +\(rel) \(message)\n", stderr)
     }
 
     private func formatDurationSeconds(_ nanos: UInt64) -> String {
         String(format: "%.3fs", Double(nanos) / 1_000_000_000.0)
     }
 
-    private func phaseName(_ phase: SwiftInterfaceEvents.Phase) -> String {
+    private func phaseName(_ phase: SwiftIndexEvents.Phase) -> String {
         switch phase {
-        case .initialization: return "initialization"
         case .preparation: return "preparation"
         case .extraction: return "extraction"
         case .indexing: return "indexing"
         case .moduleCollection: return "moduleCollection"
-        case .dependencyLoading: return "dependencyLoading"
-        case .typeDatabaseIndexing: return "typeDatabaseIndexing"
         case .build: return "build"
         }
     }
 
-    private func operationName(_ op: SwiftInterfaceEvents.PhaseOperation) -> String {
+    private func operationName(_ op: SwiftIndexEvents.PhaseOperation) -> String {
         switch op {
         case .typeIndexing: return "typeIndexing"
         case .protocolIndexing: return "protocolIndexing"
         case .conformanceIndexing: return "conformanceIndexing"
         case .extensionIndexing: return "extensionIndexing"
-        case .dependencyIndexing: return "dependencyIndexing"
         }
     }
 
-    private func sectionName(_ section: SwiftInterfaceEvents.Section) -> String {
+    private func sectionName(_ section: SwiftIndexEvents.Section) -> String {
         switch section {
         case .swiftTypes: return "swiftTypes"
         case .swiftProtocols: return "swiftProtocols"
         case .protocolConformances: return "protocolConformances"
         case .associatedTypes: return "associatedTypes"
-        }
-    }
-
-    private func diagnosticLevelName(_ level: SwiftInterfaceEvents.DiagnosticLevel) -> String {
-        switch level {
-        case .warning: return "warning"
-        case .error: return "error"
-        case .debug: return "debug"
-        case .trace: return "trace"
+        case .symbolIndex: return "symbolIndex"
         }
     }
 }
@@ -956,7 +1034,7 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
             )
             if options.verbose {
                 fputs(
-                    "headerdump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
+                    "privateheaderkit __raw-dump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
                     stderr
                 )
             }
@@ -975,28 +1053,17 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
 }
 
 private func dumpObjC(
-    machO: MachOFile,
+    machO: RawMachO,
     imagePath: String,
     outputDir: URL,
     options: DumpOptions,
     fileManager: FileManager
 ) throws {
-    let objc = machO.objc
-    var classInfos: [String: ObjCClassInfo] = [:]
-    var protocolInfos: [String: ObjCProtocolInfo] = [:]
-    var categoryInfos: [String: ObjCCategoryInfo] = [:]
-
-    if let list = objc.classes64 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
-    }
-    if let list = objc.classes32 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
-    }
-    if let list = objc.nonLazyClasses64 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
-    }
-    if let list = objc.nonLazyClasses32 {
-        collectClassInfos(list, in: machO, options: options, classInfos: &classInfos)
+    var metadata = switch machO {
+    case .file(let file):
+        collectObjCMetadata(from: file.objc, in: machO, options: options)
+    case .loaded(let image):
+        collectObjCMetadata(from: image.objc, in: machO, options: options)
     }
 
 #if canImport(ObjectiveC)
@@ -1004,25 +1071,57 @@ private func dumpObjC(
         let runtimeInfos = runtimeClassInfos(for: imagePath, options: options)
         if options.verbose, !runtimeInfos.isEmpty {
             fputs(
-                "headerdump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
+                "privateheaderkit __raw-dump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
                 stderr
             )
         }
-        for info in runtimeInfos {
-            if classInfos[info.name] == nil {
-                classInfos[info.name] = info
-            }
+        for info in runtimeInfos where metadata.classInfos[info.name] == nil {
+            metadata.classInfos[info.name] = info
         }
     }
 #endif
+
+    try writeObjCMetadata(
+        metadata,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
+}
+
+private struct CollectedObjCMetadata {
+    var classInfos: [String: ObjCClassInfo] = [:]
+    var protocolInfos: [String: ObjCProtocolInfo] = [:]
+    var categoryInfos: [String: ObjCCategoryInfo] = [:]
+}
+
+private func collectObjCMetadata<Section: ObjCSectionRepresentable>(
+    from objc: Section,
+    in machO: RawMachO,
+    options: DumpOptions
+) -> CollectedObjCMetadata {
+    var metadata = CollectedObjCMetadata()
+
+    if let list = objc.classes64 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
+    if let list = objc.classes32 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
+    if let list = objc.nonLazyClasses64 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
+    if let list = objc.nonLazyClasses32 {
+        collectClassInfos(list, in: machO, options: options, classInfos: &metadata.classInfos)
+    }
 
     var protocolCandidates: [any ObjCProtocolProtocol] = []
     if let list = objc.protocols64 { protocolCandidates.append(contentsOf: list) }
     if let list = objc.protocols32 { protocolCandidates.append(contentsOf: list) }
 
     for proto in protocolCandidates {
-        if let info = proto.info(in: machO) {
-            protocolInfos[info.name] = info
+        if let info = protocolInfo(proto, in: machO) {
+            metadata.protocolInfos[info.name] = info
         }
     }
 
@@ -1035,11 +1134,24 @@ private func dumpObjC(
     if let list = objc.categories2_32 { categoryCandidates.append(contentsOf: list) }
 
     for category in categoryCandidates {
-        if let info = category.info(in: machO) {
+        if let info = categoryInfo(category, in: machO) {
             let key = "\(info.className)(\(info.name))"
-            categoryInfos[key] = info
+            metadata.categoryInfos[key] = info
         }
     }
+
+    return metadata
+}
+
+private func writeObjCMetadata(
+    _ metadata: CollectedObjCMetadata,
+    outputDir: URL,
+    options: DumpOptions,
+    fileManager: FileManager
+) throws {
+    let classInfos = metadata.classInfos
+    let protocolInfos = metadata.protocolInfos
+    let categoryInfos = metadata.categoryInfos
 
     try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
@@ -1050,7 +1162,7 @@ private func dumpObjC(
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
             if options.verbose {
-                fputs("headerdump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
+                fputs("privateheaderkit __raw-dump: skip invalid class name: \(String(reflecting: info.name))\n", stderr)
             }
             continue
         }
@@ -1067,7 +1179,7 @@ private func dumpObjC(
         if let only = options.onlyOneClass, only != info.name { continue }
         if !isSaneObjCTypeName(info.name) {
             if options.verbose {
-                fputs("headerdump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
+                fputs("privateheaderkit __raw-dump: skip invalid protocol name: \(String(reflecting: info.name))\n", stderr)
             }
             continue
         }
@@ -1085,7 +1197,7 @@ private func dumpObjC(
         if !isSaneObjCTypeName(info.className) || !isSaneObjCTypeName(info.name) {
             if options.verbose {
                 fputs(
-                    "headerdump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
+                    "privateheaderkit __raw-dump: skip invalid category name: class=\(String(reflecting: info.className)) category=\(String(reflecting: info.name))\n",
                     stderr
                 )
             }
@@ -1113,7 +1225,7 @@ private func runtimePropertyInfo(
 ) -> ObjCPropertyInfo {
     ObjCPropertyInfo(
         name: snapshot.name,
-        attributes: snapshot.attributesString,
+        attributesString: snapshot.attributesString,
         isClassProperty: snapshot.isClassProperty
     )
 }
@@ -1124,7 +1236,8 @@ private func runtimeMethodInfo(
     ObjCMethodInfo(
         name: snapshot.name,
         typeEncoding: snapshot.typeEncoding,
-        isClassMethod: snapshot.isClassMethod
+        isClassMethod: snapshot.isClassMethod,
+        imp: 0
     )
 }
 
@@ -1166,7 +1279,7 @@ private func runtimeClassInfo(
         if options.verbose {
             let stage = (failedStage as String?) ?? "unknown"
             fputs(
-                "headerdump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
+                "privateheaderkit __raw-dump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
                 stderr
             )
         }
@@ -1194,7 +1307,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
     guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
         if options.verbose {
-            fputs("headerdump: runtime dlopen failed for \(resolvedPath)\n", stderr)
+            fputs("privateheaderkit __raw-dump: runtime dlopen failed for \(resolvedPath)\n", stderr)
         }
         return []
     }
@@ -1204,7 +1317,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
         if options.verbose {
             fputs(
-                "headerdump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
+                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -1215,7 +1328,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
     if count == 0 {
         if options.verbose {
             fputs(
-                "headerdump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
+                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
                 stderr
             )
         }
@@ -1285,7 +1398,7 @@ private func runtimeClassInfosByImageName(
 
     if options.verbose, !infos.isEmpty {
         fputs(
-            "headerdump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
+            "privateheaderkit __raw-dump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
             stderr
         )
     }
@@ -1310,7 +1423,60 @@ private func normalizedImagePath(_ path: String) -> String {
 
 private func collectClassInfos<T: ObjCClassProtocol>(
     _ classes: [T],
+    in machO: RawMachO,
+    options: DumpOptions,
+    classInfos: inout [String: ObjCClassInfo]
+) {
+    switch machO {
+    case .file(let file):
+        collectClassInfos(classes, in: file, options: options, classInfos: &classInfos)
+    case .loaded(let image):
+        collectClassInfos(classes, in: image, options: options, classInfos: &classInfos)
+    }
+}
+
+private func protocolInfo(
+    _ proto: any ObjCProtocolProtocol,
+    in machO: RawMachO
+) -> ObjCProtocolInfo? {
+    switch machO {
+    case .file(let file):
+        proto.info(in: file)
+    case .loaded(let image):
+        proto.info(in: image)
+    }
+}
+
+private func categoryInfo(
+    _ category: any ObjCCategoryProtocol,
+    in machO: RawMachO
+) -> ObjCCategoryInfo? {
+    switch machO {
+    case .file(let file):
+        category.info(in: file)
+    case .loaded(let image):
+        category.info(in: image)
+    }
+}
+
+private func collectClassInfos<T: ObjCClassProtocol>(
+    _ classes: [T],
     in machO: MachOFile,
+    options: DumpOptions,
+    classInfos: inout [String: ObjCClassInfo]
+) {
+    for cls in classes {
+        if let info = cls.info(in: machO) {
+            classInfos[info.name] = info
+        } else if options.verbose && options.logSkippedClasses {
+            logClassInfoFailure(cls, in: machO)
+        }
+    }
+}
+
+private func collectClassInfos<T: ObjCClassProtocol>(
+    _ classes: [T],
+    in machO: MachOImage,
     options: DumpOptions,
     classInfos: inout [String: ObjCClassInfo]
 ) {
@@ -1340,9 +1506,62 @@ private func logClassInfoFailure<T: ObjCClassProtocol>(
     let displayName = name ?? "<unknown>"
     let metaImage = meta?.0.imagePath ?? "<nil>"
     fputs(
-        "headerdump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
+        "privateheaderkit __raw-dump: skip class \(displayName) (offset=\(cls.offset)) image=\(machO.imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
         stderr
     )
+}
+
+private func logClassInfoFailure<T: ObjCClassProtocol>(
+    _ cls: T,
+    in machO: MachOImage
+) {
+    let data = cls.classROData(in: machO)
+    let meta = cls.metaClass(in: machO)
+    let metaData = meta.flatMap { $0.1.classROData(in: $0.0) }
+    let name = data?.name(in: machO)
+    var missing: [String] = []
+    if data == nil { missing.append("classROData") }
+    if meta == nil { missing.append("metaClass") }
+    if metaData == nil { missing.append("metaClassROData") }
+    if name == nil { missing.append("name") }
+    let missingText = missing.isEmpty ? "unknown" : missing.joined(separator: ",")
+    let displayName = name ?? "<unknown>"
+    let imagePath = machO.path ?? "<unknown>"
+    let metaImage = meta?.0.path ?? "<nil>"
+    fputs(
+        "privateheaderkit __raw-dump: skip class \(displayName) (offset=\(cls.offset)) image=\(imagePath) metaImage=\(metaImage) missing=\(missingText)\n",
+        stderr
+    )
+}
+
+private func dumpSwift(
+    machO: RawMachO,
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    interfaceBuilderFactory: SwiftInterfaceBuildingFactory,
+    fileManager: FileManager
+) async throws {
+    switch machO {
+    case .file(let file):
+        try await dumpSwift(
+            machO: file,
+            imagePath: imagePath,
+            outputDir: outputDir,
+            options: options,
+            interfaceBuilderFactory: interfaceBuilderFactory,
+            fileManager: fileManager
+        )
+    case .loaded(let image):
+        try await dumpSwift(
+            machO: image,
+            imagePath: imagePath,
+            outputDir: outputDir,
+            options: options,
+            interfaceBuilderFactory: interfaceBuilderFactory,
+            fileManager: fileManager
+        )
+    }
 }
 
 func dumpSwift(
@@ -1357,6 +1576,43 @@ func dumpSwift(
         return
     }
     let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
+    try await dumpSwift(
+        builder: builder,
+        imagePath: imagePath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
+}
+
+func dumpSwift(
+    machO: MachOImage,
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    interfaceBuilderFactory: SwiftInterfaceBuildingFactory = DefaultSwiftInterfaceBuilderFactory(),
+    fileManager: FileManager
+) async throws {
+    if shouldSkipSwiftInterface(imagePath: imagePath, outputDir: outputDir, options: options, fileManager: fileManager) {
+        return
+    }
+    let builder = try interfaceBuilderFactory.makeBuilder(machO: machO)
+    try await dumpSwift(
+        builder: builder,
+        imagePath: imagePath,
+        outputDir: outputDir,
+        options: options,
+        fileManager: fileManager
+    )
+}
+
+private func dumpSwift(
+    builder: SwiftInterfaceBuilding,
+    imagePath: String,
+    outputDir: URL,
+    options: DumpOptions,
+    fileManager: FileManager
+) async throws {
     try await dumpSwiftInterface(
         imagePath: imagePath,
         outputDir: outputDir,
@@ -1417,6 +1673,7 @@ func dumpSwiftInterface(
         if options.verbose {
             fputs("Swift interface generation failed for \(imagePath): \(error)\n", stderr)
         }
+        throw error
     }
 }
 
