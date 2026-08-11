@@ -348,36 +348,40 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try fixture.readStableHeader(framework: "Bar") == "resumed")
   }
 
-  @Test func resumeRemovesAttemptedOrphansAfterCrashBetweenLiveCopyAndDatabaseCommit()
+  @Test func databaseCommitFailureRestoresPreviousTargetAndResumeReplacesItCleanly()
     async throws
   {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"), resumeBehavior: .resume)
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old"),
+      runID: "run-old",
+      generationID: "generation-old"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
-        runner: RecordingRunner(contents: "first", additionalHeaderName: "Stale.h"),
+        runner: RecordingRunner(contents: "uncommitted", additionalHeaderName: "Stale.h"),
         runID: "run-crashed",
         generationID: "generation-crashed",
         storeFaultInjector: { point in
           if point == .afterRunTargetWrite { throw InjectedFault.stop }
         }
-      ).run(plan: plan)
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
     }
     let staleHeader = fixture.liveURL.appendingPathComponent(
       "Frameworks/Foo/Headers/Stale.h"
     )
-    #expect(FileManager.default.fileExists(atPath: staleHeader.path))
-    try FileManager.default.removeItem(at: fixture.liveHeaderURL())
+    #expect(try fixture.readLiveHeader() == "old")
+    #expect(!FileManager.default.fileExists(atPath: staleHeader.path))
 
     let resumedRunner = RecordingRunner(contents: "second")
     _ = try await fixture.executor(
       runner: resumedRunner,
       runID: "run-recovered",
       generationID: "generation-recovered"
-    ).run(plan: plan)
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
 
     #expect(await resumedRunner.invocationCount == 1)
     #expect(try fixture.readLiveHeader() == "second")
@@ -925,6 +929,70 @@ struct PrivateHeaderGenerationExecutorTests {
     }
 
     #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.liveURL.path))
+  }
+
+  @Test func freshLegacyMigrationPublishesOpaqueArtifactInLiveOutput() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let legacyArtifact = fixture.stableURL.appendingPathComponent("Notes/custom.txt")
+    try FileManager.default.createDirectory(
+      at: legacyArtifact.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try "opaque".write(to: legacyArtifact, atomically: true, encoding: .utf8)
+
+    let result = try await fixture.executor(
+      runner: RecordingRunner(contents: "generated"),
+      runID: "run-legacy",
+      generationID: "generation-legacy"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+
+    let liveArtifact = fixture.liveURL.appendingPathComponent("Notes/custom.txt")
+    #expect(result.artifactDirectory == fixture.liveURL)
+    #expect(try String(contentsOf: liveArtifact, encoding: .utf8) == "opaque")
+    #expect(try String(contentsOf: fixture.stableURL.appendingPathComponent("Notes/custom.txt"), encoding: .utf8) == "opaque")
+    let publisher = try ArtifactPublisher(
+      artifactBaseDirectory: fixture.outputBase,
+      sourceLabel: fixture.sourceLabel
+    )
+    #expect(
+      try publisher.inspect().currentMarker?.opaquePaths
+        == [PrivateHeaderGeneration.ArtifactPath(rawValue: "Notes/custom.txt")]
+    )
+  }
+
+  @Test func freshLegacyMigrationKeepsGeneratedClaimOverOpaquePath() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let claimedArtifact = fixture.stableURL.appendingPathComponent(
+      "Frameworks/Foo/Headers/Generated.h"
+    )
+    try FileManager.default.createDirectory(
+      at: claimedArtifact.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try "legacy".write(to: claimedArtifact, atomically: true, encoding: .utf8)
+
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "generated"),
+      runID: "run-claim",
+      generationID: "generation-claim"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+
+    #expect(try fixture.readLiveHeader() == "generated")
+    let publisher = try ArtifactPublisher(
+      artifactBaseDirectory: fixture.outputBase,
+      sourceLabel: fixture.sourceLabel
+    )
+    let marker = try #require(publisher.inspect().currentMarker)
+    #expect(marker.opaquePaths.isEmpty)
+    #expect(
+      marker.artifactsByTarget["framework:Foo.framework"]
+        == [PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Headers/Generated.h")]
+    )
   }
 
   @Test func startupRecoveryRemovesCrashedStateStagingPayload() async throws {

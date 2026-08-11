@@ -218,6 +218,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     progressReporter: ProgressReporter?
   ) async throws -> PrivateHeaderGeneration.Result {
     try await Self.recover(store: store, publisher: publisher, at: dateProvider())
+    try await Self.recoverTargetReplacements(
+      in: stateDirectory,
+      artifactDirectory: plan.artifactDirectory,
+      store: store
+    )
     try publisher.cleanupStaging()
     try Self.cleanupStateStaging(in: stateDirectory)
     let publication = try publisher.inspect()
@@ -383,21 +388,60 @@ extension PrivateHeaderGeneration.GenerationExecutor {
             artifactRoot: artifactRoot,
             artifacts: execution.result.artifacts
           )
-          try await store.prepareTargetPublication(execution.result, in: runID)
-          _ = try liveArtifactStore.cleanupManagedArtifacts(
-            PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
-              manifestArtifacts: ownedArtifactsByTarget[targetID] ?? [],
-              attemptedArtifacts: previousAttemptedArtifactsByTarget[targetID] ?? []
-            )
+          let artifactsToRemove = PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
+            manifestArtifacts: ownedArtifactsByTarget[targetID] ?? [],
+            attemptedArtifacts: previousAttemptedArtifactsByTarget[targetID] ?? []
           )
-          try liveArtifactStore.copy(commitPlan)
+          let replacementDirectory = Self.replacementStagingDirectory(in: stateDirectory)
+            .appendingPathComponent(runID.rawValue, isDirectory: true)
+            .appendingPathComponent(
+              Self.safeTargetDirectoryName(targetID),
+              isDirectory: true
+            )
+          let replacement = try liveArtifactStore.prepareReplacement(
+            commitPlan,
+            removing: artifactsToRemove,
+            runID: runID,
+            targetID: targetID,
+            at: replacementDirectory
+          )
+          try await store.prepareTargetPublication(execution.result, in: runID)
+          try liveArtifactStore.applyReplacement(replacement)
+          do {
+            try await store.recordPublishedTargetAttempt(execution.result, in: runID)
+          } catch {
+            let persistenceError = error
+            do {
+              try liveArtifactStore.rollbackReplacement(replacement)
+            } catch {
+              throw PrivateHeaderGeneration.ArtifactStoreError.replacementRollbackFailed(
+                primary: String(describing: persistenceError),
+                rollback: String(describing: error)
+              )
+            }
+            throw persistenceError
+          }
           ownedArtifactsByTarget[targetID] = execution.result.artifacts
           liveArtifactsByTarget[targetID] = execution.result.artifacts
           let publishedArtifactSet = Set(execution.result.artifacts)
           liveOpaquePaths.removeAll { publishedArtifactSet.contains($0) }
           completedFilesByTarget[targetID] = execution.completedFiles
-          try await store.recordPublishedTargetAttempt(execution.result, in: runID)
           generatedTargetIDs.append(targetID)
+          do {
+            try liveArtifactStore.finalizeReplacement(replacement)
+          } catch {
+            warnings.append(
+              await surfacePostCommitWarning(
+                runID: runID,
+                kind: "cleanup-warning",
+                relativePath:
+                  "replacements/\(runID.rawValue)/\(Self.safeTargetDirectoryName(targetID))",
+                error: error,
+                store: store,
+                progressReporter: progressReporter
+              )
+            )
+          }
         } else {
           try await store.recordTargetAttempt(execution.result, in: runID)
         }
@@ -459,6 +503,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           to: initialDraft
         )
         let prepared = try publisher.prepareGeneration(draft, planFingerprint: fingerprint)
+        try Self.prepareLiveArtifactDirectory(
+          plan.artifactDirectory,
+          from: prepared.draftDirectory,
+          marker: prepared.marker
+        )
         let previousGenerationID = publication.currentGenerationID
         _ = try await store.preparePublication(
           generationID: generationID,
@@ -646,6 +695,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
     }
     var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+    try await Self.recoverTargetReplacements(
+      in: stateDirectory,
+      artifactDirectory: artifactDirectory,
+      store: store
+    )
     do {
       try publisher.cleanupStaging()
     } catch {
@@ -1113,6 +1167,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         toolCompatibilityIdentity: plan.options.toolCompatibilityIdentity
       )
       try await recover(store: store, publisher: publisher, at: Date())
+      try await recoverTargetReplacements(
+        in: stateDirectory,
+        artifactDirectory: plan.artifactDirectory,
+        store: store
+      )
       try publisher.cleanupStaging()
       try cleanupStateStaging(in: stateDirectory)
       let publication = try publisher.inspect()
@@ -1542,6 +1601,37 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       _ = try PrivateHeaderGeneration.RunID(entry.lastPathComponent)
       try FileManager.default.removeItem(at: entry)
     }
+  }
+
+  fileprivate static func replacementStagingDirectory(in stateDirectory: URL) -> URL {
+    stateDirectory.appendingPathComponent("replacements", isDirectory: true)
+  }
+
+  fileprivate static func recoverTargetReplacements(
+    in stateDirectory: URL,
+    artifactDirectory: URL,
+    store: GenerationStore
+  ) async throws {
+    let replacementsRoot = replacementStagingDirectory(in: stateDirectory)
+    let artifactStore = PrivateHeaderGeneration.ArtifactStore(
+      artifactRoot: artifactDirectory
+    )
+    let replacements = try PrivateHeaderGeneration.ArtifactStore.pendingReplacements(
+      in: replacementsRoot,
+      artifactRoot: artifactDirectory
+    )
+    for replacement in replacements {
+      let publishedTarget = try await store.targetSnapshot(targetID: replacement.targetID)
+      let wasCommitted =
+        publishedTarget?.status == .completed
+        && publishedTarget?.lastSuccessfulRunID == replacement.runID
+        && Set(publishedTarget?.artifacts ?? []) == Set(replacement.incomingArtifacts)
+      if !wasCommitted {
+        try artifactStore.rollbackReplacement(replacement)
+      }
+      try artifactStore.finalizeReplacement(replacement)
+    }
+    try PrivateHeaderGeneration.ArtifactStore.cleanupReplacementStaging(replacementsRoot)
   }
 
   fileprivate static func directoryExists(_ url: URL) throws -> Bool {
