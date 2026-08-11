@@ -232,12 +232,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         ($0.targetID, $0.artifacts)
       }
     )
+    let publishedArtifactsByTarget = try await store.publishedArtifactsByTarget()
+    let targetIDsCoveredByCurrentGeneration = try await Self.targetIDsCoveredByCurrentGeneration(
+      publication,
+      store: store
+    )
     try Self.prepareLiveArtifactDirectory(
       plan.artifactDirectory,
       from: publication.currentMarker == nil ? nil : publisher.stableURL,
-      marker: publication.currentMarker
+      marker: publication.currentMarker,
+      publishedArtifactsByTarget: publishedArtifactsByTarget,
+      targetIDsCoveredByMarker: targetIDsCoveredByCurrentGeneration
     )
-    let publishedArtifactsByTarget = try await store.publishedArtifactsByTarget()
     let currentLiveArtifactsByTarget = try Self.availableLiveArtifactsByTarget(
       publishedArtifactsByTarget,
       under: plan.artifactDirectory
@@ -917,7 +923,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   fileprivate static func prepareLiveArtifactDirectory(
     _ directory: URL,
     from publishedDirectory: URL?,
-    marker: PrivateHeaderGeneration.GenerationMarkerSnapshot?
+    marker: PrivateHeaderGeneration.GenerationMarkerSnapshot?,
+    publishedArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]] = [:],
+    targetIDsCoveredByMarker: Set<String> = []
   ) throws {
     if let kind = try ManagedFileSystem.itemKind(at: directory) {
       guard kind == .directory else {
@@ -932,8 +940,33 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
 
     guard let publishedDirectory, let marker else { return }
+    let publishedArtifactSet = Set(publishedArtifactsByTarget.values.flatMap { $0 })
+    let supersededTargetIDs = Set(publishedArtifactsByTarget.keys)
+      .subtracting(targetIDsCoveredByMarker)
+    for targetID in targetIDsCoveredByMarker {
+      guard let markerArtifacts = marker.artifactsByTarget[targetID],
+        let publishedArtifacts = publishedArtifactsByTarget[targetID]
+      else { continue }
+      guard Set(markerArtifacts) == Set(publishedArtifacts) else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "current generation artifacts disagree with published target \(targetID)"
+        )
+      }
+    }
+    let staleArtifacts = supersededTargetIDs.flatMap {
+      marker.artifactsByTarget[$0] ?? []
+    }.filter { !publishedArtifactSet.contains($0) }
+    if !staleArtifacts.isEmpty {
+      _ = try PrivateHeaderGeneration.ArtifactStore(
+        artifactRoot: directory
+      ).cleanupManagedArtifacts(staleArtifacts)
+    }
     let publishedArtifacts = Set(
-      marker.artifactsByTarget.values.flatMap { $0 } + marker.opaquePaths
+      marker.artifactsByTarget
+        .filter { !supersededTargetIDs.contains($0.key) }
+        .values
+        .flatMap { $0 }
+        + marker.opaquePaths.filter { !publishedArtifactSet.contains($0) }
     ).sorted { $0.rawValue < $1.rawValue }
     for artifact in publishedArtifacts {
       let source = artifactURL(artifact, under: publishedDirectory)
@@ -964,6 +997,14 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     artifact.rawValue.split(separator: "/").reduce(into: root) { url, component in
       url.appendPathComponent(String(component), isDirectory: false)
     }
+  }
+
+  fileprivate static func targetIDsCoveredByCurrentGeneration(
+    _ publication: PrivateHeaderGeneration.PublicationSnapshot,
+    store: GenerationStore
+  ) async throws -> Set<String> {
+    guard let generationID = publication.currentGenerationID else { return [] }
+    return try await store.targetIDsCoveredByGeneration(generationID)
   }
 
   fileprivate static func availableLiveArtifactsByTarget(
@@ -1182,12 +1223,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           .artifacts(path: publisher.stableURL.path)
         )
       }
+      let publishedArtifactsByTarget = try await store.publishedArtifactsByTarget()
+      let coveredTargetIDs = try await targetIDsCoveredByCurrentGeneration(
+        publication,
+        store: store
+      )
       try prepareLiveArtifactDirectory(
         plan.artifactDirectory,
         from: publication.currentMarker == nil ? nil : publisher.stableURL,
-        marker: publication.currentMarker
+        marker: publication.currentMarker,
+        publishedArtifactsByTarget: publishedArtifactsByTarget,
+        targetIDsCoveredByMarker: coveredTargetIDs
       )
-      let publishedArtifactsByTarget = try await store.publishedArtifactsByTarget()
       let currentLiveArtifactsByTarget = try availableLiveArtifactsByTarget(
         publishedArtifactsByTarget,
         under: plan.artifactDirectory

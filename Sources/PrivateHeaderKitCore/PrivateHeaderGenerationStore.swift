@@ -639,6 +639,39 @@ package actor GenerationStore {
     }
   }
 
+  package func targetIDsCoveredByGeneration(
+    _ generationID: PrivateHeaderGeneration.GenerationID
+  ) throws -> Set<String> {
+    try databaseQueue.read { db in
+      guard
+        let generationSequence = try Int64.fetchOne(
+          db,
+          sql: """
+            SELECT runOrdering.sequence
+            FROM publicationIntents
+            JOIN runOrdering ON runOrdering.runID = publicationIntents.runID
+            WHERE publicationIntents.generationID = ?
+            """,
+          arguments: [generationID.rawValue]
+        )
+      else {
+        throw PrivateHeaderGeneration.StateError.missingPublicationIntent(generationID)
+      }
+      return Set(
+        try String.fetchAll(
+          db,
+          sql: """
+            SELECT targets.targetID
+            FROM targets
+            JOIN runOrdering ON runOrdering.runID = targets.lastSuccessfulRunID
+            WHERE runOrdering.sequence <= ?
+            """,
+          arguments: [generationSequence]
+        )
+      )
+    }
+  }
+
   package func recordRunLog(
     runID: PrivateHeaderGeneration.RunID,
     kind: String,

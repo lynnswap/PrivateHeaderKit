@@ -388,6 +388,77 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: staleHeader.path))
   }
 
+  @Test func recoveryDoesNotRestoreArtifactRemovedByNewerTargetPublication() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old", additionalHeaderName: "Removed.h"),
+      runID: "run-old",
+      generationID: "generation-old"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "new"),
+        runID: "run-new",
+        generationID: "generation-new",
+        publicationFaultInjector: { point in
+          if point == .afterPrepared { throw InjectedFault.stop }
+        }
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+    let removedHeader = fixture.liveURL.appendingPathComponent(
+      "Frameworks/Foo/Headers/Removed.h"
+    )
+    #expect(try fixture.readLiveHeader() == "new")
+    #expect(!FileManager.default.fileExists(atPath: removedHeader.path))
+
+    let resumedRunner = RecordingRunner(contents: "unexpected")
+    _ = try await fixture.executor(
+      runner: resumedRunner,
+      runID: "run-resumed",
+      generationID: "generation-resumed"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+
+    #expect(await resumedRunner.invocationCount == 0)
+    #expect(try fixture.readLiveHeader() == "new")
+    #expect(!FileManager.default.fileExists(atPath: removedHeader.path))
+  }
+
+  @Test func recoveryRerunsNewerTargetInsteadOfHydratingOlderBytes() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old"),
+      runID: "run-old",
+      generationID: "generation-old"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "new"),
+        runID: "run-new",
+        generationID: "generation-new",
+        publicationFaultInjector: { point in
+          if point == .afterPrepared { throw InjectedFault.stop }
+        }
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+    try FileManager.default.removeItem(at: fixture.liveHeaderURL())
+
+    let resumedRunner = RecordingRunner(contents: "recovered")
+    _ = try await fixture.executor(
+      runner: resumedRunner,
+      runID: "run-resumed",
+      generationID: "generation-resumed"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+
+    #expect(await resumedRunner.invocationCount == 1)
+    #expect(try fixture.readLiveHeader() == "recovered")
+  }
+
   @Test func compatibleResumeSkipsCurrentCompletedTarget() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
