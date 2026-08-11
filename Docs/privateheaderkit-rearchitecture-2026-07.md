@@ -27,7 +27,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - 引数なしの interactive flow を維持する。
 - automation 用の `--platform`、`--version`、`--build`、`--system-root`、`--device`、`--out`、`--target`、`--resume` を維持する。
 - destructive semantic reset と legacy migration を明示する `--fresh` を追加し、`--resume` とは相互排他にする。
-- default artifact lookup path `<output-base>/<source-label>/` を維持する。この path の実体は managed generation を指す symlink へ変更してよい。
+- default artifact lookup path `<output-base>/<source-storage-id>/` を維持する。この path の実体は managed generation を指す symlink へ変更してよい。
 - state/log/staging は header tree の外に置く。
 - CLI の単一 `<output-base>` から artifact と `<output-base>/.state` を導出する。外部 library consumer がないため、artifact base と state base を独立指定する package API は削除する。
 - target discovery と raw header extraction の意味論は変更しない。
@@ -37,7 +37,7 @@ PrivateHeaderKit を、単一の user-facing command `privateheaderkit` を中�
 - README に consumer story がない `PrivateHeaderKitCore` library product は削除する。Core API は package 内 contract とする。
 - rewrite 途中の `manifest.json` / `runs/*/run.json` を resume の source of truth として読み続けない。
 - legacy JSON state がある場合、`--resume` は fail fast する。明示 `--fresh` は新しい DB state で開始できるが、現在公開中の artifact を新 generation の publication 完了前に削除しない。
-- `<output-base>/<source-label>` が既存の通常 directory である場合、自動推測で symlink 化しない。明示 `--fresh` migration が選ばれたときだけ、同一 volume の initial generation として取り込み、旧 tree 全体を retained backup として残す。切替に失敗した場合は元の directory を保持する。
+- `<output-base>/<source-storage-id>` が既存の通常 directory である場合、自動推測で symlink 化しない。明示 `--fresh` migration が選ばれたときだけ、同一 volume の initial generation として取り込み、旧 tree 全体を retained backup として残す。切替に失敗した場合は元の directory を保持する。
 
 ### Non-goals
 
@@ -249,20 +249,21 @@ Task cancellation と、process crash 後に由来を確定できない startup 
 Generation は単一 output base の artifact-managed area 配下へ置き、state は同じ base の `.state` 配下へ置く。cross-process lease identity はこの canonical output/source identity に結び付ける。
 
 ```text
-<artifact-base>/
-  <source-label> -> .privateheaderkit/<source-label>/current
-  .privateheaderkit/<source-label>/
-    current -> generations/<generation-id>
-    generations/
-      <generation-id>/
-        .privateheaderkit-generation.json
-        Frameworks/...
-        PrivateFrameworks/...
+<output-base>/
+  <source-storage-id> -> .privateheaderkit/<source-storage-id>/current
+  .privateheaderkit/
+    <source-storage-id>/
+      current -> generations/<generation-id>
+      generations/
+        <generation-id>/
+          .privateheaderkit-generation.json
+          Frameworks/...
+          PrivateFrameworks/...
 ```
 
 Contract:
 
-- `<source-label>` path と generation lifecycle は PrivateHeaderKit が完全管理する。既存 tree の unknown file は opaque content として next generation へ引き継ぎ、owned artifact set に含まれない限り削除・上書きしない。
+- `<source-storage-id>` path と generation lifecycle は PrivateHeaderKit が完全管理する。既存 tree の unknown file は opaque content として next generation へ引き継ぎ、owned artifact set に含まれない限り削除・上書きしない。
 - generation directory は immutable。publish 後に内容を書き換えない。
 - 次 generation は current generation の snapshot から作り、成功 target の owned paths だけを staging 上で置換する。
 - `.fresh` でも live tree の cleanup は行わない。成功 target の旧 owned paths は次 generation 上で削除してから新 artifact を置く。
