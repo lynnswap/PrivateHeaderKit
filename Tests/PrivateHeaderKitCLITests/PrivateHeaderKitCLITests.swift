@@ -643,27 +643,6 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(await runner.streamingCommandSnapshot().count == 1)
     }
 
-    @Test func rawDumpUsesBufferedRunnerAndRetainsFailureTail() async throws {
-        let helperURL = URL(fileURLWithPath: "/tmp/privateheaderkit-raw-helper")
-        let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            try PrivateHeaderGeneration.RawDumping.Request(
-                helperURLs: .init(host: helperURL, simulator: helperURL),
-                executionMode: .host,
-                inputPath: "/System/Library/Frameworks/AppKit.framework",
-                stagingOutputDirectory: URL(fileURLWithPath: "/tmp/privateheaderkit-stage")
-            )
-        )
-
-        let result = try await runPrivateHeaderKitRawDump(
-            invocation,
-            processRunner: BufferedRawDumpProbeRunner()
-        )
-
-        #expect(result.terminationStatus == 19)
-        #expect(!result.wasKilled)
-        #expect(result.failureSummary == "helper-warning\nfatal-tail")
-    }
-
     @Test func signalCoordinatorWaitsForOperationCleanupBeforeReturningSignalStatus() async {
         let cases: [(PrivateHeaderKitTerminationSignal, Int32)] = [
             (.interrupt, 130),
@@ -1675,53 +1654,6 @@ private func testPrivateHeaderKitHelperResolver(
             ? "test-tool-identity:host-and-simulator"
             : "test-tool-identity:host"
     )
-}
-
-private struct BufferedRawDumpProbeRunner: CommandRunning {
-    func runCapture(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> String {
-        throw ToolingError.message("unexpected runCapture command: \(command)")
-    }
-
-    func runCaptureChunks(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?,
-        consumeStandardOutput: @escaping CommandStandardOutputConsumer
-    ) async throws {
-        throw ToolingError.message("unexpected runCaptureChunks command: \(command)")
-    }
-
-    func runSimple(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws {
-        throw ToolingError.message("unexpected runSimple command: \(command)")
-    }
-
-    func runStreaming(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> StreamingCommandResult {
-        throw ToolingError.message("unexpected runStreaming command: \(command)")
-    }
-
-    func runBuffered(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> StreamingCommandResult {
-        StreamingCommandResult(
-            status: 19,
-            wasKilled: false,
-            lastLines: ["helper-warning", "fatal-tail"]
-        )
-    }
 }
 
 private actor MutatingCaptureRunner: CommandRunning {

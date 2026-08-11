@@ -27,7 +27,6 @@ struct PrivateHeaderGenerationStoreTests {
         "v1-generation-state",
         "v2-run-logs-and-indexes",
         "v3-causal-ordering",
-        "v4-published-artifact-digests",
       ])
     let columns = try await queue.read { db in
       try db.columns(in: "runLogs").map(\.name)
@@ -126,46 +125,6 @@ struct PrivateHeaderGenerationStoreTests {
         == ids.runID)
     #expect(
       try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .committed
-    )
-  }
-
-  @Test func publishedTargetAttemptBecomesImmediatelyResumable() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-incremental")
-    _ = try await fixture.store.beginRun(
-      id: runID,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: fixture.date
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: runID,
-      at: fixture.date
-    )
-    let completed = fixture.completedTarget("framework:Foo")
-
-    try await fixture.store.prepareTargetPublication(completed, in: runID)
-    try await fixture.store.recordPublishedTargetAttempt(
-      completed,
-      artifactDigests: [
-        PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h"):
-          String(repeating: "0", count: 64)
-      ],
-      in: runID
-    )
-
-    #expect(try await fixture.store.runSnapshot(runID).status == .running)
-    #expect(try await fixture.store.runSnapshot(runID).targets.first?.status == .completed)
-    #expect(
-      try await fixture.store.targetSnapshot(targetID: "framework:Foo")?.lastSuccessfulRunID
-        == runID
-    )
-    #expect(
-      try await fixture.store.publishedArtifactsByTarget()["framework:Foo"]
-        == completed.artifacts
     )
   }
 
@@ -500,9 +459,7 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
-  @Test func completedAttemptRequiresTransactionalPublicationOwnershipToResumeAsComplete()
-    async throws
-  {
+  @Test func completedAttemptRequiresTransactionalPublicationOwnershipToResumeAsComplete() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let first = try await fixture.prepareCompletedPublication()
@@ -719,8 +676,7 @@ private final class StoreFixture: @unchecked Sendable {
   init(fault: @escaping GenerationStore.FaultInjector = { _ in }) throws {
     root = try temporaryDirectory()
     databaseURL = root.appendingPathComponent("generation.sqlite")
-    store = try GenerationStore(
-      databaseURL: databaseURL, toolCompatibilityIdentity: "test", faultInjector: fault)
+    store = try GenerationStore(databaseURL: databaseURL, toolCompatibilityIdentity: "test", faultInjector: fault)
   }
 
   func cleanup() {

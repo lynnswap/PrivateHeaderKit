@@ -7,11 +7,6 @@ iOS / macOS の private framework ヘッダを生成します。
 - iOS: Simulator ランタイムと dyld shared cache から生成
 - macOS: ホストの `/System/Library/{Frameworks,PrivateFrameworks}` から生成
 
-## 動作要件
-
-PrivateHeaderKit の CLI、installer、internal helper は Darwin / macOS host のみを
-サポートします。Linux などの non-Darwin host はサポート対象外です。
-
 ## コマンド構成
 
 PrivateHeaderKit がユーザー向けに公開するコマンドは 1 つです。
@@ -118,9 +113,6 @@ state があれば `Continue` / `Restart` の明示選択を求め、legacy stat
 保存または backup の扱いを表示してから移行します。automation / CI では generation
 option を直接渡します。
 
-生成済み header は `~/PrivateHeaderKit/generated-headers/<source-storage-id>/` に出力
-されます。実行開始時にも、この実際の出力先を terminal に表示します。
-
 ```bash
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit" --fresh
@@ -145,34 +137,19 @@ runtime を解決し、device を選択・boot して internal simulator helper 
   work がない互換 state は再利用できますが、未完了 state がある場合は、呼び出し側
   が `--resume` または `--fresh` を明示するまで拒否します。
 
-`--fresh` は処理開始前に現在 publish 済みの header tree を削除しません。完了した
-target は、次の target を開始する前に自身が所有する file を
-`generated-headers/<source-storage-id>/` へ反映します。後続 target や run 全体の
-finalize が失敗しても、先に完了した target の file は残り、`--resume` では再実行
-せず続きから処理します。失敗または中断した target には、最後に publish 成功した
-file を残します。run 終了時の immutable generation は recovery 用の内部 snapshot
-であり、生成中に header を見えなくする publication gate ではありません。旧
-`<version>` positional style は public surface に含みません。
-
-TTY では処理中の target を `.`, `..`, `...` の一時的な1行として更新します。成功行
-は次の target で置き換え、terminal に成功 target の一覧を残しません。失敗した
-target と短い診断だけを残します。raw helper の通常出力は terminal へ転送せず、失敗
-時の bounded diagnostic tail は target の `failureSummary` として SQLite state に保存
-します。
+`--fresh` は処理開始前に現在 publish 済みの header tree を削除しません。publish は
+毎回、新しい immutable generation として構築します。完了した target は自身が所有
+する file だけを置き換え、失敗または中断した target には最後に publish 成功した
+file を残します。旧 `<version>` positional style は public surface に含みません。
 
 ## Output Layout Contract
 
-output base には、人が直接参照する incremental header tree、recovery 用の immutable
-generation、source ごとの SQLite state database を配置します。
+output base には、stable な source storage ID path、immutable generation、source
+ごとの SQLite state database を配置します。
 
 ```text
 <output-base>/
-  generated-headers/
-    <source-storage-id>/
-      Frameworks/...
-      PrivateFrameworks/...
-      SystemLibrary/...
-      usr/lib/...
+  <source-storage-id> -> .privateheaderkit/<source-storage-id>/current
   .privateheaderkit/
     <source-storage-id>/
       current -> generations/<generation-id>
@@ -188,13 +165,12 @@ generation、source ごとの SQLite state database を配置します。
 ```
 
 `--out` は `<output-base>` を指定します。consumer は
-`<output-base>/generated-headers/<source-storage-id>/` を使います。完了 target の
-artifact と SQLite の published-target record は target 単位で確定し、内部 snapshot
-は `.privateheaderkit` 以下で run 終了時に整合させます。`legacy-backups` は rewrite 前
-の output directory を移行した場合にだけ作成します。generation state、target
-attempt、publication intent、run log は `generation.sqlite` に保存します。storage ID
-は PrivateHeaderKit が所有する versioned identifier であり、consumer は表示用 source
-label から組み立てません。
+`<output-base>/<source-storage-id>/` を使い、publication metadata と immutable
+generation directory は `.privateheaderkit` 以下に置きます。`legacy-backups` は
+rewrite 前の output directory を移行した場合にだけ作成します。generation state、
+target attempt、publication intent、run log は `generation.sqlite` に保存します。
+storage ID は PrivateHeaderKit が所有する versioned identifier であり、consumer は
+表示用 source label から組み立てません。
 
 ## Legacy Output の移行
 

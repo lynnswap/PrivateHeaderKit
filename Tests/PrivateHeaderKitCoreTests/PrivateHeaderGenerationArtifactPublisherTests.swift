@@ -141,99 +141,6 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         encoding: .utf8) == "keep")
   }
 
-  @Test func replacingTheTargetSetDropsAbsentDraftOwners() throws {
-    let fixture = try PublisherFixture()
-    defer { fixture.cleanup() }
-    try fixture.publish(
-      fixture.prepare(
-        generationID: .init(rawValue: "generation-foo"),
-        targetID: "framework:Foo",
-        relativePath: "Frameworks/Foo/Foo.h",
-        contents: "foo"
-      )
-    )
-    var combinedDraft = try fixture.publisher.beginDraft(
-      generationID: .init(rawValue: "generation-combined"),
-      allowLegacyMigration: false
-    )
-    combinedDraft = try fixture.publisher.applyCompletedTarget(
-      targetID: "framework:Bar",
-      files: [
-        .init(rawValue: "Frameworks/Bar/Bar.h"): try fixture.sourceFile(contents: "bar")
-      ],
-      to: combinedDraft
-    )
-    try fixture.publish(
-      try fixture.publisher.prepareGeneration(
-        combinedDraft,
-        planFingerprint: "fingerprint"
-      )
-    )
-
-    let seededDraft = try fixture.publisher.beginDraft(
-      generationID: .init(rawValue: "generation-exact"),
-      allowLegacyMigration: false
-    )
-    let exactDraft = try fixture.publisher.replaceCompletedTargets(
-      [
-        "framework:Bar": [
-          .init(rawValue: "Frameworks/Bar/Bar.h"): try fixture.sourceFile(
-            contents: "bar-new"
-          )
-        ]
-      ],
-      in: seededDraft
-    )
-    let prepared = try fixture.publisher.prepareGeneration(
-      exactDraft,
-      planFingerprint: "fingerprint"
-    )
-
-    #expect(prepared.marker.artifactsByTarget.keys.sorted() == ["framework:Bar"])
-    #expect(!FileManager.default.fileExists(
-      atPath: prepared.draftDirectory.appendingPathComponent("Frameworks/Foo/Foo.h").path
-    ))
-  }
-
-  @Test func replacingTheTargetSetWithEmptySetDropsEveryDraftOwner() throws {
-    let fixture = try PublisherFixture()
-    defer { fixture.cleanup() }
-    let legacyUnknown = fixture.publisher.stableURL.appendingPathComponent("User/keep.txt")
-    try FileManager.default.createDirectory(
-      at: legacyUnknown.deletingLastPathComponent(),
-      withIntermediateDirectories: true
-    )
-    try Data("keep".utf8).write(to: legacyUnknown)
-    try fixture.publish(
-      fixture.prepare(
-        generationID: .init(rawValue: "generation-foo"),
-        targetID: "framework:Foo",
-        relativePath: "Frameworks/Foo/Foo.h",
-        contents: "foo",
-        allowLegacyMigration: true
-      )
-    )
-
-    let seededDraft = try fixture.publisher.beginDraft(
-      generationID: .init(rawValue: "generation-empty"),
-      allowLegacyMigration: false
-    )
-    let exactDraft = try fixture.publisher.replaceCompletedTargets([:], in: seededDraft)
-    let prepared = try fixture.publisher.prepareGeneration(
-      exactDraft,
-      planFingerprint: "fingerprint"
-    )
-
-    #expect(prepared.marker.artifactsByTarget.isEmpty)
-    #expect(!FileManager.default.fileExists(
-      atPath: prepared.draftDirectory.appendingPathComponent("Frameworks/Foo/Foo.h").path
-    ))
-    #expect(try String(
-      contentsOf: prepared.draftDirectory.appendingPathComponent("User/keep.txt"),
-      encoding: .utf8
-    ) == "keep")
-  }
-
   @Test func rawStagingRejectsHiddenUnsupportedAndSymlinkPayloads() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
@@ -466,36 +373,6 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         encoding: .utf8
       ) == "generated"
     )
-  }
-
-  @Test func opaqueClaimsUseExactUTF8PathIdentity() throws {
-    let fixture = try PublisherFixture()
-    defer { fixture.cleanup() }
-    let composed = PrivateHeaderGeneration.ArtifactPath(
-      rawValue: "Frameworks/F\u{00E9}/Headers/Generated.h"
-    )
-    let decomposed = PrivateHeaderGeneration.ArtifactPath(
-      rawValue: "Frameworks/Fe\u{301}/Headers/Generated.h"
-    )
-    let unrelated = PrivateHeaderGeneration.ArtifactPath(
-      rawValue: "Frameworks/Bar/Headers/Generated.h"
-    )
-
-    #expect(
-      ArtifactPublisher.unclaimedOpaquePaths([decomposed], claimedBy: [composed])
-        == [decomposed]
-    )
-    #expect(
-      ArtifactPublisher.unclaimedOpaquePaths([decomposed], claimedBy: [decomposed]).isEmpty
-    )
-    #expect(throws: ArtifactPublisher.PublisherError.self) {
-      _ = try fixture.publisher.validateTargetReplacement(
-        targetID: "framework:Bar",
-        artifacts: [unrelated],
-        existingArtifactsByTarget: ["framework:Foo": [composed]],
-        opaquePaths: [decomposed]
-      )
-    }
   }
 
   @Test func applyAllowsIdenticalSharedDirectoryComponents() throws {
@@ -858,14 +735,12 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
       opaquePaths: []
     )
 
-    #expect(
-      throws: ArtifactPublisher.PublisherError.artifactCollision(
-        firstPath: "Frameworks/Foo/Headers/A.h",
-        firstOwner: "framework:Foo",
-        secondPath: "Frameworks/Foo/Headers/a.h",
-        secondOwner: "framework:Foo"
-      )
-    ) {
+    #expect(throws: ArtifactPublisher.PublisherError.artifactCollision(
+      firstPath: "Frameworks/Foo/Headers/A.h",
+      firstOwner: "framework:Foo",
+      secondPath: "Frameworks/Foo/Headers/a.h",
+      secondOwner: "framework:Foo"
+    )) {
       _ = try fixture.publisher.prepareGeneration(forged, planFingerprint: "fingerprint")
     }
   }
@@ -892,14 +767,12 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     marker["artifactChecksum"] = "intentionally-invalid"
     try JSONSerialization.data(withJSONObject: marker).write(to: markerURL)
 
-    #expect(
-      throws: ArtifactPublisher.PublisherError.artifactCollision(
-        firstPath: "Frameworks/Foo/Headers/Foo.h",
-        firstOwner: "framework:Foo",
-        secondPath: "Frameworks/Foo/Headers/foo.h",
-        secondOwner: "framework:Bar"
-      )
-    ) {
+    #expect(throws: ArtifactPublisher.PublisherError.artifactCollision(
+      firstPath: "Frameworks/Foo/Headers/Foo.h",
+      firstOwner: "framework:Foo",
+      secondPath: "Frameworks/Foo/Headers/foo.h",
+      secondOwner: "framework:Bar"
+    )) {
       _ = try fixture.publisher.inspect()
     }
   }
@@ -937,97 +810,6 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
       try String(
         contentsOf: fixture.publisher.stableURL.appendingPathComponent("Frameworks/Foo/Foo.h"),
         encoding: .utf8) == "new")
-  }
-
-  @Test func prepareGenerationRemovesFinderMetadataFromManagedSnapshots() throws {
-    let fixture = try PublisherFixture()
-    defer { fixture.cleanup() }
-    var draft = try fixture.publisher.beginDraft(
-      generationID: .init(rawValue: "generation-finder-metadata"),
-      allowLegacyMigration: false
-    )
-    draft = try fixture.publisher.applyCompletedTarget(
-      targetID: "framework:Foo",
-      files: [
-        .init(rawValue: "Frameworks/Foo/Foo.h"): try fixture.sourceFile(contents: "header")
-      ],
-      to: draft
-    )
-    let rootMetadata = draft.directory.appendingPathComponent(".DS_Store")
-    let nestedMetadata = draft.directory.appendingPathComponent("Frameworks/Foo/.DS_Store")
-    try Data("finder".utf8).write(to: rootMetadata)
-    try Data("finder".utf8).write(to: nestedMetadata)
-
-    let prepared = try fixture.publisher.prepareGeneration(
-      draft,
-      planFingerprint: "fingerprint"
-    )
-
-    #expect(!FileManager.default.fileExists(atPath: rootMetadata.path))
-    #expect(!FileManager.default.fileExists(atPath: nestedMetadata.path))
-    #expect(
-      prepared.marker.artifactsByTarget["framework:Foo"] == [
-        .init(rawValue: "Frameworks/Foo/Foo.h")
-      ])
-  }
-
-  @Test func inspectRejectsGenerationWhoseArtifactContentsChanged() throws {
-    let fixture = try PublisherFixture()
-    defer { fixture.cleanup() }
-    try fixture.publish(
-      try fixture.prepare(
-        generationID: .init(rawValue: "generation-content-authentication"),
-        targetID: "framework:Foo",
-        relativePath: "Frameworks/Foo/Foo.h",
-        contents: "original"
-      )
-    )
-    try Data("tampered".utf8).write(
-      to: fixture.publisher.stableURL.appendingPathComponent("Frameworks/Foo/Foo.h")
-    )
-
-    #expect(throws: ArtifactPublisher.PublisherError.self) {
-      _ = try fixture.publisher.inspect()
-    }
-  }
-
-  @Test func prepareGenerationRejectsUnexpectedPublishedTargetBytes() throws {
-    let fixture = try PublisherFixture()
-    defer { fixture.cleanup() }
-    var draft = try fixture.publisher.beginDraft(
-      generationID: .init(rawValue: "generation-expected-digest"),
-      allowLegacyMigration: false
-    )
-    let path = PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h")
-    draft = try fixture.publisher.applyCompletedTarget(
-      targetID: "framework:Foo",
-      files: [path: try fixture.sourceFile(contents: "actual")],
-      to: draft
-    )
-
-    #expect(throws: ArtifactPublisher.PublisherError.self) {
-      _ = try fixture.publisher.prepareGeneration(
-        draft,
-        planFingerprint: "fingerprint",
-        expectedArtifactDigestsByTarget: [
-          "framework:Foo": [path: String(repeating: "0", count: 64)]
-        ]
-      )
-    }
-  }
-
-  @Test func inventoryMismatchDescriptionIsBoundedAndShowsTheDifference() {
-    let expected = (0..<1_000).map { "Expected/\($0).h" }
-    let actual = (0..<1_000).map { "Actual/\($0).h" }
-    let description = ArtifactPublisher.PublisherError.inventoryMismatch(
-      expected: expected,
-      actual: actual
-    ).description
-
-    #expect(description.count < 500)
-    #expect(description.contains("missing Expected/0.h"))
-    #expect(description.contains("unexpected Actual/0.h"))
-    #expect(description.contains("and 995 more"))
   }
 }
 

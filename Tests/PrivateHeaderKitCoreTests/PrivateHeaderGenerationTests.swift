@@ -72,8 +72,7 @@ struct PrivateHeaderGenerationTests {
     )
 
     #expect(
-      plan.artifactDirectory.path
-        == "/tmp/PrivateHeaderKit/generated-headers/macos-v1-16.0-b1-25~41000")
+      plan.artifactDirectory.path == "/tmp/PrivateHeaderKit/macos-v1-16.0-b1-25~41000")
     #expect(
       plan.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/macos-v1-16.0-b1-25~41000")
     #expect(

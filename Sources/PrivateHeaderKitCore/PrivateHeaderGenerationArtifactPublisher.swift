@@ -54,7 +54,7 @@ package struct ArtifactPublisher: Sendable {
       case .artifactCollision(let firstPath, let firstOwner, let secondPath, let secondOwner):
         "artifact paths collide: \(firstOwner):\(firstPath) and \(secondOwner):\(secondPath)"
       case .inventoryMismatch(let expected, let actual):
-        Self.inventoryMismatchDescription(expected: expected, actual: actual)
+        "generation inventory mismatch; expected \(expected), actual \(actual)"
       case .markerMismatch(let message):
         "generation marker mismatch: \(message)"
       case .posix(let operation, let path, let error):
@@ -62,32 +62,6 @@ package struct ArtifactPublisher: Sendable {
       case .atomicSwapUnsupported(let path):
         "filesystem does not support atomic legacy directory swap at \(path)"
       }
-    }
-
-    private static func inventoryMismatchDescription(
-      expected: [String],
-      actual: [String]
-    ) -> String {
-      let missing = Array(Set(expected).subtracting(actual)).sorted()
-      let unexpected = Array(Set(actual).subtracting(expected)).sorted()
-      var details: [String] = []
-      if !missing.isEmpty {
-        details.append("missing \(summarizedPaths(missing))")
-      }
-      if !unexpected.isEmpty {
-        details.append("unexpected \(summarizedPaths(unexpected))")
-      }
-      if details.isEmpty {
-        details.append("expected \(expected.count) files, found \(actual.count)")
-      }
-      return "generation inventory mismatch: " + details.joined(separator: "; ")
-    }
-
-    private static func summarizedPaths(_ paths: [String]) -> String {
-      let limit = 5
-      let visible = paths.prefix(limit).joined(separator: ", ")
-      let remaining = paths.count - min(paths.count, limit)
-      return remaining == 0 ? visible : "\(visible), and \(remaining) more"
     }
   }
 
@@ -97,12 +71,6 @@ package struct ArtifactPublisher: Sendable {
     let artifactChecksum: String
     let artifactsByTarget: [String: [String]]
     let opaquePaths: [String]
-    let contentDigests: [String: String]?
-  }
-
-  fileprivate struct DecodedGenerationMarker {
-    let snapshot: PrivateHeaderGeneration.GenerationMarkerSnapshot
-    let persistedContentDigests: [PrivateHeaderGeneration.ArtifactPath: String]?
   }
 
   fileprivate struct OwnedArtifact {
@@ -168,8 +136,9 @@ package struct ArtifactPublisher: Sendable {
         )
       }
 
-      var ownedPathByCanonicalPath:
-        [PrivateHeaderGeneration.ArtifactPath: PrivateHeaderGeneration.ArtifactPath] = [:]
+      var ownedPathByCanonicalPath: [
+        PrivateHeaderGeneration.ArtifactPath: PrivateHeaderGeneration.ArtifactPath
+      ] = [:]
       for ownedPath in ownedPaths.sorted(by: ArtifactPublisher.artifactPathPrecedes) {
         ownedPathByCanonicalPath[ownedPath] = ownedPath
         let components = ownedPath.rawValue.split(separator: "/").map(String.init)
@@ -289,10 +258,9 @@ package struct ArtifactPublisher: Sendable {
         return
       }
       let matchesRecordedPrefix = existing.recordedByOwnership && existing.path == path
-      let matchesObservedDirectory =
-        existing.observedDirectoryPath.map {
-          $0.rawValue.utf8.elementsEqual(path.rawValue.utf8)
-        } ?? false
+      let matchesObservedDirectory = existing.observedDirectoryPath.map {
+        $0.rawValue.utf8.elementsEqual(path.rawValue.utf8)
+      } ?? false
       guard existing.kind == .directory,
         matchesObservedDirectory || (existing.observedDirectoryPath == nil && matchesRecordedPrefix)
       else {
@@ -468,187 +436,16 @@ package struct ArtifactPublisher: Sendable {
     )
   }
 
-  package func opaquePathsForTargetValidation(
-    in snapshot: PrivateHeaderGeneration.PublicationSnapshot,
-    allowLegacyMigration: Bool,
-    claimedBy artifacts: [PrivateHeaderGeneration.ArtifactPath]
-  ) throws -> [PrivateHeaderGeneration.ArtifactPath] {
-    let opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
-    if let marker = snapshot.currentMarker {
-      opaquePaths = marker.opaquePaths
-    } else if snapshot.stablePathState == .legacyDirectory {
-      guard allowLegacyMigration else {
-        throw PublisherError.legacyMigrationRequiresFresh(stableURL.path)
-      }
-      opaquePaths = try inventoryLegacyFiles(at: stableURL)
-    } else {
-      opaquePaths = []
-    }
-    return Self.unclaimedOpaquePaths(opaquePaths, claimedBy: artifacts)
-  }
-
   package func applyCompletedTarget(
     targetID: String,
     files: [PrivateHeaderGeneration.ArtifactPath: URL],
     to draft: Draft
   ) throws -> Draft {
-    try applyCompletedTargets([targetID: files], to: draft)
-  }
-
-  package func validateTargetReplacement(
-    targetID: String,
-    artifacts: [PrivateHeaderGeneration.ArtifactPath],
-    existingArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
-    opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
-  ) throws -> [PrivateHeaderGeneration.ArtifactPath] {
-    var prospectiveArtifactsByTarget = existingArtifactsByTarget
-    prospectiveArtifactsByTarget[targetID] = artifacts
-    let remainingOpaquePaths = Self.unclaimedOpaquePaths(opaquePaths, claimedBy: artifacts)
-    try Self.validatePortableOwnership(
-      artifactsByTarget: prospectiveArtifactsByTarget,
-      opaquePaths: remainingOpaquePaths
-    )
-    return remainingOpaquePaths
-  }
-
-  package static func unclaimedOpaquePaths(
-    _ opaquePaths: [PrivateHeaderGeneration.ArtifactPath],
-    claimedBy artifacts: [PrivateHeaderGeneration.ArtifactPath]
-  ) -> [PrivateHeaderGeneration.ArtifactPath] {
-    let claimedPathKeys = Set(artifacts.map(Self.lexicalPathKey))
-    return opaquePaths.filter {
-      !claimedPathKeys.contains(Self.lexicalPathKey($0))
-    }
-  }
-
-  package func applyCompletedTargets(
-    _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
-    to draft: Draft
-  ) throws -> Draft {
-    try applyCompletedTargets(
-      filesByTarget,
-      to: draft,
-      removesAbsentTargets: false,
-      retiringOpaquePaths: []
-    )
-  }
-
-  package func replaceCompletedTargets(
-    _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
-    retiringOpaquePaths: [PrivateHeaderGeneration.ArtifactPath] = [],
-    in draft: Draft
-  ) throws -> Draft {
-    try applyCompletedTargets(
-      filesByTarget,
-      to: draft,
-      removesAbsentTargets: true,
-      retiringOpaquePaths: retiringOpaquePaths
-    )
-  }
-
-  private func applyCompletedTargets(
-    _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
-    to draft: Draft,
-    removesAbsentTargets: Bool,
-    retiringOpaquePaths: [PrivateHeaderGeneration.ArtifactPath]
-  ) throws -> Draft {
-    if filesByTarget.isEmpty, !removesAbsentTargets {
-      return draft
-    }
-    guard try itemKind(at: draft.directory) == .directory else {
-      throw PublisherError.unexpectedItem(
-        path: draft.directory.path,
-        description: "expected draft directory"
-      )
-    }
-
-    var artifactsByTarget = removesAbsentTargets ? [:] : draft.artifactsByTarget
-    var incomingFiles:
-      [(targetID: String, path: PrivateHeaderGeneration.ArtifactPath, source: URL)] = []
-    var incomingPathKeys: Set<[UInt8]> = []
-    var pathsToRemove: [PrivateHeaderGeneration.ArtifactPath] =
-      removesAbsentTargets ? draft.artifactsByTarget.values.flatMap { $0 } : []
-
-    for targetID in filesByTarget.keys.sorted() {
-      guard let files = filesByTarget[targetID], !files.isEmpty else {
-        throw PublisherError.missingArtifact("target \(targetID) produced no files")
-      }
-      let sortedFiles = files.sorted { $0.key.rawValue < $1.key.rawValue }
-      artifactsByTarget[targetID] = sortedFiles.map(\.key)
-      pathsToRemove += draft.artifactsByTarget[targetID] ?? []
-      for (path, source) in sortedFiles {
-        incomingPathKeys.insert(Self.lexicalPathKey(path))
-        incomingFiles.append((targetID, path, source))
-      }
-    }
-
-    let retiredOpaquePathKeys = Set(retiringOpaquePaths.map(Self.lexicalPathKey))
-    let claimedOpaquePaths = draft.opaquePaths.filter {
-      let key = Self.lexicalPathKey($0)
-      return incomingPathKeys.contains(key) || retiredOpaquePathKeys.contains(key)
-    }
-    pathsToRemove += claimedOpaquePaths
-    var seenRemovalKeys: Set<[UInt8]> = []
-    pathsToRemove =
-      pathsToRemove
-      .filter { seenRemovalKeys.insert(Self.lexicalPathKey($0)).inserted }
-      .sorted { Self.lexicalStringPrecedes($0.rawValue, $1.rawValue) }
-    let opaquePaths = draft.opaquePaths.filter {
-      let key = Self.lexicalPathKey($0)
-      return !incomingPathKeys.contains(key) && !retiredOpaquePathKeys.contains(key)
-    }.sorted {
-      Self.lexicalStringPrecedes($0.rawValue, $1.rawValue)
-    }
-
-    try Self.validatePortableOwnership(
-      artifactsByTarget: draft.artifactsByTarget,
-      opaquePaths: draft.opaquePaths
-    )
-    try Self.validatePortableOwnership(
-      artifactsByTarget: artifactsByTarget,
-      opaquePaths: opaquePaths
-    )
-    for path in pathsToRemove {
-      try preflightRemoval(path, from: draft.directory)
-    }
-
-    let existingItems = try inventoryItems(
-      at: draft.directory,
-      allowHidden: true,
-      allowedExtensions: nil
-    )
-    let namespace = try ProspectiveNamespace(
-      ownedPaths: draft.artifactsByTarget.values.flatMap { $0 } + draft.opaquePaths,
-      existingDirectories: existingItems.compactMap {
-        $0.kind == .directory ? $0.path : nil
-      },
-      existingRegularPaths: existingItems.compactMap {
-        $0.kind == .regular ? $0.path : nil
-      },
-      pathsToRemove: pathsToRemove
-    )
-
-    var copies: [TargetMutationPlan.Copy] = []
-    copies.reserveCapacity(incomingFiles.count)
-    for incoming in incomingFiles.sorted(by: {
-      if $0.path != $1.path { return $0.path.rawValue < $1.path.rawValue }
-      return $0.targetID < $1.targetID
-    }) {
-      guard try itemKind(at: incoming.source) == .regular else {
-        throw PublisherError.unexpectedItem(
-          path: incoming.source.path,
-          description: "expected regular file"
-        )
-      }
-      let destination = try artifactURL(incoming.path, in: draft.directory)
-      try namespace.preflightDestination(incoming.path, destination: destination)
-      copies.append(.init(source: incoming.source, destination: destination))
-    }
-
-    for path in pathsToRemove {
+    let plan = try targetMutationPlan(targetID: targetID, files: files, draft: draft)
+    for path in plan.pathsToRemove {
       try removeOwnedArtifact(path, from: draft.directory)
     }
-    for copy in copies {
+    for copy in plan.copies {
       guard try itemKind(at: copy.destination) == nil else {
         throw PublisherError.unexpectedItem(
           path: copy.destination.path,
@@ -664,8 +461,8 @@ package struct ArtifactPublisher: Sendable {
     return Draft(
       generationID: draft.generationID,
       directory: draft.directory,
-      artifactsByTarget: artifactsByTarget,
-      opaquePaths: opaquePaths
+      artifactsByTarget: plan.artifactsByTarget,
+      opaquePaths: plan.opaquePaths
     )
   }
 
@@ -690,23 +487,17 @@ package struct ArtifactPublisher: Sendable {
 
   package func prepareGeneration(
     _ draft: Draft,
-    planFingerprint: String,
-    expectedArtifactDigestsByTarget:
-      [String: [PrivateHeaderGeneration.ArtifactPath: String]] = [:]
+    planFingerprint: String
   ) throws -> PreparedGeneration {
-    try removeFinderMetadata(in: draft.directory)
     try Self.validatePortableOwnership(
       artifactsByTarget: draft.artifactsByTarget,
       opaquePaths: draft.opaquePaths
     )
-    let inventory = try inventoryItems(
+    let actual = try inventoryRegularFiles(
       at: draft.directory,
       allowHidden: true,
       allowedExtensions: nil
     )
-    let actual = inventory.compactMap { item in
-      item.kind == .regular ? (path: item.path, url: item.url) : nil
-    }
     let actualPaths = Set(actual.map(\.path))
     let ownedPaths = Set(draft.artifactsByTarget.values.flatMap { $0 })
     let expectedPaths = ownedPaths.union(draft.opaquePaths)
@@ -717,33 +508,10 @@ package struct ArtifactPublisher: Sendable {
       )
     }
 
-    let contentDigests = try Dictionary(
-      uniqueKeysWithValues: actual.map { item in
-        (item.path, try Self.sha256(of: item.url))
-      }
-    )
-    for (targetID, expectedDigests) in expectedArtifactDigestsByTarget {
-      guard let targetArtifacts = draft.artifactsByTarget[targetID],
-        Set(targetArtifacts) == Set(expectedDigests.keys)
-      else {
-        throw PublisherError.markerMismatch(
-          "expected content digests do not match target \(targetID) inventory"
-        )
-      }
-      for (artifact, expectedDigest) in expectedDigests {
-        guard Self.isValidSHA256(expectedDigest), contentDigests[artifact] == expectedDigest else {
-          throw PublisherError.markerMismatch(
-            "artifact contents do not match published target \(targetID): \(artifact.rawValue)"
-          )
-        }
-      }
-    }
-    try synchronizeGenerationContents(inventory, root: draft.directory)
     let checksum = Self.artifactChecksum(
       planFingerprint: planFingerprint,
       artifactsByTarget: draft.artifactsByTarget,
-      opaquePaths: draft.opaquePaths,
-      contentDigests: contentDigests
+      opaquePaths: draft.opaquePaths
     )
     let marker = PrivateHeaderGeneration.GenerationMarkerSnapshot(
       generationID: draft.generationID,
@@ -752,19 +520,10 @@ package struct ArtifactPublisher: Sendable {
       artifactsByTarget: draft.artifactsByTarget.mapValues {
         $0.sorted { $0.rawValue < $1.rawValue }
       },
-      opaquePaths: draft.opaquePaths.sorted { $0.rawValue < $1.rawValue },
-      contentDigests: contentDigests
+      opaquePaths: draft.opaquePaths.sorted { $0.rawValue < $1.rawValue }
     )
     try writeMarker(marker, to: draft.directory)
-    let decodedMarker = try decodeGenerationMarker(
-      at: draft.directory,
-      expectedID: draft.generationID
-    )
-    guard decodedMarker.snapshot == marker,
-      decodedMarker.persistedContentDigests == marker.contentDigests
-    else {
-      throw PublisherError.markerMismatch("generation marker changed after writing")
-    }
+    _ = try validateGeneration(at: draft.directory, expectedID: draft.generationID)
     return PreparedGeneration(
       generationID: draft.generationID,
       draftDirectory: draft.directory,
@@ -777,15 +536,15 @@ package struct ArtifactPublisher: Sendable {
     guard try itemKind(at: generation.finalDirectory) == nil else {
       throw PublisherError.generationAlreadyExists(generation.generationID.rawValue)
     }
+    try atomicRename(from: generation.draftDirectory, to: generation.finalDirectory)
+    try syncDirectory(generationsURL)
     let validated = try validateGeneration(
-      at: generation.draftDirectory,
+      at: generation.finalDirectory,
       expectedID: generation.generationID
     )
     guard validated == generation.marker else {
-      throw PublisherError.markerMismatch("generation changed after preparation")
+      throw PublisherError.markerMismatch("generation changed after final move")
     }
-    try atomicRename(from: generation.draftDirectory, to: generation.finalDirectory)
-    try syncDirectory(generationsURL)
   }
 
   package func switchCurrent(to generationID: PrivateHeaderGeneration.GenerationID) throws {
@@ -1057,12 +816,7 @@ extension ArtifactPublisher {
     artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
     opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
   ) throws {
-    var entries = [
-      OwnedArtifact(
-        path: PrivateHeaderGeneration.ArtifactPath(rawValue: markerName),
-        owner: "reserved generation marker"
-      )
-    ]
+    var entries: [OwnedArtifact] = []
     for targetID in artifactsByTarget.keys.sorted() {
       entries += artifactsByTarget[targetID, default: []].map {
         OwnedArtifact(path: $0, owner: targetID)
@@ -1246,47 +1000,6 @@ extension ArtifactPublisher {
     at directory: URL,
     expectedID: PrivateHeaderGeneration.GenerationID
   ) throws -> PrivateHeaderGeneration.GenerationMarkerSnapshot {
-    let decodedMarker = try decodeGenerationMarker(at: directory, expectedID: expectedID)
-    let marker = decodedMarker.snapshot
-    let markerContentDigests = decodedMarker.persistedContentDigests
-    let files = try inventoryRegularFiles(at: directory, allowHidden: true, allowedExtensions: nil)
-      .filter { $0.path.rawValue != Self.markerName }
-    let actual = Set(files.map(\.path))
-    let expected = Set(marker.artifactsByTarget.values.flatMap { $0 }).union(marker.opaquePaths)
-    guard actual == expected else {
-      throw PublisherError.inventoryMismatch(
-        expected: expected.map(\.rawValue).sorted(),
-        actual: actual.map(\.rawValue).sorted()
-      )
-    }
-    let actualContentDigests = try Dictionary(
-      uniqueKeysWithValues: files.map { item in
-        (item.path, try Self.sha256(of: item.url))
-      }
-    )
-    if let markerContentDigests {
-      for (artifact, expectedDigest) in markerContentDigests {
-        guard actualContentDigests[artifact] == expectedDigest else {
-          throw PublisherError.markerMismatch(
-            "artifact content digest does not match marker: \(artifact.rawValue)"
-          )
-        }
-      }
-    }
-    return PrivateHeaderGeneration.GenerationMarkerSnapshot(
-      generationID: expectedID,
-      planFingerprint: marker.planFingerprint,
-      artifactChecksum: marker.artifactChecksum,
-      artifactsByTarget: marker.artifactsByTarget,
-      opaquePaths: marker.opaquePaths,
-      contentDigests: actualContentDigests
-    )
-  }
-
-  fileprivate func decodeGenerationMarker(
-    at directory: URL,
-    expectedID: PrivateHeaderGeneration.GenerationID
-  ) throws -> DecodedGenerationMarker {
     let markerURL = directory.appendingPathComponent(Self.markerName, isDirectory: false)
     guard try itemKind(at: markerURL) == .regular else {
       throw PublisherError.markerMismatch("missing marker for \(expectedID.rawValue)")
@@ -1297,24 +1010,6 @@ extension ArtifactPublisher {
       artifactsByTarget[targetID] = try paths.map { try PrivateHeaderGeneration.ArtifactPath($0) }
     }
     let opaquePaths = try marker.opaquePaths.map { try PrivateHeaderGeneration.ArtifactPath($0) }
-    let markerContentDigests: [PrivateHeaderGeneration.ArtifactPath: String]?
-    if let rawContentDigests = marker.contentDigests {
-      var decoded: [PrivateHeaderGeneration.ArtifactPath: String] = [:]
-      decoded.reserveCapacity(rawContentDigests.count)
-      for (rawPath, digest) in rawContentDigests {
-        let path = try PrivateHeaderGeneration.ArtifactPath(rawPath)
-        guard decoded[path] == nil, Self.isValidSHA256(digest) else {
-          throw PublisherError.markerMismatch("generation marker has invalid content digests")
-        }
-        decoded[path] = digest
-      }
-      guard decoded.count == rawContentDigests.count else {
-        throw PublisherError.markerMismatch("generation marker has duplicate content digest paths")
-      }
-      markerContentDigests = decoded
-    } else {
-      markerContentDigests = nil
-    }
     try Self.validatePortableOwnership(
       artifactsByTarget: artifactsByTarget,
       opaquePaths: opaquePaths
@@ -1322,33 +1017,30 @@ extension ArtifactPublisher {
     guard marker.generationID == expectedID.rawValue else {
       throw PublisherError.markerMismatch("directory and marker generation IDs differ")
     }
-    let expected = Set(artifactsByTarget.values.flatMap { $0 }).union(opaquePaths)
-    if let markerContentDigests {
-      guard Set(markerContentDigests.keys) == expected else {
-        throw PublisherError.markerMismatch(
-          "generation marker content digests do not match its inventory"
-        )
-      }
-    }
     let checksum = Self.artifactChecksum(
       planFingerprint: marker.planFingerprint,
       artifactsByTarget: artifactsByTarget,
-      opaquePaths: opaquePaths,
-      contentDigests: markerContentDigests
+      opaquePaths: opaquePaths
     )
     guard checksum == marker.artifactChecksum else {
       throw PublisherError.markerMismatch("artifact checksum does not match marker inventory")
     }
-    return DecodedGenerationMarker(
-      snapshot: PrivateHeaderGeneration.GenerationMarkerSnapshot(
-        generationID: expectedID,
-        planFingerprint: marker.planFingerprint,
-        artifactChecksum: marker.artifactChecksum,
-        artifactsByTarget: artifactsByTarget,
-        opaquePaths: opaquePaths,
-        contentDigests: markerContentDigests ?? [:]
-      ),
-      persistedContentDigests: markerContentDigests
+    let files = try inventoryRegularFiles(at: directory, allowHidden: true, allowedExtensions: nil)
+      .filter { $0.path.rawValue != Self.markerName }
+    let actual = Set(files.map(\.path))
+    let expected = Set(artifactsByTarget.values.flatMap { $0 }).union(opaquePaths)
+    guard actual == expected else {
+      throw PublisherError.inventoryMismatch(
+        expected: expected.map(\.rawValue).sorted(),
+        actual: actual.map(\.rawValue).sorted()
+      )
+    }
+    return PrivateHeaderGeneration.GenerationMarkerSnapshot(
+      generationID: expectedID,
+      planFingerprint: marker.planFingerprint,
+      artifactChecksum: marker.artifactChecksum,
+      artifactsByTarget: artifactsByTarget,
+      opaquePaths: opaquePaths
     )
   }
 
@@ -1361,10 +1053,7 @@ extension ArtifactPublisher {
       planFingerprint: snapshot.planFingerprint,
       artifactChecksum: snapshot.artifactChecksum,
       artifactsByTarget: snapshot.artifactsByTarget.mapValues { $0.map(\.rawValue).sorted() },
-      opaquePaths: snapshot.opaquePaths.map(\.rawValue).sorted(),
-      contentDigests: Dictionary(
-        uniqueKeysWithValues: snapshot.contentDigests.map { ($0.key.rawValue, $0.value) }
-      )
+      opaquePaths: snapshot.opaquePaths.map(\.rawValue).sorted()
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1377,8 +1066,7 @@ extension ArtifactPublisher {
   fileprivate static func artifactChecksum(
     planFingerprint: String,
     artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
-    opaquePaths: [PrivateHeaderGeneration.ArtifactPath],
-    contentDigests: [PrivateHeaderGeneration.ArtifactPath: String]? = nil
+    opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
   ) -> String {
     var lines = ["plan=\(planFingerprint)"]
     for targetID in artifactsByTarget.keys.sorted() {
@@ -1389,53 +1077,8 @@ extension ArtifactPublisher {
     for path in opaquePaths.map(\.rawValue).sorted() {
       lines.append("opaque=\(path)")
     }
-    if let contentDigests {
-      for (path, digest) in contentDigests.sorted(by: {
-        $0.key.rawValue < $1.key.rawValue
-      }) {
-        lines.append("content=\(path.rawValue):\(digest)")
-      }
-    }
     let digest = SHA256.hash(data: Data(lines.joined(separator: "\n").utf8))
     return digest.map { String(format: "%02x", $0) }.joined()
-  }
-
-  fileprivate func synchronizeGenerationContents(
-    _ inventory: [InventoriedItem],
-    root: URL
-  ) throws {
-    for file in inventory.filter({ $0.kind == .regular }).sorted(by: {
-      $0.url.path < $1.url.path
-    }) {
-      try syncFile(file.url)
-    }
-    var directories = Set(
-      inventory.filter { $0.kind == .directory }.map { $0.url.standardizedFileURL }
-    )
-    directories.insert(root.standardizedFileURL)
-    for directory in directories.sorted(by: {
-      let leftDepth = $0.pathComponents.count
-      let rightDepth = $1.pathComponents.count
-      return leftDepth == rightDepth ? $0.path < $1.path : leftDepth > rightDepth
-    }) {
-      try syncDirectory(directory)
-    }
-  }
-
-  fileprivate static func sha256(of url: URL) throws -> String {
-    let handle = try FileHandle(forReadingFrom: url)
-    defer { handle.closeFile() }
-    var hasher = SHA256()
-    while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
-      hasher.update(data: chunk)
-    }
-    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-  }
-
-  fileprivate static func isValidSHA256(_ digest: String) -> Bool {
-    digest.utf8.count == 64 && digest.utf8.allSatisfy {
-      (48...57).contains($0) || (97...102).contains($0)
-    }
   }
 
   fileprivate func inventoryLegacyFiles(at root: URL) throws -> [PrivateHeaderGeneration
@@ -1445,6 +1088,12 @@ extension ArtifactPublisher {
       .map(\.path)
       .sorted { $0.rawValue < $1.rawValue }
     try Self.validatePortableOwnership(artifactsByTarget: [:], opaquePaths: paths)
+    guard !paths.contains(where: { $0.rawValue == Self.markerName }) else {
+      throw PublisherError.unexpectedItem(
+        path: root.appendingPathComponent(Self.markerName).path,
+        description: "legacy tree contains reserved generation marker path"
+      )
+    }
     return paths
   }
 
@@ -1459,45 +1108,6 @@ extension ArtifactPublisher {
       allowedExtensions: allowedExtensions
     ).compactMap { item in
       item.kind == .regular ? (item.path, item.url) : nil
-    }
-  }
-
-  fileprivate func removeFinderMetadata(in root: URL) throws {
-    var enumerationFailure: (URL, any Error)?
-    guard
-      let enumerator = FileManager.default.enumerator(
-        at: root,
-        includingPropertiesForKeys: nil,
-        options: [],
-        errorHandler: { url, error in
-          enumerationFailure = (url, error)
-          return false
-        }
-      )
-    else {
-      throw PublisherError.unexpectedItem(
-        path: root.path,
-        description: "could not enumerate directory"
-      )
-    }
-    var metadataURLs: [URL] = []
-    for case let url as URL in enumerator where url.lastPathComponent == ".DS_Store" {
-      guard try itemKind(at: url) == .regular else {
-        throw PublisherError.unexpectedItem(
-          path: url.path,
-          description: "Finder metadata path is not a regular file"
-        )
-      }
-      metadataURLs.append(url)
-    }
-    if let (url, error) = enumerationFailure {
-      throw PublisherError.unexpectedItem(
-        path: url.path,
-        description: "directory enumeration failed: \(error)"
-      )
-    }
-    for url in metadataURLs {
-      try FileManager.default.removeItem(at: url)
     }
   }
 
@@ -1528,14 +1138,11 @@ extension ArtifactPublisher {
     var items: [InventoriedItem] = []
     for case let url as URL in enumerator {
       let relative = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
-      guard let kind = try itemKind(at: url) else {
-        throw PublisherError.missingArtifact(url.path)
-      }
-      if url.lastPathComponent == ".DS_Store", kind == .regular {
-        continue
-      }
       if !allowHidden, relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
         throw PublisherError.unexpectedItem(path: url.path, description: "hidden staging payload")
+      }
+      guard let kind = try itemKind(at: url) else {
+        throw PublisherError.missingArtifact(url.path)
       }
       switch kind {
       case .directory:

@@ -321,21 +321,6 @@ public protocol CommandRunning: Sendable {
         env: [String: String]?,
         cwd: URL?
     ) async throws -> StreamingCommandResult
-    func runBuffered(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> StreamingCommandResult
-}
-
-public extension CommandRunning {
-    func runBuffered(
-        _ command: [String],
-        env: [String: String]? = nil,
-        cwd: URL? = nil
-    ) async throws -> StreamingCommandResult {
-        try await runStreaming(command, env: env, cwd: cwd)
-    }
 }
 
 public struct ProcessRunner: CommandRunning, Sendable {
@@ -563,20 +548,6 @@ public struct ProcessRunner: CommandRunning, Sendable {
         } onCancel: {
             outputWriter.cancel()
         }
-    }
-
-    public func runBuffered(
-        _ command: [String],
-        env: [String: String]? = nil,
-        cwd: URL? = nil
-    ) async throws -> StreamingCommandResult {
-        try await runStreaming(
-            command,
-            env: env,
-            cwd: cwd,
-            streamOutput: false,
-            passthrough: { _ in }
-        )
     }
 
     func runStreaming(
