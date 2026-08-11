@@ -19,12 +19,18 @@ The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are no
 
 ## Installation
 
+On an Apple Silicon Mac, install the latest validated release cohort with the
+version-baked installer:
+
 ```bash
-swift run -c release privateheaderkit-install
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+sh install.sh
 ```
 
-By default, this installs the single user-facing `privateheaderkit` binary to `~/.local/bin`.
-Raw dumping also installs internal helpers to `~/.local/libexec/privateheaderkit/`.
+The installer downloads the matching archive and `SHA256SUMS.txt`, verifies the
+archive before extraction, validates all three binaries, and only then switches
+the active cohort. By default, the stable user-facing command is
+`~/.local/bin/privateheaderkit`.
 
 If `~/.local/bin` is not in your `PATH`, add it:
 
@@ -33,20 +39,42 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-To change the destination:
+To choose another prefix or command directory:
 
 ```bash
-swift run -c release privateheaderkit-install --prefix "$HOME/.local"
-# or
-swift run -c release privateheaderkit-install --bindir "$HOME/bin"
+sh install.sh --prefix "$HOME/.local"
+# or: this uses $HOME as the prefix and $HOME/bin for the stable command
+sh install.sh --bindir "$HOME/bin"
 ```
 
-If you prefer running the built installer directly:
+To build and install all artifacts from a checkout instead:
 
 ```bash
-swift build -c release --product privateheaderkit-install
-"$(swift build -c release --show-bin-path)/privateheaderkit-install" --bindir "$HOME/bin"
+git clone https://github.com/lynnswap/PrivateHeaderKit.git
+cd PrivateHeaderKit
+swift run -c release privateheaderkit-install
 ```
+
+Release and source installs use the same immutable layout:
+
+```text
+~/.local/bin/privateheaderkit
+  -> ../libexec/privateheaderkit/current/privateheaderkit
+~/.local/libexec/privateheaderkit/
+  current -> versions/<version+content-sha256>
+  versions/<version+content-sha256>/
+    privateheaderkit
+    privateheaderkit-raw-helper
+    privateheaderkit-sim-helper
+    release.json
+```
+
+Only `privateheaderkit` is public. The raw-dump helpers always come from the
+same validated cohort. To update, download and run the latest `install.sh`
+again, or update the source checkout and rerun `swift run -c release
+privateheaderkit-install`. A failed build, download, validation, or staging step
+does not change the active `current` pointer. Untagged source checkouts use a
+commit-qualified `0.0.0-dev.<short-commit>` version namespace.
 
 ## Command Surface
 
