@@ -141,6 +141,99 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         encoding: .utf8) == "keep")
   }
 
+  @Test func replacingTheTargetSetDropsAbsentDraftOwners() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-foo"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "foo"
+      )
+    )
+    var combinedDraft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-combined"),
+      allowLegacyMigration: false
+    )
+    combinedDraft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:Bar",
+      files: [
+        .init(rawValue: "Frameworks/Bar/Bar.h"): try fixture.sourceFile(contents: "bar")
+      ],
+      to: combinedDraft
+    )
+    try fixture.publish(
+      try fixture.publisher.prepareGeneration(
+        combinedDraft,
+        planFingerprint: "fingerprint"
+      )
+    )
+
+    let seededDraft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-exact"),
+      allowLegacyMigration: false
+    )
+    let exactDraft = try fixture.publisher.replaceCompletedTargets(
+      [
+        "framework:Bar": [
+          .init(rawValue: "Frameworks/Bar/Bar.h"): try fixture.sourceFile(
+            contents: "bar-new"
+          )
+        ]
+      ],
+      in: seededDraft
+    )
+    let prepared = try fixture.publisher.prepareGeneration(
+      exactDraft,
+      planFingerprint: "fingerprint"
+    )
+
+    #expect(prepared.marker.artifactsByTarget.keys.sorted() == ["framework:Bar"])
+    #expect(!FileManager.default.fileExists(
+      atPath: prepared.draftDirectory.appendingPathComponent("Frameworks/Foo/Foo.h").path
+    ))
+  }
+
+  @Test func replacingTheTargetSetWithEmptySetDropsEveryDraftOwner() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let legacyUnknown = fixture.publisher.stableURL.appendingPathComponent("User/keep.txt")
+    try FileManager.default.createDirectory(
+      at: legacyUnknown.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("keep".utf8).write(to: legacyUnknown)
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-foo"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "foo",
+        allowLegacyMigration: true
+      )
+    )
+
+    let seededDraft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-empty"),
+      allowLegacyMigration: false
+    )
+    let exactDraft = try fixture.publisher.replaceCompletedTargets([:], in: seededDraft)
+    let prepared = try fixture.publisher.prepareGeneration(
+      exactDraft,
+      planFingerprint: "fingerprint"
+    )
+
+    #expect(prepared.marker.artifactsByTarget.isEmpty)
+    #expect(!FileManager.default.fileExists(
+      atPath: prepared.draftDirectory.appendingPathComponent("Frameworks/Foo/Foo.h").path
+    ))
+    #expect(try String(
+      contentsOf: prepared.draftDirectory.appendingPathComponent("User/keep.txt"),
+      encoding: .utf8
+    ) == "keep")
+  }
+
   @Test func rawStagingRejectsHiddenUnsupportedAndSymlinkPayloads() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }

@@ -504,9 +504,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           generationID: generationID,
           allowLegacyMigration: plan.options.resumeBehavior.isFresh
         )
-        let draft = try publisher.applyCompletedTargets(
+        let draft = try publisher.replaceCompletedTargets(
           snapshotFilesByTarget,
-          to: initialDraft
+          in: initialDraft
         )
         let prepared = try publisher.prepareGeneration(draft, planFingerprint: fingerprint)
         try Self.prepareLiveArtifactDirectory(

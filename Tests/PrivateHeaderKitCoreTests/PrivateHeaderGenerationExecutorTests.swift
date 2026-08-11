@@ -459,6 +459,47 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try fixture.readLiveHeader() == "recovered")
   }
 
+  @Test func snapshotRebuildDropsPublishedTargetThatIsMissingFromLiveOutput() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try fixture.createFramework("Bar.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old", additionalHeaderName: "Removed.h"),
+      runID: "run-old",
+      generationID: "generation-old"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "new"),
+        runID: "run-new",
+        generationID: "generation-new",
+        publicationFaultInjector: { point in
+          if point == .afterPrepared { throw InjectedFault.stop }
+        }
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+    try FileManager.default.removeItem(at: fixture.liveHeaderURL(framework: "Foo"))
+
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "bar"),
+      runID: "run-bar",
+      generationID: "generation-bar"
+    ).run(plan: try fixture.plan(.query("Bar"), resumeBehavior: .fresh))
+
+    let marker = try #require(fixture.publisher().inspect().currentMarker)
+    #expect(marker.artifactsByTarget.keys.sorted() == ["framework:Bar.framework"])
+    let recoveredRunner = RecordingRunner(contents: "recovered")
+    _ = try await fixture.executor(
+      runner: recoveredRunner,
+      runID: "run-recovered",
+      generationID: "generation-recovered"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    #expect(await recoveredRunner.invocationCount == 1)
+    #expect(try fixture.readLiveHeader(framework: "Foo") == "recovered")
+  }
+
   @Test func compatibleResumeSkipsCurrentCompletedTarget() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
