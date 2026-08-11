@@ -201,8 +201,9 @@ without replacing the original output path.
 
 - iOS runtime discovery and simulator execution require Xcode with `xcrun`,
   `simctl`, and an installed iPhone Simulator SDK.
-- Building or installing from source additionally requires the Swift 6.3
-  toolchain.
+- Building from source requires the Swift 6.3 toolchain. Source installation
+  additionally requires Xcode with `xcrun` and an installed iPhone Simulator
+  SDK because the installed cohort includes the simulator helper.
 - State, logs, and staging data are kept outside the published generated header
   tree.
 

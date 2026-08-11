@@ -191,7 +191,9 @@ generation にコピーし、owner のない opaque file として記録しま�
 
 - iOS runtime discovery と simulator execution には、`xcrun`、`simctl`、および
   iPhone Simulator SDK がインストールされた Xcode が必要です。
-- source からの build または install には、追加で Swift 6.3 toolchain が必要です。
+- source からの build には Swift 6.3 toolchain が必要です。source install では
+  simulator helper を含む cohort 全体を作るため、`xcrun` と iPhone Simulator SDK
+  がインストールされた Xcode も必要です。
 - state、log、staging data は publish 済み generated header tree の外に置きます。
 
 ## テスト
