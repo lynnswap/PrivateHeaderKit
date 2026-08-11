@@ -906,8 +906,12 @@ private func canonicalJSON<T: Encodable>(_ value: T) throws -> Data {
     return try encoder.encode(value)
 }
 
-private func sha256File(_ url: URL) throws -> String {
+func toolInputSHA256Hex(
+    ofFileAt url: URL,
+    checkCancellation: () throws -> Void
+) throws -> String {
 #if canImport(CryptoKit)
+    try checkCancellation()
     let handle: FileHandle
     do {
         handle = try FileHandle(forReadingFrom: url)
@@ -917,16 +921,30 @@ private func sha256File(_ url: URL) throws -> String {
     defer { try? handle.close() }
     var hasher = SHA256()
     while true {
-        let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        try checkCancellation()
+        let chunk: Data
+        do {
+            chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        } catch {
+            throw ToolingError.message("failed to read build input at \(url.path): \(error)")
+        }
         if chunk.isEmpty {
             break
         }
         hasher.update(data: chunk)
     }
+    try checkCancellation()
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 #else
     throw ToolingError.message("SHA-256 is unavailable on this platform")
 #endif
+}
+
+private func sha256File(_ url: URL) throws -> String {
+    try toolInputSHA256Hex(
+        ofFileAt: url,
+        checkCancellation: { try Task.checkCancellation() }
+    )
 }
 
 private func sha256Hex(_ data: Data) throws -> String {

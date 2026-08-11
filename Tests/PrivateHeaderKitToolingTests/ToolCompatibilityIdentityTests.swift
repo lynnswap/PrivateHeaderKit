@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import PrivateHeaderKitTestSupport
 import Testing
@@ -6,6 +7,36 @@ import Testing
 
 @Suite
 struct ToolCompatibilityIdentityTests {
+    @Test func toolInputHashingChecksCancellationBetweenBoundedReads() throws {
+        let root = try makeIdentityFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent("large-input.bin")
+        let contents = Data(repeating: 0x5A, count: 3 * 1024 * 1024 + 17)
+        try contents.write(to: input)
+
+        let expected = SHA256.hash(data: contents)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        #expect(try toolInputSHA256Hex(
+            ofFileAt: input,
+            checkCancellation: {}
+        ) == expected)
+
+        var checkCount = 0
+        #expect(throws: CancellationError.self) {
+            _ = try toolInputSHA256Hex(
+                ofFileAt: input,
+                checkCancellation: {
+                    checkCount += 1
+                    if checkCount == 3 {
+                        throw CancellationError()
+                    }
+                }
+            )
+        }
+        #expect(checkCount == 3)
+    }
+
     @Test func installedIdentityUsesExecutableContentsInsteadOfDirectoryName() throws {
         let root = try makeIdentityFixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }
