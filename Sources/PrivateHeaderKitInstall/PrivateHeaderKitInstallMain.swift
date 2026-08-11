@@ -268,11 +268,28 @@ func createReleaseManifest(
         inspectArtifact: inspectArtifact
     )
     let outputURL = URL(fileURLWithPath: options.output, isDirectory: false)
+    try publishReleaseManifest(
+        manifest,
+        to: outputURL,
+        fileManager: fileManager
+    )
+}
+
+func publishReleaseManifest(
+    _ manifest: ReleaseManifest,
+    to outputURL: URL,
+    fileManager: FileManager,
+    checkCancellation: () throws -> Void = { try Task.checkCancellation() }
+) throws {
+    let encoded = try manifest.encoded()
+    // This check defines the publication boundary. Once synchronous filesystem mutation begins,
+    // the atomic write either commits the complete manifest or leaves the previous file intact.
+    try checkCancellation()
     try fileManager.createDirectory(
         at: outputURL.deletingLastPathComponent(),
         withIntermediateDirectories: true
     )
-    try manifest.encoded().write(to: outputURL, options: [.atomic])
+    try encoded.write(to: outputURL, options: [.atomic])
 }
 
 func makeReleaseManifest(

@@ -1672,6 +1672,75 @@ struct SourceBuildResolutionTests {
 
 @Suite
 struct InstallCancellationTests {
+    @Test func cancelledManifestPublicationDoesNotCreateItsDestination() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let outputURL = directories.root
+            .appendingPathComponent("manifest-output", isDirectory: true)
+            .appendingPathComponent(ReleaseManifest.fileName, isDirectory: false)
+        let manifest = try ReleaseManifest(
+            version: "v1.0.0",
+            commit: String(repeating: "a", count: 40),
+            artifacts: InstallArtifactName.allCases.map { artifact in
+                ReleaseArtifactRecord(
+                    name: artifact,
+                    sha256: String(repeating: "a", count: 64),
+                    architectures: ["arm64"],
+                    platform: artifact.expectedPlatform,
+                    codeSignaturePolicy: .valid
+                )
+            }
+        )
+
+        #expect(throws: CancellationError.self) {
+            try publishReleaseManifest(
+                manifest,
+                to: outputURL,
+                fileManager: .default,
+                checkCancellation: { throw CancellationError() }
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: outputURL.deletingLastPathComponent().path
+            )
+        )
+    }
+
+    @Test func sourcePathSortingChecksCancellationBetweenBoundedRuns() throws {
+        let paths = (0..<1_537).map { index in
+            "Sources/Generated/\(1_537 - index).swift"
+        }
+        var checkCount = 0
+
+        #expect(throws: CancellationError.self) {
+            _ = try cancellationAwareSortedSourcePaths(paths) {
+                checkCount += 1
+                if checkCount == 3 {
+                    throw CancellationError()
+                }
+            }
+        }
+        #expect(checkCount == 3)
+    }
+
+    @Test func sourceFileHashingChecksCancellationBetweenBoundedReads() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let inputURL = directories.root.appendingPathComponent("large-untracked-input")
+        try Data(repeating: 0x5a, count: 3 * 1024 * 1024 + 17).write(to: inputURL)
+        var checkCount = 0
+
+        #expect(throws: CancellationError.self) {
+            _ = try sourceSHA256Hex(ofFileAt: inputURL) {
+                checkCount += 1
+                if checkCount == 3 {
+                    throw CancellationError()
+                }
+            }
+        }
+        #expect(checkCount == 3)
+    }
+
     @Test func releaseManifestInspectionPreservesCancellation() async {
         let root = FileManager.default.temporaryDirectory
         let artifactURLs = Dictionary(
