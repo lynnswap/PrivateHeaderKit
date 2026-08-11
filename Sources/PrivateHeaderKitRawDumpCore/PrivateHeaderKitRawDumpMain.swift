@@ -6,7 +6,8 @@ import MachOSwiftSection
 import ObjCDump
 import PrivateHeaderKitHelperProtocol
 import SwiftDeclaration
-@_spi(Support) import SwiftInterface
+import SwiftDeclarationRendering
+import SwiftInterface
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -62,7 +63,7 @@ struct DefaultSwiftInterfaceBuilderFactory: SwiftInterfaceBuildingFactory {
     }
 }
 
-struct SwiftInterfaceBuilderAdapter<MachO: MachOSwiftSectionRepresentableWithCache>: SwiftInterfaceBuilding {
+struct SwiftInterfaceBuilderAdapter<MachO: FieldLayoutRenderable>: SwiftInterfaceBuilding {
     private let builder: SwiftInterfaceBuilder<MachO>
 
     init(
