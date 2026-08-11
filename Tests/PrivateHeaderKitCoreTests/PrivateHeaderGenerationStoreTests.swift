@@ -27,6 +27,7 @@ struct PrivateHeaderGenerationStoreTests {
         "v1-generation-state",
         "v2-run-logs-and-indexes",
         "v3-causal-ordering",
+        "v4-published-artifact-digests",
       ])
     let columns = try await queue.read { db in
       try db.columns(in: "runLogs").map(\.name)
@@ -147,7 +148,14 @@ struct PrivateHeaderGenerationStoreTests {
     let completed = fixture.completedTarget("framework:Foo")
 
     try await fixture.store.prepareTargetPublication(completed, in: runID)
-    try await fixture.store.recordPublishedTargetAttempt(completed, in: runID)
+    try await fixture.store.recordPublishedTargetAttempt(
+      completed,
+      artifactDigests: [
+        PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h"):
+          String(repeating: "0", count: 64)
+      ],
+      in: runID
+    )
 
     #expect(try await fixture.store.runSnapshot(runID).status == .running)
     #expect(try await fixture.store.runSnapshot(runID).targets.first?.status == .completed)

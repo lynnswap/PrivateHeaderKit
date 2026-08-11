@@ -131,6 +131,10 @@ extension PrivateHeaderGeneration {
       )
       try publisher.prepareForLease()
       return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
+        let artifactDirectory = Self.canonicalArtifactDirectory(
+          outputBase: publisher.artifactBaseDirectory,
+          sourceLabel: plan.source.storageIdentifier
+        )
         let stateDirectory = Self.canonicalStateDirectory(
           outputBase: publisher.artifactBaseDirectory,
           sourceLabel: plan.source.storageIdentifier
@@ -163,6 +167,7 @@ extension PrivateHeaderGeneration {
         )
         return try await runWithLease(
           plan: plan,
+          artifactDirectory: artifactDirectory,
           stateDirectory: stateDirectory,
           databaseURL: databaseURL,
           selectedTargets: preparedPlan.selectedTargets,
@@ -191,6 +196,13 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let sourceDirectory: URL?
   }
 
+  fileprivate enum PublishedTargetSource: Equatable {
+    case currentGeneration
+    case newerLiveOutput
+    case unverifiedLiveOutput
+    case unavailable
+  }
+
   fileprivate func cancellationRequested() -> Bool {
     Task.isCancelled
   }
@@ -207,6 +219,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
   fileprivate func runWithLease(
     plan: PrivateHeaderGeneration.Plan,
+    artifactDirectory: URL,
     stateDirectory: URL,
     databaseURL: URL,
     selectedTargets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget],
@@ -217,10 +230,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
     progressReporter: ProgressReporter?
   ) async throws -> PrivateHeaderGeneration.Result {
+    if plan.options.resumeBehavior.isFresh {
+      _ = try await store.bootstrapPublishedGenerationIfEmpty(
+        sourceIdentity: plan.source.storageIdentifier,
+        publication: publisher.inspect(),
+        at: dateProvider()
+      )
+    }
     try await Self.recover(store: store, publisher: publisher, at: dateProvider())
     try await Self.recoverTargetReplacements(
       in: stateDirectory,
-      artifactDirectory: plan.artifactDirectory,
+      artifactDirectory: artifactDirectory,
+      currentMarker: try publisher.inspect().currentMarker,
       store: store
     )
     try publisher.cleanupStaging()
@@ -232,21 +253,34 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         ($0.targetID, $0.artifacts)
       }
     )
-    let publishedArtifactsByTarget = try await store.publishedArtifactsByTarget()
+    let publishedTargetsByID = try await store.publishedTargetsByID()
+    let publishedArtifactsByTarget = publishedTargetsByID.mapValues(\.artifacts)
+    let liveArtifactStore = PrivateHeaderGeneration.ArtifactStore(
+      artifactRoot: artifactDirectory
+    )
     let targetIDsCoveredByCurrentGeneration = try await Self.targetIDsCoveredByCurrentGeneration(
       publication,
       store: store
     )
-    try Self.prepareLiveArtifactDirectory(
-      plan.artifactDirectory,
-      from: publication.currentMarker == nil ? nil : publisher.stableURL,
+    let publishedTargetSources = try Self.publishedTargetSources(
       marker: publication.currentMarker,
+      publishedTargetsByID: publishedTargetsByID,
+      targetIDsCoveredByMarker: targetIDsCoveredByCurrentGeneration,
+      liveArtifactStore: liveArtifactStore
+    )
+    try await Self.reconcileLiveArtifactDirectory(
+      artifactDirectory,
+      publication: publication,
+      publishedDirectory: publisher.stableURL,
       publishedArtifactsByTarget: publishedArtifactsByTarget,
-      targetIDsCoveredByMarker: targetIDsCoveredByCurrentGeneration
+      publishedTargetSources: publishedTargetSources,
+      stagingDirectory: Self.hydrationStagingDirectory(in: stateDirectory),
+      store: store
     )
     let currentLiveArtifactsByTarget = try Self.availableLiveArtifactsByTarget(
       publishedArtifactsByTarget,
-      under: plan.artifactDirectory
+      publishedTargetSources: publishedTargetSources,
+      under: artifactDirectory
     )
 
     if publication.stablePathState == .legacyDirectory,
@@ -314,14 +348,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         .appendingPathComponent("staging", isDirectory: true)
         .appendingPathComponent(runID.rawValue, isDirectory: true)
       try Self.ensureEmptyDirectory(runStagingDirectory)
-      let liveArtifactStore = PrivateHeaderGeneration.ArtifactStore(
-        artifactRoot: plan.artifactDirectory
+      let initialOpaquePaths = try publisher.opaquePathsForTargetValidation(
+        in: publication,
+        allowLegacyMigration: plan.options.resumeBehavior.isFresh,
+        claimedBy: publishedArtifactsByTarget.values.flatMap { $0 }
       )
       var generatedTargetIDs: [String] = []
       var ownedArtifactsByTarget = publishedArtifactsByTarget
       var liveArtifactsByTarget = currentLiveArtifactsByTarget
-      var liveOpaquePaths = publication.currentMarker?.opaquePaths ?? []
+      var unclaimedOpaquePaths = initialOpaquePaths
       var completedFilesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]] = [:]
+      var completedArtifactDigestsByTarget:
+        [String: [PrivateHeaderGeneration.ArtifactPath: String]] = [:]
       var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
       var wasCancelled = false
       var executedIndex = 0
@@ -382,21 +420,24 @@ extension PrivateHeaderGeneration.GenerationExecutor {
               "completed target \(targetID) has no staged artifact source"
             )
           }
-          try publisher.validateTargetReplacement(
+          let opaquePathsAfterReplacement = try publisher.validateTargetReplacement(
             targetID: targetID,
             artifacts: execution.result.artifacts,
             existingArtifactsByTarget: ownedArtifactsByTarget,
-            opaquePaths: liveOpaquePaths
+            opaquePaths: unclaimedOpaquePaths
           )
-          let commitPlan = try liveArtifactStore.prepareCommit(
-            stagingDirectory: targetStagingDirectory,
-            stagedSourceDirectory: stagedSourceDirectory,
-            artifactRoot: artifactRoot,
-            artifacts: execution.result.artifacts
-          )
-          let artifactsToRemove = PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
+          let removalCandidates = PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
             manifestArtifacts: ownedArtifactsByTarget[targetID] ?? [],
             attemptedArtifacts: previousAttemptedArtifactsByTarget[targetID] ?? []
+          )
+          let artifactsToRemove = try liveArtifactStore.artifactsExcludingEquivalentPaths(
+            removalCandidates,
+            retainedArtifacts:
+              ownedArtifactsByTarget
+              .filter { $0.key != targetID }
+              .values
+              .flatMap { $0 }
+              + opaquePathsAfterReplacement
           )
           let replacementDirectory = Self.replacementStagingDirectory(in: stateDirectory)
             .appendingPathComponent(runID.rawValue, isDirectory: true)
@@ -405,7 +446,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
               isDirectory: true
             )
           let replacement = try liveArtifactStore.prepareReplacement(
-            commitPlan,
+            stagingDirectory: targetStagingDirectory,
+            stagedSourceDirectory: stagedSourceDirectory,
+            artifactRoot: artifactRoot,
+            artifacts: execution.result.artifacts,
             removing: artifactsToRemove,
             runID: runID,
             targetID: targetID,
@@ -414,7 +458,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           try await store.prepareTargetPublication(execution.result, in: runID)
           try liveArtifactStore.applyReplacement(replacement)
           do {
-            try await store.recordPublishedTargetAttempt(execution.result, in: runID)
+            try await store.recordPublishedTargetAttempt(
+              execution.result,
+              artifactDigests: replacement.artifactDigests,
+              in: runID
+            )
           } catch {
             let persistenceError = error
             do {
@@ -429,9 +477,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           }
           ownedArtifactsByTarget[targetID] = execution.result.artifacts
           liveArtifactsByTarget[targetID] = execution.result.artifacts
-          let publishedArtifactSet = Set(execution.result.artifacts)
-          liveOpaquePaths.removeAll { publishedArtifactSet.contains($0) }
+          unclaimedOpaquePaths = opaquePathsAfterReplacement
           completedFilesByTarget[targetID] = execution.completedFiles
+          completedArtifactDigestsByTarget[targetID] = replacement.artifactDigests
           generatedTargetIDs.append(targetID)
           do {
             try liveArtifactStore.finalizeReplacement(replacement)
@@ -490,10 +538,44 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         )
         wasCancelled = finalSnapshot.status == .interrupted
       } else {
-        var snapshotFilesByTarget = liveArtifactsByTarget.mapValues { artifacts in
-          Dictionary(
+        let generatedTargetSet = Set(generatedTargetIDs)
+        var snapshotFilesByTarget:
+          [String: [PrivateHeaderGeneration.ArtifactPath: URL]] = [:]
+        for (targetID, artifacts) in liveArtifactsByTarget
+        where !generatedTargetSet.contains(targetID) {
+          let sourceRoot: URL
+          switch publishedTargetSources[targetID] {
+          case .currentGeneration:
+            sourceRoot = publisher.stableURL
+          case .newerLiveOutput:
+            guard let publishedTarget = publishedTargetsByID[targetID] else {
+              throw PrivateHeaderGeneration.StateError.corruptPublication(
+                "published target source is missing target \(targetID)"
+              )
+            }
+            guard
+              try liveArtifactStore.artifactsMatchDigests(
+                artifacts,
+                digests: publishedTarget.artifactDigests
+              )
+            else {
+              throw PrivateHeaderGeneration.StateError.corruptPublication(
+                "published target contents changed during generation: \(targetID)"
+              )
+            }
+            sourceRoot = artifactDirectory
+          case .unavailable:
+            continue
+          case .unverifiedLiveOutput:
+            continue
+          case nil:
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "published target source is missing for \(targetID)"
+            )
+          }
+          snapshotFilesByTarget[targetID] = Dictionary(
             uniqueKeysWithValues: artifacts.map {
-              ($0, Self.artifactURL($0, under: plan.artifactDirectory))
+              ($0, Self.artifactURL($0, under: sourceRoot))
             }
           )
         }
@@ -506,13 +588,39 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         )
         let draft = try publisher.replaceCompletedTargets(
           snapshotFilesByTarget,
+          retiringOpaquePaths: ownedArtifactsByTarget.values.flatMap { $0 },
           in: initialDraft
         )
-        let prepared = try publisher.prepareGeneration(draft, planFingerprint: fingerprint)
-        try Self.prepareLiveArtifactDirectory(
-          plan.artifactDirectory,
-          from: prepared.draftDirectory,
-          marker: prepared.marker
+        var expectedArtifactDigestsByTarget = completedArtifactDigestsByTarget
+        expectedArtifactDigestsByTarget.merge(
+          Dictionary(
+            uniqueKeysWithValues: snapshotFilesByTarget.keys.compactMap { targetID in
+              guard publishedTargetSources[targetID] == .newerLiveOutput,
+                !generatedTargetSet.contains(targetID),
+                let publishedTarget = publishedTargetsByID[targetID]
+              else {
+                return nil
+              }
+              return (targetID, publishedTarget.artifactDigests)
+            }
+          )
+        ) { _, publishedDigests in
+          publishedDigests
+        }
+        let prepared = try publisher.prepareGeneration(
+          draft,
+          planFingerprint: fingerprint,
+          expectedArtifactDigestsByTarget: expectedArtifactDigestsByTarget
+        )
+        let retirementCandidates = ownedArtifactsByTarget.compactMap { targetID, artifacts in
+          generatedTargetSet.contains(targetID)
+            || publishedTargetSources[targetID] != .unverifiedLiveOutput
+            ? artifacts
+            : nil
+        }.flatMap { $0 }
+        let retiringArtifacts = try liveArtifactStore.artifactsExcludingEquivalentPaths(
+          retirementCandidates,
+          retainedArtifacts: prepared.marker.artifactsByTarget.values.flatMap { $0 }
         )
         let previousGenerationID = publication.currentGenerationID
         _ = try await store.preparePublication(
@@ -535,6 +643,17 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           wasCancelled,
           runID: runID,
           store: store
+        )
+        try Self.prepareLiveArtifactDirectory(
+          artifactDirectory,
+          from: prepared.finalDirectory,
+          marker: prepared.marker,
+          publishedArtifactsByTarget: prepared.marker.artifactsByTarget,
+          publishedTargetSources: prepared.marker.artifactsByTarget.mapValues {
+            _ in PublishedTargetSource.currentGeneration
+          },
+          stagingDirectory: Self.hydrationStagingDirectory(in: stateDirectory),
+          retiringArtifacts: retiringArtifacts
         )
         try publisher.switchCurrent(to: generationID)
         try injectPublicationFault(.afterCurrentPointerSwitch)
@@ -601,7 +720,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         runID: runID,
         status: finalSnapshot.status,
         targetCounts: finalSnapshot.counts,
-        artifactDirectory: plan.artifactDirectory,
+        artifactDirectory: artifactDirectory,
         stateDatabaseURL: databaseURL,
         warnings: warnings,
         targetFailures: Self.targetFailures(finalSnapshot.targets)
@@ -624,7 +743,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
       return PrivateHeaderGeneration.Result(
         plan: plan,
-        artifactDirectory: plan.artifactDirectory,
+        artifactDirectory: artifactDirectory,
         generatedTargets: generatedTargetIDs.map(
           PrivateHeaderGeneration.Target.generated(identifier:)),
         runID: runID,
@@ -642,7 +761,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         runID: runID,
         generationID: generationID,
         databaseURL: databaseURL,
-        artifactDirectory: plan.artifactDirectory,
+        artifactDirectory: artifactDirectory,
         stateDirectory: stateDirectory,
         store: store,
         publisher: publisher,
@@ -704,6 +823,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     try await Self.recoverTargetReplacements(
       in: stateDirectory,
       artifactDirectory: artifactDirectory,
+      currentMarker: try publisher.inspect().currentMarker,
       store: store
     )
     do {
@@ -920,46 +1040,105 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     )
   }
 
+  fileprivate static func reconcileLiveArtifactDirectory(
+    _ directory: URL,
+    publication: PrivateHeaderGeneration.PublicationSnapshot,
+    publishedDirectory: URL,
+    publishedArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
+    publishedTargetSources: [String: PublishedTargetSource],
+    stagingDirectory: URL,
+    store: GenerationStore
+  ) async throws {
+    let bootstrapReconciliation = try await store.pendingBootstrapReconciliation()
+    if let bootstrapReconciliation {
+      switch bootstrapReconciliation {
+      case .empty:
+        guard publication.currentGenerationID == nil else {
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "empty bootstrap reconciliation has a current generation"
+          )
+        }
+      case .generation(let generationID):
+        guard publication.currentGenerationID == generationID else {
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "bootstrap reconciliation generation \(generationID.rawValue) is not current"
+          )
+        }
+      }
+    }
+    try prepareLiveArtifactDirectory(
+      directory,
+      from: publication.currentMarker == nil ? nil : publishedDirectory,
+      marker: publication.currentMarker,
+      publishedArtifactsByTarget: publishedArtifactsByTarget,
+      publishedTargetSources: publishedTargetSources,
+      stagingDirectory: stagingDirectory,
+      validateUntrackedArtifacts: bootstrapReconciliation != nil
+    )
+    if let bootstrapReconciliation {
+      try await store.completeBootstrapReconciliation(bootstrapReconciliation)
+    }
+  }
+
   fileprivate static func prepareLiveArtifactDirectory(
     _ directory: URL,
     from publishedDirectory: URL?,
     marker: PrivateHeaderGeneration.GenerationMarkerSnapshot?,
     publishedArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]] = [:],
-    targetIDsCoveredByMarker: Set<String> = []
+    publishedTargetSources: [String: PublishedTargetSource] = [:],
+    stagingDirectory: URL,
+    validateUntrackedArtifacts: Bool = false,
+    retiringArtifacts: [PrivateHeaderGeneration.ArtifactPath] = []
   ) throws {
-    if let kind = try ManagedFileSystem.itemKind(at: directory) {
-      guard kind == .directory else {
-        throw ManagedFileSystem.Failure.unexpectedKind(
-          path: directory.path,
-          expected: "directory",
-          actual: kind
+    try ManagedFileSystem.ensureRealDirectory(directory)
+
+    let liveArtifactStore = PrivateHeaderGeneration.ArtifactStore(artifactRoot: directory)
+    if validateUntrackedArtifacts {
+      let retainedArtifacts = marker.map {
+        $0.artifactsByTarget.values.flatMap { $0 } + $0.opaquePaths
+      } ?? []
+      if let marker {
+        try liveArtifactStore.validateExistingArtifacts(
+          retainedArtifacts,
+          digests: marker.contentDigests
         )
       }
-    } else {
-      try ManagedFileSystem.ensureRealDirectory(directory)
+      let untrackedArtifacts = try liveArtifactStore.artifactsExcludingEquivalentPaths(
+        liveArtifactStore.inventoryRegularArtifacts(),
+        retainedArtifacts: retainedArtifacts
+      )
+      if let firstUntrackedArtifact = untrackedArtifacts.first {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "live output contains unauthenticated artifact \(firstUntrackedArtifact.rawValue) after state loss"
+        )
+      }
     }
 
     guard let publishedDirectory, let marker else { return }
-    let publishedArtifactSet = Set(publishedArtifactsByTarget.values.flatMap { $0 })
-    let supersededTargetIDs = Set(publishedArtifactsByTarget.keys)
-      .subtracting(targetIDsCoveredByMarker)
-    for targetID in targetIDsCoveredByMarker {
-      guard let markerArtifacts = marker.artifactsByTarget[targetID],
-        let publishedArtifacts = publishedArtifactsByTarget[targetID]
-      else { continue }
-      guard Set(markerArtifacts) == Set(publishedArtifacts) else {
-        throw PrivateHeaderGeneration.StateError.corruptPublication(
-          "current generation artifacts disagree with published target \(targetID)"
-        )
+    let publishedOwnedArtifacts = publishedArtifactsByTarget.values.flatMap { $0 }
+    let publishedArtifactSet = Set(publishedOwnedArtifacts)
+    let supersededTargetIDs = Set(
+      publishedTargetSources.compactMap { targetID, source in
+        source == .currentGeneration ? nil : targetID
       }
-    }
-    let staleArtifacts = supersededTargetIDs.flatMap {
-      marker.artifactsByTarget[$0] ?? []
-    }.filter { !publishedArtifactSet.contains($0) }
-    if !staleArtifacts.isEmpty {
-      _ = try PrivateHeaderGeneration.ArtifactStore(
-        artifactRoot: directory
-      ).cleanupManagedArtifacts(staleArtifacts)
+    )
+    let authoritativeArtifacts = Set(
+      publishedTargetSources.compactMap { targetID, source in
+        source == .currentGeneration ? marker.artifactsByTarget[targetID] : nil
+      }.flatMap { $0 }
+    )
+    let staleArtifacts = try liveArtifactStore.artifactsExcludingEquivalentPaths(
+      supersededTargetIDs.flatMap { marker.artifactsByTarget[$0] ?? [] },
+      retainedArtifacts: publishedOwnedArtifacts
+    )
+    let unavailableArtifacts = publishedTargetSources.compactMap { targetID, source in
+      source == .unavailable ? publishedArtifactsByTarget[targetID] : nil
+    }.flatMap { $0 }
+    let artifactsToRetire = PrivateHeaderGeneration.ArtifactStore.cleanupCandidates(
+      manifestArtifacts: staleArtifacts + unavailableArtifacts + retiringArtifacts
+    )
+    if !artifactsToRetire.isEmpty {
+      _ = try liveArtifactStore.cleanupManagedArtifacts(artifactsToRetire)
     }
     let publishedArtifacts = Set(
       marker.artifactsByTarget
@@ -968,6 +1147,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         .flatMap { $0 }
         + marker.opaquePaths.filter { !publishedArtifactSet.contains($0) }
     ).sorted { $0.rawValue < $1.rawValue }
+    let isRecoveringInterruptedHydration = try prepareHydrationStagingDirectory(
+      stagingDirectory
+    )
     for artifact in publishedArtifacts {
       let source = artifactURL(artifact, under: publishedDirectory)
       guard try ManagedFileSystem.itemKind(at: source) == .regular else {
@@ -976,10 +1158,21 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       let destination = artifactURL(artifact, under: directory)
       switch try ManagedFileSystem.itemKind(at: destination) {
       case nil:
-        try ManagedFileSystem.ensureRealDirectory(destination.deletingLastPathComponent())
-        try FileManager.default.copyItem(at: source, to: destination)
+        try liveArtifactStore.restoreArtifact(
+          artifact,
+          from: source,
+          stagingDirectory: stagingDirectory,
+          synchronizeExistingArtifact: isRecoveringInterruptedHydration
+        )
       case .regular:
-        break
+        if authoritativeArtifacts.contains(artifact) {
+          try liveArtifactStore.restoreArtifact(
+            artifact,
+            from: source,
+            stagingDirectory: stagingDirectory,
+            synchronizeExistingArtifact: isRecoveringInterruptedHydration
+          )
+        }
       case .some(let kind):
         throw ManagedFileSystem.Failure.unexpectedKind(
           path: destination.path,
@@ -988,6 +1181,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         )
       }
     }
+    try FileManager.default.removeItem(at: stagingDirectory)
+    try ManagedFileSystem.syncDirectory(stagingDirectory.deletingLastPathComponent())
   }
 
   fileprivate static func artifactURL(
@@ -1007,12 +1202,50 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     return try await store.targetIDsCoveredByGeneration(generationID)
   }
 
+  fileprivate static func publishedTargetSources(
+    marker: PrivateHeaderGeneration.GenerationMarkerSnapshot?,
+    publishedTargetsByID: [String: PrivateHeaderGeneration.TargetSnapshot],
+    targetIDsCoveredByMarker: Set<String>,
+    liveArtifactStore: PrivateHeaderGeneration.ArtifactStore
+  ) throws -> [String: PublishedTargetSource] {
+    try Dictionary(
+      uniqueKeysWithValues: publishedTargetsByID.map { targetID, publishedTarget in
+        guard targetIDsCoveredByMarker.contains(targetID) else {
+          guard !publishedTarget.artifactDigests.isEmpty else {
+            return (targetID, .unverifiedLiveOutput)
+          }
+          let matches = try liveArtifactStore.artifactsMatchDigests(
+            publishedTarget.artifacts,
+            digests: publishedTarget.artifactDigests
+          )
+          return (targetID, matches ? .newerLiveOutput : .unavailable)
+        }
+        guard let markerArtifacts = marker?.artifactsByTarget[targetID] else {
+          return (targetID, .unavailable)
+        }
+        guard Set(markerArtifacts) == Set(publishedTarget.artifacts) else {
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "current generation artifacts disagree with published target \(targetID)"
+          )
+        }
+        return (targetID, .currentGeneration)
+      }
+    )
+  }
+
   fileprivate static func availableLiveArtifactsByTarget(
     _ artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
+    publishedTargetSources: [String: PublishedTargetSource],
     under root: URL
   ) throws -> [String: [PrivateHeaderGeneration.ArtifactPath]] {
     var available: [String: [PrivateHeaderGeneration.ArtifactPath]] = [:]
     for targetID in artifactsByTarget.keys.sorted() {
+      guard let source = publishedTargetSources[targetID] else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "published target \(targetID) has no artifact source"
+        )
+      }
+      guard source == .currentGeneration || source == .newerLiveOutput else { continue }
       let artifacts = artifactsByTarget[targetID] ?? []
       var allArtifactsExist = true
       for artifact in artifacts {
@@ -1179,12 +1412,17 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     guard let executionMode = plan.options.executionMode else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
     }
+    guard !plan.options.resumeBehavior.isFresh else { return nil }
     let publisher = try ArtifactPublisher(
       artifactBaseDirectory: plan.output.baseDirectory,
       sourceLabel: plan.source.storageIdentifier
     )
     try publisher.prepareForLease()
     return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
+      let artifactDirectory = canonicalArtifactDirectory(
+        outputBase: publisher.artifactBaseDirectory,
+        sourceLabel: plan.source.storageIdentifier
+      )
       let stateDirectory = canonicalStateDirectory(
         outputBase: publisher.artifactBaseDirectory,
         sourceLabel: plan.source.storageIdentifier
@@ -1210,7 +1448,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try await recover(store: store, publisher: publisher, at: Date())
       try await recoverTargetReplacements(
         in: stateDirectory,
-        artifactDirectory: plan.artifactDirectory,
+        artifactDirectory: artifactDirectory,
+        currentMarker: try publisher.inspect().currentMarker,
         store: store
       )
       try publisher.cleanupStaging()
@@ -1223,23 +1462,35 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           .artifacts(path: publisher.stableURL.path)
         )
       }
-      let publishedArtifactsByTarget = try await store.publishedArtifactsByTarget()
+      let publishedTargetsByID = try await store.publishedTargetsByID()
+      let publishedArtifactsByTarget = publishedTargetsByID.mapValues(\.artifacts)
+      let liveArtifactStore = PrivateHeaderGeneration.ArtifactStore(
+        artifactRoot: artifactDirectory
+      )
       let coveredTargetIDs = try await targetIDsCoveredByCurrentGeneration(
         publication,
         store: store
       )
-      try prepareLiveArtifactDirectory(
-        plan.artifactDirectory,
-        from: publication.currentMarker == nil ? nil : publisher.stableURL,
+      let publishedTargetSources = try Self.publishedTargetSources(
         marker: publication.currentMarker,
+        publishedTargetsByID: publishedTargetsByID,
+        targetIDsCoveredByMarker: coveredTargetIDs,
+        liveArtifactStore: liveArtifactStore
+      )
+      try await reconcileLiveArtifactDirectory(
+        artifactDirectory,
+        publication: publication,
+        publishedDirectory: publisher.stableURL,
         publishedArtifactsByTarget: publishedArtifactsByTarget,
-        targetIDsCoveredByMarker: coveredTargetIDs
+        publishedTargetSources: publishedTargetSources,
+        stagingDirectory: hydrationStagingDirectory(in: stateDirectory),
+        store: store
       )
       let currentLiveArtifactsByTarget = try availableLiveArtifactsByTarget(
         publishedArtifactsByTarget,
-        under: plan.artifactDirectory
+        publishedTargetSources: publishedTargetSources,
+        under: artifactDirectory
       )
-      guard !plan.options.resumeBehavior.isFresh else { return nil }
       let summary = try await store.resumeSummary(
         planFingerprint: planFingerprint(
           plan,
@@ -1621,6 +1872,34 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
   }
 
+  fileprivate static func prepareHydrationStagingDirectory(_ url: URL) throws -> Bool {
+    do {
+      try ManagedFileSystem.ensureRealDirectory(url.deletingLastPathComponent())
+      guard let kind = try ManagedFileSystem.itemKind(at: url) else {
+        try ManagedFileSystem.ensureRealDirectory(url)
+        return false
+      }
+      guard kind == .directory else {
+        throw ManagedFileSystem.Failure.unexpectedKind(
+          path: url.path,
+          expected: "directory or missing",
+          actual: kind
+        )
+      }
+      for child in try FileManager.default.contentsOfDirectory(
+        at: url,
+        includingPropertiesForKeys: nil,
+        options: []
+      ) {
+        try FileManager.default.removeItem(at: child)
+      }
+      try ManagedFileSystem.syncDirectory(url)
+      return true
+    } catch let error as ManagedFileSystem.Failure {
+      throw stateFileSystemError(error)
+    }
+  }
+
   fileprivate static func cleanupStateStaging(in stateDirectory: URL) throws {
     let stagingDirectory = stateDirectory.appendingPathComponent("staging", isDirectory: true)
     do {
@@ -1654,9 +1933,14 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     stateDirectory.appendingPathComponent("replacements", isDirectory: true)
   }
 
+  fileprivate static func hydrationStagingDirectory(in stateDirectory: URL) -> URL {
+    stateDirectory.appendingPathComponent("hydration", isDirectory: true)
+  }
+
   fileprivate static func recoverTargetReplacements(
     in stateDirectory: URL,
     artifactDirectory: URL,
+    currentMarker: PrivateHeaderGeneration.GenerationMarkerSnapshot?,
     store: GenerationStore
   ) async throws {
     let replacementsRoot = replacementStagingDirectory(in: stateDirectory)
@@ -1673,10 +1957,23 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         publishedTarget?.status == .completed
         && publishedTarget?.lastSuccessfulRunID == replacement.runID
         && Set(publishedTarget?.artifacts ?? []) == Set(replacement.incomingArtifacts)
-      if !wasCommitted {
+        && publishedTarget?.artifactDigests == replacement.artifactDigests
+      let isPublishedByCurrentGeneration = currentMarker.map { marker in
+        guard Set(marker.artifactsByTarget[replacement.targetID] ?? [])
+          == Set(replacement.incomingArtifacts)
+        else {
+          return false
+        }
+        return replacement.artifactDigests.allSatisfy { artifact, digest in
+          marker.contentDigests[artifact] == digest
+        }
+      } ?? false
+      if wasCommitted || isPublishedByCurrentGeneration {
+        try artifactStore.finalizeReplacement(replacement)
+      } else {
         try artifactStore.rollbackReplacement(replacement)
+        try artifactStore.finalizeReplacement(replacement)
       }
-      try artifactStore.finalizeReplacement(replacement)
     }
     try PrivateHeaderGeneration.ArtifactStore.cleanupReplacementStaging(replacementsRoot)
   }
@@ -1699,6 +1996,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     } catch let error as ManagedFileSystem.Failure {
       throw stateFileSystemError(error)
     }
+  }
+
+  fileprivate static func canonicalArtifactDirectory(outputBase: URL, sourceLabel: String) -> URL {
+    outputBase
+      .appendingPathComponent("generated-headers", isDirectory: true)
+      .appendingPathComponent(sourceLabel, isDirectory: true)
   }
 
   fileprivate static func canonicalStateDirectory(outputBase: URL, sourceLabel: String) -> URL {

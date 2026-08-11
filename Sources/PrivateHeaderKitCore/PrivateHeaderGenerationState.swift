@@ -188,6 +188,7 @@ extension PrivateHeaderGeneration {
     package let lastSuccessfulRunID: RunID
     package let status: RunTargetStatus
     package let artifacts: [ArtifactPath]
+    package let artifactDigests: [ArtifactPath: String]
     package let updatedAt: Date
   }
 
@@ -312,6 +313,23 @@ extension PrivateHeaderGeneration {
     package let artifactChecksum: String
     package let artifactsByTarget: [String: [ArtifactPath]]
     package let opaquePaths: [ArtifactPath]
+    package let contentDigests: [ArtifactPath: String]
+
+    package init(
+      generationID: GenerationID,
+      planFingerprint: String,
+      artifactChecksum: String,
+      artifactsByTarget: [String: [ArtifactPath]],
+      opaquePaths: [ArtifactPath],
+      contentDigests: [ArtifactPath: String] = [:]
+    ) {
+      self.generationID = generationID
+      self.planFingerprint = planFingerprint
+      self.artifactChecksum = artifactChecksum
+      self.artifactsByTarget = artifactsByTarget
+      self.opaquePaths = opaquePaths
+      self.contentDigests = contentDigests
+    }
   }
 
   package struct PublicationSnapshot: Equatable, Sendable {
