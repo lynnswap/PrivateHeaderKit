@@ -257,6 +257,84 @@ private func processIsLive(_ processIdentifier: pid_t) throws -> Bool {
     try liveProcessIdentity(processIdentifier) != nil
 }
 
+private func spawnImmediateProcessGroupLeader() throws -> pid_t {
+    var attributes: posix_spawnattr_t?
+    let initializeStatus = posix_spawnattr_init(&attributes)
+    guard initializeStatus == 0 else {
+        throw ToolingError.message(
+            "initialize process attributes failed (errno \(initializeStatus))"
+        )
+    }
+    defer { posix_spawnattr_destroy(&attributes) }
+
+    let processGroupStatus = posix_spawnattr_setpgroup(&attributes, 0)
+    guard processGroupStatus == 0 else {
+        throw ToolingError.message(
+            "configure child process group failed (errno \(processGroupStatus))"
+        )
+    }
+    let flagsStatus = posix_spawnattr_setflags(
+        &attributes,
+        Int16(POSIX_SPAWN_SETPGROUP)
+    )
+    guard flagsStatus == 0 else {
+        throw ToolingError.message(
+            "configure process attributes failed (errno \(flagsStatus))"
+        )
+    }
+
+    let executable = "/usr/bin/true"
+    guard let argument = strdup(executable) else {
+        throw ToolingError.message("allocate process argument failed")
+    }
+    defer { free(argument) }
+    var arguments: [UnsafeMutablePointer<CChar>?] = [argument, nil]
+    var processIdentifier: pid_t = 0
+    let spawnStatus = executable.withCString { executablePointer in
+        arguments.withUnsafeMutableBufferPointer { buffer in
+            posix_spawn(
+                &processIdentifier,
+                executablePointer,
+                nil,
+                &attributes,
+                buffer.baseAddress,
+                environ
+            )
+        }
+    }
+    guard spawnStatus == 0 else {
+        throw ToolingError.message("spawn process failed (errno \(spawnStatus))")
+    }
+    return processIdentifier
+}
+
+private func exitedChildRemainsWaitable(_ processIdentifier: pid_t) throws -> Bool {
+    while true {
+        var info = siginfo_t()
+        errno = 0
+        guard waitid(
+            P_PID,
+            id_t(processIdentifier),
+            &info,
+            WEXITED | WNOWAIT | WNOHANG
+        ) == 0 else {
+            let errorCode = errno
+            if errorCode == EINTR {
+                continue
+            }
+            throw ToolingError.message(
+                "inspect waitable child failed (errno \(errorCode == 0 ? EIO : errorCode))"
+            )
+        }
+        return info.si_pid == processIdentifier
+    }
+}
+
+private func reapChild(_ processIdentifier: pid_t) {
+    var status: Int32 = 0
+    while waitpid(processIdentifier, &status, 0) < 0, errno == EINTR {}
+}
+
 private func fixtureStillHoldsExclusiveLock(at path: String) -> Bool {
     let descriptor = path.withCString { open($0, O_RDWR) }
     guard descriptor >= 0 else { return false }
@@ -935,6 +1013,18 @@ struct StreamingProcessRunnerTests {
         #expect(result.status == SIGTERM)
         #expect(result.wasKilled)
         #expect(result.lastLines == ["Terminated by signal \(SIGTERM)"])
+    }
+
+    @Test func waitableLeaderAnchorsIdentityThroughProcessGroupCompletion() async throws {
+        let processIdentifier = try spawnImmediateProcessGroupLeader()
+        defer { reapChild(processIdentifier) }
+
+        let leader = try await waitForOwnedProcessGroupLeaderExit(processIdentifier)
+        #expect(leader.processIdentifier == processIdentifier)
+        #expect(try exitedChildRemainsWaitable(processIdentifier))
+
+        try await completeOwnedProcessGroup(leader)
+        #expect(try exitedChildRemainsWaitable(processIdentifier))
     }
 
     @Test(arguments: ["CHILD_PID=0\n", "CHILD_PID=-1\n"])

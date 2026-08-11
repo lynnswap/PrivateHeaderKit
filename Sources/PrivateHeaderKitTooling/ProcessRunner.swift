@@ -7,7 +7,7 @@ import Subprocess
 #endif
 
 #if os(macOS)
-private struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertible {
+struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertible {
     let operation: String
     let processGroupID: pid_t
     let errorCode: Int32
@@ -21,6 +21,23 @@ private enum CapturedCommandStreamResult: Sendable {
     case standardOutputComplete
     case standardErrorComplete([String])
 }
+
+struct WaitableProcessGroupLeader: Sendable {
+    let processIdentifier: pid_t
+
+    fileprivate init(processIdentifier: pid_t) {
+        self.processIdentifier = processIdentifier
+    }
+}
+
+private let ownedProcessGroupTeardownSequence: [TeardownStep] = [
+    // The leader gets a graceful interval. If it exits first, the lexical ownership
+    // boundary below completes teardown for any remaining descendants.
+    .gracefulShutDown(
+        toProcessGroup: true,
+        allowedDurationToNextStep: .seconds(5)
+    ),
+]
 
 private func processGroupTeardownError(
     operation: String,
@@ -142,14 +159,73 @@ private func processGroupHasLiveMember(
     }
 }
 
-private func completeOwnedProcessGroup(
-    _ processGroupID: pid_t?
-) async throws(ProcessGroupTeardownError) {
-    guard let processGroupID else { return }
-    precondition(processGroupID > 0)
+func waitForOwnedProcessGroupLeaderExit(
+    _ processIdentifier: pid_t
+) async throws(ProcessGroupTeardownError) -> WaitableProcessGroupLeader {
+    guard processIdentifier > 0 else {
+        throw processGroupTeardownError(
+            operation: "wait for leader exit",
+            processGroupID: processIdentifier,
+            errorCode: EINVAL
+        )
+    }
 
-    // swift-subprocess observes only the group leader. Once it returns, any remaining live
-    // descendants are orphaned from this command contract and receive no separate grace period.
+    let outcome: Result<WaitableProcessGroupLeader, ProcessGroupTeardownError> =
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                while true {
+                    var info = siginfo_t()
+                    errno = 0
+                    if waitid(
+                        P_PID,
+                        id_t(processIdentifier),
+                        &info,
+                        WEXITED | WNOWAIT
+                    ) == 0 {
+                        guard info.si_pid == processIdentifier else {
+                            continuation.resume(returning: .failure(
+                                processGroupTeardownError(
+                                    operation: "verify waitable leader",
+                                    processGroupID: processIdentifier,
+                                    errorCode: EIO
+                                )
+                            ))
+                            return
+                        }
+                        continuation.resume(returning: .success(
+                            WaitableProcessGroupLeader(
+                                processIdentifier: processIdentifier
+                            )
+                        ))
+                        return
+                    }
+
+                    let errorCode = errno
+                    if errorCode == EINTR {
+                        continue
+                    }
+                    continuation.resume(returning: .failure(
+                        processGroupTeardownError(
+                            operation: "wait for leader exit",
+                            processGroupID: processIdentifier,
+                            errorCode: errorCode == 0 ? EIO : errorCode
+                        )
+                    ))
+                    return
+                }
+            }
+        }
+    return try outcome.get()
+}
+
+func completeOwnedProcessGroup(
+    _ leader: WaitableProcessGroupLeader
+) async throws(ProcessGroupTeardownError) {
+    let processGroupID = leader.processIdentifier
+
+    // waitid(WNOWAIT) keeps the leader as our waitable child until this body returns to
+    // swift-subprocess. That kernel-owned identity prevents this numeric PID/PGID from being
+    // recycled while lingering descendants are signaled and observed to terminate.
     while true {
         if Darwin.kill(-processGroupID, SIGKILL) == 0 {
             await Task.yield()
@@ -189,45 +265,31 @@ private func completeOwnedProcessGroup(
     }
 }
 
-private final class OwnedProcessGroup: @unchecked Sendable {
-    private let lock = NSLock()
-    private var processGroupID: pid_t?
-
-    func recordLaunch(processIdentifier: pid_t) {
-        precondition(processIdentifier > 0)
-        lock.lock()
-        precondition(processGroupID == nil)
-        processGroupID = processIdentifier
-        lock.unlock()
-    }
-
-    func complete() async throws(ProcessGroupTeardownError) {
-        try await completeOwnedProcessGroup(takeProcessGroupID())
-    }
-
-    private func takeProcessGroupID() -> pid_t? {
-        lock.lock()
-        let takenProcessGroupID = processGroupID
-        processGroupID = nil
-        lock.unlock()
-        return takenProcessGroupID
-    }
-}
-
-private func withOwnedProcessGroup<Result>(
-    _ operation: (OwnedProcessGroup) async throws -> Result
-) async throws -> Result {
-    let ownedProcessGroup = OwnedProcessGroup()
-    let result: Result
+private func withOwnedProcessGroup<
+    Success: Sendable,
+    Input: InputProtocol,
+    Output: OutputProtocol,
+    FailureOutput: OutputProtocol
+>(
+    execution: Execution<Input, Output, FailureOutput>,
+    operation: () async throws -> Success
+) async throws -> Success {
+    let outcome: Result<Success, any Error>
     do {
-        result = try await operation(ownedProcessGroup)
+        outcome = .success(try await operation())
     } catch {
-        let operationError = error
-        try await ownedProcessGroup.complete()
-        throw operationError
+        // A body failure must reach process teardown without first waiting for a leader that
+        // may otherwise run indefinitely. Cancellation can start the same teardown concurrently;
+        // swift-subprocess shares its process monitor across those idempotent waiters.
+        await execution.teardown(using: ownedProcessGroupTeardownSequence)
+        outcome = .failure(error)
     }
-    try await ownedProcessGroup.complete()
-    return result
+
+    let leader = try await waitForOwnedProcessGroupLeaderExit(
+        execution.processIdentifier.value
+    )
+    try await completeOwnedProcessGroup(leader)
+    return try outcome.get()
 }
 #endif
 
@@ -276,18 +338,15 @@ public struct ProcessRunner: CommandRunning, Sendable {
         for configuration in configurations {
             try Task.checkCancellation()
             do {
-                let result = try await withOwnedProcessGroup { ownedProcessGroup in
-                    try await Subprocess.run(
-                        configuration,
-                        input: .none,
-                        // Capture is an exact command contract: callers parse complete JSON and build
-                        // metadata, so truncating at the library default would corrupt successful output.
-                        output: .bytes(limit: .max),
-                        error: .bytes(limit: .max)
-                    ) { execution in
-                        ownedProcessGroup.recordLaunch(
-                            processIdentifier: execution.processIdentifier.value
-                        )
+                let result = try await Subprocess.run(
+                    configuration,
+                    input: .none,
+                    // Capture is an exact command contract: callers parse complete JSON and build
+                    // metadata, so truncating at the library default would corrupt successful output.
+                    output: .bytes(limit: .max),
+                    error: .bytes(limit: .max)
+                ) { execution in
+                    try await withOwnedProcessGroup(execution: execution) {
                     }
                 }
                 // Preserve cancellation only after the owned process group has no live member.
@@ -340,16 +399,13 @@ public struct ProcessRunner: CommandRunning, Sendable {
         for configuration in configurations {
             try Task.checkCancellation()
             do {
-                let result = try await withOwnedProcessGroup { ownedProcessGroup in
-                    try await Subprocess.run(
-                        configuration,
-                        input: .none,
-                        output: .sequence,
-                        error: .sequence
-                    ) { execution in
-                        ownedProcessGroup.recordLaunch(
-                            processIdentifier: execution.processIdentifier.value
-                        )
+                let result = try await Subprocess.run(
+                    configuration,
+                    input: .none,
+                    output: .sequence,
+                    error: .sequence
+                ) { execution in
+                    try await withOwnedProcessGroup(execution: execution) {
                         return try await withThrowingTaskGroup(
                             of: CapturedCommandStreamResult.self
                         ) { group in
@@ -507,16 +563,13 @@ public struct ProcessRunner: CommandRunning, Sendable {
         for configuration in configurations {
             try Task.checkCancellation()
             do {
-                let result = try await withOwnedProcessGroup { ownedProcessGroup in
-                    try await Subprocess.run(
-                        configuration,
-                        input: .none,
-                        output: .sequence,
-                        error: .combinedWithOutput
-                    ) { execution in
-                        ownedProcessGroup.recordLaunch(
-                            processIdentifier: execution.processIdentifier.value
-                        )
+                let result = try await Subprocess.run(
+                    configuration,
+                    input: .none,
+                    output: .sequence,
+                    error: .combinedWithOutput
+                ) { execution in
+                    try await withOwnedProcessGroup(execution: execution) {
                         var collector = StreamingOutputCollector()
                         for try await buffer in execution.standardOutput {
                             let bytes = buffer.withUnsafeBytes { Array($0) }
@@ -635,15 +688,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
         }
         var platformOptions = PlatformOptions()
         platformOptions.createSession = true
-        platformOptions.teardownSequence = [
-            // The leader gets a graceful interval. If it exits first, any remaining descendants
-            // are orphaned from the command contract and the ownership boundary completes
-            // teardown.
-            .gracefulShutDown(
-                toProcessGroup: true,
-                allowedDurationToNextStep: .seconds(5)
-            ),
-        ]
+        platformOptions.teardownSequence = ownedProcessGroupTeardownSequence
         return executablePaths.map { executablePath in
             Configuration(
                 executable: .path(.init(executablePath)),
