@@ -64,6 +64,16 @@ package enum ManagedFileSystem {
     }
   }
 
+  package static func atomicRename(from source: URL, to destination: URL) throws {
+    guard rename(source.path, destination.path) == 0 else {
+      throw Failure.posix(
+        operation: "rename",
+        path: "\(source.path) -> \(destination.path)",
+        errno: errno
+      )
+    }
+  }
+
   @discardableResult
   package static func requireRegularFileOrMissing(_ url: URL) throws -> Bool {
     guard let kind = try itemKind(at: url) else { return false }

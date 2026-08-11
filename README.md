@@ -7,6 +7,11 @@ Generate private framework headers for iOS and macOS.
 - iOS: dump from simulator runtimes and dyld shared caches.
 - macOS: dump from host `/System/Library/{Frameworks,PrivateFrameworks}`.
 
+## Requirements
+
+The PrivateHeaderKit CLI, installer, and internal helpers support Darwin/macOS
+hosts only. Non-Darwin hosts such as Linux are unsupported.
+
 ## Command Model
 
 PrivateHeaderKit exposes one user-facing command:

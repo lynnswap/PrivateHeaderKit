@@ -7,6 +7,11 @@ iOS / macOS の private framework ヘッダを生成します。
 - iOS: Simulator ランタイムと dyld shared cache から生成
 - macOS: ホストの `/System/Library/{Frameworks,PrivateFrameworks}` から生成
 
+## 動作要件
+
+PrivateHeaderKit の CLI、installer、internal helper は Darwin / macOS host のみを
+サポートします。Linux などの non-Darwin host はサポート対象外です。
+
 ## コマンド構成
 
 PrivateHeaderKit がユーザー向けに公開するコマンドは 1 つです。
