@@ -735,12 +735,14 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
       opaquePaths: []
     )
 
-    #expect(throws: ArtifactPublisher.PublisherError.artifactCollision(
-      firstPath: "Frameworks/Foo/Headers/A.h",
-      firstOwner: "framework:Foo",
-      secondPath: "Frameworks/Foo/Headers/a.h",
-      secondOwner: "framework:Foo"
-    )) {
+    #expect(
+      throws: ArtifactPublisher.PublisherError.artifactCollision(
+        firstPath: "Frameworks/Foo/Headers/A.h",
+        firstOwner: "framework:Foo",
+        secondPath: "Frameworks/Foo/Headers/a.h",
+        secondOwner: "framework:Foo"
+      )
+    ) {
       _ = try fixture.publisher.prepareGeneration(forged, planFingerprint: "fingerprint")
     }
   }
@@ -767,12 +769,14 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     marker["artifactChecksum"] = "intentionally-invalid"
     try JSONSerialization.data(withJSONObject: marker).write(to: markerURL)
 
-    #expect(throws: ArtifactPublisher.PublisherError.artifactCollision(
-      firstPath: "Frameworks/Foo/Headers/Foo.h",
-      firstOwner: "framework:Foo",
-      secondPath: "Frameworks/Foo/Headers/foo.h",
-      secondOwner: "framework:Bar"
-    )) {
+    #expect(
+      throws: ArtifactPublisher.PublisherError.artifactCollision(
+        firstPath: "Frameworks/Foo/Headers/Foo.h",
+        firstOwner: "framework:Foo",
+        secondPath: "Frameworks/Foo/Headers/foo.h",
+        secondOwner: "framework:Bar"
+      )
+    ) {
       _ = try fixture.publisher.inspect()
     }
   }
@@ -810,6 +814,52 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
       try String(
         contentsOf: fixture.publisher.stableURL.appendingPathComponent("Frameworks/Foo/Foo.h"),
         encoding: .utf8) == "new")
+  }
+
+  @Test func prepareGenerationRemovesFinderMetadataFromManagedSnapshots() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    var draft = try fixture.publisher.beginDraft(
+      generationID: .init(rawValue: "generation-finder-metadata"),
+      allowLegacyMigration: false
+    )
+    draft = try fixture.publisher.applyCompletedTarget(
+      targetID: "framework:Foo",
+      files: [
+        .init(rawValue: "Frameworks/Foo/Foo.h"): try fixture.sourceFile(contents: "header")
+      ],
+      to: draft
+    )
+    let rootMetadata = draft.directory.appendingPathComponent(".DS_Store")
+    let nestedMetadata = draft.directory.appendingPathComponent("Frameworks/Foo/.DS_Store")
+    try Data("finder".utf8).write(to: rootMetadata)
+    try Data("finder".utf8).write(to: nestedMetadata)
+
+    let prepared = try fixture.publisher.prepareGeneration(
+      draft,
+      planFingerprint: "fingerprint"
+    )
+
+    #expect(!FileManager.default.fileExists(atPath: rootMetadata.path))
+    #expect(!FileManager.default.fileExists(atPath: nestedMetadata.path))
+    #expect(
+      prepared.marker.artifactsByTarget["framework:Foo"] == [
+        .init(rawValue: "Frameworks/Foo/Foo.h")
+      ])
+  }
+
+  @Test func inventoryMismatchDescriptionIsBoundedAndShowsTheDifference() {
+    let expected = (0..<1_000).map { "Expected/\($0).h" }
+    let actual = (0..<1_000).map { "Actual/\($0).h" }
+    let description = ArtifactPublisher.PublisherError.inventoryMismatch(
+      expected: expected,
+      actual: actual
+    ).description
+
+    #expect(description.count < 500)
+    #expect(description.contains("missing Expected/0.h"))
+    #expect(description.contains("unexpected Actual/0.h"))
+    #expect(description.contains("and 995 more"))
   }
 }
 

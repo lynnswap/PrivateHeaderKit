@@ -54,7 +54,7 @@ package struct ArtifactPublisher: Sendable {
       case .artifactCollision(let firstPath, let firstOwner, let secondPath, let secondOwner):
         "artifact paths collide: \(firstOwner):\(firstPath) and \(secondOwner):\(secondPath)"
       case .inventoryMismatch(let expected, let actual):
-        "generation inventory mismatch; expected \(expected), actual \(actual)"
+        Self.inventoryMismatchDescription(expected: expected, actual: actual)
       case .markerMismatch(let message):
         "generation marker mismatch: \(message)"
       case .posix(let operation, let path, let error):
@@ -62,6 +62,32 @@ package struct ArtifactPublisher: Sendable {
       case .atomicSwapUnsupported(let path):
         "filesystem does not support atomic legacy directory swap at \(path)"
       }
+    }
+
+    private static func inventoryMismatchDescription(
+      expected: [String],
+      actual: [String]
+    ) -> String {
+      let missing = Array(Set(expected).subtracting(actual)).sorted()
+      let unexpected = Array(Set(actual).subtracting(expected)).sorted()
+      var details: [String] = []
+      if !missing.isEmpty {
+        details.append("missing \(summarizedPaths(missing))")
+      }
+      if !unexpected.isEmpty {
+        details.append("unexpected \(summarizedPaths(unexpected))")
+      }
+      if details.isEmpty {
+        details.append("expected \(expected.count) files, found \(actual.count)")
+      }
+      return "generation inventory mismatch: " + details.joined(separator: "; ")
+    }
+
+    private static func summarizedPaths(_ paths: [String]) -> String {
+      let limit = 5
+      let visible = paths.prefix(limit).joined(separator: ", ")
+      let remaining = paths.count - min(paths.count, limit)
+      return remaining == 0 ? visible : "\(visible), and \(remaining) more"
     }
   }
 
@@ -136,9 +162,8 @@ package struct ArtifactPublisher: Sendable {
         )
       }
 
-      var ownedPathByCanonicalPath: [
-        PrivateHeaderGeneration.ArtifactPath: PrivateHeaderGeneration.ArtifactPath
-      ] = [:]
+      var ownedPathByCanonicalPath:
+        [PrivateHeaderGeneration.ArtifactPath: PrivateHeaderGeneration.ArtifactPath] = [:]
       for ownedPath in ownedPaths.sorted(by: ArtifactPublisher.artifactPathPrecedes) {
         ownedPathByCanonicalPath[ownedPath] = ownedPath
         let components = ownedPath.rawValue.split(separator: "/").map(String.init)
@@ -258,9 +283,10 @@ package struct ArtifactPublisher: Sendable {
         return
       }
       let matchesRecordedPrefix = existing.recordedByOwnership && existing.path == path
-      let matchesObservedDirectory = existing.observedDirectoryPath.map {
-        $0.rawValue.utf8.elementsEqual(path.rawValue.utf8)
-      } ?? false
+      let matchesObservedDirectory =
+        existing.observedDirectoryPath.map {
+          $0.rawValue.utf8.elementsEqual(path.rawValue.utf8)
+        } ?? false
       guard existing.kind == .directory,
         matchesObservedDirectory || (existing.observedDirectoryPath == nil && matchesRecordedPrefix)
       else {
@@ -441,11 +467,122 @@ package struct ArtifactPublisher: Sendable {
     files: [PrivateHeaderGeneration.ArtifactPath: URL],
     to draft: Draft
   ) throws -> Draft {
-    let plan = try targetMutationPlan(targetID: targetID, files: files, draft: draft)
-    for path in plan.pathsToRemove {
+    try applyCompletedTargets([targetID: files], to: draft)
+  }
+
+  package func validateTargetReplacement(
+    targetID: String,
+    artifacts: [PrivateHeaderGeneration.ArtifactPath],
+    existingArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
+    opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
+  ) throws {
+    var prospectiveArtifactsByTarget = existingArtifactsByTarget
+    prospectiveArtifactsByTarget[targetID] = artifacts
+    let incomingKeys = Set(artifacts.map(Self.lexicalPathKey))
+    let remainingOpaquePaths = opaquePaths.filter {
+      !incomingKeys.contains(Self.lexicalPathKey($0))
+    }
+    try Self.validatePortableOwnership(
+      artifactsByTarget: prospectiveArtifactsByTarget,
+      opaquePaths: remainingOpaquePaths
+    )
+  }
+
+  package func applyCompletedTargets(
+    _ filesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]],
+    to draft: Draft
+  ) throws -> Draft {
+    guard !filesByTarget.isEmpty else { return draft }
+    guard try itemKind(at: draft.directory) == .directory else {
+      throw PublisherError.unexpectedItem(
+        path: draft.directory.path,
+        description: "expected draft directory"
+      )
+    }
+
+    var artifactsByTarget = draft.artifactsByTarget
+    var incomingFiles:
+      [(targetID: String, path: PrivateHeaderGeneration.ArtifactPath, source: URL)] = []
+    var incomingPathKeys: Set<[UInt8]> = []
+    var pathsToRemove: [PrivateHeaderGeneration.ArtifactPath] = []
+
+    for targetID in filesByTarget.keys.sorted() {
+      guard let files = filesByTarget[targetID], !files.isEmpty else {
+        throw PublisherError.missingArtifact("target \(targetID) produced no files")
+      }
+      let sortedFiles = files.sorted { $0.key.rawValue < $1.key.rawValue }
+      artifactsByTarget[targetID] = sortedFiles.map(\.key)
+      pathsToRemove += draft.artifactsByTarget[targetID] ?? []
+      for (path, source) in sortedFiles {
+        incomingPathKeys.insert(Self.lexicalPathKey(path))
+        incomingFiles.append((targetID, path, source))
+      }
+    }
+
+    let claimedOpaquePaths = draft.opaquePaths.filter {
+      incomingPathKeys.contains(Self.lexicalPathKey($0))
+    }
+    pathsToRemove += claimedOpaquePaths
+    var seenRemovalKeys: Set<[UInt8]> = []
+    pathsToRemove =
+      pathsToRemove
+      .filter { seenRemovalKeys.insert(Self.lexicalPathKey($0)).inserted }
+      .sorted { Self.lexicalStringPrecedes($0.rawValue, $1.rawValue) }
+    let opaquePaths = draft.opaquePaths.filter {
+      !incomingPathKeys.contains(Self.lexicalPathKey($0))
+    }.sorted {
+      Self.lexicalStringPrecedes($0.rawValue, $1.rawValue)
+    }
+
+    try Self.validatePortableOwnership(
+      artifactsByTarget: draft.artifactsByTarget,
+      opaquePaths: draft.opaquePaths
+    )
+    try Self.validatePortableOwnership(
+      artifactsByTarget: artifactsByTarget,
+      opaquePaths: opaquePaths
+    )
+    for path in pathsToRemove {
+      try preflightRemoval(path, from: draft.directory)
+    }
+
+    let existingItems = try inventoryItems(
+      at: draft.directory,
+      allowHidden: true,
+      allowedExtensions: nil
+    )
+    let namespace = try ProspectiveNamespace(
+      ownedPaths: draft.artifactsByTarget.values.flatMap { $0 } + draft.opaquePaths,
+      existingDirectories: existingItems.compactMap {
+        $0.kind == .directory ? $0.path : nil
+      },
+      existingRegularPaths: existingItems.compactMap {
+        $0.kind == .regular ? $0.path : nil
+      },
+      pathsToRemove: pathsToRemove
+    )
+
+    var copies: [TargetMutationPlan.Copy] = []
+    copies.reserveCapacity(incomingFiles.count)
+    for incoming in incomingFiles.sorted(by: {
+      if $0.path != $1.path { return $0.path.rawValue < $1.path.rawValue }
+      return $0.targetID < $1.targetID
+    }) {
+      guard try itemKind(at: incoming.source) == .regular else {
+        throw PublisherError.unexpectedItem(
+          path: incoming.source.path,
+          description: "expected regular file"
+        )
+      }
+      let destination = try artifactURL(incoming.path, in: draft.directory)
+      try namespace.preflightDestination(incoming.path, destination: destination)
+      copies.append(.init(source: incoming.source, destination: destination))
+    }
+
+    for path in pathsToRemove {
       try removeOwnedArtifact(path, from: draft.directory)
     }
-    for copy in plan.copies {
+    for copy in copies {
       guard try itemKind(at: copy.destination) == nil else {
         throw PublisherError.unexpectedItem(
           path: copy.destination.path,
@@ -461,8 +598,8 @@ package struct ArtifactPublisher: Sendable {
     return Draft(
       generationID: draft.generationID,
       directory: draft.directory,
-      artifactsByTarget: plan.artifactsByTarget,
-      opaquePaths: plan.opaquePaths
+      artifactsByTarget: artifactsByTarget,
+      opaquePaths: opaquePaths
     )
   }
 
@@ -489,6 +626,7 @@ package struct ArtifactPublisher: Sendable {
     _ draft: Draft,
     planFingerprint: String
   ) throws -> PreparedGeneration {
+    try removeFinderMetadata(in: draft.directory)
     try Self.validatePortableOwnership(
       artifactsByTarget: draft.artifactsByTarget,
       opaquePaths: draft.opaquePaths
@@ -1111,6 +1249,45 @@ extension ArtifactPublisher {
     }
   }
 
+  fileprivate func removeFinderMetadata(in root: URL) throws {
+    var enumerationFailure: (URL, any Error)?
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: root,
+        includingPropertiesForKeys: nil,
+        options: [],
+        errorHandler: { url, error in
+          enumerationFailure = (url, error)
+          return false
+        }
+      )
+    else {
+      throw PublisherError.unexpectedItem(
+        path: root.path,
+        description: "could not enumerate directory"
+      )
+    }
+    var metadataURLs: [URL] = []
+    for case let url as URL in enumerator where url.lastPathComponent == ".DS_Store" {
+      guard try itemKind(at: url) == .regular else {
+        throw PublisherError.unexpectedItem(
+          path: url.path,
+          description: "Finder metadata path is not a regular file"
+        )
+      }
+      metadataURLs.append(url)
+    }
+    if let (url, error) = enumerationFailure {
+      throw PublisherError.unexpectedItem(
+        path: url.path,
+        description: "directory enumeration failed: \(error)"
+      )
+    }
+    for url in metadataURLs {
+      try FileManager.default.removeItem(at: url)
+    }
+  }
+
   fileprivate func inventoryItems(
     at root: URL,
     allowHidden: Bool,
@@ -1138,11 +1315,14 @@ extension ArtifactPublisher {
     var items: [InventoriedItem] = []
     for case let url as URL in enumerator {
       let relative = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
-      if !allowHidden, relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
-        throw PublisherError.unexpectedItem(path: url.path, description: "hidden staging payload")
-      }
       guard let kind = try itemKind(at: url) else {
         throw PublisherError.missingArtifact(url.path)
+      }
+      if url.lastPathComponent == ".DS_Store", kind == .regular {
+        continue
+      }
+      if !allowHidden, relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
+        throw PublisherError.unexpectedItem(path: url.path, description: "hidden staging payload")
       }
       switch kind {
       case .directory:

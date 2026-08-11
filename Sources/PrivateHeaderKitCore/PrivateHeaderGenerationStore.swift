@@ -145,10 +145,17 @@ package actor GenerationStore {
     }
   }
 
-  package func recordTargetAttempt(
+  package func prepareTargetPublication(
     _ result: PrivateHeaderGeneration.TargetAttemptResult,
     in runID: PrivateHeaderGeneration.RunID
   ) throws {
+    guard result.status == .completed else {
+      throw PrivateHeaderGeneration.StateError.invalidTransition(
+        entity: "target publication \(result.targetID)",
+        from: result.status.rawValue,
+        to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
+      )
+    }
     try databaseQueue.write { db in
       let status = try String.fetchOne(
         db,
@@ -157,28 +164,53 @@ package actor GenerationStore {
       )
       guard status == PrivateHeaderGeneration.RunTargetStatus.running.rawValue else {
         throw PrivateHeaderGeneration.StateError.invalidTransition(
-          entity: "target attempt \(result.targetID)",
+          entity: "target publication \(result.targetID)",
           from: status ?? "missing",
-          to: result.status.rawValue
+          to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
         )
       }
       try db.execute(
         sql: """
           UPDATE runTargets
-          SET displayName = ?, kind = ?, status = ?, failureSummary = ?, artifactSet = ?, updatedAt = ?
+          SET displayName = ?, kind = ?, artifactSet = ?, updatedAt = ?
           WHERE runID = ? AND targetID = ?
           """,
         arguments: [
           result.displayName,
           result.kind,
-          result.status.rawValue,
-          result.failureSummary,
           try Self.encodeArtifacts(result.artifacts),
           result.completedAt.timeIntervalSinceReferenceDate,
           runID.rawValue,
           result.targetID,
         ]
       )
+    }
+  }
+
+  package func recordTargetAttempt(
+    _ result: PrivateHeaderGeneration.TargetAttemptResult,
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    try databaseQueue.write { db in
+      try Self.updateRunTarget(db, result: result, in: runID)
+      try faultInjector(.afterRunTargetWrite)
+    }
+  }
+
+  package func recordPublishedTargetAttempt(
+    _ result: PrivateHeaderGeneration.TargetAttemptResult,
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    guard result.status == .completed else {
+      throw PrivateHeaderGeneration.StateError.invalidTransition(
+        entity: "published target attempt \(result.targetID)",
+        from: result.status.rawValue,
+        to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
+      )
+    }
+    try databaseQueue.write { db in
+      try Self.updateRunTarget(db, result: result, in: runID)
+      try Self.upsertPublishedTarget(db, result: result, in: runID)
       try faultInjector(.afterRunTargetWrite)
     }
   }
@@ -594,6 +626,19 @@ package actor GenerationStore {
     }
   }
 
+  package func publishedArtifactsByTarget()
+    throws -> [String: [PrivateHeaderGeneration.ArtifactPath]]
+  {
+    try databaseQueue.read { db in
+      try Dictionary(
+        uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT * FROM targets").map { row in
+          let snapshot = try Self.targetSnapshot(row)
+          return (snapshot.targetID, snapshot.artifacts)
+        }
+      )
+    }
+  }
+
   package func recordRunLog(
     runID: PrivateHeaderGeneration.RunID,
     kind: String,
@@ -697,6 +742,67 @@ package actor GenerationStore {
 }
 
 extension GenerationStore {
+  fileprivate static func updateRunTarget(
+    _ db: Database,
+    result: PrivateHeaderGeneration.TargetAttemptResult,
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    let status = try String.fetchOne(
+      db,
+      sql: "SELECT status FROM runTargets WHERE runID = ? AND targetID = ?",
+      arguments: [runID.rawValue, result.targetID]
+    )
+    guard status == PrivateHeaderGeneration.RunTargetStatus.running.rawValue else {
+      throw PrivateHeaderGeneration.StateError.invalidTransition(
+        entity: "target attempt \(result.targetID)",
+        from: status ?? "missing",
+        to: result.status.rawValue
+      )
+    }
+    try db.execute(
+      sql: """
+        UPDATE runTargets
+        SET displayName = ?, kind = ?, status = ?, failureSummary = ?, artifactSet = ?, updatedAt = ?
+        WHERE runID = ? AND targetID = ?
+        """,
+      arguments: [
+        result.displayName,
+        result.kind,
+        result.status.rawValue,
+        result.failureSummary,
+        try encodeArtifacts(result.artifacts),
+        result.completedAt.timeIntervalSinceReferenceDate,
+        runID.rawValue,
+        result.targetID,
+      ]
+    )
+  }
+
+  fileprivate static func upsertPublishedTarget(
+    _ db: Database,
+    result: PrivateHeaderGeneration.TargetAttemptResult,
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    try db.execute(
+      sql: """
+        INSERT INTO targets(targetID, lastSuccessfulRunID, status, artifactSet, updatedAt)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(targetID) DO UPDATE SET
+            lastSuccessfulRunID = excluded.lastSuccessfulRunID,
+            status = excluded.status,
+            artifactSet = excluded.artifactSet,
+            updatedAt = excluded.updatedAt
+        """,
+      arguments: [
+        result.targetID,
+        runID.rawValue,
+        PrivateHeaderGeneration.RunTargetStatus.completed.rawValue,
+        try encodeArtifacts(result.artifacts),
+        result.completedAt.timeIntervalSinceReferenceDate,
+      ]
+    )
+  }
+
   fileprivate static func prepareDatabasePath(_ databaseURL: URL) throws {
     do {
       try ManagedFileSystem.ensureRealDirectory(databaseURL.deletingLastPathComponent())
@@ -932,7 +1038,16 @@ extension GenerationStore {
           sql: """
             UPDATE runTargets
             SET status = ?, failureSummary = COALESCE(failureSummary, ?), updatedAt = ?
-            WHERE runID = ? AND status IN (?, ?)
+            WHERE runID = ?
+              AND (
+                status = ?
+                OR (
+                  status = ?
+                  AND targetID NOT IN (
+                    SELECT targetID FROM targets WHERE lastSuccessfulRunID = ?
+                  )
+                )
+              )
             """,
           arguments: [
             PrivateHeaderGeneration.RunTargetStatus.failed.rawValue,
@@ -941,6 +1056,7 @@ extension GenerationStore {
             intent.runID.rawValue,
             PrivateHeaderGeneration.RunTargetStatus.running.rawValue,
             PrivateHeaderGeneration.RunTargetStatus.completed.rawValue,
+            intent.runID.rawValue,
           ]
         )
         try db.execute(
