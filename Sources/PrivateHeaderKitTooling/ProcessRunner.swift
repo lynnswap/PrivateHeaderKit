@@ -148,7 +148,10 @@ private func completeOwnedProcessGroup(
     while true {
         if Darwin.kill(-processGroupID, SIGKILL) == 0 {
             await Task.yield()
-            continue
+            if try processGroupHasLiveMember(processGroupID) {
+                continue
+            }
+            return
         }
         let errorCode = errno
         switch errorCode {
@@ -194,14 +197,15 @@ private final class OwnedProcessGroup: @unchecked Sendable {
     }
 
     func complete() async throws(ProcessGroupTeardownError) {
-        try await completeOwnedProcessGroup(recordedProcessGroupID())
+        try await completeOwnedProcessGroup(takeProcessGroupID())
     }
 
-    private func recordedProcessGroupID() -> pid_t? {
+    private func takeProcessGroupID() -> pid_t? {
         lock.lock()
-        let processGroupID = processGroupID
+        let takenProcessGroupID = processGroupID
+        processGroupID = nil
         lock.unlock()
-        return processGroupID
+        return takenProcessGroupID
     }
 }
 
