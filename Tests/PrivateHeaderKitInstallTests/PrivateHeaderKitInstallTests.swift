@@ -1204,6 +1204,86 @@ struct VersionCohortInstallerTests {
         }
     }
 
+    @Test func recreatedLegacyBackupBeforeIntentUpdateIsRestartable() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let fixture = try makeInterruptedLegacyRollbackFixture(
+            under: directories.root,
+            commit: String(repeating: "4", count: 40),
+            marker: "copy-before-intent"
+        )
+        try FileManager.default.copyItem(
+            at: fixture.layout.publicCommandURL,
+            to: fixture.backupURL
+        )
+
+        #expect(
+            try testInstaller(layout: fixture.layout).readLegacyMigrationIntent()
+                == fixture.intent
+        )
+        try testInstaller(layout: fixture.layout).withInstallLock {}
+
+        try assertCompletedLegacyRecovery(fixture)
+    }
+
+    @Test func recreatedLegacyBackupIntentIsRestartableBeforePointerSwitch() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let fixture = try makeInterruptedLegacyRollbackFixture(
+            under: directories.root,
+            commit: String(repeating: "5", count: 40),
+            marker: "intent-before-pointer"
+        )
+        try FileManager.default.copyItem(
+            at: fixture.layout.publicCommandURL,
+            to: fixture.backupURL
+        )
+        let installer = testInstaller(layout: fixture.layout)
+
+        let updatedIntent = try installer.ensureLegacyPublicBackup(
+            fixture.intent,
+            ownedPublicIdentity: fixture.intent.publicBackup
+        )
+
+        #expect(updatedIntent.legacyLayout.publicCommand == fixture.intent.publicBackup)
+        #expect(updatedIntent.publicBackup != fixture.intent.publicBackup)
+        #expect(try installer.readLegacyMigrationIntent() == updatedIntent)
+        try testInstaller(layout: fixture.layout).withInstallLock {}
+
+        try assertCompletedLegacyRecovery(fixture)
+    }
+
+    @Test func recreatedLegacyBackupRejectsChangedContents() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let fixture = try makeInterruptedLegacyRollbackFixture(
+            under: directories.root,
+            commit: String(repeating: "6", count: 40),
+            marker: "changed-backup"
+        )
+        try writeExecutable("replacement-backup", to: fixture.backupURL)
+        let persistedIntent = try Data(contentsOf: fixture.layout.legacyMigrationIntentURL)
+
+        #expect(throws: InstallError.self) {
+            try testInstaller(layout: fixture.layout).withInstallLock {}
+        }
+
+        #expect(
+            try Data(contentsOf: fixture.layout.legacyMigrationIntentURL)
+                == persistedIntent
+        )
+        #expect(
+            try String(contentsOf: fixture.layout.publicCommandURL, encoding: .utf8)
+                == "legacy-main"
+        )
+        #expect(
+            try String(contentsOf: fixture.backupURL, encoding: .utf8)
+                == "replacement-backup"
+        )
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: fixture.layout.currentURL.path
+            ) == "versions/\(fixture.cohort.manifest.cohort)"
+        )
+    }
+
     @Test func restorationNeverOverwritesAReplacedRegularFile() throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
@@ -1678,6 +1758,83 @@ private enum TestInstallFailure: Error {
     case injected
     case activation
     case restoration
+}
+
+private struct InterruptedLegacyRollbackFixture {
+    let layout: InstallLayout
+    let cohort: ReleaseCohort
+    let marker: String
+    let intent: LegacyMigrationIntent
+    let backupURL: URL
+}
+
+private func makeInterruptedLegacyRollbackFixture(
+    under root: URL,
+    commit: String,
+    marker: String
+) throws -> InterruptedLegacyRollbackFixture {
+    let layout = try testLayout(in: root)
+    try writeLegacyLayout(layout: layout)
+    let cohort = try makeTestCohort(
+        under: root,
+        version: "v2.0.0",
+        commit: commit,
+        marker: marker
+    )
+    let interrupted = testInstaller(
+        layout: layout,
+        faultInjector: { point in
+            if point == .stableCommandSwitched {
+                throw TestInstallFailure.activation
+            }
+            if point == .currentRestorationStarted {
+                throw TestInstallFailure.restoration
+            }
+        }
+    )
+    #expect(throws: InstallError.self) {
+        _ = try interrupted.install(cohort)
+    }
+
+    let inspector = testInstaller(layout: layout)
+    let intent = try #require(try inspector.readLegacyMigrationIntent())
+    let backupURL = inspector.migrationBackupURL(intent)
+    try inspector.requireLegacyIdentity(
+        intent.publicBackup,
+        at: layout.publicCommandURL,
+        label: "restored legacy public command"
+    )
+    #expect(!FileManager.default.fileExists(atPath: backupURL.path))
+    #expect(
+        try FileManager.default.destinationOfSymbolicLink(
+            atPath: layout.currentURL.path
+        ) == "versions/\(cohort.manifest.cohort)"
+    )
+    return InterruptedLegacyRollbackFixture(
+        layout: layout,
+        cohort: cohort,
+        marker: marker,
+        intent: intent,
+        backupURL: backupURL
+    )
+}
+
+private func assertCompletedLegacyRecovery(
+    _ fixture: InterruptedLegacyRollbackFixture
+) throws {
+    try assertActive(
+        fixture.cohort.manifest,
+        layout: fixture.layout,
+        marker: fixture.marker
+    )
+    #expect(!FileManager.default.fileExists(atPath: fixture.layout.rawDumpHelperURL.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.layout.simulatorHelperURL.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.layout.legacyMigrationIntentURL.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.backupURL.path))
+    let binEntries = try FileManager.default.contentsOfDirectory(
+        atPath: fixture.layout.binDir.path
+    )
+    #expect(binEntries == ["privateheaderkit"])
 }
 
 private func testLayout(in root: URL) throws -> InstallLayout {

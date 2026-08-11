@@ -25,6 +25,12 @@ struct LegacyFileIdentity: Codable, Equatable, Sendable {
             throw InstallError.message("invalid executable permissions in \(label)")
         }
     }
+
+    func hasSameCopyPayload(as other: Self) -> Bool {
+        sha256 == other.sha256
+            && size == other.size
+            && permissions == other.permissions
+    }
 }
 
 enum LegacyDirectLayoutClassification: Equatable, Sendable {
@@ -67,12 +73,19 @@ struct LegacyMigrationIntent: Codable, Equatable, Sendable {
         self.publicBackup = publicBackup
     }
 
-    func replacingPublicBackup(_ identity: LegacyFileIdentity) -> Self {
+    func replacingOwnedPublicState(
+        publicCommand: LegacyFileIdentity,
+        publicBackup: LegacyFileIdentity
+    ) -> Self {
         Self(
             targetManifest: targetManifest,
-            legacyLayout: legacyLayout,
+            legacyLayout: LegacyLayoutSnapshot(
+                publicCommand: publicCommand,
+                rawDumpHelper: legacyLayout.rawDumpHelper,
+                simulatorHelper: legacyLayout.simulatorHelper
+            ),
             publicBackupName: publicBackupName,
-            publicBackup: identity
+            publicBackup: publicBackup
         )
     }
 
@@ -215,9 +228,7 @@ extension VersionCohortInstaller {
         try fileManager.copyItem(at: layout.publicCommandURL, to: backupURL)
         shouldRemoveBackup = true
         let backupIdentity = try legacyFileIdentity(at: backupURL)
-        guard backupIdentity.sha256 == legacyLayout.publicCommand.sha256,
-              backupIdentity.size == legacyLayout.publicCommand.size,
-              backupIdentity.permissions == legacyLayout.publicCommand.permissions,
+        guard backupIdentity.hasSameCopyPayload(as: legacyLayout.publicCommand),
               fileManager.isExecutableFile(atPath: backupURL.path)
         else {
             throw InstallError.message(
@@ -412,12 +423,30 @@ extension VersionCohortInstaller {
         let backupURL = migrationBackupURL(intent)
         switch try fileSystemItemKind(at: backupURL, fileManager: fileManager) {
         case .regularFile:
+            let backupIdentity = try legacyFileIdentity(at: backupURL)
+            if backupIdentity == intent.publicBackup,
+               fileManager.isExecutableFile(atPath: backupURL.path)
+            {
+                return intent
+            }
             try requireLegacyIdentity(
-                intent.publicBackup,
-                at: backupURL,
-                label: "legacy public-command backup"
+                ownedPublicIdentity,
+                at: layout.publicCommandURL,
+                label: "legacy public command during backup recovery"
             )
-            return intent
+            guard backupIdentity.hasSameCopyPayload(as: ownedPublicIdentity),
+                  fileManager.isExecutableFile(atPath: backupURL.path)
+            else {
+                throw InstallError.message(
+                    "legacy public-command backup changed during recovery"
+                )
+            }
+            let updated = intent.replacingOwnedPublicState(
+                publicCommand: ownedPublicIdentity,
+                publicBackup: backupIdentity
+            )
+            try persistLegacyMigrationIntent(updated, requireAbsent: false)
+            return updated
         case .absent:
             try requireLegacyIdentity(
                 ownedPublicIdentity,
@@ -439,9 +468,7 @@ extension VersionCohortInstaller {
             try fileManager.copyItem(at: layout.publicCommandURL, to: backupURL)
             shouldRemoveBackup = true
             let newBackupIdentity = try legacyFileIdentity(at: backupURL)
-            guard newBackupIdentity.sha256 == ownedPublicIdentity.sha256,
-                  newBackupIdentity.size == ownedPublicIdentity.size,
-                  newBackupIdentity.permissions == ownedPublicIdentity.permissions,
+            guard newBackupIdentity.hasSameCopyPayload(as: ownedPublicIdentity),
                   fileManager.isExecutableFile(atPath: backupURL.path)
             else {
                 let primaryMessage =
@@ -456,7 +483,10 @@ extension VersionCohortInstaller {
                 }
                 throw InstallError.message(primaryMessage)
             }
-            let updated = intent.replacingPublicBackup(newBackupIdentity)
+            let updated = intent.replacingOwnedPublicState(
+                publicCommand: ownedPublicIdentity,
+                publicBackup: newBackupIdentity
+            )
             try persistLegacyMigrationIntent(updated, requireAbsent: false)
             shouldRemoveBackup = false
             return updated
