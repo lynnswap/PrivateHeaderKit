@@ -230,14 +230,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
     progressReporter: ProgressReporter?
   ) async throws -> PrivateHeaderGeneration.Result {
-    if plan.options.resumeBehavior.isFresh {
-      _ = try await store.bootstrapPublishedGenerationIfEmpty(
-        sourceIdentity: plan.source.storageIdentifier,
-        publication: publisher.inspect(),
-        at: dateProvider()
-      )
-    }
-    try await Self.recover(store: store, publisher: publisher, at: dateProvider())
+    try await Self.bootstrapAndRecover(
+      sourceIdentity: plan.source.storageIdentifier,
+      store: store,
+      publisher: publisher,
+      at: dateProvider()
+    )
     try await Self.recoverTargetReplacements(
       in: stateDirectory,
       artifactDirectory: artifactDirectory,
@@ -1305,6 +1303,20 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
   }
 
+  fileprivate static func bootstrapAndRecover(
+    sourceIdentity: String,
+    store: GenerationStore,
+    publisher: ArtifactPublisher,
+    at date: Date
+  ) async throws {
+    _ = try await store.bootstrapPublishedGenerationIfEmpty(
+      sourceIdentity: sourceIdentity,
+      publication: publisher.inspect(),
+      at: date
+    )
+    try await recover(store: store, publisher: publisher, at: date)
+  }
+
   fileprivate static func recover(
     store: GenerationStore,
     publisher: ArtifactPublisher,
@@ -1445,7 +1457,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         databaseURL: databaseURL,
         toolCompatibilityIdentity: plan.options.toolCompatibilityIdentity
       )
-      try await recover(store: store, publisher: publisher, at: Date())
+      try await bootstrapAndRecover(
+        sourceIdentity: plan.source.storageIdentifier,
+        store: store,
+        publisher: publisher,
+        at: Date()
+      )
       try await recoverTargetReplacements(
         in: stateDirectory,
         artifactDirectory: artifactDirectory,

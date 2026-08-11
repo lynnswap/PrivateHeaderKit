@@ -1468,6 +1468,56 @@ struct PrivateHeaderGenerationExecutorTests {
     ))
   }
 
+  @Test func resumeSummaryRebuildsStateWhenManagedGenerationOutlivesDatabase() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let plan = try fixture.plan(.query("Foo"))
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "first"),
+      runID: "run-first",
+      generationID: "generation-first"
+    ).run(plan: plan)
+    try fixture.removeDatabaseFiles()
+    let runner = RecordingRunner(contents: "unexpected")
+    let executor = fixture.executor(
+      runner: runner,
+      runID: "run-summary",
+      generationID: "generation-summary"
+    )
+    let preparedPlan = try await executor.prepare(plan)
+
+    #expect(try await executor.availableResumeSummary(for: preparedPlan) == nil)
+    #expect(await runner.invocationCount == 0)
+    #expect(FileManager.default.fileExists(atPath: fixture.databaseURL.path))
+    #expect(try fixture.readLiveHeader() == "first")
+    #expect(try fixture.readStableHeader() == "first")
+  }
+
+  @Test func resumeRunRebuildsStateWhenManagedGenerationOutlivesDatabase() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "first"),
+      runID: "run-first",
+      generationID: "generation-first"
+    ).run(plan: try fixture.plan(.query("Foo")))
+    try fixture.removeDatabaseFiles()
+    let runner = RecordingRunner(contents: "unexpected")
+
+    let result = try await fixture.executor(
+      runner: runner,
+      runID: "run-resumed",
+      generationID: "generation-resumed"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+
+    #expect(await runner.invocationCount == 0)
+    #expect(result.targetCounts.skipped == 1)
+    #expect(try fixture.readLiveHeader() == "first")
+    #expect(try fixture.readStableHeader() == "first")
+  }
+
   @Test func freshDatabaseBootstrapSurvivesFailedPublicationAndRetries() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
