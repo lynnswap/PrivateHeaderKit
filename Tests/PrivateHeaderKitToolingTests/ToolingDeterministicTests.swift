@@ -4,54 +4,6 @@ import Testing
 import PrivateHeaderKitTestSupport
 
 @Suite
-struct FileOpsDeterministicTests {
-    @Test func buildStageDirUsesInjectedPidDateAndTimeZone() {
-        let outDir = URL(fileURLWithPath: "/tmp/out", isDirectory: true)
-        let date = Date(timeIntervalSince1970: 1_700_000_000)
-        let stageDir = FileOps.buildStageDir(
-            outDir: outDir,
-            pid: 42,
-            date: date,
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-
-        #expect(stageDir.path == "/tmp/out/.tmp-42-20231114221320")
-    }
-
-    @Test func normalizeAndDenormalizeBundleDirsHandleConflictsDeterministically() throws {
-        let dirs = try makeTemporaryTestDirectories()
-        let parent = dirs.root.appendingPathComponent("Bundles", isDirectory: true)
-        let bundle = parent.appendingPathComponent("Foo.bundle", isDirectory: true)
-        let normalized = parent.appendingPathComponent("Foo", isDirectory: true)
-        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: normalized, withIntermediateDirectories: true)
-        try Data("bundle".utf8).write(to: bundle.appendingPathComponent("Bundle.h"))
-        try Data("normalized".utf8).write(to: normalized.appendingPathComponent("Normalized.h"))
-
-        let result = try FileOps.normalizeBundleDir(
-            bundle,
-            allowedExtensions: ["bundle"],
-            overwrite: false,
-            fileManager: .default
-        )
-
-        #expect(result.path == normalized.path)
-        #expect(FileManager.default.fileExists(atPath: normalized.appendingPathComponent("Bundle.h").path))
-        #expect(FileManager.default.fileExists(atPath: normalized.appendingPathComponent("Normalized.h").path))
-
-        let denormalized = try FileOps.denormalizeBundleDir(
-            normalized,
-            bundleExtension: "bundle",
-            overwrite: true,
-            fileManager: .default
-        )
-
-        #expect(denormalized.lastPathComponent == "Foo.bundle")
-        #expect(FileManager.default.fileExists(atPath: denormalized.appendingPathComponent("Bundle.h").path))
-    }
-}
-
-@Suite
 struct PathAndVersionTests {
     @Test func versionKeyParsesNumericComponents() {
         #expect(VersionUtils.versionKey("26.10.1") == [26, 10, 1])
@@ -70,13 +22,50 @@ struct PathAndVersionTests {
         #expect(found?.path == executable.path)
         #expect(Which.find("missing", environment: ["PATH": binDir.path]) == nil)
     }
+
+    @Test func whichResolvesRelativeAndEmbeddedEmptyPathEntriesFromTheWorkingDirectory() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let binDir = dirs.root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        let cwdExecutable = dirs.root.appendingPathComponent("cwd-tool", isDirectory: false)
+        let relativeExecutable = binDir.appendingPathComponent("relative-tool", isDirectory: false)
+        for executable in [cwdExecutable, relativeExecutable] {
+            try Data("#!/bin/sh\n".utf8).write(to: executable)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
+
+        #expect(
+            Which.findAll(
+                "cwd-tool",
+                environment: ["PATH": ":/usr/bin:"],
+                currentDirectory: dirs.root
+            ).map(\.path) == [cwdExecutable.path]
+        )
+        #expect(
+            Which.findAll(
+                "relative-tool",
+                environment: ["PATH": "bin"],
+                currentDirectory: dirs.root
+            ).map(\.path) == [relativeExecutable.path]
+        )
+        #expect(
+            Which.findAll(
+                "cwd-tool",
+                environment: ["PATH": ""],
+                currentDirectory: dirs.root
+            ).isEmpty
+        )
+    }
 }
 
 @Suite
 struct SimctlDeterministicTests {
-    @Test func listRuntimesParsesAvailableIOSRuntimesInVersionOrder() throws {
+    @Test func listRuntimesParsesAvailableIOSRuntimesInVersionOrder() async throws {
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "runtimes": [
@@ -100,17 +89,17 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        let runtimes = try Simctl.listRuntimes(runner: runner)
+        let runtimes = try await Simctl.listRuntimes(runner: runner)
 
         #expect(runtimes.map(\.version) == ["26.2", "26.10"])
         #expect(runtimes.first?.build == "23C54")
         #expect(runtimes.last?.supportedDeviceTypes.first?.identifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-17")
-        #expect(runner.captureCommands.map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
     }
 
-    @Test func listRuntimesOrdersEqualVersionsByBuildAndIdentity() throws {
+    @Test func listRuntimesOrdersEqualVersionsByBuildAndIdentity() async throws {
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "runtimes": [
@@ -123,14 +112,14 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        let runtimes = try Simctl.listRuntimes(runner: runner)
+        let runtimes = try await Simctl.listRuntimes(runner: runner)
 
         #expect(runtimes.map(\.identifier) == ["ios-27-a", "ios-27-b", "ios-27-z"])
     }
 
-    @Test func findRuntimeMatchesExplicitBuildWhenProvided() throws {
+    @Test func findRuntimeMatchesExplicitBuildWhenProvided() async throws {
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "runtimes": [
@@ -142,13 +131,13 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        let runtime = try Simctl.findRuntime(version: "27.0", build: "24B2", runner: runner)
+        let runtime = try await Simctl.findRuntime(version: "27.0", build: "24B2", runner: runner)
 
         #expect(runtime.identifier == "ios-27-b")
         #expect(runtime.runtimeRoot == "/runtimes/27B")
     }
 
-    @Test func findRuntimeRejectsDuplicateExplicitBuildRegardlessOfInputOrder() {
+    @Test func findRuntimeRejectsDuplicateExplicitBuildRegardlessOfInputOrder() async {
         let entries = [
             """
             {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24A1"}
@@ -163,24 +152,23 @@ struct SimctlDeterministicTests {
 
         for orderedEntries in [entries, Array(entries.reversed())] {
             let runner = RecordingCommandRunner()
-            runner.setCaptureOutput(
+            await runner.setCaptureOutput(
                 """
                 {"runtimes":[\(orderedEntries.joined(separator: ","))]}
                 """,
                 for: ["xcrun", "simctl", "list", "runtimes", "-j"]
             )
 
-            #expect(
-                runtimeResolutionError {
-                    try Simctl.findRuntime(version: "27.0", build: "24A1", runner: runner)
-                } == expectedError
-            )
+            let error = await runtimeResolutionError {
+                try await Simctl.findRuntime(version: "27.0", build: "24A1", runner: runner)
+            }
+            #expect(error == expectedError)
         }
     }
 
-    @Test func findRuntimeWithoutBuildReturnsUniqueVersionMatch() throws {
+    @Test func findRuntimeWithoutBuildReturnsUniqueVersionMatch() async throws {
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "runtimes": [
@@ -192,12 +180,12 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        let runtime = try Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
+        let runtime = try await Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
 
         #expect(runtime.identifier == "ios-27")
     }
 
-    @Test func findRuntimeWithoutBuildRejectsAmbiguousBuildsRegardlessOfInputOrder() {
+    @Test func findRuntimeWithoutBuildRejectsAmbiguousBuildsRegardlessOfInputOrder() async {
         let entries = [
             """
             {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
@@ -211,24 +199,23 @@ struct SimctlDeterministicTests {
 
         for orderedEntries in [entries, Array(entries.reversed())] {
             let runner = RecordingCommandRunner()
-            runner.setCaptureOutput(
+            await runner.setCaptureOutput(
                 """
                 {"runtimes":[\(orderedEntries.joined(separator: ","))]}
                 """,
                 for: ["xcrun", "simctl", "list", "runtimes", "-j"]
             )
 
-            #expect(
-                runtimeResolutionError {
-                    try Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
-                } == expectedError
-            )
+            let error = await runtimeResolutionError {
+                try await Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
+            }
+            #expect(error == expectedError)
         }
     }
 
-    @Test func listDevicesParsesDevicesForRuntime() throws {
+    @Test func listDevicesParsesDevicesForRuntime() async throws {
         let runner = RecordingCommandRunner()
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "devices": {
@@ -245,27 +232,29 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "devices", "-j"]
         )
 
-        let devices = try Simctl.listDevices(runtimeId: "ios-26-2", runner: runner)
+        let devices = try await Simctl.listDevices(runtimeId: "ios-26-2", runner: runner)
 
         #expect(devices.map(\.udid) == ["A", "B"])
         #expect(devices.map(\.state) == ["Shutdown", "Booted"])
     }
 
-    @Test func ensureDeviceBootedSkipsBootedDeviceUnlessForced() throws {
+    @Test func ensureDeviceBootedSkipsBootedDeviceUnlessForced() async throws {
         let runner = RecordingCommandRunner()
-        var booted = DeviceInfo(name: "iPhone", udid: "BOOTED", state: "Booted")
+        let booted = DeviceInfo(name: "iPhone", udid: "BOOTED", state: "Booted")
 
-        try Simctl.ensureDeviceBooted(&booted, runner: runner, force: false)
-        #expect(runner.simpleCommands.isEmpty)
+        let unchanged = try await Simctl.ensureDeviceBooted(booted, runner: runner, force: false)
+        #expect(unchanged == booted)
+        #expect(await runner.simpleCommandSnapshot().isEmpty)
 
-        try Simctl.ensureDeviceBooted(&booted, runner: runner, force: true)
-        #expect(runner.simpleCommands.map(\.command) == [
+        let forced = try await Simctl.ensureDeviceBooted(booted, runner: runner, force: true)
+        #expect(forced.state == "Booted")
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
             ["xcrun", "simctl", "boot", "BOOTED"],
             ["xcrun", "simctl", "bootstatus", "BOOTED", "-b"],
         ])
     }
 
-    @Test func resolveDeviceCreatesRelistsClonesAndBootsWhenRuntimeHasNoDevices() throws {
+    @Test func resolveDeviceCreatesRelistsClonesAndBootsWhenRuntimeHasNoDevices() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             version: "27.0",
@@ -285,7 +274,7 @@ struct SimctlDeterministicTests {
                 ),
             ]
         )
-        runner.setCaptureOutputs(
+        await runner.setCaptureOutputs(
             [
                 """
                 {"devices":{"ios-27":[]}}
@@ -296,17 +285,17 @@ struct SimctlDeterministicTests {
             ],
             for: ["xcrun", "simctl", "list", "devices", "-j"]
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             "CLONE-001\n",
             for: ["xcrun", "simctl", "clone", "BASE-001", "Dumping Device (iOS 27.0)"]
         )
 
-        let device = try Simctl.resolveDevice(runtime: runtime, query: nil, runner: runner, environment: [:])
+        let device = try await Simctl.resolveDevice(runtime: runtime, query: nil, runner: runner, environment: [:])
 
         #expect(device.name == "Dumping Device (iOS 27.0)")
         #expect(device.udid == "CLONE-001")
         #expect(device.state == "Booted")
-        #expect(runner.simpleCommands.map(\.command) == [
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
             [
                 "xcrun",
                 "simctl",
@@ -318,10 +307,11 @@ struct SimctlDeterministicTests {
             ["xcrun", "simctl", "boot", "CLONE-001"],
             ["xcrun", "simctl", "bootstatus", "CLONE-001", "-b"],
         ])
-        #expect(!runner.captureCommands.map(\.command).contains(["xcrun", "simctl", "list", "devicetypes", "-j"]))
+        let capturedCommands = await runner.captureCommandSnapshot().map(\.command)
+        #expect(!capturedCommands.contains(["xcrun", "simctl", "list", "devicetypes", "-j"]))
     }
 
-    @Test func createDefaultDeviceFallsBackToRuntimeCompatibleDeviceTypes() throws {
+    @Test func createDefaultDeviceFallsBackToRuntimeCompatibleDeviceTypes() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             version: "27.0",
@@ -329,7 +319,7 @@ struct SimctlDeterministicTests {
             identifier: "ios-27",
             runtimeRoot: "/runtimes/27"
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "devicetypes": [
@@ -360,9 +350,9 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
         )
 
-        try Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
 
-        #expect(runner.simpleCommands.map(\.command) == [
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
             [
                 "xcrun",
                 "simctl",
@@ -374,7 +364,7 @@ struct SimctlDeterministicTests {
         ])
     }
 
-    @Test func createDefaultDeviceFallsBackToNumericRuntimeCompatibleDeviceTypes() throws {
+    @Test func createDefaultDeviceFallsBackToNumericRuntimeCompatibleDeviceTypes() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             version: "27.0",
@@ -382,7 +372,7 @@ struct SimctlDeterministicTests {
             identifier: "ios-27",
             runtimeRoot: "/runtimes/27"
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "devicetypes": [
@@ -420,9 +410,9 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
         )
 
-        try Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
 
-        #expect(runner.simpleCommands.map(\.command) == [
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
             [
                 "xcrun",
                 "simctl",
@@ -434,7 +424,7 @@ struct SimctlDeterministicTests {
         ])
     }
 
-    @Test func createDefaultDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() throws {
+    @Test func createDefaultDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             version: "27.0",
@@ -442,7 +432,7 @@ struct SimctlDeterministicTests {
             identifier: "ios-27",
             runtimeRoot: "/runtimes/27"
         )
-        runner.setCaptureOutput(
+        await runner.setCaptureOutput(
             """
             {
               "devicetypes": [
@@ -462,9 +452,9 @@ struct SimctlDeterministicTests {
             for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
         )
 
-        try Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
 
-        #expect(runner.simpleCommands.map(\.command) == [
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
             [
                 "xcrun",
                 "simctl",
@@ -478,10 +468,10 @@ struct SimctlDeterministicTests {
 }
 
 private func runtimeResolutionError(
-    _ operation: () throws -> RuntimeInfo
-) -> String? {
+    _ operation: () async throws -> RuntimeInfo
+) async -> String? {
     do {
-        _ = try operation()
+        _ = try await operation()
         Issue.record("expected runtime resolution to fail")
         return nil
     } catch let error as ToolingError {

@@ -149,12 +149,12 @@ package func captureSwiftPMToolSnapshot(
     context: SwiftPMToolIdentityContext,
     runner: CommandRunning,
     fileManager: FileManager
-) throws -> SwiftPMToolSnapshot {
+) async throws -> SwiftPMToolSnapshot {
     guard !context.builds.isEmpty else {
         throw ToolingError.message("SwiftPM tool identity requires at least one build")
     }
 
-    let descriptionOutput = try runner.runCapture(
+    let descriptionOutput = try await runner.runCapture(
         ["swift", "package", "describe", "--type", "json"],
         env: nil,
         cwd: context.repoRoot
@@ -186,7 +186,7 @@ package func captureSwiftPMToolSnapshot(
         repoRoot: context.repoRoot,
         fileManager: fileManager
     )
-    let dumpOutput = try runner.runCapture(
+    let dumpOutput = try await runner.runCapture(
         ["swift", "package", "dump-package"],
         env: nil,
         cwd: context.repoRoot
@@ -195,13 +195,13 @@ package func captureSwiftPMToolSnapshot(
         from: dumpOutput,
         selectedTargetNames: Set(selectedTargets.map(\.name))
     )
-    let dependencyCheckouts = try validatedDependencyCheckouts(
+    let dependencyCheckouts = try await validatedDependencyCheckouts(
         directIdentities: directDependencyIdentities,
         resolvedPins: resolvedInput.pins,
         repoRoot: context.repoRoot,
         runner: runner
     )
-    let toolchain = try toolchainRecord(
+    let toolchain = try await toolchainRecord(
         destinations: context.builds.map(\.destination),
         environment: context.buildEnvironment,
         runner: runner,
@@ -434,11 +434,11 @@ private func validatedDependencyCheckouts(
     resolvedPins: [ResolvedPinRecord],
     repoRoot: URL,
     runner: CommandRunning
-) throws -> [DependencyCheckoutRecord] {
+) async throws -> [DependencyCheckoutRecord] {
     guard !directIdentities.isEmpty else {
         return []
     }
-    let output = try runner.runCapture(
+    let output = try await runner.runCapture(
         [
             "swift", "package", "--force-resolved-versions",
             "show-dependencies", "--format", "json",
@@ -493,7 +493,8 @@ private func validatedDependencyCheckouts(
             )
         }
     }
-    return try selectedIdentities.sorted().map { identity in
+    var records = [DependencyCheckoutRecord]()
+    for identity in selectedIdentities.sorted() {
         guard let node = nodesByIdentity[identity],
               let pin = pinsByIdentity[identity],
               let revision = pin.revision?.lowercased(),
@@ -506,7 +507,7 @@ private func validatedDependencyCheckouts(
                 "helper dependency \(identity) is not pinned to a Git revision"
             )
         }
-        let status = try runner.runCapture(
+        let status = try await runner.runCapture(
             [
                 "git", "-C", node.path,
                 "status", "--porcelain=v2", "--branch", "-z",
@@ -530,8 +531,9 @@ private func validatedDependencyCheckouts(
                 "helper dependency \(identity) checkout contains local changes"
             )
         }
-        return DependencyCheckoutRecord(identity: identity, revision: revision)
+        records.append(DependencyCheckoutRecord(identity: identity, revision: revision))
     }
+    return records
 }
 
 private func selectedTargetRecords(
@@ -640,30 +642,29 @@ private func toolchainRecord(
     environment: [String: String],
     runner: CommandRunning,
     repoRoot: URL
-) throws -> ToolchainRecord {
-    let swiftExecutable = try requiredCommandOutput(
+) async throws -> ToolchainRecord {
+    let swiftExecutable = try await requiredCommandOutput(
         ["which", "swift"],
         runner: runner,
         cwd: repoRoot
     )
-    let swiftVersion = try requiredCommandOutput(
+    let swiftVersion = try await requiredCommandOutput(
         ["swift", "--version"],
         runner: runner,
         cwd: repoRoot
     )
-    let xcodeVersion = try requiredCommandOutput(
+    let xcodeVersion = try await requiredCommandOutput(
         ["xcodebuild", "-version"],
         runner: runner,
         cwd: nil
     )
-    let hostTargetInfo = try canonicalTargetInfo(
-        requiredCommandOutput(
-            ["swift", "-print-target-info"],
-            runner: runner,
-            cwd: repoRoot
-        )
+    let hostTargetInfoOutput = try await requiredCommandOutput(
+        ["swift", "-print-target-info"],
+        runner: runner,
+        cwd: repoRoot
     )
-    let macOSSDKBuildVersion = try requiredCommandOutput(
+    let hostTargetInfo = try canonicalTargetInfo(hostTargetInfoOutput)
+    let macOSSDKBuildVersion = try await requiredCommandOutput(
         ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"],
         runner: runner,
         cwd: nil
@@ -677,14 +678,13 @@ private func toolchainRecord(
         else {
             continue
         }
-        let targetInfo = try canonicalTargetInfo(
-            requiredCommandOutput(
-                ["swift", "-sdk", sdkPath, "-target", triple, "-print-target-info"],
-                runner: runner,
-                cwd: repoRoot
-            )
+        let targetInfoOutput = try await requiredCommandOutput(
+            ["swift", "-sdk", sdkPath, "-target", triple, "-print-target-info"],
+            runner: runner,
+            cwd: repoRoot
         )
-        let sdkBuildVersion = try requiredCommandOutput(
+        let targetInfo = try canonicalTargetInfo(targetInfoOutput)
+        let sdkBuildVersion = try await requiredCommandOutput(
             ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-build-version"],
             runner: runner,
             cwd: nil
@@ -860,8 +860,8 @@ private func requiredCommandOutput(
     _ command: [String],
     runner: CommandRunning,
     cwd: URL?
-) throws -> String {
-    let output = try runner.runCapture(command, env: nil, cwd: cwd)
+) async throws -> String {
+    let output = try await runner.runCapture(command, env: nil, cwd: cwd)
         .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !output.isEmpty else {
         throw ToolingError.message(
@@ -906,8 +906,12 @@ private func canonicalJSON<T: Encodable>(_ value: T) throws -> Data {
     return try encoder.encode(value)
 }
 
-private func sha256File(_ url: URL) throws -> String {
+func toolInputSHA256Hex(
+    ofFileAt url: URL,
+    checkCancellation: () throws -> Void
+) throws -> String {
 #if canImport(CryptoKit)
+    try checkCancellation()
     let handle: FileHandle
     do {
         handle = try FileHandle(forReadingFrom: url)
@@ -917,16 +921,30 @@ private func sha256File(_ url: URL) throws -> String {
     defer { try? handle.close() }
     var hasher = SHA256()
     while true {
-        let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        try checkCancellation()
+        let chunk: Data
+        do {
+            chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        } catch {
+            throw ToolingError.message("failed to read build input at \(url.path): \(error)")
+        }
         if chunk.isEmpty {
             break
         }
         hasher.update(data: chunk)
     }
+    try checkCancellation()
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 #else
     throw ToolingError.message("SHA-256 is unavailable on this platform")
 #endif
+}
+
+private func sha256File(_ url: URL) throws -> String {
+    try toolInputSHA256Hex(
+        ofFileAt: url,
+        checkCancellation: { try Task.checkCancellation() }
+    )
 }
 
 private func sha256Hex(_ data: Data) throws -> String {

@@ -1,10 +1,11 @@
 import Foundation
 
-public enum ToolingError: Error, CustomStringConvertible {
+public enum ToolingError: Error, CustomStringConvertible, Sendable {
     case message(String)
     case invalidArgument(String)
     case commandFailed(command: [String], status: Int32, stderr: String)
     case processLaunchFailed(command: [String], underlying: String)
+    case processExecutionFailed(command: [String], underlying: String)
     case unsupported(String)
 
     public var description: String {
@@ -27,6 +28,13 @@ public enum ToolingError: Error, CustomStringConvertible {
                 return "failed to launch process: \(cmd)"
             }
             return "failed to launch process: \(cmd)\n\(trimmed)"
+        case .processExecutionFailed(let command, let underlying):
+            let cmd = command.joined(separator: " ")
+            let trimmed = underlying.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "process execution failed: \(cmd)"
+            }
+            return "process execution failed: \(cmd)\n\(trimmed)"
         case .unsupported(let text):
             return "unsupported: \(text)"
         }

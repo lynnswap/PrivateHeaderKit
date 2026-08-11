@@ -33,17 +33,37 @@ struct PrivateHeaderKitGenerationClient: Sendable {
 
     let prepare: Prepare
 
-    static let live = PrivateHeaderKitGenerationClient(
-        prepare: preparePrivateHeaderGeneration
-    )
+    static let live = live(processRunner: ProcessRunner())
+
+    static func live(processRunner: any CommandRunning) -> PrivateHeaderKitGenerationClient {
+        PrivateHeaderKitGenerationClient(
+            prepare: { request in
+                try await preparePrivateHeaderGeneration(
+                    request: request,
+                    processRunner: processRunner
+                )
+            }
+        )
+    }
 }
 
 private func preparePrivateHeaderGeneration(
-    request: PrivateHeaderKitGenerationRequest
+    request: PrivateHeaderKitGenerationRequest,
+    processRunner: any CommandRunning
 ) async throws -> PrivateHeaderKitPreparedGeneration {
     let executor = PrivateHeaderGeneration.GenerationExecutor(
-        rawDumpRunner: runPrivateHeaderKitRawDump,
-        sharedCacheInventoryRunner: capturePrivateHeaderKitSharedCacheInventory
+        rawDumpRunner: { invocation in
+            try await runPrivateHeaderKitRawDump(
+                invocation,
+                processRunner: processRunner
+            )
+        },
+        sharedCacheInventoryRunner: { invocation in
+            try await capturePrivateHeaderKitSharedCacheInventory(
+                invocation,
+                processRunner: processRunner
+            )
+        }
     )
     let plan = PrivateHeaderGeneration.makePlan(
         source: request.source,
@@ -81,9 +101,10 @@ private func preparePrivateHeaderGeneration(
 }
 
 private func runPrivateHeaderKitRawDump(
-    invocation: PrivateHeaderGeneration.RawDumping.Invocation
+    _ invocation: PrivateHeaderGeneration.RawDumping.Invocation,
+    processRunner: any CommandRunning
 ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
-    let processResult = try ProcessRunner().runStreaming(
+    let processResult = try await processRunner.runStreaming(
         invocation.command,
         env: invocation.environment,
         cwd: nil
@@ -98,9 +119,10 @@ private func runPrivateHeaderKitRawDump(
 }
 
 private func capturePrivateHeaderKitSharedCacheInventory(
-    invocation: PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation
+    _ invocation: PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation,
+    processRunner: any CommandRunning
 ) async throws -> Data {
-    let output = try ProcessRunner().runCapture(
+    let output = try await processRunner.runCapture(
         invocation.command,
         env: invocation.environment,
         cwd: nil

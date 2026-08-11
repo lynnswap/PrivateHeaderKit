@@ -338,17 +338,19 @@ extension VersionCohortInstaller {
         }
     }
 
-    func recoverInterruptedLegacyMigration() throws {
+    func recoverInterruptedLegacyMigration() async throws {
+        try Task.checkCancellation()
         guard var intent = try readLegacyMigrationIntent() else {
             return
         }
-        try validateDirectory(
+        try await validateDirectory(
             layout.cohortDirectory(for: intent.targetManifest),
             expectedManifest: intent.targetManifest
         )
+        try Task.checkCancellation()
 
         let expectedCurrent = "versions/\(intent.targetManifest.cohort)"
-        let current = try currentPathSnapshot()
+        let current = try await currentPathSnapshot()
         switch current {
         case .absent:
             break
@@ -378,6 +380,7 @@ extension VersionCohortInstaller {
                 ownedPublicIdentity: publicIdentity
             )
             if case .absent = current {
+                try Task.checkCancellation()
                 try atomicReplaceSymlink(
                     at: layout.currentURL,
                     destination: expectedCurrent
@@ -388,6 +391,7 @@ extension VersionCohortInstaller {
                 at: layout.publicCommandURL,
                 label: "legacy public command during recovery"
             )
+            try Task.checkCancellation()
             try atomicReplaceSymlink(
                 at: layout.publicCommandURL,
                 destination: "../libexec/privateheaderkit/current/privateheaderkit"
@@ -395,6 +399,7 @@ extension VersionCohortInstaller {
         case .symbolicLink(let destination)
             where destination == "../libexec/privateheaderkit/current/privateheaderkit":
             if case .absent = current {
+                try Task.checkCancellation()
                 try atomicReplaceSymlink(
                     at: layout.currentURL,
                     destination: expectedCurrent
@@ -406,7 +411,8 @@ extension VersionCohortInstaller {
             )
         }
 
-        try verifyActiveCohort(intent.targetManifest)
+        try await verifyActiveCohort(intent.targetManifest)
+        try Task.checkCancellation()
         let warnings = try finalizeLegacyMigration(intent)
         for warning in warnings {
             outputLogger("warning: recovered interrupted legacy migration; \(warning)")
@@ -725,7 +731,12 @@ private func legacyFileIdentity(at url: URL) throws -> LegacyFileIdentity {
 
     let before = try readMetadata()
     let beforePermissions = UInt16(before.st_mode & mode_t(0o7777))
-    let digest = try LiveReleaseArtifactInspector.sha256(of: url)
+    // Legacy identity checks are also used while completing durable recovery and rollback.
+    // Cancellation is observed at those operations' safe boundaries, not during repair.
+    let digest = try LiveReleaseArtifactInspector.sha256(
+        of: url,
+        checkCancellation: {}
+    )
     let after = try readMetadata()
     let afterPermissions = UInt16(after.st_mode & mode_t(0o7777))
     guard before.st_dev == after.st_dev,
