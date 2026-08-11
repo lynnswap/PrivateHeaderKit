@@ -175,6 +175,55 @@ private func canAcquireExclusiveLock(at path: String) -> Bool {
     return true
 }
 
+private func processIdentifier(from output: String, prefix: String = "CHILD_PID=") throws -> pid_t {
+    for line in output.split(whereSeparator: \.isNewline) {
+        guard line.hasPrefix(prefix), let processIdentifier = pid_t(line.dropFirst(prefix.count)) else {
+            continue
+        }
+        return processIdentifier
+    }
+    throw ToolingError.message("process-group helper did not report its child PID")
+}
+
+private func recordedProcessIdentifier(at path: String) throws -> pid_t {
+    let data = try Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false))
+    return try processIdentifier(from: String(decoding: data, as: UTF8.self), prefix: "PID=")
+}
+
+private func processIsLive(_ processIdentifier: pid_t) throws -> Bool {
+    var info = proc_bsdshortinfo()
+    let expectedSize = Int32(MemoryLayout<proc_bsdshortinfo>.size)
+    errno = 0
+    let actualSize = withUnsafeMutablePointer(to: &info) { pointer in
+        proc_pidinfo(
+            processIdentifier,
+            PROC_PIDT_SHORTBSDINFO,
+            0,
+            pointer,
+            expectedSize
+        )
+    }
+    let errorCode = errno
+    if actualSize == expectedSize {
+        return info.pbsi_status != UInt32(SZOMB)
+    }
+    if actualSize <= 0, errorCode == 0 || errorCode == ESRCH {
+        return false
+    }
+    throw ToolingError.message(
+        "inspect process \(processIdentifier) failed (errno \(errorCode == 0 ? EIO : errorCode))"
+    )
+}
+
+private func terminateRecordedProcessIfLive(at path: String) {
+    guard let processIdentifier = try? recordedProcessIdentifier(at: path),
+          (try? processIsLive(processIdentifier)) == true
+    else {
+        return
+    }
+    _ = kill(processIdentifier, SIGKILL)
+}
+
 private func waitForProcessGroupLocks(parent: String, child: String) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: .seconds(10))
@@ -763,11 +812,52 @@ struct StreamingProcessRunnerTests {
         #expect(result.lastLines == ["Terminated by signal \(SIGTERM)"])
     }
 
+    @Test func captureNormalLeaderExitCompletesOwnedProcessGroup() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let childLock = directory.appendingPathComponent("normal-capture-child.lock").path
+        defer { terminateRecordedProcessIfLive(at: childLock) }
+        let helper = try testHelperExecutableURL()
+
+        let output = try await ProcessRunner().runCapture(
+            [helper.path, "process-group-normal-leader-exit", childLock],
+            env: nil,
+            cwd: nil
+        )
+        let childPID = try processIdentifier(from: output)
+        #expect(try recordedProcessIdentifier(at: childLock) == childPID)
+        #expect(try processIsLive(childPID) == false)
+    }
+
+    @Test func streamingNormalLeaderExitCompletesOwnedProcessGroup() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let childLock = directory.appendingPathComponent("normal-streaming-child.lock").path
+        defer { terminateRecordedProcessIfLive(at: childLock) }
+        let helper = try testHelperExecutableURL()
+
+        let result = try await ProcessRunner().runStreaming(
+            [helper.path, "process-group-normal-leader-exit", childLock],
+            streamOutput: false,
+            passthrough: { _ in }
+        )
+        let childPID = try processIdentifier(from: result.lastLines.joined(separator: "\n"))
+
+        #expect(result.status == 0)
+        #expect(!result.wasKilled)
+        #expect(try recordedProcessIdentifier(at: childLock) == childPID)
+        #expect(try processIsLive(childPID) == false)
+    }
+
     @Test func cancellationWaitsForWholeProcessGroupAndOutputDrain() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("parent.lock").path
         let childLock = directory.appendingPathComponent("child.lock").path
+        defer {
+            terminateRecordedProcessIfLive(at: parentLock)
+            terminateRecordedProcessIfLive(at: childLock)
+        }
         let helper = try testHelperExecutableURL()
         let readiness = AsyncEvent()
         let output = LockedDataBox()
@@ -800,14 +890,14 @@ struct StreamingProcessRunnerTests {
             _ = try await task.value
             Issue.record("expected cancellation")
         } catch is CancellationError {
-            // Cancellation is preserved after the owned process group is gone.
+            // Cancellation is preserved after the owned process group has no live member.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
 
         #expect(output.snapshot().range(of: readyMarker) != nil)
-        #expect(canAcquireExclusiveLock(at: parentLock))
-        #expect(canAcquireExclusiveLock(at: childLock))
+        #expect(try processIsLive(recordedProcessIdentifier(at: parentLock)) == false)
+        #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
 
     @Test func captureCancellationAfterSpawnWaitsForWholeProcessGroupAndDrain() async throws {
@@ -815,6 +905,10 @@ struct StreamingProcessRunnerTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("capture-parent.lock").path
         let childLock = directory.appendingPathComponent("capture-child.lock").path
+        defer {
+            terminateRecordedProcessIfLive(at: parentLock)
+            terminateRecordedProcessIfLive(at: childLock)
+        }
         let helper = try testHelperExecutableURL()
 
         let task = Task {
@@ -831,13 +925,12 @@ struct StreamingProcessRunnerTests {
             _ = try await task.value
             Issue.record("expected capture cancellation")
         } catch is CancellationError {
-            // Cancellation is returned only after the process group is gone and pipes drain.
+            // Cancellation is returned only after the group has no live member and pipes drain.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
-
-        #expect(canAcquireExclusiveLock(at: parentLock))
-        #expect(canAcquireExclusiveLock(at: childLock))
+        #expect(try processIsLive(recordedProcessIdentifier(at: parentLock)) == false)
+        #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
 
     @Test func passthroughFailureWaitsForWholeProcessGroup() async throws {
@@ -845,6 +938,10 @@ struct StreamingProcessRunnerTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("error-parent.lock").path
         let childLock = directory.appendingPathComponent("error-child.lock").path
+        defer {
+            terminateRecordedProcessIfLive(at: parentLock)
+            terminateRecordedProcessIfLive(at: childLock)
+        }
         let helper = try testHelperExecutableURL()
 
         do {
@@ -862,9 +959,8 @@ struct StreamingProcessRunnerTests {
         } catch {
             Issue.record("unexpected error: \(error)")
         }
-
-        #expect(canAcquireExclusiveLock(at: parentLock))
-        #expect(canAcquireExclusiveLock(at: childLock))
+        #expect(try processIsLive(recordedProcessIdentifier(at: parentLock)) == false)
+        #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
 
     @Test func cancellationUnblocksStoppedPassthroughAndWaitsForProcessGroup() async throws {
@@ -872,6 +968,10 @@ struct StreamingProcessRunnerTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("blocked-parent.lock").path
         let childLock = directory.appendingPathComponent("blocked-child.lock").path
+        defer {
+            terminateRecordedProcessIfLive(at: parentLock)
+            terminateRecordedProcessIfLive(at: childLock)
+        }
         let helper = try testHelperExecutableURL()
         let passthroughEntered = AsyncEvent()
         let passthroughRelease = AsyncEvent()
@@ -904,9 +1004,8 @@ struct StreamingProcessRunnerTests {
         } catch {
             Issue.record("unexpected error: \(error)")
         }
-
-        #expect(canAcquireExclusiveLock(at: parentLock))
-        #expect(canAcquireExclusiveLock(at: childLock))
+        #expect(try processIsLive(recordedProcessIdentifier(at: parentLock)) == false)
+        #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
 
     @Test func dispatchWriterCancellationStopsBlockedPipeAndClosesOwnedDescriptor() async throws {

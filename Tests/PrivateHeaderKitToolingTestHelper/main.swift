@@ -58,6 +58,29 @@ private struct PrivateHeaderKitToolingTestHelper {
 #else
                 throw HelperError.invalidCommand(command)
 #endif
+            case "process-group-normal-leader-exit":
+#if os(macOS)
+                let arguments = Array(CommandLine.arguments.dropFirst(2))
+                guard arguments.count == 1 else {
+                    throw HelperError.invalidCommand(command)
+                }
+                try runNormallyExitingProcessGroup(childLockPath: arguments[0])
+#else
+                throw HelperError.invalidCommand(command)
+#endif
+            case "process-group-silent-stubborn-child":
+#if os(macOS)
+                let arguments = Array(CommandLine.arguments.dropFirst(2))
+                guard arguments.count == 2, let readinessDescriptor = Int32(arguments[1]) else {
+                    throw HelperError.invalidCommand(command)
+                }
+                try runSilentStubbornProcessGroupChild(
+                    lockPath: arguments[0],
+                    readinessDescriptor: readinessDescriptor
+                )
+#else
+                throw HelperError.invalidCommand(command)
+#endif
             default:
                 throw HelperError.invalidCommand(command)
             }
@@ -135,6 +158,7 @@ private struct PrivateHeaderKitToolingTestHelper {
             _ = close(parentLock)
             throw HelperError.posix(operation: "open child lock", code: code)
         }
+        try writeAll(Array("PID=\(getpid())\n".utf8), to: parentLock)
         guard flock(parentLock, LOCK_EX) == 0 else {
             let code = errno
             _ = close(parentLock)
@@ -180,10 +204,100 @@ private struct PrivateHeaderKitToolingTestHelper {
         guard lockDescriptor >= 0 else {
             throw HelperError.posix(operation: "open child lock", code: errno)
         }
+        try writeAll(Array("PID=\(getpid())\n".utf8), to: lockDescriptor)
         guard flock(lockDescriptor, LOCK_EX) == 0 else {
             throw HelperError.posix(operation: "lock child", code: errno)
         }
         try writeAll(Array("READY\n".utf8), to: STDOUT_FILENO)
+        while true { _ = pause() }
+    }
+
+    private static func runNormallyExitingProcessGroup(childLockPath: String) throws {
+        var readinessDescriptors = [Int32](repeating: -1, count: 2)
+        guard pipe(&readinessDescriptors) == 0 else {
+            throw HelperError.posix(operation: "create readiness pipe", code: errno)
+        }
+        defer {
+            for descriptor in readinessDescriptors where descriptor >= 0 {
+                _ = close(descriptor)
+            }
+        }
+
+        let executable = CommandLine.arguments[0]
+        let argumentValues = [
+            executable,
+            "process-group-silent-stubborn-child",
+            childLockPath,
+            String(readinessDescriptors[1]),
+        ]
+        var argumentPointers = argumentValues.map { strdup($0) }
+        argumentPointers.append(nil)
+        defer {
+            for pointer in argumentPointers where pointer != nil {
+                free(pointer)
+            }
+        }
+
+        var childPID: pid_t = 0
+        let spawnStatus = executable.withCString { executablePointer in
+            argumentPointers.withUnsafeMutableBufferPointer { arguments in
+                posix_spawn(
+                    &childPID,
+                    executablePointer,
+                    nil,
+                    nil,
+                    arguments.baseAddress,
+                    environ
+                )
+            }
+        }
+        guard spawnStatus == 0 else {
+            throw HelperError.posix(operation: "posix_spawn", code: spawnStatus)
+        }
+
+        _ = close(readinessDescriptors[1])
+        readinessDescriptors[1] = -1
+        var readinessByte: UInt8 = 0
+        while true {
+            let readCount = withUnsafeMutableBytes(of: &readinessByte) { buffer in
+                read(readinessDescriptors[0], buffer.baseAddress, buffer.count)
+            }
+            if readCount == 1 {
+                break
+            }
+            if readCount < 0, errno == EINTR {
+                continue
+            }
+            throw HelperError.posix(
+                operation: "wait for stubborn child readiness",
+                code: readCount == 0 ? EPIPE : errno
+            )
+        }
+        try writeAll(Array("CHILD_PID=\(childPID)\n".utf8), to: STDOUT_FILENO)
+    }
+
+    private static func runSilentStubbornProcessGroupChild(
+        lockPath: String,
+        readinessDescriptor: Int32
+    ) throws -> Never {
+        _ = signal(SIGTERM, SIG_IGN)
+        let permissions = mode_t(S_IRUSR | S_IWUSR)
+        let lockDescriptor = lockPath.withCString {
+            open($0, O_CREAT | O_RDWR, permissions)
+        }
+        guard lockDescriptor >= 0 else {
+            throw HelperError.posix(operation: "open child lock", code: errno)
+        }
+        try writeAll(Array("PID=\(getpid())\n".utf8), to: lockDescriptor)
+        guard flock(lockDescriptor, LOCK_EX) == 0 else {
+            throw HelperError.posix(operation: "lock child", code: errno)
+        }
+
+        _ = close(STDIN_FILENO)
+        _ = close(STDOUT_FILENO)
+        _ = close(STDERR_FILENO)
+        try writeAll([1], to: readinessDescriptor)
+        _ = close(readinessDescriptor)
         while true { _ = pause() }
     }
 #endif

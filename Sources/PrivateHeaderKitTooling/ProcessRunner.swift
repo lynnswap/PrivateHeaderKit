@@ -137,13 +137,13 @@ private func processGroupHasLiveMember(
     }
 }
 
-private func completeAbortedProcessGroupTeardown(
+private func completeOwnedProcessGroup(
     _ processGroupID: pid_t?
 ) async throws(ProcessGroupTeardownError) {
     guard let processGroupID else { return }
     precondition(processGroupID > 0)
 
-    // swift-subprocess observes only the group leader. Once an aborted leader exits, remaining
+    // swift-subprocess observes only the group leader. Once it returns, any remaining live
     // descendants are orphaned from this command contract and receive no separate grace period.
     while true {
         if Darwin.kill(-processGroupID, SIGKILL) == 0 {
@@ -155,9 +155,9 @@ private func completeAbortedProcessGroupTeardown(
         case EINTR:
             continue
         case EPERM:
-            // Do not fail on zombie-only groups: Darwin retains their pgrp but excludes zombies
-            // from signal delivery. A live member means signal permission is no longer available,
-            // so this adapter must surface failed teardown instead of waiting forever.
+            // Darwin excludes zombies from process-group signal delivery. Recheck after the
+            // failed signal to distinguish a completed zombie-only group from a live member that
+            // this adapter no longer has permission to terminate.
             if try processGroupHasLiveMember(processGroupID) {
                 throw ProcessGroupTeardownError(
                     operation: "send SIGKILL",
@@ -165,7 +165,10 @@ private func completeAbortedProcessGroupTeardown(
                     errorCode: errorCode
                 )
             }
-            await Task.yield()
+            // A zombie has already released its executable resources. Its parent may be outside
+            // this process group and may never reap it, so group-object extinction is not an
+            // achievable completion contract; no live member is the owned lifecycle boundary.
+            return
         case ESRCH:
             return
         default:
@@ -176,6 +179,46 @@ private func completeAbortedProcessGroupTeardown(
             )
         }
     }
+}
+
+private final class OwnedProcessGroup: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processGroupID: pid_t?
+
+    func recordLaunch(processIdentifier: pid_t) {
+        precondition(processIdentifier > 0)
+        lock.lock()
+        precondition(processGroupID == nil)
+        processGroupID = processIdentifier
+        lock.unlock()
+    }
+
+    func complete() async throws(ProcessGroupTeardownError) {
+        try await completeOwnedProcessGroup(recordedProcessGroupID())
+    }
+
+    private func recordedProcessGroupID() -> pid_t? {
+        lock.lock()
+        let processGroupID = processGroupID
+        lock.unlock()
+        return processGroupID
+    }
+}
+
+private func withOwnedProcessGroup<Result>(
+    _ operation: (OwnedProcessGroup) async throws -> Result
+) async throws -> Result {
+    let ownedProcessGroup = OwnedProcessGroup()
+    let result: Result
+    do {
+        result = try await operation(ownedProcessGroup)
+    } catch {
+        let operationError = error
+        try await ownedProcessGroup.complete()
+        throw operationError
+    }
+    try await ownedProcessGroup.complete()
+    return result
 }
 #endif
 
@@ -215,21 +258,22 @@ public struct ProcessRunner: CommandRunning, Sendable {
         var lastRetryableLaunchError: SubprocessError?
         for configuration in configurations {
             try Task.checkCancellation()
-            var processGroupID: pid_t?
             do {
-                let result = try await Subprocess.run(
-                    configuration,
-                    input: .none,
-                    // Capture is an exact command contract: callers parse complete JSON and build
-                    // metadata, so truncating at the library default would corrupt successful output.
-                    output: .bytes(limit: .max),
-                    error: .bytes(limit: .max)
-                ) { execution in
-                    precondition(processGroupID == nil)
-                    processGroupID = execution.processIdentifier.value
+                let result = try await withOwnedProcessGroup { ownedProcessGroup in
+                    try await Subprocess.run(
+                        configuration,
+                        input: .none,
+                        // Capture is an exact command contract: callers parse complete JSON and build
+                        // metadata, so truncating at the library default would corrupt successful output.
+                        output: .bytes(limit: .max),
+                        error: .bytes(limit: .max)
+                    ) { execution in
+                        ownedProcessGroup.recordLaunch(
+                            processIdentifier: execution.processIdentifier.value
+                        )
+                    }
                 }
-                // Subprocess completes capture and its group-leader lifecycle before returning.
-                // Preserve cancellation only after the catch path also proves group extinction.
+                // Preserve cancellation only after the owned process group has no live member.
                 try Task.checkCancellation()
                 let termination = commandTermination(result.terminationStatus)
                 let standardOutput = String(decoding: result.standardOutput, as: UTF8.self)
@@ -243,18 +287,10 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 }
                 return standardOutput
             } catch is CancellationError {
-                do {
-                    try await completeAbortedProcessGroupTeardown(processGroupID)
-                } catch {
-                    throw mapProcessGroupTeardownError(error, command: command)
-                }
                 throw CancellationError()
+            } catch let error as ProcessGroupTeardownError {
+                throw mapProcessGroupTeardownError(error, command: command)
             } catch let error as SubprocessError {
-                do {
-                    try await completeAbortedProcessGroupTeardown(processGroupID)
-                } catch {
-                    throw mapProcessGroupTeardownError(error, command: command)
-                }
                 if Task.isCancelled {
                     throw CancellationError()
                 }
@@ -263,11 +299,6 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 }
                 lastRetryableLaunchError = error
             } catch {
-                do {
-                    try await completeAbortedProcessGroupTeardown(processGroupID)
-                } catch {
-                    throw mapProcessGroupTeardownError(error, command: command)
-                }
                 if Task.isCancelled {
                     throw CancellationError()
                 }
@@ -361,29 +392,30 @@ public struct ProcessRunner: CommandRunning, Sendable {
         var lastRetryableLaunchError: SubprocessError?
         for configuration in configurations {
             try Task.checkCancellation()
-            var processGroupID: pid_t?
             do {
-                let result = try await Subprocess.run(
-                    configuration,
-                    input: .none,
-                    output: .sequence,
-                    error: .combinedWithOutput
-                ) { execution in
-                    precondition(processGroupID == nil)
-                    processGroupID = execution.processIdentifier.value
-                    var collector = StreamingOutputCollector()
-                    for try await buffer in execution.standardOutput {
-                        let bytes = buffer.withUnsafeBytes { Array($0) }
-                        if streamOutput {
-                            try await passthrough(Data(bytes))
+                let result = try await withOwnedProcessGroup { ownedProcessGroup in
+                    try await Subprocess.run(
+                        configuration,
+                        input: .none,
+                        output: .sequence,
+                        error: .combinedWithOutput
+                    ) { execution in
+                        ownedProcessGroup.recordLaunch(
+                            processIdentifier: execution.processIdentifier.value
+                        )
+                        var collector = StreamingOutputCollector()
+                        for try await buffer in execution.standardOutput {
+                            let bytes = buffer.withUnsafeBytes { Array($0) }
+                            if streamOutput {
+                                try await passthrough(Data(bytes))
+                            }
+                            collector.consume(bytes)
                         }
-                        collector.consume(bytes)
+                        collector.finish()
+                        return collector.lastLines
                     }
-                    collector.finish()
-                    return collector.lastLines
                 }
-                // See runCapture: cancellation is checked after Subprocess finishes the leader,
-                // then the catch path proves no descendant remains in the owned process group.
+                // See runCapture: cancellation is observed after group completion.
                 try Task.checkCancellation()
                 let termination = commandTermination(result.terminationStatus)
                 var lastLines = result.closureResult
@@ -401,10 +433,10 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     lastLines: lastLines
                 )
             } catch is CancellationError {
-                try await completeAbortedProcessGroupTeardown(processGroupID)
                 throw CancellationError()
+            } catch let error as ProcessGroupTeardownError {
+                throw error
             } catch let error as SubprocessError {
-                try await completeAbortedProcessGroupTeardown(processGroupID)
                 if Task.isCancelled {
                     throw CancellationError()
                 }
@@ -413,7 +445,6 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 }
                 lastRetryableLaunchError = error
             } catch {
-                try await completeAbortedProcessGroupTeardown(processGroupID)
                 if Task.isCancelled {
                     throw CancellationError()
                 }
@@ -492,7 +523,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
         platformOptions.createSession = true
         platformOptions.teardownSequence = [
             // The leader gets a graceful interval. If it exits first, any remaining descendants
-            // are orphaned from the command contract and the catch path force-completes teardown.
+            // are orphaned from the command contract and the ownership boundary completes
+            // teardown.
             .gracefulShutDown(
                 toProcessGroup: true,
                 allowedDurationToNextStep: .seconds(5)
