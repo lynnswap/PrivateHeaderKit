@@ -347,7 +347,14 @@ func runPrivateHeaderKitPreparedGeneration(
     do {
         let result = try await preparedGeneration.run(
             resumeBehavior,
-            privateHeaderKitProgressReporter(outputLogger: outputLogger)
+            privateHeaderKitProgressReporter(
+                artifactDirectory: request.output.artifactBaseDirectory.appendingPathComponent(
+                    request.source.storageIdentifier,
+                    isDirectory: true
+                ),
+                outputLogger: outputLogger,
+                failureLogger: errorLogger
+            )
         )
         resultScreenClearer?()
         renderPrivateHeaderKitRunSummary(
