@@ -619,12 +619,16 @@ func defaultSimulatorHelperTriple(
 }
 
 func dryRunInstallMessages(layout: InstallLayout) -> [String] {
-    [
+    var messages = [
         "Would acquire install lock: \(layout.lockURL.path)",
         "Would stage all three artifacts under: \(layout.versionsDirectory.path)",
         "Would atomically switch: \(layout.currentURL.path)",
         "Would maintain stable command symlink: \(layout.publicCommandURL.path)",
     ]
+    messages.append(contentsOf: ObsoletePublicCommand.allCases.map { command in
+        "Would remove obsolete command if present: \(layout.url(for: command).path)"
+    })
+    return messages
 }
 
 private func nonEmptyCLIValue(

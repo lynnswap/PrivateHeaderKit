@@ -21,6 +21,13 @@ struct InstallOptionTests {
         #expect(layout.versionsDirectory.path == "/prefix/libexec/privateheaderkit/versions")
         #expect(layout.currentURL.path == "/prefix/libexec/privateheaderkit/current")
         #expect(layout.rawDumpHelperURL.path == "/prefix/libexec/privateheaderkit/privateheaderkit-raw-helper")
+        #expect(
+            ObsoletePublicCommand.allCases.map { layout.url(for: $0).path } == [
+                "/prefix/bin/privateheaderkit-dump",
+                "/prefix/bin/headerdump",
+                "/prefix/bin/headerdump-sim",
+            ]
+        )
 
         let custom = try resolveInstallLayout(
             prefix: "/ignored",
@@ -29,6 +36,13 @@ struct InstallOptionTests {
         #expect(custom.prefix.path == "/custom")
         #expect(custom.publicCommandURL.path == "/custom/bin/privateheaderkit")
         #expect(custom.installRoot.path == "/custom/libexec/privateheaderkit")
+        #expect(
+            dryRunInstallMessages(layout: custom).suffix(3) == [
+                "Would remove obsolete command if present: /custom/bin/privateheaderkit-dump",
+                "Would remove obsolete command if present: /custom/bin/headerdump",
+                "Would remove obsolete command if present: /custom/bin/headerdump-sim",
+            ]
+        )
     }
 
 }
@@ -186,6 +200,225 @@ struct VersionCohortInstallerTests {
         )
         #expect(try activePublicCommandContents(layout: layout) == "first-privateheaderkit")
         try assertInstalledCohortIsExact(cohort.manifest, layout: layout)
+    }
+
+    @Test func installRemovesEveryObsoletePublicCommand() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        for command in ObsoletePublicCommand.allCases {
+            try writeExecutable("obsolete-\(command.rawValue)", to: layout.url(for: command))
+        }
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "2", count: 40),
+            marker: "cleanup"
+        )
+
+        _ = try await testInstaller(layout: layout).install(cohort)
+
+        try assertActive(cohort.manifest, layout: layout, marker: "cleanup")
+        for command in ObsoletePublicCommand.allCases {
+            #expect(!FileManager.default.fileExists(atPath: layout.url(for: command).path))
+        }
+    }
+
+    @Test func obsoleteCommandCleanupRemovesLinksWithoutRemovingTheirTargets() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        var targets: [URL] = []
+        for command in ObsoletePublicCommand.allCases {
+            let target = directories.root.appendingPathComponent(
+                "target-\(command.rawValue)",
+                isDirectory: false
+            )
+            try writeExecutable("target-\(command.rawValue)", to: target)
+            targets.append(target)
+            try FileManager.default.createDirectory(
+                at: layout.binDir,
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createSymbolicLink(
+                at: layout.url(for: command),
+                withDestinationURL: target
+            )
+        }
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "3", count: 40),
+            marker: "linked-cleanup"
+        )
+
+        _ = try await testInstaller(layout: layout).install(cohort)
+
+        for command in ObsoletePublicCommand.allCases {
+            #expect(!FileManager.default.fileExists(atPath: layout.url(for: command).path))
+        }
+        for target in targets {
+            #expect(FileManager.default.fileExists(atPath: target.path))
+        }
+    }
+
+    @Test func obsoleteCommandCleanupRemovesADanglingLink() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try FileManager.default.createDirectory(
+            at: layout.binDir,
+            withIntermediateDirectories: true
+        )
+        let commandURL = layout.url(for: .privateHeaderKitDump)
+        try FileManager.default.createSymbolicLink(
+            atPath: commandURL.path,
+            withDestinationPath: "missing-privateheaderkit-dump"
+        )
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "4", count: 40),
+            marker: "dangling-cleanup"
+        )
+
+        _ = try await testInstaller(layout: layout).install(cohort)
+
+        guard case .absent = try fileSystemItemKind(
+            at: commandURL,
+            fileManager: .default
+        ) else {
+            Issue.record("expected dangling obsolete command link to be removed")
+            return
+        }
+    }
+
+    @Test func activationFailureLeavesObsoleteCommandsUntouched() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeObsoleteCommands(layout: layout)
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "5", count: 40),
+            marker: "failed-activation"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .stableCommandSwitched {
+                    throw TestInstallFailure.activation
+                }
+            }
+        )
+
+        await #expect(throws: TestInstallFailure.self) {
+            _ = try await installer.install(cohort)
+        }
+
+        for command in ObsoletePublicCommand.allCases {
+            #expect(
+                try String(
+                    contentsOf: layout.url(for: command),
+                    encoding: .utf8
+                ) == "obsolete-\(command.rawValue)"
+            )
+        }
+    }
+
+    @Test func directLayoutMigrationAlsoRemovesObsoletePublicCommands() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        try writeObsoleteCommands(layout: layout)
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "6", count: 40),
+            marker: "migrated-cleanup"
+        )
+
+        _ = try await testInstaller(layout: layout).install(cohort)
+
+        try assertActive(cohort.manifest, layout: layout, marker: "migrated-cleanup")
+        for command in ObsoletePublicCommand.allCases {
+            #expect(!FileManager.default.fileExists(atPath: layout.url(for: command).path))
+        }
+        #expect(!FileManager.default.fileExists(atPath: layout.rawDumpHelperURL.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
+    }
+
+    @Test func obsoleteCommandDirectoryFailsBeforeInstallMutation() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let directory = layout.url(for: .headerDump)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "4", count: 40),
+            marker: "blocked-cleanup"
+        )
+
+        await #expect(throws: InstallError.self) {
+            _ = try await testInstaller(layout: layout).install(cohort)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: layout.currentURL.path))
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    @Test func obsoleteCommandCleanupRaceFailsAfterLeavingTheNewCohortActive() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeObsoleteCommands(layout: layout)
+        let racedDirectory = layout.url(for: .headerDump)
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "5", count: 40),
+            marker: "raced-cleanup"
+        )
+        let installer = testInstaller(
+            layout: layout,
+            faultInjector: { point in
+                if point == .obsoleteCommandCleanupStarted {
+                    try FileManager.default.removeItem(at: racedDirectory)
+                    try FileManager.default.createDirectory(
+                        at: racedDirectory,
+                        withIntermediateDirectories: true
+                    )
+                }
+            }
+        )
+
+        do {
+            _ = try await installer.install(cohort)
+            Issue.record("expected obsolete command cleanup to fail")
+        } catch let error as InstallError {
+            #expect(error.description.contains("new cohort is active"))
+            #expect(error.description.contains(racedDirectory.path))
+        }
+
+        try assertActive(cohort.manifest, layout: layout, marker: "raced-cleanup")
+        #expect(FileManager.default.fileExists(atPath: racedDirectory.path))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: layout.url(for: .privateHeaderKitDump).path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: layout.url(for: .headerDumpSimulator).path
+            )
+        )
+
+        try FileManager.default.removeItem(at: racedDirectory)
+        _ = try await testInstaller(layout: layout).install(cohort)
+
+        for command in ObsoletePublicCommand.allCases {
+            #expect(!FileManager.default.fileExists(atPath: layout.url(for: command).path))
+        }
     }
 
     @Test func installReportsPathGuidanceFromTheCanonicalCommandDirectory() async throws {
@@ -2514,6 +2747,15 @@ private func writeLegacyLayout(layout: InstallLayout) throws {
     try writeExecutable("legacy-main", to: layout.publicCommandURL)
     try writeExecutable("legacy-raw", to: layout.rawDumpHelperURL)
     try writeExecutable("legacy-sim", to: layout.simulatorHelperURL)
+}
+
+private func writeObsoleteCommands(layout: InstallLayout) throws {
+    for command in ObsoletePublicCommand.allCases {
+        try writeExecutable(
+            "obsolete-\(command.rawValue)",
+            to: layout.url(for: command)
+        )
+    }
 }
 
 private func activePublicCommandContents(
