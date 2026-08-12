@@ -1,0 +1,115 @@
+# Installation and Updates
+
+PrivateHeaderKit installs one public command, `privateheaderkit`. The raw macOS
+and iOS Simulator helpers are internal artifacts that are installed and updated
+with it as one validated cohort.
+
+## Requirements
+
+GitHub release installation requires:
+
+- an Apple Silicon Mac
+- macOS 14 or later
+
+It does not require a Swift toolchain. Generating iOS headers additionally
+requires Xcode with the matching iOS Simulator runtime.
+
+## Install a Release
+
+```bash
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+```
+
+The default command is installed at `~/.local/bin/privateheaderkit`.
+
+The installer checks whether the resolved command directory is already on
+`PATH`. If it is missing, the installer prints a `Next steps` block with:
+
+- a command to update the appropriate zsh or bash login profile when that
+  profile can be updated safely
+- an `export` command for the current shell
+- the `privateheaderkit` command to run next
+
+The installer never creates, edits, or sources a shell profile itself. For an
+unknown login shell, it prints the command directory instead of guessing a
+profile or shell syntax.
+
+### Custom destination
+
+Install under another prefix. The public command is placed in `<prefix>/bin`:
+
+```bash
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --prefix ~/Tools/PrivateHeaderKit
+```
+
+Or choose the public command directory directly:
+
+```bash
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
+```
+
+Choose either `--prefix` or `--bindir`. The installer resolves `~`, relative
+paths, and symlinked ancestors before installing and reporting the command
+location.
+
+### Install a specific release
+
+Replace `<version>` with a release tag such as `v1.2.3`:
+
+```text
+https://github.com/lynnswap/PrivateHeaderKit/releases/download/<version>/install.sh
+```
+
+## Install from Source
+
+Source installation builds the public command and both internal helpers from
+the same checkout:
+
+```bash
+git clone https://github.com/lynnswap/PrivateHeaderKit.git
+cd PrivateHeaderKit
+swift run -c release privateheaderkit-install
+```
+
+This path requires Swift 6.3 and Xcode with `xcrun` and an installed iOS
+Simulator SDK because the installed cohort always includes the simulator
+helper. `--prefix` and `--bindir` are also available for source installation.
+
+## Update
+
+Run the download command again, or update the source checkout and rerun
+`swift run -c release privateheaderkit-install`. Preserve the same `--prefix`
+or `--bindir` option when updating a custom destination.
+
+The installer verifies the archive checksum, exact archive contents, release
+manifest, executable hashes, architecture, platform, permissions, and code
+signatures before activation. It publishes an immutable cohort and switches
+the stable command only after the complete cohort passes validation. Download,
+build, validation, or staging failures leave the previous cohort active; an
+activation failure attempts to restore it and reports any restoration failure.
+
+## Installed Layout
+
+The default layout is:
+
+```text
+~/.local/bin/privateheaderkit
+  -> ../libexec/privateheaderkit/current/privateheaderkit
+~/.local/libexec/privateheaderkit/
+  current -> versions/<version>+<cohort-sha256>
+  versions/<version>+<cohort-sha256>/
+    privateheaderkit
+    privateheaderkit-raw-helper
+    privateheaderkit-sim-helper
+    release.json
+```
+
+Only `privateheaderkit` is a public command. The helpers are always resolved
+through the active validated cohort.
+
+An older direct install containing all three executables is migrated under the
+installer lock. Partial, ambiguous, or modified legacy install layouts are
+rejected instead of guessed. An interrupted install migration is recovered
+from its recorded intent on the next install. Generation-state and output
+migration is a separate contract described in
+[Generation, Output, and Resume Behavior](generation.md#legacy-output).
