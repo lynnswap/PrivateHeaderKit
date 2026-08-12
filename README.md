@@ -1,69 +1,45 @@
 # PrivateHeaderKit
 
-[Japanese](README.ja.md)
+[日本語](README.ja.md)
 
-Generate private framework headers for iOS and macOS.
+Generate searchable private headers from this Mac or an installed iOS Simulator
+runtime.
 
-- iOS: dump from simulator runtimes and dyld shared caches.
-- macOS: dump from host `/System/Library/{Frameworks,PrivateFrameworks}`.
+Requires macOS 14 or later. Prebuilt releases require Apple Silicon. iOS
+generation requires Xcode and an installed iOS Simulator runtime. Source
+installation requires Swift 6.3 and Xcode with an iOS Simulator SDK.
 
-## Requirements
+## Quick Start
 
-The PrivateHeaderKit CLI, installer, and internal helpers support Darwin/macOS
-hosts only. Non-Darwin hosts such as Linux are unsupported.
+```bash
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh
+```
 
-## Command Model
-
-PrivateHeaderKit exposes one user-facing command:
+If the installer prints a `Next steps` block, follow it instead of the command
+below. Otherwise run:
 
 ```bash
 privateheaderkit
 ```
 
-The old `privateheaderkit-dump`, `headerdump`, and `headerdump-sim` names are not
-installed as user-facing commands. Low-level raw dumping is handled by internal
-helpers that are installed and updated with the public command as one cohort.
+Choose a source, then generate all targets or enter specific framework, bundle,
+or dylib names. PrivateHeaderKit writes to `~/PrivateHeaderKit` by default and
+prints the exact `Headers` directory for the generated files.
 
-## Installation
+The installer does not edit shell profiles.
 
-On an Apple Silicon Mac, install the latest validated release cohort with the
-version-baked installer:
+## Install Options
 
-```bash
-curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
-sh install.sh
-```
+<details>
+<summary>Custom directories and source installation</summary>
 
-Each release has exactly three downloadable assets:
-
-- `install.sh`
-- `SHA256SUMS.txt`
-- `privateheaderkit-darwin-arm64.tar.gz`
-
-The version-baked installer downloads the matching archive and checksum file,
-verifies the archive checksum and exact archive contents, then validates
-`release.json` and all three executables for SHA-256, architecture, platform,
-executable permissions, and code signature. Only after the complete cohort has
-passed validation does it publish the immutable cohort and switch the active
-`current` link. By default, the stable user-facing command is
-`~/.local/bin/privateheaderkit`.
-
-If `~/.local/bin` is not in your `PATH`, add it:
+Install the command in `~/bin`:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
 ```
 
-To choose another prefix or command directory:
-
-```bash
-sh install.sh --prefix "$HOME/.local"
-# or: this uses $HOME as the prefix and $HOME/bin for the stable command
-sh install.sh --bindir "$HOME/bin"
-```
-
-To build and install all artifacts from a checkout instead:
+Build and install from a checkout:
 
 ```bash
 git clone https://github.com/lynnswap/PrivateHeaderKit.git
@@ -71,182 +47,51 @@ cd PrivateHeaderKit
 swift run -c release privateheaderkit-install
 ```
 
-Release and source installs use the same immutable layout:
+Source installation requires Swift 6.3 and Xcode with an iOS Simulator SDK.
 
-```text
-~/.local/bin/privateheaderkit
-  -> ../libexec/privateheaderkit/current/privateheaderkit
-~/.local/libexec/privateheaderkit/
-  current -> versions/<version>+<cohort-sha256>
-  versions/<version>+<cohort-sha256>/
-    privateheaderkit
-    privateheaderkit-raw-helper
-    privateheaderkit-sim-helper
-    release.json
-```
+</details>
 
-Only `privateheaderkit` is public. Its two helpers are always resolved through
-the same validated cohort. To update, download and run the latest `install.sh`
-again, or update the source checkout and rerun `swift run -c release
-privateheaderkit-install`. A failed build, download, validation, or staging
-step leaves the previous validated cohort active. If activation fails, the
-installer attempts to restore the previous cohort and reports any rollback
-failure instead of hiding it.
-Untagged source checkouts use a commit-qualified
-`0.0.0-dev.<short-commit>` version namespace.
+## Automation
 
-An older direct install containing the three executable files is migrated under
-the installer lock. If that migration is interrupted, the next install recovers
-it from the recorded migration intent. A partial or ambiguous legacy layout is
-rejected, and recovery refuses to guess if its files changed after the intent
-was recorded. A retired helper whose contents changed is left untouched; once
-the validated `current` and public command links establish the managed layout,
-that leftover does not block a later managed install.
-
-Maintainers prepare a release with the `Prepare Draft Release` workflow. It must
-be dispatched with a version and the full SHA of the current default-branch
-HEAD. The workflow creates or repairs a draft GitHub Release with exactly the
-three assets listed above. Publishing remains a manual step after the draft and
-release notes have been reviewed.
-
-## Generation
+The no-argument command is the recommended interactive path. For scripts, pass
+all generation inputs explicitly:
 
 ```bash
-privateheaderkit
-privateheaderkit --help
+privateheaderkit \
+  --platform macOS \
+  --version "$(sw_vers -productVersion)" \
+  --build "$(sw_vers -buildVersion)" \
+  --system-root / \
+  --out ~/PrivateHeaderKit \
+  --target AppKit,Foundation
 ```
-
-Running `privateheaderkit` without arguments starts the interactive generation
-wizard; its default output base is `~/PrivateHeaderKit`. The wizard asks for an
-explicit Continue or Restart decision when compatible unfinished state exists,
-and asks for confirmation before migrating legacy state or output. If both are
-present, the same confirmation lists both paths and their preservation or
-backup effects before migration. For automation and CI, pass generation
-options directly:
-
-Generated headers are written to
-`~/PrivateHeaderKit/generated-headers/<source-storage-id>/`. The command also
-prints this concrete destination when a run starts.
 
 ```bash
-privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
-privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit" --fresh
-privateheaderkit --platform macOS --version 16.0 --system-root / --out "$HOME/PrivateHeaderKit" --target "AppKit,Foundation" --resume
+privateheaderkit \
+  --platform iOS \
+  --version 27.0 \
+  --out ~/PrivateHeaderKit \
+  --target SwiftUI,UIKit
 ```
 
-For iOS generation, `privateheaderkit` resolves an available simulator runtime
-from `--version` and `--build`, selects and boots a simulator device, and uses
-the internal simulator helper. `--system-root` is optional for iOS; when
-supplied, it is used as the runtime root instead of being replaced by the
-resolved runtime path. `--device <name-or-udid>` and `--sim-helper <path>` are
-optional automation flags.
+Use `privateheaderkit --help` for the complete option list. If more than one iOS
+runtime matches a version, add `--build <build>`. Replace the example iOS
+version with an installed runtime version.
 
-`--target` is a comma-separated target query, not a stable target ID list.
-`--resume` and `--fresh` are mutually exclusive:
+## Update
 
-- `--resume` continues the latest compatible plan and runs its unfinished or
-  missing targets. A changed plan fingerprint or a smaller selected target set
-  is rejected as incompatible.
-- `--fresh` starts a new run for every selected target. It also permits the
-  explicit migration of legacy JSON state and a legacy output directory.
-- With neither flag, a new run starts when no prior state exists. Compatible
-  state with no unfinished work may be reused, but unfinished state is rejected
-  until the caller explicitly chooses `--resume` or `--fresh`.
+Run the install command again. A release is activated only after validation.
+Download, build, validation, and staging failures leave the previous cohort
+active; an activation failure attempts to restore it and reports if restoration
+also fails.
 
-`--fresh` does not delete the currently published header tree before work
-starts. A completed target updates the files it owns under
-`generated-headers/<source-storage-id>/` before the next target starts. A later
-target or finalization failure does not remove those files, and `--resume`
-continues without rerunning targets that were already published. Failed or
-interrupted targets retain their last successfully published files. The
-immutable generation finalized at the end of a run is an internal recovery
-snapshot, not a gate that hides headers while generation is in progress. The
-old `<version>` positional style is not part of the public surface.
+## Documentation
 
-On a TTY, the active target is one transient line animated as `.`, `..`, and
-`...`. Successful lines are replaced by the next target instead of accumulating
-in the terminal; only failed targets and concise diagnostics remain. Normal raw
-helper output is not forwarded to the terminal. A bounded diagnostic tail for
-a failed target is retained as its SQLite `failureSummary`.
-
-## Output Layout Contract
-
-The output base contains the incrementally visible header tree, internal
-immutable recovery generations, and one SQLite state database per source:
-
-```text
-<output-base>/
-  generated-headers/
-    <source-storage-id>/
-      Frameworks/...
-      PrivateFrameworks/...
-      SystemLibrary/...
-      usr/lib/...
-  .privateheaderkit/
-    <source-storage-id>/
-      current -> generations/<generation-id>
-      generations/
-        <generation-id>/
-          .privateheaderkit-generation.json
-          Frameworks/...
-          PrivateFrameworks/...
-      legacy-backups/...
-  .state/
-    <source-storage-id>/
-      generation.sqlite
-```
-
-`--out` selects `<output-base>`. Consumers use
-`<output-base>/generated-headers/<source-storage-id>/`. Completed target
-artifacts and their SQLite published-target records become durable per target;
-the internal snapshot under `.privateheaderkit` is reconciled at the end of a
-run. The `legacy-backups` directory is created only when a pre-rewrite output
-directory is migrated. Generation state, target attempts, publication intent,
-and run logs are stored in `generation.sqlite`. The storage ID is versioned and
-owned by PrivateHeaderKit; consumers must not construct it from the displayed
-source label.
-
-## Legacy Output Migration
-
-Old `.state/<source-storage-id>/manifest.json` and `runs/` data is not imported as
-resumable state. When those paths exist without `generation.sqlite`, a run
-without `--fresh` stops. An explicit fresh migration creates
-`generation.sqlite` and leaves the old JSON paths in place.
-
-An existing real `<output-base>/<source-storage-id>/` directory is not silently
-adopted. With `--fresh`, PrivateHeaderKit inventories and copies its regular
-files into the draft generation as opaque, unowned files. It then uses an
-atomic directory/symlink swap to publish the managed stable path and retains
-the original directory under
-`.privateheaderkit/<source-storage-id>/legacy-backups/`. If the legacy tree cannot be
-validated or the filesystem cannot perform the atomic swap, migration fails
-without replacing the original output path.
-
-## Notes
-
-- iOS runtime discovery and simulator execution require Xcode with `xcrun`,
-  `simctl`, and an installed iPhone Simulator SDK.
-- Building from source requires the Swift 6.3 toolchain. Source installation
-  additionally requires Xcode with `xcrun` and an installed iPhone Simulator
-  SDK because the installed cohort includes the simulator helper.
-- State, logs, and staging data are kept outside the published generated header
-  tree.
-
-## Testing
-
-`swift test` is expected to be deterministic. Regular tests should use fixed fixture trees, injected environments, and stub command runners only.
-
-Compile the platform-neutral Core target and its test surface for iOS without launching a simulator:
-
-```bash
-PHK_IOS_SIMULATOR_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-PHK_IOS_SIMULATOR_TRIPLE="$(uname -m)-apple-ios17.0-simulator"
-PHK_IOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-ios-compile/$PHK_IOS_SIMULATOR_TRIPLE"
-swift build --scratch-path "$PHK_IOS_BUILD_SCRATCH" --sdk "$PHK_IOS_SIMULATOR_SDK" --triple "$PHK_IOS_SIMULATOR_TRIPLE" --target PrivateHeaderKitCore
-swift build --scratch-path "$PHK_IOS_BUILD_SCRATCH" --sdk "$PHK_IOS_SIMULATOR_SDK" --triple "$PHK_IOS_SIMULATOR_TRIPLE" --target PrivateHeaderKitCoreTests
-```
-Do not add regular tests that depend on the host dyld shared cache, installed system apps, simulator availability, runtime boot state, wall-clock time, generated `swiftc` binaries, network access, or stress loops. If an integration smoke test needs one of those dependencies, guard it behind an explicit opt-in such as `PHK_RUN_INTEGRATION_TESTS=1` and keep it out of the default acceptance path.
+- [Installation and updates](Docs/installation.md)
+- [Generation, output, and resume behavior](Docs/generation.md)
+- [Troubleshooting](Docs/troubleshooting.md)
+- [Development and releases](CONTRIBUTING.md)
 
 ## License
 
-- MIT for this workspace: see `LICENSE`.
+PrivateHeaderKit is available under the [MIT License](LICENSE).

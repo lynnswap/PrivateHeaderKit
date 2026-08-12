@@ -175,21 +175,10 @@ if [ -n "$BINDIR" ]; then
     --expected-version "$VERSION" \
     --expected-commit "$COMMIT" \
     --bindir "$BINDIR"
-  installed_bin="$BINDIR"
 else
   "$temporary_directory/bin/privateheaderkit-install" \
     --release-dir "$temporary_directory/cohort" \
     --expected-version "$VERSION" \
     --expected-commit "$COMMIT" \
     --prefix "$PREFIX"
-  installed_bin="$PREFIX/bin"
 fi
-
-echo "Installed PrivateHeaderKit $VERSION."
-case ":${PATH}:" in
-  *":${installed_bin}:"*) ;;
-  *)
-    echo "Add this directory to PATH:"
-    echo "  export PATH=\"${installed_bin}:\$PATH\""
-    ;;
-esac

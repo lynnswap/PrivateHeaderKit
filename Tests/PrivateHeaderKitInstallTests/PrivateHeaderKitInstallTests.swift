@@ -188,6 +188,56 @@ struct VersionCohortInstallerTests {
         try assertInstalledCohortIsExact(cohort.manifest, layout: layout)
     }
 
+    @Test func installReportsPathGuidanceFromTheCanonicalCommandDirectory() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let realPrefix = directories.root.appendingPathComponent("real-prefix", isDirectory: true)
+        let prefixAlias = directories.root.appendingPathComponent("prefix-alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: realPrefix, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: prefixAlias, withDestinationURL: realPrefix)
+        let layout = try resolveInstallLayout(prefix: prefixAlias.path, bindir: nil)
+        let cohort = try await makeTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "a", count: 40),
+            marker: "guidance"
+        )
+        let releaseDirectory = try cohortDirectory(cohort)
+        let output = OSAllocatedUnfairLock(initialState: [String]())
+        let options = InstallOptions(
+            prefix: prefixAlias.path,
+            bindir: nil,
+            dryRun: false,
+            buildConfiguration: nil,
+            releaseDirectory: releaseDirectory.path,
+            expectedReleaseVersion: cohort.manifest.version,
+            expectedReleaseCommit: cohort.manifest.commit
+        )
+
+        try await runInstall(
+            options: options,
+            currentExecutableURL: nil,
+            currentDirectoryURL: directories.root,
+            environment: [
+                "HOME": directories.root.path,
+                "PATH": "/usr/bin:/bin",
+                "SHELL": "/bin/zsh",
+            ],
+            runner: RecordingCommandRunner(),
+            fileManager: .default,
+            inspectArtifact: testArtifactInspector,
+            outputLogger: { message in
+                output.withLock { $0.append(message) }
+            }
+        )
+
+        let messages = output.withLock { $0 }
+        #expect(messages.contains("Command: \(layout.publicCommandURL.path)"))
+        #expect(messages.contains("Next steps:"))
+        #expect(messages.contains(where: { $0.contains(layout.binDir.path) }))
+        #expect(!messages.contains(where: { $0.contains(prefixAlias.path) }))
+        #expect(messages.contains(where: { $0.contains(".zprofile") }))
+    }
+
     @Test func stagingFailureKeepsPreviousCohortActive() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
