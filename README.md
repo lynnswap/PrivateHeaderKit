@@ -7,6 +7,11 @@ Generate private framework headers for iOS and macOS.
 - iOS: dump from simulator runtimes and dyld shared caches.
 - macOS: dump from host `/System/Library/{Frameworks,PrivateFrameworks}`.
 
+## Requirements
+
+The PrivateHeaderKit CLI, installer, and internal helpers support Darwin/macOS
+hosts only. Non-Darwin hosts such as Linux are unsupported.
+
 ## Command Model
 
 PrivateHeaderKit exposes one user-facing command:
@@ -119,6 +124,10 @@ present, the same confirmation lists both paths and their preservation or
 backup effects before migration. For automation and CI, pass generation
 options directly:
 
+Generated headers are written to
+`~/PrivateHeaderKit/generated-headers/<source-storage-id>/`. The command also
+prints this concrete destination when a run starts.
+
 ```bash
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit"
 privateheaderkit --platform iOS --version 27.0 --build 24A5355q --system-root /path/to/RuntimeRoot --device "iPhone 17" --out "$HOME/PrivateHeaderKit" --target "SwiftUI,UIKit" --fresh
@@ -145,19 +154,34 @@ optional automation flags.
   until the caller explicitly chooses `--resume` or `--fresh`.
 
 `--fresh` does not delete the currently published header tree before work
-starts. Every publication is built as a new immutable generation. A target that
-finishes replaces only the files it owns; failed or interrupted targets retain
-their last successfully published files. The old `<version>` positional style
-is not part of the public surface.
+starts. A completed target updates the files it owns under
+`generated-headers/<source-storage-id>/` before the next target starts. A later
+target or finalization failure does not remove those files, and `--resume`
+continues without rerunning targets that were already published. Failed or
+interrupted targets retain their last successfully published files. The
+immutable generation finalized at the end of a run is an internal recovery
+snapshot, not a gate that hides headers while generation is in progress. The
+old `<version>` positional style is not part of the public surface.
+
+On a TTY, the active target is one transient line animated as `.`, `..`, and
+`...`. Successful lines are replaced by the next target instead of accumulating
+in the terminal; only failed targets and concise diagnostics remain. Normal raw
+helper output is not forwarded to the terminal. A bounded diagnostic tail for
+a failed target is retained as its SQLite `failureSummary`.
 
 ## Output Layout Contract
 
-The output base contains a stable source storage ID path, immutable generations,
-and one SQLite state database per source:
+The output base contains the incrementally visible header tree, internal
+immutable recovery generations, and one SQLite state database per source:
 
 ```text
 <output-base>/
-  <source-storage-id> -> .privateheaderkit/<source-storage-id>/current
+  generated-headers/
+    <source-storage-id>/
+      Frameworks/...
+      PrivateFrameworks/...
+      SystemLibrary/...
+      usr/lib/...
   .privateheaderkit/
     <source-storage-id>/
       current -> generations/<generation-id>
@@ -173,13 +197,14 @@ and one SQLite state database per source:
 ```
 
 `--out` selects `<output-base>`. Consumers use
-`<output-base>/<source-storage-id>/`, while publication metadata and immutable
-generation directories remain under `.privateheaderkit`. The
-`legacy-backups` directory is created only when a pre-rewrite output directory
-is migrated. Generation state, target attempts, publication intent, and run
-logs are stored in `generation.sqlite`. The storage ID is versioned and owned
-by PrivateHeaderKit; consumers must not construct it from the displayed source
-label.
+`<output-base>/generated-headers/<source-storage-id>/`. Completed target
+artifacts and their SQLite published-target records become durable per target;
+the internal snapshot under `.privateheaderkit` is reconciled at the end of a
+run. The `legacy-backups` directory is created only when a pre-rewrite output
+directory is migrated. Generation state, target attempts, publication intent,
+and run logs are stored in `generation.sqlite`. The storage ID is versioned and
+owned by PrivateHeaderKit; consumers must not construct it from the displayed
+source label.
 
 ## Legacy Output Migration
 

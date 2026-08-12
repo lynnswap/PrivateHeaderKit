@@ -5,6 +5,38 @@ package actor GenerationStore {
   package typealias FaultInjector =
     @Sendable (PrivateHeaderGeneration.StoreFaultPoint) throws -> Void
 
+  package enum BootstrapReconciliation: Equatable, Sendable {
+    case empty
+    case generation(PrivateHeaderGeneration.GenerationID)
+
+    fileprivate var storedValue: String {
+      switch self {
+      case .empty:
+        "empty"
+      case .generation(let generationID):
+        "generation:\(generationID.rawValue)"
+      }
+    }
+
+    fileprivate init(storedValue: String) throws {
+      if storedValue == "empty" {
+        self = .empty
+      } else if storedValue.hasPrefix("generation:") {
+        self = .generation(
+          try PrivateHeaderGeneration.GenerationID(
+            String(storedValue.dropFirst("generation:".count))
+          )
+        )
+      } else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "invalid bootstrap reconciliation state \(storedValue)"
+        )
+      }
+    }
+  }
+
+  private static let bootstrapReconciliationKey = "bootstrapReconciliationGenerationID"
+
   private let databaseQueue: DatabaseQueue
   private let faultInjector: FaultInjector
 
@@ -48,6 +80,151 @@ package actor GenerationStore {
   package func appliedMigrationIdentifiers() throws -> [String] {
     try databaseQueue.read { db in
       try Self.migrator.completedMigrations(db)
+    }
+  }
+
+  @discardableResult
+  package func bootstrapPublishedGenerationIfEmpty(
+    sourceIdentity: String,
+    publication: PrivateHeaderGeneration.PublicationSnapshot,
+    at date: Date
+  ) throws -> Bool {
+    let reconciliation = publication.currentMarker.map {
+      BootstrapReconciliation.generation($0.generationID)
+    } ?? .empty
+    return try databaseQueue.write { db in
+      let stateRowCount =
+        (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM runs") ?? 0)
+        + (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0)
+        + (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM publicationIntents") ?? 0)
+        + (try Int.fetchOne(
+          db,
+          sql: "SELECT COUNT(*) FROM metadata WHERE key = ?",
+          arguments: [Self.bootstrapReconciliationKey]
+        ) ?? 0)
+      guard stateRowCount == 0 else { return false }
+
+      guard let marker = publication.currentMarker else {
+        try db.execute(
+          sql: "INSERT INTO metadata(key, value) VALUES (?, ?)",
+          arguments: [Self.bootstrapReconciliationKey, reconciliation.storedValue]
+        )
+        return true
+      }
+
+      let runID = PrivateHeaderGeneration.RunID(
+        rawValue: "baseline-\(marker.generationID.rawValue)"
+      )
+      let targetIDs = marker.artifactsByTarget.keys.sorted()
+      let timestamp = date.timeIntervalSinceReferenceDate
+      try db.execute(
+        sql: """
+          INSERT INTO runs(
+              id, sourceIdentity, planFingerprint, targetIDs,
+              startedAt, endedAt, status
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+          """,
+        arguments: [
+          runID.rawValue,
+          sourceIdentity,
+          marker.planFingerprint,
+          try Self.encodeStrings(targetIDs),
+          timestamp,
+          PrivateHeaderGeneration.RunStatus.running.rawValue,
+        ]
+      )
+      try db.execute(
+        sql: "INSERT INTO runOrdering(runID) VALUES (?)",
+        arguments: [runID.rawValue]
+      )
+      for targetID in targetIDs {
+        let artifacts = marker.artifactsByTarget[targetID] ?? []
+        let encodedArtifacts = try Self.encodeArtifacts(artifacts)
+        let kind = targetID.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+        try db.execute(
+          sql: """
+            INSERT INTO runTargets(
+                runID, targetID, displayName, kind, status,
+                failureSummary, artifactSet, updatedAt
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+            """,
+          arguments: [
+            runID.rawValue,
+            targetID,
+            targetID,
+            kind,
+            PrivateHeaderGeneration.RunTargetStatus.completed.rawValue,
+            encodedArtifacts,
+            timestamp,
+          ]
+        )
+      }
+      try db.execute(
+        sql: """
+          INSERT INTO publicationIntents(
+              generationID, runID, previousGenerationID, state,
+              planFingerprint, artifactChecksum, createdAt, completedAt
+          ) VALUES (?, ?, NULL, ?, ?, ?, ?, NULL)
+          """,
+        arguments: [
+          marker.generationID.rawValue,
+          runID.rawValue,
+          PrivateHeaderGeneration.PublicationState.pointerPublished.rawValue,
+          marker.planFingerprint,
+          marker.artifactChecksum,
+          timestamp,
+        ]
+      )
+      try db.execute(
+        sql: "INSERT INTO publicationOrdering(generationID) VALUES (?)",
+        arguments: [marker.generationID.rawValue]
+      )
+      try db.execute(
+        sql: "INSERT INTO metadata(key, value) VALUES (?, ?)",
+        arguments: [Self.bootstrapReconciliationKey, reconciliation.storedValue]
+      )
+      return true
+    }
+  }
+
+  package func pendingBootstrapReconciliation() throws -> BootstrapReconciliation?
+  {
+    try databaseQueue.read { db in
+      guard
+        let rawValue = try String.fetchOne(
+          db,
+          sql: "SELECT value FROM metadata WHERE key = ?",
+          arguments: [Self.bootstrapReconciliationKey]
+        )
+      else {
+        return nil
+      }
+      return try BootstrapReconciliation(storedValue: rawValue)
+    }
+  }
+
+  package func completeBootstrapReconciliation(
+    _ reconciliation: BootstrapReconciliation
+  ) throws {
+    try databaseQueue.write { db in
+      guard
+        let pending = try String.fetchOne(
+          db,
+          sql: "SELECT value FROM metadata WHERE key = ?",
+          arguments: [Self.bootstrapReconciliationKey]
+        )
+      else {
+        return
+      }
+      guard pending == reconciliation.storedValue else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "bootstrap reconciliation state changed from \(reconciliation.storedValue) to \(pending)"
+        )
+      }
+      try db.execute(
+        sql: "DELETE FROM metadata WHERE key = ?",
+        arguments: [Self.bootstrapReconciliationKey]
+      )
     }
   }
 
@@ -145,10 +322,17 @@ package actor GenerationStore {
     }
   }
 
-  package func recordTargetAttempt(
+  package func prepareTargetPublication(
     _ result: PrivateHeaderGeneration.TargetAttemptResult,
     in runID: PrivateHeaderGeneration.RunID
   ) throws {
+    guard result.status == .completed else {
+      throw PrivateHeaderGeneration.StateError.invalidTransition(
+        entity: "target publication \(result.targetID)",
+        from: result.status.rawValue,
+        to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
+      )
+    }
     try databaseQueue.write { db in
       let status = try String.fetchOne(
         db,
@@ -157,27 +341,58 @@ package actor GenerationStore {
       )
       guard status == PrivateHeaderGeneration.RunTargetStatus.running.rawValue else {
         throw PrivateHeaderGeneration.StateError.invalidTransition(
-          entity: "target attempt \(result.targetID)",
+          entity: "target publication \(result.targetID)",
           from: status ?? "missing",
-          to: result.status.rawValue
+          to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
         )
       }
       try db.execute(
         sql: """
           UPDATE runTargets
-          SET displayName = ?, kind = ?, status = ?, failureSummary = ?, artifactSet = ?, updatedAt = ?
+          SET displayName = ?, kind = ?, artifactSet = ?, updatedAt = ?
           WHERE runID = ? AND targetID = ?
           """,
         arguments: [
           result.displayName,
           result.kind,
-          result.status.rawValue,
-          result.failureSummary,
           try Self.encodeArtifacts(result.artifacts),
           result.completedAt.timeIntervalSinceReferenceDate,
           runID.rawValue,
           result.targetID,
         ]
+      )
+    }
+  }
+
+  package func recordTargetAttempt(
+    _ result: PrivateHeaderGeneration.TargetAttemptResult,
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    try databaseQueue.write { db in
+      try Self.updateRunTarget(db, result: result, in: runID)
+      try faultInjector(.afterRunTargetWrite)
+    }
+  }
+
+  package func recordPublishedTargetAttempt(
+    _ result: PrivateHeaderGeneration.TargetAttemptResult,
+    artifactDigests: [PrivateHeaderGeneration.ArtifactPath: String],
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    guard result.status == .completed else {
+      throw PrivateHeaderGeneration.StateError.invalidTransition(
+        entity: "published target attempt \(result.targetID)",
+        from: result.status.rawValue,
+        to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
+      )
+    }
+    try databaseQueue.write { db in
+      try Self.updateRunTarget(db, result: result, in: runID)
+      try Self.upsertPublishedTarget(
+        db,
+        result: result,
+        artifactDigests: artifactDigests,
+        in: runID
       )
       try faultInjector(.afterRunTargetWrite)
     }
@@ -594,6 +809,65 @@ package actor GenerationStore {
     }
   }
 
+  package func publishedArtifactsByTarget()
+    throws -> [String: [PrivateHeaderGeneration.ArtifactPath]]
+  {
+    try databaseQueue.read { db in
+      try Dictionary(
+        uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT * FROM targets").map { row in
+          let snapshot = try Self.targetSnapshot(row)
+          return (snapshot.targetID, snapshot.artifacts)
+        }
+      )
+    }
+  }
+
+  package func publishedTargetsByID()
+    throws -> [String: PrivateHeaderGeneration.TargetSnapshot]
+  {
+    try databaseQueue.read { db in
+      try Dictionary(
+        uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT * FROM targets").map { row in
+          let snapshot = try Self.targetSnapshot(row)
+          return (snapshot.targetID, snapshot)
+        }
+      )
+    }
+  }
+
+  package func targetIDsCoveredByGeneration(
+    _ generationID: PrivateHeaderGeneration.GenerationID
+  ) throws -> Set<String> {
+    try databaseQueue.read { db in
+      guard
+        let generationSequence = try Int64.fetchOne(
+          db,
+          sql: """
+            SELECT runOrdering.sequence
+            FROM publicationIntents
+            JOIN runOrdering ON runOrdering.runID = publicationIntents.runID
+            WHERE publicationIntents.generationID = ?
+            """,
+          arguments: [generationID.rawValue]
+        )
+      else {
+        throw PrivateHeaderGeneration.StateError.missingPublicationIntent(generationID)
+      }
+      return Set(
+        try String.fetchAll(
+          db,
+          sql: """
+            SELECT targets.targetID
+            FROM targets
+            JOIN runOrdering ON runOrdering.runID = targets.lastSuccessfulRunID
+            WHERE runOrdering.sequence <= ?
+            """,
+          arguments: [generationSequence]
+        )
+      )
+    }
+  }
+
   package func recordRunLog(
     runID: PrivateHeaderGeneration.RunID,
     kind: String,
@@ -697,6 +971,75 @@ package actor GenerationStore {
 }
 
 extension GenerationStore {
+  fileprivate static func updateRunTarget(
+    _ db: Database,
+    result: PrivateHeaderGeneration.TargetAttemptResult,
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    let status = try String.fetchOne(
+      db,
+      sql: "SELECT status FROM runTargets WHERE runID = ? AND targetID = ?",
+      arguments: [runID.rawValue, result.targetID]
+    )
+    guard status == PrivateHeaderGeneration.RunTargetStatus.running.rawValue else {
+      throw PrivateHeaderGeneration.StateError.invalidTransition(
+        entity: "target attempt \(result.targetID)",
+        from: status ?? "missing",
+        to: result.status.rawValue
+      )
+    }
+    try db.execute(
+      sql: """
+        UPDATE runTargets
+        SET displayName = ?, kind = ?, status = ?, failureSummary = ?, artifactSet = ?, updatedAt = ?
+        WHERE runID = ? AND targetID = ?
+        """,
+      arguments: [
+        result.displayName,
+        result.kind,
+        result.status.rawValue,
+        result.failureSummary,
+        try encodeArtifacts(result.artifacts),
+        result.completedAt.timeIntervalSinceReferenceDate,
+        runID.rawValue,
+        result.targetID,
+      ]
+    )
+  }
+
+  fileprivate static func upsertPublishedTarget(
+    _ db: Database,
+    result: PrivateHeaderGeneration.TargetAttemptResult,
+    artifactDigests: [PrivateHeaderGeneration.ArtifactPath: String],
+    in runID: PrivateHeaderGeneration.RunID
+  ) throws {
+    let encodedDigests = try encodeArtifactDigests(
+      artifactDigests,
+      artifacts: result.artifacts
+    )
+    try db.execute(
+      sql: """
+        INSERT INTO targets(
+            targetID, lastSuccessfulRunID, status, artifactSet, artifactDigests, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(targetID) DO UPDATE SET
+            lastSuccessfulRunID = excluded.lastSuccessfulRunID,
+            status = excluded.status,
+            artifactSet = excluded.artifactSet,
+            artifactDigests = excluded.artifactDigests,
+            updatedAt = excluded.updatedAt
+        """,
+      arguments: [
+        result.targetID,
+        runID.rawValue,
+        PrivateHeaderGeneration.RunTargetStatus.completed.rawValue,
+        try encodeArtifacts(result.artifacts),
+        encodedDigests,
+        result.completedAt.timeIntervalSinceReferenceDate,
+      ]
+    )
+  }
+
   fileprivate static func prepareDatabasePath(_ databaseURL: URL) throws {
     do {
       try ManagedFileSystem.ensureRealDirectory(databaseURL.deletingLastPathComponent())
@@ -789,6 +1132,13 @@ extension GenerationStore {
           );
           INSERT INTO publicationOrdering(generationID)
               SELECT generationID FROM publicationIntents ORDER BY rowid;
+          """)
+    }
+    migrator.registerMigration("v4-published-artifact-digests") { db in
+      try db.execute(
+        sql: """
+          ALTER TABLE targets
+          ADD COLUMN artifactDigests TEXT NOT NULL DEFAULT '{}';
           """)
     }
     return migrator
@@ -932,7 +1282,16 @@ extension GenerationStore {
           sql: """
             UPDATE runTargets
             SET status = ?, failureSummary = COALESCE(failureSummary, ?), updatedAt = ?
-            WHERE runID = ? AND status IN (?, ?)
+            WHERE runID = ?
+              AND (
+                status = ?
+                OR (
+                  status = ?
+                  AND targetID NOT IN (
+                    SELECT targetID FROM targets WHERE lastSuccessfulRunID = ?
+                  )
+                )
+              )
             """,
           arguments: [
             PrivateHeaderGeneration.RunTargetStatus.failed.rawValue,
@@ -941,6 +1300,7 @@ extension GenerationStore {
             intent.runID.rawValue,
             PrivateHeaderGeneration.RunTargetStatus.running.rawValue,
             PrivateHeaderGeneration.RunTargetStatus.completed.rawValue,
+            intent.runID.rawValue,
           ]
         )
         try db.execute(
@@ -986,9 +1346,15 @@ extension GenerationStore {
       let updatedAt: Double = row["updatedAt"]
       try db.execute(
         sql: """
-          INSERT INTO targets(targetID, lastSuccessfulRunID, status, artifactSet, updatedAt)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO targets(
+              targetID, lastSuccessfulRunID, status, artifactSet, artifactDigests, updatedAt
+          ) VALUES (?, ?, ?, ?, '{}', ?)
           ON CONFLICT(targetID) DO UPDATE SET
+              artifactDigests = CASE
+                  WHEN targets.lastSuccessfulRunID = excluded.lastSuccessfulRunID
+                  THEN targets.artifactDigests
+                  ELSE excluded.artifactDigests
+              END,
               lastSuccessfulRunID = excluded.lastSuccessfulRunID,
               status = excluded.status,
               artifactSet = excluded.artifactSet,
@@ -1140,11 +1506,20 @@ extension GenerationStore {
         "unknown target status \(rawStatus)")
     }
     let artifactJSON: String = row["artifactSet"]
+    let artifacts = try decodeArtifacts(artifactJSON)
+    let digestJSON: String = row["artifactDigests"]
+    let artifactDigests = try decodeArtifactDigests(digestJSON)
+    guard artifactDigests.isEmpty || Set(artifactDigests.keys) == Set(artifacts) else {
+      throw PrivateHeaderGeneration.StateError.corruptPublication(
+        "published target artifact digests do not match its artifact set"
+      )
+    }
     return PrivateHeaderGeneration.TargetSnapshot(
       targetID: row["targetID"],
       lastSuccessfulRunID: try PrivateHeaderGeneration.RunID(row["lastSuccessfulRunID"]),
       status: status,
-      artifacts: try decodeArtifacts(artifactJSON),
+      artifacts: artifacts,
+      artifactDigests: artifactDigests,
       updatedAt: Date(timeIntervalSinceReferenceDate: row["updatedAt"])
     )
   }
@@ -1236,5 +1611,47 @@ extension GenerationStore {
     .ArtifactPath]
   {
     try decodeStrings(value).map { try PrivateHeaderGeneration.ArtifactPath($0) }
+  }
+
+  fileprivate static func encodeArtifactDigests(
+    _ values: [PrivateHeaderGeneration.ArtifactPath: String],
+    artifacts: [PrivateHeaderGeneration.ArtifactPath]
+  ) throws -> String {
+    guard Set(values.keys) == Set(artifacts), values.values.allSatisfy(isValidSHA256) else {
+      throw PrivateHeaderGeneration.StateError.corruptPublication(
+        "published target artifact digests do not match its artifact set"
+      )
+    }
+    let rawValues = Dictionary(uniqueKeysWithValues: values.map { ($0.key.rawValue, $0.value) })
+    return String(decoding: try JSONEncoder().encode(rawValues), as: UTF8.self)
+  }
+
+  fileprivate static func decodeArtifactDigests(
+    _ value: String
+  ) throws -> [PrivateHeaderGeneration.ArtifactPath: String] {
+    let rawValues = try JSONDecoder().decode([String: String].self, from: Data(value.utf8))
+    var result: [PrivateHeaderGeneration.ArtifactPath: String] = [:]
+    result.reserveCapacity(rawValues.count)
+    for (rawPath, digest) in rawValues {
+      guard isValidSHA256(digest) else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "published target has an invalid artifact digest"
+        )
+      }
+      let path = try PrivateHeaderGeneration.ArtifactPath(rawPath)
+      guard result[path] == nil else {
+        throw PrivateHeaderGeneration.StateError.corruptPublication(
+          "published target has duplicate artifact digest paths"
+        )
+      }
+      result[path] = digest
+    }
+    return result
+  }
+
+  fileprivate static func isValidSHA256(_ digest: String) -> Bool {
+    digest.utf8.count == 64 && digest.utf8.allSatisfy {
+      (48...57).contains($0) || (97...102).contains($0)
+    }
   }
 }
