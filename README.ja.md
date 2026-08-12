@@ -12,7 +12,7 @@ macOS 14 以降が必要です。prebuilt release は Apple Silicon 向けです
 ## クイックスタート
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh
 ```
 
 installer が `Next steps` を表示した場合は、下の command の代わりにその内容を実行します。
@@ -35,7 +35,7 @@ installer が shell profile を勝手に編集することはありません。
 command を `~/bin` にインストールする場合:
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
 ```
 
 checkout から build してインストールする場合:

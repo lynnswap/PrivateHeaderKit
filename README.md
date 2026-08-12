@@ -12,7 +12,7 @@ installation requires Swift 6.3 and Xcode with an iOS Simulator SDK.
 ## Quick Start
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh
 ```
 
 If the installer prints a `Next steps` block, follow it instead of the command
@@ -36,7 +36,7 @@ The installer does not edit shell profiles.
 Install the command in `~/bin`:
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
 ```
 
 Build and install from a checkout:

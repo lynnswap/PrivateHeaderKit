@@ -17,7 +17,7 @@ requires Xcode with the matching iOS Simulator runtime.
 ## Install a Release
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh
 ```
 
 The default command is installed at `~/.local/bin/privateheaderkit`.
@@ -39,13 +39,13 @@ profile or shell syntax.
 Install under another prefix. The public command is placed in `<prefix>/bin`:
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --prefix ~/Tools/PrivateHeaderKit
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --prefix ~/Tools/PrivateHeaderKit
 ```
 
 Or choose the public command directory directly:
 
 ```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
+curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
 ```
 
 Choose either `--prefix` or `--bindir`. The installer resolves `~`, relative
