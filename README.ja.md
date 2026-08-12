@@ -77,12 +77,6 @@ privateheaderkit \
 済み runtime に合わせて変更してください。同じ version に一致する runtime が複数ある
 場合は `--build <build>` も指定します。
 
-## 更新
-
-install command を再実行してください。release は検証後にだけ activate されます。
-download、build、validation、staging の失敗では以前の cohort が active なまま残り、
-activation の失敗では復元を試み、その復元も失敗した場合は明示的に報告します。
-
 ## ドキュメント
 
 - [インストールと更新（英語）](Docs/installation.md)

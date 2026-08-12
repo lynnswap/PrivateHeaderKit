@@ -78,13 +78,6 @@ Use `privateheaderkit --help` for the complete option list. If more than one iOS
 runtime matches a version, add `--build <build>`. Replace the example iOS
 version with an installed runtime version.
 
-## Update
-
-Run the install command again. A release is activated only after validation.
-Download, build, validation, and staging failures leave the previous cohort
-active; an activation failure attempts to restore it and reports if restoration
-also fails.
-
 ## Documentation
 
 - [Installation and updates](Docs/installation.md)
