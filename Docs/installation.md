@@ -107,6 +107,13 @@ The default layout is:
 Only `privateheaderkit` is a public command. The helpers are always resolved
 through the active validated cohort.
 
+After activating a validated cohort, the installer removes the retired
+`privateheaderkit-dump`, `headerdump`, and `headerdump-sim` commands from the
+selected command directory. Release and source installation use the same
+cleanup path. These names are reserved PrivateHeaderKit installation paths;
+choosing a custom `--prefix` or `--bindir` also authorizes their removal from
+that selected command directory.
+
 An older direct install containing all three executables is migrated under the
 installer lock. Partial, ambiguous, or modified legacy install layouts are
 rejected instead of guessed. An interrupted install migration is recovered

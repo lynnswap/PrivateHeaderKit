@@ -91,6 +91,7 @@ enum InstallFaultPoint: Equatable, Sendable {
     case publicRestorationStarted
     case currentRestorationStarted
     case legacyCleanupStarted
+    case obsoleteCommandCleanupStarted
 }
 
 typealias InstallFaultInjector = @Sendable (InstallFaultPoint) throws -> Void
@@ -158,6 +159,7 @@ struct VersionCohortInstaller {
     func installLocked(_ cohort: ReleaseCohort) async throws -> InstallResult {
         try Task.checkCancellation()
         try await preflight(cohort)
+        try validateObsoleteCommandCleanupTargets()
         try faultInjector(.preflightComplete)
         try validateOwnedDirectoryIfPresent(layout.installRoot, label: "install root")
         try validateOwnedDirectoryIfPresent(layout.versionsDirectory, label: "versions path")
@@ -359,8 +361,13 @@ struct VersionCohortInstaller {
                 )
             }
         }
+        try faultInjector(.obsoleteCommandCleanupStarted)
+        let removedObsoleteCommands = try removeObsoletePublicCommands()
         for warning in cleanupWarnings {
             outputLogger("warning: \(warning)")
+        }
+        for url in removedObsoleteCommands {
+            outputLogger("Removed obsolete command: \(url.path)")
         }
 
         outputLogger(
