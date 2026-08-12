@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-checks:
+    name: Package Checks
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          xcrun --sdk iphonesimulator --show-sdk-path
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Run release script contract tests
+        run: scripts/test-release-scripts.sh
+
+      - name: Compile iOS Core surface
+        run: |
+          set -euo pipefail
+          PHK_IOS_SIMULATOR_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          PHK_IOS_SIMULATOR_TRIPLE="$(uname -m)-apple-ios17.0-simulator"
+          PHK_IOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-ios-compile/$PHK_IOS_SIMULATOR_TRIPLE"
+          swift build \
+            --scratch-path "$PHK_IOS_BUILD_SCRATCH" \
+            --sdk "$PHK_IOS_SIMULATOR_SDK" \
+            --triple "$PHK_IOS_SIMULATOR_TRIPLE" \
+            --target PrivateHeaderKitCore
+          swift build \
+            --scratch-path "$PHK_IOS_BUILD_SCRATCH" \
+            --sdk "$PHK_IOS_SIMULATOR_SDK" \
+            --triple "$PHK_IOS_SIMULATOR_TRIPLE" \
+            --target PrivateHeaderKitCoreTests
