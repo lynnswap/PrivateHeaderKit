@@ -201,7 +201,7 @@ func runInstall(
         faultInjector: faultInjector,
         outputLogger: outputLogger
     )
-    try await installer.withInstallLock {
+    let result = try await installer.withInstallLock {
         let cohort: ReleaseCohort
         if let releaseDirectory = options.releaseDirectory {
             cohort = try ReleaseCohort.read(
@@ -239,8 +239,13 @@ func runInstall(
                 simulatorHelperTriple: simulatorHelperTriple
             )
         }
-        _ = try await installer.installLocked(cohort)
+        return try await installer.installLocked(cohort)
     }
+    InstallPathGuidance(
+        commandDirectory: result.publicCommandURL.deletingLastPathComponent(),
+        environment: environment,
+        fileManager: fileManager
+    ).messages().forEach(outputLogger)
 }
 
 func createReleaseManifest(
