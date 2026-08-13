@@ -28,26 +28,30 @@ prints the exact `Headers` directory for the generated files.
 
 The installer does not edit shell profiles.
 
+## Build from Source
+
+Build the source installer, then run it from the checkout:
+
+```bash
+git clone https://github.com/lynnswap/PrivateHeaderKit.git
+cd PrivateHeaderKit
+swift build -c release --product privateheaderkit-install
+.build/release/privateheaderkit-install
+```
+
+The installer builds `privateheaderkit` and both internal helpers from the same
+checkout. It accepts the same `--prefix` and `--bindir` options as `install.sh`.
+
 ## Install Options
 
 <details>
-<summary>Custom directories and source installation</summary>
+<summary>Custom directories</summary>
 
 Install the command in `~/bin`:
 
 ```bash
 curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
 ```
-
-Build and install from a checkout:
-
-```bash
-git clone https://github.com/lynnswap/PrivateHeaderKit.git
-cd PrivateHeaderKit
-swift run -c release privateheaderkit-install
-```
-
-Source installation requires Swift 6.3 and Xcode with an iOS Simulator SDK.
 
 </details>
 

@@ -22,12 +22,14 @@ enum InstallerBuildConfiguration: String, ExpressibleByArgument, Sendable {
 struct PrivateHeaderKitInstallCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "privateheaderkit-install",
-        abstract: "Build and atomically install a PrivateHeaderKit version cohort.",
+        abstract: "Build and install PrivateHeaderKit from a source checkout.",
         discussion: """
-            Source install:
-              swift run -c release privateheaderkit-install
+            Build the installer, then run it from the checkout:
+              swift build -c release --product privateheaderkit-install
+              .build/release/privateheaderkit-install
 
-            Release installation is performed by the version-baked install.sh asset.
+            Or build and run it in one command:
+              swift run -c release privateheaderkit-install
             """
     )
 

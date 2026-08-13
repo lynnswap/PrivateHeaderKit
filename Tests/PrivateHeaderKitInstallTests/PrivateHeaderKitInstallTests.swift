@@ -1123,6 +1123,35 @@ struct VersionCohortInstallerTests {
         #expect(await runner.simpleCommandSnapshot().count == 1)
     }
 
+    @Test func builtInstallerFindsItsCheckoutOutsideTheWorkingDirectory() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        let workingDirectory = directories.root.appendingPathComponent(
+            "Elsewhere",
+            isDirectory: true
+        )
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        try FileManager.default.createDirectory(
+            at: workingDirectory,
+            withIntermediateDirectories: true
+        )
+        for executablePath in [
+            ".build/release/privateheaderkit-install",
+            ".build/out/Products/Release/privateheaderkit-install",
+        ] {
+            let resolved = resolveRepositoryRoot(
+                currentExecutableURL: repoRoot.appendingPathComponent(
+                    executablePath,
+                    isDirectory: false
+                ),
+                currentDirectoryURL: workingDirectory,
+                fileManager: .default
+            )
+
+            #expect(resolved?.path == repoRoot.path)
+        }
+    }
+
     @Test func installLockIsHeldForTheLexicalOperationScope() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
