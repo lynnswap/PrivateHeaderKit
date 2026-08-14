@@ -34,6 +34,10 @@ The installer never creates, edits, or sources a shell profile itself. For an
 unknown login shell, it prints the command directory instead of guessing a
 profile or shell syntax.
 
+The release installer verifies the downloaded archive checksum, exact archive
+contents, release manifest, executable hashes, architecture, platform,
+permissions, and code signatures before activation.
+
 ### Custom destination
 
 Install under another prefix. The public command is placed in `<prefix>/bin`:
@@ -68,22 +72,28 @@ the same checkout:
 ```bash
 git clone https://github.com/lynnswap/PrivateHeaderKit.git
 cd PrivateHeaderKit
-swift run -c release privateheaderkit-install
+swift build -c release --product privateheaderkit-install
+.build/release/privateheaderkit-install
 ```
 
 This path requires Swift 6.3 and Xcode with `xcrun` and an installed iOS
 Simulator SDK because the installed cohort always includes the simulator
-helper. `--prefix` and `--bindir` are also available for source installation.
+helper. It does not download release assets. `--prefix` and `--bindir` are also
+available for source installation.
+
+To build and run the installer in one command instead:
+
+```bash
+swift run -c release privateheaderkit-install
+```
 
 ## Update
 
 Run the download command again, or update the source checkout and rerun
-`swift run -c release privateheaderkit-install`. Preserve the same `--prefix`
-or `--bindir` option when updating a custom destination.
+the build and installer commands above. Preserve the same `--prefix` or
+`--bindir` option when updating a custom destination.
 
-The installer verifies the archive checksum, exact archive contents, release
-manifest, executable hashes, architecture, platform, permissions, and code
-signatures before activation. It publishes an immutable cohort and switches
+Release and source installation both publish an immutable cohort and switch
 the stable command only after the complete cohort passes validation. Download,
 build, validation, or staging failures leave the previous cohort active; an
 activation failure attempts to restore it and reports any restoration failure.

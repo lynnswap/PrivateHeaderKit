@@ -27,26 +27,30 @@ source を選び、全 target または個別の framework、bundle、dylib 名�
 
 installer が shell profile を勝手に編集することはありません。
 
+## Source から build
+
+source installer を build し、checkout から実行します。
+
+```bash
+git clone https://github.com/lynnswap/PrivateHeaderKit.git
+cd PrivateHeaderKit
+swift build -c release --product privateheaderkit-install
+.build/release/privateheaderkit-install
+```
+
+installer は同じ checkout から `privateheaderkit` と 2 つの内部 helper を build します。
+`install.sh` と同じ `--prefix`、`--bindir` option を指定できます。
+
 ## インストールオプション
 
 <details>
-<summary>インストール先の変更と source install</summary>
+<summary>インストール先の変更</summary>
 
 command を `~/bin` にインストールする場合:
 
 ```bash
 curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
 ```
-
-checkout から build してインストールする場合:
-
-```bash
-git clone https://github.com/lynnswap/PrivateHeaderKit.git
-cd PrivateHeaderKit
-swift run -c release privateheaderkit-install
-```
-
-source install には Swift 6.3 と iOS Simulator SDK を含む Xcode が必要です。
 
 </details>
 
