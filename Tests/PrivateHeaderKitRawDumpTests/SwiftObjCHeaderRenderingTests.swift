@@ -56,12 +56,35 @@ struct SwiftObjCNameResolverTests {
         #expect(metadata.displayName == runtime.displayName)
         #expect(metadata.canonicalName == runtime.canonicalName)
         #expect(metadata.objcIdentifier == runtime.objcIdentifier)
+        #expect(runtime.canonicalName != "class:Demo.Foo")
+        #expect(runtime.canonicalName.contains("node:"))
+        #expect(runtime.canonicalName.utf8.count > runtime.displayName.utf8.count)
 
         let genericRuntime = try resolved("_TtGC4Demo3BoxSi_")
         let genericMetadata = try resolved("_$s4Demo3BoxCySiGN")
         #expect(genericMetadata.displayName == "Demo.Box<Swift.Int>")
         #expect(genericMetadata.canonicalName == genericRuntime.canonicalName)
         #expect(genericMetadata.objcIdentifier == genericRuntime.objcIdentifier)
+    }
+
+    @Test func runtimeQualifiedNamesAcceptUnicodeNestedAndGenericPresentation() throws {
+        for displayName in ["デモ.可視", "Demo.Outer.Inner", "Demo.Box<Swift.Int>"] {
+            guard case .resolved(let resolved) =
+                SwiftObjCNameResolver.resolveRuntimeOriginClassName(displayName)
+            else {
+                throw SwiftObjCHeaderRenderingTestError.expectedResolvedName(displayName)
+            }
+            #expect(resolved.source == .runtimeQualifiedName)
+            #expect(resolved.displayName == displayName)
+            #expect(resolved.objcIdentifier.hasPrefix("PHKSwift__"))
+            #expect(resolved.objcIdentifier.unicodeScalars.allSatisfy { $0.isASCII })
+        }
+
+        for rejected in ["Demo..Foo", "Demo. Foo", "Demo/Foo", "Demo\\Foo", "Demo.\0Foo"] {
+            #expect(
+                SwiftObjCNameResolver.resolveRuntimeOriginClassName(rejected) == .notSwift
+            )
+        }
     }
 
     @Test func rejectsNonTypeAndMalformedSwiftMarkersVisibly() {
@@ -275,6 +298,7 @@ struct SwiftObjCHeaderProjectionTests {
                 "__attribute__((objc_runtime_name(\"\(rawName)\")))\n@protocol"
             )
         )
+        #expect(!entry.headerString.contains("Objective-C runtime binding unavailable"))
     }
 
     @Test func categoryMetadataSymbolUsesAliasWithoutRuntimeAttribute() throws {
@@ -295,6 +319,11 @@ struct SwiftObjCHeaderProjectionTests {
         #expect(entry.displayBaseName.hasPrefix("Demo.Foo+Extras"))
         #expect(entry.headerString.contains("@interface \(resolved.objcIdentifier) (Extras)"))
         #expect(!entry.headerString.contains("objc_runtime_name"))
+        #expect(
+            entry.headerString.contains(
+                "// Objective-C runtime binding unavailable: \(metadataSymbol)"
+            )
+        )
     }
 
     @Test func runtimeOnlyQualifiedNameUsesAliasWithoutUnprovenRuntimeAttribute() throws {
@@ -312,10 +341,39 @@ struct SwiftObjCHeaderProjectionTests {
         )
 
         #expect(qualified.objcIdentifier == mangled.objcIdentifier)
+        #expect(qualified.canonicalName != mangled.canonicalName)
         #expect(entry.displayBaseName == "Demo.Foo")
         #expect(entry.headerString.hasPrefix("// Swift name: Demo.Foo -> Demo.Foo\n"))
         #expect(entry.headerString.contains("@interface \(mangled.objcIdentifier)"))
         #expect(!entry.headerString.contains("objc_runtime_name"))
+        #expect(
+            entry.headerString.contains(
+                "// Objective-C runtime binding unavailable: Demo.Foo"
+            )
+        )
+    }
+
+    @Test func unicodeRuntimeQualifiedNameNeverLeaksIntoObjectiveCDeclaration() throws {
+        let qualifiedName = "デモ.可視"
+        guard case .resolved(let resolved) =
+            SwiftObjCNameResolver.resolveRuntimeOriginClassName(qualifiedName)
+        else {
+            throw SwiftObjCHeaderRenderingTestError.expectedResolvedName(qualifiedName)
+        }
+
+        let entry = SwiftObjCHeaderRendering.classEntry(
+            makeClassInfo(name: qualifiedName),
+            runtimeOrigin: true
+        )
+
+        #expect(entry.headerString.contains("@interface \(resolved.objcIdentifier)"))
+        #expect(!entry.headerString.contains("@interface \(qualifiedName)"))
+        #expect(entry.headerString.contains("// Swift name: \(qualifiedName) -> \(qualifiedName)"))
+        #expect(
+            entry.headerString.contains(
+                "// Objective-C runtime binding unavailable: \(qualifiedName)"
+            )
+        )
     }
 
     @Test func rawIdentityDeterminesCollisionSuffixAndInputOrderDoesNot() {

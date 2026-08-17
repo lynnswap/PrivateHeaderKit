@@ -76,7 +76,11 @@ enum SwiftObjCNameResolver {
                 rawName: rawName,
                 source: source,
                 kind: extracted.kind,
-                displayName: displayName
+                displayName: displayName,
+                canonicalName: structuralCanonicalName(
+                    kind: extracted.kind,
+                    node: extracted.node
+                )
             )
         } catch {
             return .unavailable(rawName: rawName)
@@ -98,7 +102,11 @@ enum SwiftObjCNameResolver {
                 rawName: rawName,
                 source: .runtimeQualifiedName,
                 kind: .class,
-                displayName: rawName
+                displayName: rawName,
+                canonicalName: lengthPrefixed(
+                    tag: "runtime-qualified-class",
+                    value: rawName
+                )
             )
         }
     }
@@ -170,12 +178,13 @@ enum SwiftObjCNameResolver {
         rawName: String,
         source: ResolvedSwiftObjCName.Source,
         kind: ResolvedSwiftObjCName.Kind,
-        displayName: String
+        displayName: String,
+        canonicalName: String
     ) -> SwiftObjCNameLookup {
-        // Hash the extracted type identity, not its source symbol. Legacy `_Tt`
-        // names and modern `...CN` metadata symbols for one type must share an alias.
-        let canonicalName = "\(kind.hashDiscriminator):\(displayName)"
-        let hash = stableHashHex(canonicalName)
+        // Aliases are a presentation projection. Equivalent `_Tt`, metadata,
+        // and runtime-qualified spellings must share one suffix even though only
+        // the first two have an intrinsic structural identity.
+        let hash = stableHashHex(presentationIdentity(kind: kind, displayName: displayName))
         return .resolved(
             ResolvedSwiftObjCName(
                 rawName: rawName,
@@ -195,21 +204,53 @@ enum SwiftObjCNameResolver {
 
     private static func isStrictRuntimeQualifiedClassName(_ name: String) -> Bool {
         let components = name.split(separator: ".", omittingEmptySubsequences: false)
-        guard components.count >= 2 else { return false }
-        return components.allSatisfy { component in
-            guard let first = component.unicodeScalars.first,
-                  first == "_" || isASCIIAlpha(first)
-            else { return false }
-            return component.unicodeScalars.dropFirst().allSatisfy {
-                $0 == "_" || isASCIIAlpha($0) || ($0.value >= 48 && $0.value <= 57)
-            }
+        guard components.count >= 2, components.allSatisfy({ !$0.isEmpty }) else {
+            return false
+        }
+        guard !name.contains(where: \.isWhitespace) else { return false }
+        return name.unicodeScalars.allSatisfy { scalar in
+            scalar != "\0"
+                && scalar != "/"
+                && scalar != "\\"
+                && scalar.properties.generalCategory != .control
         }
     }
 
-    private static func isASCIIAlpha(_ scalar: UnicodeScalar) -> Bool {
-        scalar.isASCII
-            && ((scalar.value >= 65 && scalar.value <= 90)
-                || (scalar.value >= 97 && scalar.value <= 122))
+    private static func structuralCanonicalName(
+        kind: ResolvedSwiftObjCName.Kind,
+        node: Node
+    ) -> String {
+        lengthPrefixed(tag: "type-kind", value: kind.hashDiscriminator)
+            + lengthPrefixed(tag: "node", value: structuralSerialization(of: node))
+    }
+
+    private static func structuralSerialization(of node: Node) -> String {
+        var result = lengthPrefixed(tag: "kind", value: node.kind.rawValue)
+        switch node.contents {
+        case .none:
+            result += lengthPrefixed(tag: "contents-none", value: "")
+        case .index(let index):
+            result += lengthPrefixed(tag: "contents-index", value: String(index))
+        case .text(let text):
+            result += lengthPrefixed(tag: "contents-text", value: text)
+        }
+        result += lengthPrefixed(tag: "children-count", value: String(node.children.count))
+        for child in node.children {
+            result += lengthPrefixed(tag: "child", value: structuralSerialization(of: child))
+        }
+        return result
+    }
+
+    private static func presentationIdentity(
+        kind: ResolvedSwiftObjCName.Kind,
+        displayName: String
+    ) -> String {
+        lengthPrefixed(tag: "type-kind", value: kind.hashDiscriminator)
+            + lengthPrefixed(tag: "display", value: displayName)
+    }
+
+    private static func lengthPrefixed(tag: String, value: String) -> String {
+        "\(tag):\(value.utf8.count):\(value)"
     }
 
     private static func isValidDisplayName(_ displayName: String) -> Bool {
@@ -408,6 +449,7 @@ private extension SwiftObjCHeaderRendering {
     struct Projection {
         let allowsRuntimeQualifiedClassNames: Bool
         private var annotations: [String: Annotation] = [:]
+        private var runtimeBindingUnavailableNames: Set<String> = []
 
         init(allowsRuntimeQualifiedClassNames: Bool) {
             self.allowsRuntimeQualifiedClassNames = allowsRuntimeQualifiedClassNames
@@ -434,6 +476,10 @@ private extension SwiftObjCHeaderRendering {
                     return ProjectedName(rawName: rawName, outputName: rawName, resolved: nil)
                 }
                 record(.resolved(resolved.displayName), for: rawName)
+                if resolved.source == .runtimeQualifiedName
+                    || resolved.source == .classMetadataSymbol {
+                    runtimeBindingUnavailableNames.insert(rawName)
+                }
                 return ProjectedName(
                     rawName: rawName,
                     outputName: resolved.objcIdentifier,
@@ -493,6 +539,9 @@ private extension SwiftObjCHeaderRendering {
                 case nil:
                     preconditionFailure("annotation key must have a value")
                 }
+            }
+            prefix += runtimeBindingUnavailableNames.sorted().map {
+                "// Objective-C runtime binding unavailable: \($0)"
             }
             if let runtimeName {
                 prefix.append(

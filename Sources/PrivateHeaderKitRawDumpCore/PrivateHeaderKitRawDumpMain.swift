@@ -1128,7 +1128,9 @@ private func logicalClassIdentity(name: String, runtimeOrigin: Bool) -> String {
         ? SwiftObjCNameResolver.resolveRuntimeOriginClassName(name)
         : SwiftObjCNameResolver.resolve(name)
     if case .resolved(let resolved) = lookup, resolved.kind == .class {
-        return "swift:\(resolved.canonicalName)"
+        // Runtime-qualified names have no intrinsic mangling tree. Bridge them to
+        // static metadata only through the explicit kind + display projection.
+        return "swift-display:class:\(resolved.displayName.utf8.count):\(resolved.displayName)"
     }
     return "objc:\(name)"
 }
