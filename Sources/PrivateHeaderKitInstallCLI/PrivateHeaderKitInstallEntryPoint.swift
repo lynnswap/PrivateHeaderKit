@@ -24,11 +24,7 @@ struct PrivateHeaderKitInstallCommand: AsyncParsableCommand {
         commandName: "privateheaderkit-install",
         abstract: "Build and install PrivateHeaderKit from a source checkout.",
         discussion: """
-            Build the installer, then run it from the checkout:
-              swift build -c release --product privateheaderkit-install
-              .build/release/privateheaderkit-install
-
-            Or build and run it in one command:
+            Build and run the installer from the checkout:
               swift run -c release privateheaderkit-install
             """
     )

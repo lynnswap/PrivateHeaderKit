@@ -30,13 +30,12 @@ The installer does not edit shell profiles.
 
 ## Build from Source
 
-Build the source installer, then run it from the checkout:
+Build and run the source installer from the checkout:
 
 ```bash
 git clone https://github.com/lynnswap/PrivateHeaderKit.git
 cd PrivateHeaderKit
-swift build -c release --product privateheaderkit-install
-.build/release/privateheaderkit-install
+swift run -c release privateheaderkit-install
 ```
 
 The installer builds `privateheaderkit` and both internal helpers from the same
