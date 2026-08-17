@@ -118,11 +118,11 @@ static NSString * const PHRuntimeStageOptionalMethods = @"optionalMethods";
 @end
 
 @interface PHRuntimeObjCClassSnapshot ()
-- (instancetype)initWithName:(NSString *)name
+- (instancetype)initWithObjCRuntimeName:(NSString *)objcRuntimeName
                      version:(int32_t)version
                    imageName:(NSString * _Nullable)imageName
                 instanceSize:(NSUInteger)instanceSize
-              superClassName:(NSString * _Nullable)superClassName
+   superclassObjCRuntimeName:(NSString * _Nullable)superclassObjCRuntimeName
                    protocols:(NSArray<PHRuntimeObjCProtocolSnapshot *> *)protocols
                        ivars:(NSArray<PHRuntimeObjCIvarSnapshot *> *)ivars
              classProperties:(NSArray<PHRuntimeObjCPropertySnapshot *> *)classProperties
@@ -132,11 +132,11 @@ static NSString * const PHRuntimeStageOptionalMethods = @"optionalMethods";
 @end
 
 @implementation PHRuntimeObjCClassSnapshot
-- (instancetype)initWithName:(NSString *)name
+- (instancetype)initWithObjCRuntimeName:(NSString *)objcRuntimeName
                      version:(int32_t)version
                    imageName:(NSString * _Nullable)imageName
                 instanceSize:(NSUInteger)instanceSize
-              superClassName:(NSString * _Nullable)superClassName
+   superclassObjCRuntimeName:(NSString * _Nullable)superclassObjCRuntimeName
                    protocols:(NSArray<PHRuntimeObjCProtocolSnapshot *> *)protocols
                        ivars:(NSArray<PHRuntimeObjCIvarSnapshot *> *)ivars
              classProperties:(NSArray<PHRuntimeObjCPropertySnapshot *> *)classProperties
@@ -145,11 +145,11 @@ static NSString * const PHRuntimeStageOptionalMethods = @"optionalMethods";
                      methods:(NSArray<PHRuntimeObjCMethodSnapshot *> *)methods {
     self = [super init];
     if (self) {
-        _name = [name copy];
+        _objcRuntimeName = [objcRuntimeName copy];
         _version = version;
         _imageName = [imageName copy];
         _instanceSize = instanceSize;
-        _superClassName = [superClassName copy];
+        _superclassObjCRuntimeName = [superclassObjCRuntimeName copy];
         _protocols = [protocols copy];
         _ivars = [ivars copy];
         _classProperties = [classProperties copy];
@@ -428,14 +428,17 @@ PHRuntimeProtocolSnapshotsForClass(Class cls, NSString * _Nullable * _Nullable f
                                     failedStage:(NSString * _Nullable * _Nullable)failedStage {
     if (failedStage) { *failedStage = nil; }
 
-    NSString *name = nil;
+    NSString *objcRuntimeName = nil;
     @try {
-        name = NSStringFromClass(cls);
+        const char *name = class_getName(cls);
+        if (name) {
+            objcRuntimeName = [NSString stringWithUTF8String:name];
+        }
     } @catch (NSException *) {
         if (failedStage) { *failedStage = PHRuntimeStageName; }
         return nil;
     }
-    if (!name) {
+    if (!objcRuntimeName) {
         if (failedStage) { *failedStage = PHRuntimeStageName; }
         return nil;
     }
@@ -467,11 +470,14 @@ PHRuntimeProtocolSnapshotsForClass(Class cls, NSString * _Nullable * _Nullable f
         return nil;
     }
 
-    NSString *superClassName = nil;
+    NSString *superclassObjCRuntimeName = nil;
     @try {
         Class superClass = class_getSuperclass(cls);
         if (superClass) {
-            superClassName = NSStringFromClass(superClass);
+            const char *name = class_getName(superClass);
+            if (name) {
+                superclassObjCRuntimeName = [NSString stringWithUTF8String:name];
+            }
         }
     } @catch (NSException *) {
         if (failedStage) { *failedStage = PHRuntimeStageSuperclass; }
@@ -491,16 +497,16 @@ PHRuntimeProtocolSnapshotsForClass(Class cls, NSString * _Nullable * _Nullable f
     NSArray<PHRuntimeObjCMethodSnapshot *> *methods = PHRuntimeMethodSnapshotsForClass(cls, YES, PHRuntimeStageMethods, failedStage);
     if (!methods && failedStage && *failedStage) { return nil; }
 
-    return [[PHRuntimeObjCClassSnapshot alloc] initWithName:name
-                                                    version:version
-                                                  imageName:imageName
-                                               instanceSize:instanceSize
-                                             superClassName:superClassName
-                                                  protocols:protocols ?: @[]
-                                                      ivars:ivars ?: @[]
-                                            classProperties:classProperties ?: @[]
-                                                 properties:properties ?: @[]
-                                               classMethods:classMethods ?: @[]
-                                                    methods:methods ?: @[]];
+    return [[PHRuntimeObjCClassSnapshot alloc] initWithObjCRuntimeName:objcRuntimeName
+                                                               version:version
+                                                             imageName:imageName
+                                                          instanceSize:instanceSize
+                                             superclassObjCRuntimeName:superclassObjCRuntimeName
+                                                             protocols:protocols ?: @[]
+                                                                 ivars:ivars ?: @[]
+                                                       classProperties:classProperties ?: @[]
+                                                            properties:properties ?: @[]
+                                                          classMethods:classMethods ?: @[]
+                                                               methods:methods ?: @[]];
 }
 @end

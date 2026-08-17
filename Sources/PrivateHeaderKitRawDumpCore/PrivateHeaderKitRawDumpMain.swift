@@ -706,13 +706,15 @@ enum ObjCHeaderSymbolKind: String, Comparable {
 
 struct ObjCHeaderEntry: Equatable {
     let symbolKind: ObjCHeaderSymbolKind
-    let baseName: String
+    let rawIdentity: String
+    let displayBaseName: String
     let headerString: String
 }
 
 struct ResolvedObjCHeaderEntry: Equatable {
     let symbolKind: ObjCHeaderSymbolKind
-    let baseName: String
+    let rawIdentity: String
+    let displayBaseName: String
     let headerString: String
     let fileName: String
     let hadNameCollision: Bool
@@ -1000,7 +1002,7 @@ private func caseInsensitiveFileNameKey(_ fileName: String) -> String {
 }
 
 private func collisionSuffix(for entry: ObjCHeaderEntry) -> String {
-    "~\(stableHashHex("\(entry.symbolKind.rawValue):\(entry.baseName)"))"
+    "~\(stableHashHex("\(entry.symbolKind.rawValue):\(entry.rawIdentity)"))"
 }
 
 func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions) -> [ResolvedObjCHeaderEntry] {
@@ -1008,14 +1010,17 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
         if lhs.symbolKind != rhs.symbolKind {
             return lhs.symbolKind < rhs.symbolKind
         }
-        if lhs.baseName != rhs.baseName {
-            return lhs.baseName < rhs.baseName
+        if lhs.displayBaseName != rhs.displayBaseName {
+            return lhs.displayBaseName < rhs.displayBaseName
+        }
+        if lhs.rawIdentity != rhs.rawIdentity {
+            return lhs.rawIdentity < rhs.rawIdentity
         }
         return lhs.headerString < rhs.headerString
     }
 
     let pending = sortedEntries.map { entry in
-        let fileName = safeFileName(baseName: entry.baseName, extension: ".h")
+        let fileName = safeFileName(baseName: entry.displayBaseName, extension: ".h")
         return PendingObjCHeaderFileName(
             entry: entry,
             fileName: fileName,
@@ -1029,13 +1034,13 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
         let resolvedFileName: String
         if hadCollision {
             resolvedFileName = safeFileName(
-                baseName: item.entry.baseName,
+                baseName: item.entry.displayBaseName,
                 suffix: collisionSuffix(for: item.entry),
                 extension: ".h"
             )
             if options.verbose {
                 fputs(
-                    "privateheaderkit __raw-dump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.baseName) -> \(resolvedFileName)\n",
+                    "privateheaderkit __raw-dump: resolved case-insensitive header name collision \(item.entry.symbolKind.rawValue):\(item.entry.rawIdentity) -> \(resolvedFileName)\n",
                     stderr
                 )
             }
@@ -1045,7 +1050,8 @@ func resolveObjCHeaderEntries(_ entries: [ObjCHeaderEntry], options: DumpOptions
 
         return ResolvedObjCHeaderEntry(
             symbolKind: item.entry.symbolKind,
-            baseName: item.entry.baseName,
+            rawIdentity: item.entry.rawIdentity,
+            displayBaseName: item.entry.displayBaseName,
             headerString: item.entry.headerString,
             fileName: resolvedFileName,
             hadNameCollision: hadCollision
@@ -1076,9 +1082,10 @@ private func dumpObjC(
                 stderr
             )
         }
-        for info in runtimeInfos where metadata.classInfos[info.name] == nil {
-            metadata.classInfos[info.name] = info
-        }
+        metadata.runtimeOriginClassNames = supplementMissingRuntimeClassInfos(
+            runtimeInfos,
+            into: &metadata.classInfos
+        )
     }
 #endif
 
@@ -1094,6 +1101,49 @@ private struct CollectedObjCMetadata {
     var classInfos: [String: ObjCClassInfo] = [:]
     var protocolInfos: [String: ObjCProtocolInfo] = [:]
     var categoryInfos: [String: ObjCCategoryInfo] = [:]
+    var runtimeOriginClassNames: Set<String> = []
+}
+
+@discardableResult
+func supplementMissingRuntimeClassInfos(
+    _ runtimeInfos: [ObjCClassInfo],
+    into classInfos: inout [String: ObjCClassInfo]
+) -> Set<String> {
+    var logicalIdentities = Set(classInfos.values.map {
+        logicalClassIdentity(name: $0.name, runtimeOrigin: false)
+    })
+    var insertedNames: Set<String> = []
+    for info in runtimeInfos.sorted(by: { runtimeClassSortKey($0.name) < runtimeClassSortKey($1.name) }) {
+        guard classInfos[info.name] == nil else { continue }
+        let logicalIdentity = logicalClassIdentity(name: info.name, runtimeOrigin: true)
+        guard logicalIdentities.insert(logicalIdentity).inserted else { continue }
+        classInfos[info.name] = info
+        insertedNames.insert(info.name)
+    }
+    return insertedNames
+}
+
+private func logicalClassIdentity(name: String, runtimeOrigin: Bool) -> String {
+    let lookup = runtimeOrigin
+        ? SwiftObjCNameResolver.resolveRuntimeOriginClassName(name)
+        : SwiftObjCNameResolver.resolve(name)
+    if case .resolved(let resolved) = lookup, resolved.kind == .class {
+        return "swift:\(resolved.canonicalName)"
+    }
+    return "objc:\(name)"
+}
+
+private func runtimeClassSortKey(_ name: String) -> String {
+    let rank: Int
+    if case .resolved(let resolved) = SwiftObjCNameResolver.resolve(name),
+       resolved.source == .objcRuntimeName {
+        rank = 0
+    } else if case .resolved = SwiftObjCNameResolver.resolveRuntimeOriginClassName(name) {
+        rank = 1
+    } else {
+        rank = 2
+    }
+    return "\(rank):\(name)"
 }
 
 private func collectObjCMetadata<Section: ObjCSectionRepresentable>(
@@ -1168,10 +1218,9 @@ private func writeObjCMetadata(
             continue
         }
         entries.append(
-            ObjCHeaderEntry(
-                symbolKind: .class,
-                baseName: info.name,
-                headerString: info.headerString
+            SwiftObjCHeaderRendering.classEntry(
+                info,
+                runtimeOrigin: metadata.runtimeOriginClassNames.contains(info.name)
             )
         )
     }
@@ -1184,13 +1233,7 @@ private func writeObjCMetadata(
             }
             continue
         }
-        entries.append(
-            ObjCHeaderEntry(
-                symbolKind: .protocol,
-                baseName: info.name,
-                headerString: info.headerString
-            )
-        )
+        entries.append(SwiftObjCHeaderRendering.protocolEntry(info))
     }
 
     for info in categoryInfos.values {
@@ -1204,14 +1247,7 @@ private func writeObjCMetadata(
             }
             continue
         }
-        let baseName = "\(info.className)+\(info.name)"
-        entries.append(
-            ObjCHeaderEntry(
-                symbolKind: .category,
-                baseName: baseName,
-                headerString: info.headerString
-            )
-        )
+        entries.append(SwiftObjCHeaderRendering.categoryEntry(info))
     }
 
     for entry in resolveObjCHeaderEntries(entries, options: options) {
@@ -1271,7 +1307,7 @@ private func runtimeProtocolInfo(
 
 private func runtimeClassInfo(
     for cls: AnyClass,
-    fallbackName: String,
+    runtimeOriginName: String,
     imagePath: String,
     options: DumpOptions
 ) -> ObjCClassInfo? {
@@ -1280,19 +1316,22 @@ private func runtimeClassInfo(
         if options.verbose {
             let stage = (failedStage as String?) ?? "unknown"
             fputs(
-                "privateheaderkit __raw-dump: runtime fallback skip class \(fallbackName) image=\(imagePath) stage=\(stage)\n",
+                "privateheaderkit __raw-dump: runtime fallback skip class \(runtimeOriginName) image=\(imagePath) stage=\(stage)\n",
                 stderr
             )
         }
         return nil
     }
 
+    // The caller-provided runtime-origin spelling owns identity. The primary path
+    // uses `objc_copyClassNamesForImage`; its `class_getName` fallback may instead
+    // provide a qualified `Module.Type` name on current runtimes.
     return ObjCClassInfo(
-        name: snapshot.name,
+        name: runtimeOriginName,
         version: snapshot.version,
         imageName: snapshot.imageName,
         instanceSize: Int(snapshot.instanceSize),
-        superClassName: snapshot.superClassName,
+        superClassName: snapshot.superclassObjCRuntimeName,
         protocols: snapshot.protocols.map(runtimeProtocolInfo(from:)),
         ivars: snapshot.ivars.map(runtimeIvarInfo(from:)),
         classProperties: snapshot.classProperties.map(runtimePropertyInfo(from:)),
@@ -1346,7 +1385,7 @@ private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [
         if let cls = NSClassFromString(name) ?? (objc_getClass(name) as? AnyClass) {
             if let info = runtimeClassInfo(
                 for: cls,
-                fallbackName: name,
+                runtimeOriginName: name,
                 imagePath: imagePath,
                 options: options
             ) {
@@ -1389,7 +1428,7 @@ private func runtimeClassInfosByImageName(
         if let only = options.onlyOneClass, only != name { continue }
         if let info = runtimeClassInfo(
             for: cls,
-            fallbackName: name,
+            runtimeOriginName: name,
             imagePath: imagePath,
             options: options
         ) {

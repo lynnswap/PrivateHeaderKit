@@ -43,11 +43,11 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @interface PHRuntimeObjCClassSnapshot : NSObject
-@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy) NSString *objcRuntimeName;
 @property (nonatomic, readonly) int32_t version;
 @property (nonatomic, readonly, copy, nullable) NSString *imageName;
 @property (nonatomic, readonly) NSUInteger instanceSize;
-@property (nonatomic, readonly, copy, nullable) NSString *superClassName;
+@property (nonatomic, readonly, copy, nullable) NSString *superclassObjCRuntimeName;
 @property (nonatomic, readonly, copy) NSArray<PHRuntimeObjCProtocolSnapshot *> *protocols;
 @property (nonatomic, readonly, copy) NSArray<PHRuntimeObjCIvarSnapshot *> *ivars;
 @property (nonatomic, readonly, copy) NSArray<PHRuntimeObjCPropertySnapshot *> *classProperties;

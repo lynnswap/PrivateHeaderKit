@@ -46,6 +46,10 @@ let package = Package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
             "0.15.1" ..< "0.16.0"
         ),
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
+            "0.4.5" ..< "0.5.0"
+        ),
     ],
     targets: [
         .target(
@@ -69,6 +73,7 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                .product(name: "Demangling", package: "swift-demangling"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDeclaration", package: "MachOSwiftSection"),
                 .product(name: "SwiftDeclarationRendering", package: "MachOSwiftSection"),
@@ -169,6 +174,7 @@ let package = Package(
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
             ]
         ),
         .testTarget(

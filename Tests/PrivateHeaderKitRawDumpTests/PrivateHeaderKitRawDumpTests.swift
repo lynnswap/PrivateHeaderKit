@@ -581,7 +581,7 @@ struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
     @Test func resolveObjCHeaderEntriesLeavesNonCollidingNamesUnchanged() {
         let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
         let entries = [
-            ObjCHeaderEntry(symbolKind: .class, baseName: "FooHeader", headerString: "@interface FooHeader\n@end\n")
+            entry(symbolKind: .class, name: "FooHeader", headerString: "@interface FooHeader\n@end\n")
         ]
 
         let resolved = resolveObjCHeaderEntries(entries, options: options)
@@ -594,8 +594,8 @@ struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
     @Test func resolveObjCHeaderEntriesDisambiguatesCaseOnlyCollisions() {
         let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
         let entries = [
-            ObjCHeaderEntry(symbolKind: .class, baseName: "MTRBaseClusterWakeOnLAN", headerString: "@interface A\n@end\n"),
-            ObjCHeaderEntry(symbolKind: .class, baseName: "MTRBaseClusterWakeOnLan", headerString: "@interface B\n@end\n")
+            entry(symbolKind: .class, name: "MTRBaseClusterWakeOnLAN", headerString: "@interface A\n@end\n"),
+            entry(symbolKind: .class, name: "MTRBaseClusterWakeOnLan", headerString: "@interface B\n@end\n")
         ]
 
         let resolved = resolveObjCHeaderEntries(entries, options: options)
@@ -603,15 +603,15 @@ struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
 
         #expect(fileNames.count == 2)
         #expect(resolved.allSatisfy { $0.hadNameCollision })
-        #expect(resolved.contains { $0.baseName == "MTRBaseClusterWakeOnLAN" && $0.fileName.hasPrefix("MTRBaseClusterWakeOnLAN~") })
-        #expect(resolved.contains { $0.baseName == "MTRBaseClusterWakeOnLan" && $0.fileName.hasPrefix("MTRBaseClusterWakeOnLan~") })
+        #expect(resolved.contains { $0.displayBaseName == "MTRBaseClusterWakeOnLAN" && $0.fileName.hasPrefix("MTRBaseClusterWakeOnLAN~") })
+        #expect(resolved.contains { $0.displayBaseName == "MTRBaseClusterWakeOnLan" && $0.fileName.hasPrefix("MTRBaseClusterWakeOnLan~") })
     }
 
     @Test func resolveObjCHeaderEntriesDisambiguatesAcrossSymbolKinds() {
         let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
         let entries = [
-            ObjCHeaderEntry(symbolKind: .class, baseName: "SharedHeaderName", headerString: "@interface SharedHeaderName\n@end\n"),
-            ObjCHeaderEntry(symbolKind: .protocol, baseName: "SharedHeaderName", headerString: "@protocol SharedHeaderName\n@end\n")
+            entry(symbolKind: .class, name: "SharedHeaderName", headerString: "@interface SharedHeaderName\n@end\n"),
+            entry(symbolKind: .protocol, name: "SharedHeaderName", headerString: "@protocol SharedHeaderName\n@end\n")
         ]
 
         let resolved = resolveObjCHeaderEntries(entries, options: options)
@@ -627,8 +627,8 @@ struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
         let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
         let longBaseName = String(repeating: "VeryLongHeaderName", count: 20)
         let entries = [
-            ObjCHeaderEntry(symbolKind: .class, baseName: longBaseName, headerString: "@interface LongHeader\n@end\n"),
-            ObjCHeaderEntry(symbolKind: .protocol, baseName: longBaseName, headerString: "@protocol LongHeader\n@end\n")
+            entry(symbolKind: .class, name: longBaseName, headerString: "@interface LongHeader\n@end\n"),
+            entry(symbolKind: .protocol, name: longBaseName, headerString: "@protocol LongHeader\n@end\n")
         ]
 
         let resolved = resolveObjCHeaderEntries(entries, options: options)
@@ -641,15 +641,28 @@ struct PrivateHeaderKitRawDumpObjCHeaderNameTests {
     @Test func resolveObjCHeaderEntriesIsStableAcrossRuns() {
         let options = DumpOptions(outputDir: URL(fileURLWithPath: "/tmp/out"))
         let entries = [
-            ObjCHeaderEntry(symbolKind: .protocol, baseName: "SharedHeaderName", headerString: "@protocol SharedHeaderName\n@end\n"),
-            ObjCHeaderEntry(symbolKind: .class, baseName: "MTRBaseClusterWakeOnLan", headerString: "@interface MTRBaseClusterWakeOnLan\n@end\n"),
-            ObjCHeaderEntry(symbolKind: .class, baseName: "MTRBaseClusterWakeOnLAN", headerString: "@interface MTRBaseClusterWakeOnLAN\n@end\n")
+            entry(symbolKind: .protocol, name: "SharedHeaderName", headerString: "@protocol SharedHeaderName\n@end\n"),
+            entry(symbolKind: .class, name: "MTRBaseClusterWakeOnLan", headerString: "@interface MTRBaseClusterWakeOnLan\n@end\n"),
+            entry(symbolKind: .class, name: "MTRBaseClusterWakeOnLAN", headerString: "@interface MTRBaseClusterWakeOnLAN\n@end\n")
         ]
 
         let first = resolveObjCHeaderEntries(entries, options: options)
         let second = resolveObjCHeaderEntries(Array(entries.reversed()), options: options)
 
         #expect(first == second)
+    }
+
+    private func entry(
+        symbolKind: ObjCHeaderSymbolKind,
+        name: String,
+        headerString: String
+    ) -> ObjCHeaderEntry {
+        ObjCHeaderEntry(
+            symbolKind: symbolKind,
+            rawIdentity: name,
+            displayBaseName: name,
+            headerString: headerString
+        )
     }
 }
 
@@ -770,7 +783,8 @@ struct PrivateHeaderKitRawDumpRuntimeInspectorTests {
         let snapshot = PHRuntimeObjCInspector.snapshot(for: NSObject.self, failedStage: &failedStage)
         #expect(snapshot != nil)
         #expect(failedStage == nil)
-        #expect(snapshot?.name == "NSObject")
+        #expect(snapshot?.objcRuntimeName == "NSObject")
+        #expect(snapshot?.superclassObjCRuntimeName == nil)
     }
     #endif
 }
