@@ -395,9 +395,10 @@ private extension SwiftObjCHeaderRendering {
         let resolved: ResolvedSwiftObjCName?
 
         func runtimeName(for expectedKind: ResolvedSwiftObjCName.Kind) -> String? {
+            // Do not promote `class_getName`'s qualified `Module.Type` display to
+            // `objc_runtime_name`: the linker class symbol can remain `_Tt...`.
             guard let resolved,
-                  (resolved.source == .objcRuntimeName
-                    || resolved.source == .runtimeQualifiedName),
+                  resolved.source == .objcRuntimeName,
                   resolved.kind == expectedKind
             else { return nil }
             return rawName

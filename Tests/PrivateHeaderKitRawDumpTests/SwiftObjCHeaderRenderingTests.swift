@@ -297,7 +297,7 @@ struct SwiftObjCHeaderProjectionTests {
         #expect(!entry.headerString.contains("objc_runtime_name"))
     }
 
-    @Test func runtimeOnlyQualifiedNameUsesCanonicalAliasAndRuntimeAttribute() throws {
+    @Test func runtimeOnlyQualifiedNameUsesAliasWithoutUnprovenRuntimeAttribute() throws {
         let qualifiedName = "Demo.Foo"
         guard case .resolved(let qualified) =
             SwiftObjCNameResolver.resolveRuntimeOriginClassName(qualifiedName)
@@ -315,11 +315,7 @@ struct SwiftObjCHeaderProjectionTests {
         #expect(entry.displayBaseName == "Demo.Foo")
         #expect(entry.headerString.hasPrefix("// Swift name: Demo.Foo -> Demo.Foo\n"))
         #expect(entry.headerString.contains("@interface \(mangled.objcIdentifier)"))
-        #expect(
-            entry.headerString.contains(
-                "__attribute__((objc_runtime_name(\"Demo.Foo\")))\n@interface"
-            )
-        )
+        #expect(!entry.headerString.contains("objc_runtime_name"))
     }
 
     @Test func rawIdentityDeterminesCollisionSuffixAndInputOrderDoesNot() {
