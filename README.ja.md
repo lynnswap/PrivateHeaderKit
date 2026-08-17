@@ -29,13 +29,12 @@ installer が shell profile を勝手に編集することはありません。
 
 ## Source から build
 
-source installer を build し、checkout から実行します。
+source installer を checkout から build して実行します。
 
 ```bash
 git clone https://github.com/lynnswap/PrivateHeaderKit.git
 cd PrivateHeaderKit
-swift build -c release --product privateheaderkit-install
-.build/release/privateheaderkit-install
+swift run -c release privateheaderkit-install
 ```
 
 installer は同じ checkout から `privateheaderkit` と 2 つの内部 helper を build します。

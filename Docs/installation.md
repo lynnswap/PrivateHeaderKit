@@ -72,8 +72,7 @@ the same checkout:
 ```bash
 git clone https://github.com/lynnswap/PrivateHeaderKit.git
 cd PrivateHeaderKit
-swift build -c release --product privateheaderkit-install
-.build/release/privateheaderkit-install
+swift run -c release privateheaderkit-install
 ```
 
 This path requires Swift 6.3 and Xcode with `xcrun` and an installed iOS
@@ -81,16 +80,10 @@ Simulator SDK because the installed cohort always includes the simulator
 helper. It does not download release assets. `--prefix` and `--bindir` are also
 available for source installation.
 
-To build and run the installer in one command instead:
-
-```bash
-swift run -c release privateheaderkit-install
-```
-
 ## Update
 
 Run the download command again, or update the source checkout and rerun
-the build and installer commands above. Preserve the same `--prefix` or
+the source installation command above. Preserve the same `--prefix` or
 `--bindir` option when updating a custom destination.
 
 Release and source installation both publish an immutable cohort and switch
