@@ -10,13 +10,13 @@ enum PrivateHeaderKitContinuationMode: String, EnumerableFlag, Equatable, Sendab
 extension PrivateHeaderKitGenerateCommand.Platform: ExpressibleByArgument {}
 
 struct PrivateHeaderKitGenerationArguments: ParsableArguments {
-    @Option(help: "Source platform: iOS or macOS.")
+    @Option(help: "Source platform: iOS, watchOS, or macOS.")
     var platform: PrivateHeaderKitGenerateCommand.Platform?
 
     @Option(name: .customLong("version"), help: "Source OS version.")
     var sourceVersion: String?
 
-    @Option(help: "Source build identifier; required when an iOS version is ambiguous.")
+    @Option(help: "Source build identifier; required when a simulator version is ambiguous.")
     var build: String?
 
     @Option(name: .customLong("system-root"), help: "Runtime system root. Required for macOS.")
@@ -28,7 +28,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("target"), help: "Target query, or 'all'.")
     var targetQuery: String?
 
-    @Option(help: "Simulator name or UDID for iOS generation.")
+    @Option(help: "Simulator name or UDID for iOS or watchOS generation.")
     var device: String?
 
     @Option(name: .customLong("sim-helper"), help: "Explicit simulator helper path.")

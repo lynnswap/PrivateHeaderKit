@@ -35,7 +35,7 @@ package struct ToolArtifactDigest: Codable, Equatable, Sendable {
 
 package enum SwiftPMToolDestination: Equatable, Sendable {
     case host
-    case simulator(sdkPath: String, triple: String)
+    case simulator(platform: SimulatorPlatform, sdkPath: String, triple: String)
 }
 
 package struct SwiftPMToolBuildRecipe: Equatable, Sendable {
@@ -289,6 +289,7 @@ private struct ToolchainRecord: Codable, Equatable {
 }
 
 private struct SimulatorToolchainRecord: Codable, Equatable {
+    let sdkName: String
     let triple: String
     let targetInfo: TargetInfoRecord
     let sdkBuildVersion: String
@@ -309,6 +310,7 @@ private struct BuildRecipeRecord: Codable, Equatable {
     let product: String
     let configuration: String
     let destination: String
+    let sdkName: String?
     let triple: String?
 
     init(_ build: SwiftPMToolBuildRecipe) {
@@ -317,15 +319,18 @@ private struct BuildRecipeRecord: Codable, Equatable {
         switch build.destination {
         case .host:
             destination = "host"
+            sdkName = nil
             triple = nil
-        case let .simulator(_, value):
+        case let .simulator(platform, _, value):
             destination = "simulator"
+            sdkName = platform.sdkName
             triple = value
         }
     }
 
     var sortKey: String {
-        [product, configuration, destination, triple ?? ""].joined(separator: "\u{0}")
+        [product, configuration, destination, sdkName ?? "", triple ?? ""]
+            .joined(separator: "\u{0}")
     }
 }
 
@@ -670,11 +675,11 @@ private func toolchainRecord(
         cwd: nil
     )
 
-    var seenSimulatorTriples = Set<String>()
+    var seenSimulatorDestinations = Set<String>()
     var simulatorTargets = [SimulatorToolchainRecord]()
     for destination in destinations {
-        guard case let .simulator(sdkPath, triple) = destination,
-              seenSimulatorTriples.insert(triple).inserted
+        guard case let .simulator(platform, sdkPath, triple) = destination,
+              seenSimulatorDestinations.insert("\(platform.sdkName)\u{0}\(triple)").inserted
         else {
             continue
         }
@@ -685,11 +690,12 @@ private func toolchainRecord(
         )
         let targetInfo = try canonicalTargetInfo(targetInfoOutput)
         let sdkBuildVersion = try await requiredCommandOutput(
-            ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-build-version"],
+            ["xcrun", "--sdk", platform.sdkName, "--show-sdk-build-version"],
             runner: runner,
             cwd: nil
         )
         simulatorTargets.append(SimulatorToolchainRecord(
+            sdkName: platform.sdkName,
             triple: triple,
             targetInfo: targetInfo,
             sdkBuildVersion: sdkBuildVersion
@@ -708,7 +714,12 @@ private func toolchainRecord(
         xcodeVersion: xcodeVersion,
         hostTargetInfo: hostTargetInfo,
         macOSSDKBuildVersion: macOSSDKBuildVersion,
-        simulatorTargets: simulatorTargets.sorted { $0.triple < $1.triple },
+        simulatorTargets: simulatorTargets.sorted {
+            if $0.sdkName != $1.sdkName {
+                return $0.sdkName < $1.sdkName
+            }
+            return $0.triple < $1.triple
+        },
         buildEnvironment: buildEnvironment
     )
 }

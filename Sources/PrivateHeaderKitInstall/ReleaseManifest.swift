@@ -5,10 +5,11 @@ import PrivateHeaderKitTooling
 import CryptoKit
 #endif
 
-enum InstallArtifactName: String, Codable, CaseIterable, Comparable, Sendable {
+enum InstallArtifactName: String, Codable, Comparable, Sendable {
     case publicCommand = "privateheaderkit"
     case rawDumpHelper = "privateheaderkit-raw-helper"
     case simulatorHelper = "privateheaderkit-sim-helper"
+    case watchSimulatorHelper = "privateheaderkit-watch-sim-helper"
 
     static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -20,6 +21,19 @@ enum InstallArtifactName: String, Codable, CaseIterable, Comparable, Sendable {
             .macOS
         case .simulatorHelper:
             .iOSSimulator
+        case .watchSimulatorHelper:
+            .watchOSSimulator
+        }
+    }
+
+    var simulatorPlatform: SimulatorPlatform? {
+        switch self {
+        case .publicCommand, .rawDumpHelper:
+            nil
+        case .simulatorHelper:
+            .iOS
+        case .watchSimulatorHelper:
+            .watchOS
         }
     }
 }
@@ -27,6 +41,32 @@ enum InstallArtifactName: String, Codable, CaseIterable, Comparable, Sendable {
 enum InstallArtifactPlatform: String, Codable, Sendable {
     case macOS
     case iOSSimulator
+    case watchOSSimulator
+}
+
+enum ReleaseManifestSchema: Int, Sendable {
+    case v1 = 1
+    case v2 = 2
+
+    static let current = Self.v2
+
+    var artifactNames: [InstallArtifactName] {
+        switch self {
+        case .v1:
+            [
+                .publicCommand,
+                .rawDumpHelper,
+                .simulatorHelper,
+            ]
+        case .v2:
+            [
+                .publicCommand,
+                .rawDumpHelper,
+                .simulatorHelper,
+                .watchSimulatorHelper,
+            ]
+        }
+    }
 }
 
 enum InstallCodeSignaturePolicy: String, Codable, Sendable {
@@ -42,7 +82,7 @@ struct ReleaseArtifactRecord: Codable, Equatable, Sendable {
 }
 
 struct ReleaseManifest: Codable, Equatable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = ReleaseManifestSchema.current.rawValue
     static let fileName = "release.json"
 
     let schemaVersion: Int
@@ -69,7 +109,7 @@ struct ReleaseManifest: Codable, Equatable, Sendable {
     }
 
     func validate() throws {
-        guard schemaVersion == Self.schemaVersion else {
+        guard let schema = ReleaseManifestSchema(rawValue: schemaVersion) else {
             throw InstallError.message(
                 "unsupported release manifest schema: \(schemaVersion)"
             )
@@ -92,7 +132,7 @@ struct ReleaseManifest: Codable, Equatable, Sendable {
             )
         }
 
-        let expectedNames = Set(InstallArtifactName.allCases)
+        let expectedNames = Set(schema.artifactNames)
         let actualNames = Set(artifacts.map(\.name))
         guard artifacts.count == expectedNames.count, actualNames == expectedNames else {
             throw InstallError.message(
@@ -133,6 +173,17 @@ struct ReleaseManifest: Codable, Equatable, Sendable {
                     "unsupported code signature policy for \(artifact.name.rawValue)"
                 )
             }
+        }
+    }
+
+    var requiredArtifactNames: [InstallArtifactName] {
+        get throws {
+            guard let schema = ReleaseManifestSchema(rawValue: schemaVersion) else {
+                throw InstallError.message(
+                    "unsupported release manifest schema: \(schemaVersion)"
+                )
+            }
+            return schema.artifactNames
         }
     }
 
@@ -275,6 +326,8 @@ struct LiveReleaseArtifactInspector: Sendable {
             platform = .macOS
         case ["IOSSIMULATOR"]:
             platform = .iOSSimulator
+        case ["WATCHOSSIMULATOR"]:
+            platform = .watchOSSimulator
         default:
             throw InstallError.message(
                 "unexpected build platform for \(url.path): \(rawPlatforms.sorted().joined(separator: ", "))"

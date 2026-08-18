@@ -159,6 +159,7 @@ expected_entries="$(printf '%s\n' \
   "cohort/privateheaderkit" \
   "cohort/privateheaderkit-raw-helper" \
   "cohort/privateheaderkit-sim-helper" \
+  "cohort/privateheaderkit-watch-sim-helper" \
   "cohort/release.json")"
 actual_entries="$(tar -tzf "$release_base/$archive_asset" | LC_ALL=C sort)"
 if [[ "$actual_entries" != "$expected_entries" ]]; then
@@ -171,7 +172,7 @@ if printf '%s\n' "$actual_entries" | grep -Eq '(^/|(^|/)[.][.](/|$))'; then
   echo "Release archive contains an unsafe path." >&2
   exit 1
 fi
-expected_entry_types="$(printf '%s\n' - - - - -)"
+expected_entry_types="$(printf '%s\n' - - - - - -)"
 actual_entry_types="$(tar -tvzf "$release_base/$archive_asset" \
   | awk '{ print substr($1, 1, 1) }')"
 if [[ "$actual_entry_types" != "$expected_entry_types" ]]; then
@@ -193,6 +194,7 @@ for file in \
   "$extract_root/cohort/privateheaderkit" \
   "$extract_root/cohort/privateheaderkit-raw-helper" \
   "$extract_root/cohort/privateheaderkit-sim-helper" \
+  "$extract_root/cohort/privateheaderkit-watch-sim-helper" \
   "$extract_root/cohort/release.json"
 do
   if [[ ! -f "$file" || -L "$file" ]]; then
@@ -286,6 +288,7 @@ expected_cohort_entries="$(printf '%s\n' \
   "privateheaderkit" \
   "privateheaderkit-raw-helper" \
   "privateheaderkit-sim-helper" \
+  "privateheaderkit-watch-sim-helper" \
   "release.json")"
 actual_cohort_entries="$(find "$installed_cohort" -mindepth 1 -maxdepth 1 -print \
   | sed 's|.*/||' \
@@ -302,7 +305,7 @@ fi
 tamper_root="$temporary_directory/tampered"
 mkdir -p "$tamper_root"
 tar -C "$tamper_root" -xzf "$release_base/$archive_asset"
-printf 'tamper' >> "$tamper_root/cohort/privateheaderkit-raw-helper"
+printf 'tamper' >> "$tamper_root/cohort/privateheaderkit-watch-sim-helper"
 tamper_prefix="$temporary_directory/tamper-prefix"
 if "$tamper_root/bin/privateheaderkit-install" \
   --release-dir "$tamper_root/cohort" \

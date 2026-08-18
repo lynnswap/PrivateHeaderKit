@@ -2,12 +2,13 @@
 
 [English](README.md)
 
-この Mac またはインストール済み iOS Simulator runtime から、検索可能な private
-header を生成します。
+この Mac またはインストール済み iOS / watchOS Simulator runtime から、検索可能な
+private header を生成します。
 
-macOS 14 以降が必要です。prebuilt release は Apple Silicon 向けです。iOS の header
-生成には Xcode とインストール済み iOS Simulator runtime が必要です。source install
-には Swift 6.3 と iOS Simulator SDK を含む Xcode が必要です。
+macOS 14 以降が必要です。prebuilt release は Apple Silicon 向けです。iOS / watchOS
+の header 生成には Xcode と対応するインストール済み Simulator runtime が必要です。
+実機は生成元にできません。source install には Swift 6.3 と iOS / watchOS Simulator
+SDK を含む Xcode が必要です。
 
 ## クイックスタート
 
@@ -37,7 +38,7 @@ cd PrivateHeaderKit
 swift run -c release privateheaderkit-install
 ```
 
-installer は同じ checkout から `privateheaderkit` と 2 つの内部 helper を build します。
+installer は同じ checkout から `privateheaderkit` と 3 つの内部 helper を build します。
 `install.sh` と同じ `--prefix`、`--bindir` option を指定できます。
 
 ## インストールオプション
@@ -76,9 +77,17 @@ privateheaderkit \
   --target SwiftUI,UIKit
 ```
 
-全 option は `privateheaderkit --help` で確認できます。例の iOS version はインストール
-済み runtime に合わせて変更してください。同じ version に一致する runtime が複数ある
-場合は `--build <build>` も指定します。
+```bash
+privateheaderkit \
+  --platform watchOS \
+  --version 27.0 \
+  --out ~/PrivateHeaderKit \
+  --target WatchKit
+```
+
+全 option は `privateheaderkit --help` で確認できます。各例の version はインストール済み
+runtime に合わせて変更してください。選択した platform で同じ version に一致する runtime
+が複数ある場合は `--build <build>` も指定します。
 
 ## ドキュメント
 

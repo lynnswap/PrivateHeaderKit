@@ -129,6 +129,7 @@ expected_entries="$(printf '%s\n' \
   "cohort/privateheaderkit" \
   "cohort/privateheaderkit-raw-helper" \
   "cohort/privateheaderkit-sim-helper" \
+  "cohort/privateheaderkit-watch-sim-helper" \
   "cohort/release.json")"
 actual_entries="$(tar -tzf "$temporary_directory/$ARCHIVE" | LC_ALL=C sort)"
 if [ "$actual_entries" != "$expected_entries" ]; then
@@ -137,7 +138,7 @@ if [ "$actual_entries" != "$expected_entries" ]; then
   printf 'Actual:\n%s\n' "$actual_entries" >&2
   exit 1
 fi
-expected_entry_types="$(printf '%s\n' - - - - -)"
+expected_entry_types="$(printf '%s\n' - - - - - -)"
 actual_entry_types="$(tar -tvzf "$temporary_directory/$ARCHIVE" \
   | awk '{ print substr($1, 1, 1) }')"
 if [ "$actual_entry_types" != "$expected_entry_types" ]; then
@@ -157,6 +158,7 @@ for file in \
   "$temporary_directory/cohort/privateheaderkit" \
   "$temporary_directory/cohort/privateheaderkit-raw-helper" \
   "$temporary_directory/cohort/privateheaderkit-sim-helper" \
+  "$temporary_directory/cohort/privateheaderkit-watch-sim-helper" \
   "$temporary_directory/cohort/release.json"
 do
   if [ ! -f "$file" ] || [ -L "$file" ]; then

@@ -27,7 +27,7 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
         case .invalidTargetQuery(let value):
             "target query must be 'all' or a comma-separated list without empty entries: \(value)"
         case .missingSimulatorResolution:
-            "iOS generation requires a resolved simulator runtime and device"
+            "simulator generation requires a resolved runtime and device"
         }
     }
 }
@@ -35,12 +35,31 @@ enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
 struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     enum Platform: String, CaseIterable, Sendable {
         case iOS = "iOS"
+        case watchOS = "watchOS"
         case macOS = "macOS"
 
         var corePlatform: PrivateHeaderGeneration.Source.Platform {
             switch self {
             case .iOS: .iOS
+            case .watchOS: .watchOS
             case .macOS: .macOS
+            }
+        }
+
+        var simulatorPlatform: SimulatorPlatform? {
+            switch self {
+            case .iOS: .iOS
+            case .watchOS: .watchOS
+            case .macOS: nil
+            }
+        }
+
+        init(simulatorPlatform: SimulatorPlatform) {
+            switch simulatorPlatform {
+            case .iOS:
+                self = .iOS
+            case .watchOS:
+                self = .watchOS
             }
         }
     }
@@ -106,7 +125,7 @@ typealias PrivateHeaderKitSimulatorResolver = @Sendable (
 typealias PrivateHeaderKitHelperResolver = @Sendable (
     URL,
     String?,
-    Bool
+    SimulatorPlatform?
 ) async throws -> PrivateHeaderKitHelperPlan
 typealias PrivateHeaderKitOutputLogger = @Sendable (String) -> Void
 
@@ -314,11 +333,11 @@ func preparePrivateHeaderKitGenerationRequest(
     let helperPlan = try await helperResolver(
         publicExecutableURL,
         command.simulatorHelperPath,
-        command.platform == .iOS
+        command.platform.simulatorPlatform
     )
     try await preparePrivateHeaderKitHelpers(helperPlan)
     let simulatorResolution: PrivateHeaderKitSimulatorResolution?
-    if command.platform == .iOS {
+    if command.platform.simulatorPlatform != nil {
         let resolution = try await simulatorResolver(command)
         outputLogger(
             "selected simulator: \(resolution.deviceName) (\(resolution.deviceUDID))"
@@ -404,10 +423,9 @@ func makePrivateHeaderGenerationRequest(
         baseDirectory: URL(fileURLWithPath: command.outputBaseDirectory, isDirectory: true)
     )
     let executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
-    switch command.platform {
-    case .macOS:
+    if command.platform.simulatorPlatform == nil {
         executionMode = .host
-    case .iOS:
+    } else {
         guard let simulatorResolution else {
             throw PrivateHeaderKitCLIError.missingSimulatorResolution
         }
@@ -448,11 +466,10 @@ private func effectiveSourceConfiguration(
         let systemRootURL = canonicalDirectoryURL(path: systemRoot)
         let build: String?
         let useSharedCache: Bool
-        switch command.platform {
-        case .macOS:
+        if command.platform.simulatorPlatform == nil {
             build = command.build
             useSharedCache = systemRootURL.path == "/"
-        case .iOS:
+        } else {
             guard let simulatorResolution else {
                 throw PrivateHeaderKitCLIError.missingSimulatorResolution
             }
@@ -469,7 +486,7 @@ private func effectiveSourceConfiguration(
             useSharedCache: useSharedCache
         )
     }
-    guard command.platform == .iOS, let simulatorResolution else {
+    guard command.platform.simulatorPlatform != nil, let simulatorResolution else {
         throw PrivateHeaderKitCLIError.missingSimulatorResolution
     }
     return EffectiveSourceConfiguration(
@@ -491,41 +508,61 @@ func defaultRawDumpHelperURL(publicExecutableURL: URL) -> URL {
         .appendingPathComponent("privateheaderkit-raw-helper", isDirectory: false)
 }
 
-func defaultSimulatorHelperURL(hostExecutableURL: URL) -> URL {
+func defaultSimulatorHelperURL(
+    hostExecutableURL: URL,
+    platform: SimulatorPlatform
+) -> URL {
     let cohortHelper = hostExecutableURL.resolvingSymlinksInPath()
     return cohortHelper.deletingLastPathComponent()
-        .appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+        .appendingPathComponent(
+            privateHeaderKitInstalledSimulatorHelperName(for: platform),
+            isDirectory: false
+        )
+}
+
+private func privateHeaderKitInstalledSimulatorHelperName(
+    for platform: SimulatorPlatform
+) -> String {
+    switch platform {
+    case .iOS:
+        "privateheaderkit-sim-helper"
+    case .watchOS:
+        "privateheaderkit-watch-sim-helper"
+    }
 }
 
 func resolvePrivateHeaderKitHelperURLs(
     publicExecutableURL: URL,
     simulatorHelperPath: String?,
-    requiresSimulatorHelper: Bool
+    simulatorPlatform: SimulatorPlatform?
 ) async throws -> PrivateHeaderKitHelperPlan {
     try await resolvePrivateHeaderKitHelperPlan(
         publicExecutableURL: publicExecutableURL,
         simulatorHelperPath: simulatorHelperPath,
-        requiresSimulatorHelper: requiresSimulatorHelper
+        simulatorPlatform: simulatorPlatform
     )
 }
 
 func resolvePrivateHeaderKitHelperPlan(
     publicExecutableURL: URL,
     simulatorHelperPath: String?,
-    requiresSimulatorHelper: Bool,
+    simulatorPlatform: SimulatorPlatform?,
     runner: CommandRunning = ProcessRunner(),
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    simulatorTriple: String = defaultSwiftPMIOSSimulatorTriple()
+    simulatorArchitecture: String = defaultSwiftPMSimulatorArchitecture()
 ) async throws -> PrivateHeaderKitHelperPlan {
     let runningExecutableIdentity = try currentProcessExecutableBuildIdentity()
     guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
         let hostURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
         let simulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
-            ?? defaultSimulatorHelperURL(hostExecutableURL: hostURL)
+            ?? defaultSimulatorHelperURL(
+                hostExecutableURL: hostURL,
+                platform: simulatorPlatform ?? .iOS
+            )
         var artifacts = [
             ToolArtifactInput(role: "host-helper", url: hostURL),
         ]
-        if requiresSimulatorHelper {
+        if simulatorPlatform != nil {
             artifacts.append(ToolArtifactInput(
                 role: "simulator-helper",
                 url: simulatorURL
@@ -581,7 +618,7 @@ func resolvePrivateHeaderKitHelperPlan(
     ]
     if let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath) {
         simulatorURL = explicitSimulatorURL
-        if requiresSimulatorHelper {
+        if simulatorPlatform != nil {
             let artifact = ToolArtifactInput(
                 role: "simulator-helper",
                 url: explicitSimulatorURL
@@ -589,14 +626,17 @@ func resolvePrivateHeaderKitHelperPlan(
             externalArtifacts.append(artifact)
             preparedArtifacts.append(artifact)
         }
-    } else if requiresSimulatorHelper {
+    } else if let simulatorPlatform {
+        let simulatorTriple = simulatorPlatform.swiftPMTriple(
+            architecture: simulatorArchitecture
+        )
         let sdkPath = try lastNonemptyOutputLine(
             await runner.runCapture(
-                ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+                ["xcrun", "--sdk", simulatorPlatform.sdkName, "--show-sdk-path"],
                 env: nil,
                 cwd: nil
             ),
-            failureMessage: "failed to resolve iPhone Simulator SDK path"
+            failureMessage: "failed to resolve \(simulatorPlatform.userFacingSimulatorName) SDK path"
         )
         let scratchPath = SwiftPMBuildPaths.simulatorScratchURL(
             repoRoot: layout.repoRoot,
@@ -614,7 +654,7 @@ func resolvePrivateHeaderKitHelperPlan(
                 env: nil,
                 cwd: layout.repoRoot
             ),
-            destination: "iOS Simulator"
+            destination: simulatorPlatform.userFacingSimulatorName
         )
         simulatorURL = simulatorBinDirectory.appendingPathComponent(
             "privateheaderkit-sim-helper",
@@ -627,14 +667,21 @@ func resolvePrivateHeaderKitHelperPlan(
         buildRecipes.append(SwiftPMToolBuildRecipe(
             product: "privateheaderkit-sim-helper",
             configuration: layout.configuration,
-            destination: .simulator(sdkPath: sdkPath, triple: simulatorTriple)
+            destination: .simulator(
+                platform: simulatorPlatform,
+                sdkPath: sdkPath,
+                triple: simulatorTriple
+            )
         ))
         preparedArtifacts.append(ToolArtifactInput(
             role: "simulator-helper",
             url: simulatorURL
         ))
     } else {
-        simulatorURL = defaultSimulatorHelperURL(hostExecutableURL: hostURL)
+        simulatorURL = defaultSimulatorHelperURL(
+            hostExecutableURL: hostURL,
+            platform: .iOS
+        )
     }
     let identityContext = SwiftPMToolIdentityContext(
         repoRoot: layout.repoRoot,
@@ -934,11 +981,7 @@ private func lastNonemptyOutputLine(_ output: String, failureMessage: String) th
     return line
 }
 
-func defaultSwiftPMIOSSimulatorTriple() -> String {
-    "\(defaultSwiftPMIOSSimulatorArchitecture())-apple-ios-simulator"
-}
-
-private func defaultSwiftPMIOSSimulatorArchitecture() -> String {
+func defaultSwiftPMSimulatorArchitecture() -> String {
 #if arch(x86_64)
     return currentHostSupportsNativeArm64Simulator() ? "arm64" : "x86_64"
 #else
@@ -959,8 +1002,12 @@ private func currentHostSupportsNativeArm64Simulator() -> Bool {
 func resolvePrivateHeaderKitSimulator(
     for command: PrivateHeaderKitGenerateCommand
 ) async throws -> PrivateHeaderKitSimulatorResolution {
+    guard let simulatorPlatform = command.platform.simulatorPlatform else {
+        throw PrivateHeaderKitCLIError.missingSimulatorResolution
+    }
     let runner = ProcessRunner()
     let runtime = try await Simctl.findRuntime(
+        platform: simulatorPlatform,
         version: command.version,
         build: command.build,
         runner: runner
@@ -984,7 +1031,7 @@ func discoverPrivateHeaderKitInteractiveSources(
 ) async throws -> [PrivateHeaderKitInteractiveSource] {
     var sources = try await (Simctl.listRuntimesIfAvailable(runner: runner) ?? []).map {
         PrivateHeaderKitInteractiveSource(
-            platform: .iOS,
+            platform: .init(simulatorPlatform: $0.platform),
             version: $0.version,
             build: $0.build.isEmpty ? nil : $0.build,
             systemRoot: nil

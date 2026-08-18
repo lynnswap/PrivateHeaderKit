@@ -153,7 +153,12 @@ mkdir -p "$package_fixture/scripts" "$package_fixture/dist/arm64/bin" "$package_
 cp "$repo_root/scripts/package-release.sh" "$package_fixture/scripts/package-release.sh"
 cp "$repo_root/scripts/render-install-script.sh" "$package_fixture/scripts/render-install-script.sh"
 cp "$repo_root/scripts/install-release.sh.in" "$package_fixture/scripts/install-release.sh.in"
-for file in privateheaderkit privateheaderkit-raw-helper privateheaderkit-sim-helper; do
+for file in \
+  privateheaderkit \
+  privateheaderkit-raw-helper \
+  privateheaderkit-sim-helper \
+  privateheaderkit-watch-sim-helper
+do
   printf '%s\n' "$file" > "$package_fixture/dist/arm64/cohort/$file"
 done
 printf '{}\n' > "$package_fixture/dist/arm64/cohort/release.json"
@@ -187,6 +192,15 @@ assert_file_set "$package_fixture/release"
 if find "$package_fixture" -maxdepth 1 \( -name '.release.staging.*' -o -name '.release.backup.*' \) -print -quit | grep -q .; then
   fail "package retry left a staging or backup directory"
 fi
+printf 'unknown cohort entry\n' > "$package_fixture/dist/arm64/cohort/unknown-helper"
+expect_failure "Staged release cohort is not exact." \
+  "$package_fixture/scripts/package-release.sh" \
+  --version v1.2.3 \
+  --commit 0000000000000000000000000000000000000000 \
+  --repo lynnswap/PrivateHeaderKit \
+  --dist-root dist \
+  --output-dir release
+rm "$package_fixture/dist/arm64/cohort/unknown-helper"
 printf 'unknown asset\n' > "$package_fixture/release/unknown.txt"
 expect_failure "Unknown entry: unknown.txt" \
   "$package_fixture/scripts/package-release.sh" \

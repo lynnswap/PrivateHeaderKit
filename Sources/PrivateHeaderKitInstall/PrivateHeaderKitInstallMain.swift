@@ -181,7 +181,7 @@ func runInstall(
     inspectArtifact: @escaping ReleaseArtifactInspector,
     faultInjector: @escaping InstallFaultInjector = { _ in },
     outputLogger: @escaping @Sendable (String) -> Void,
-    simulatorHelperTriple: String? = nil
+    simulatorHelperTriples: [SimulatorPlatform: String] = [:]
 ) async throws {
     try Task.checkCancellation()
     let layout = try resolveInstallLayout(
@@ -236,7 +236,7 @@ func runInstall(
                 runner: runner,
                 fileManager: fileManager,
                 inspectArtifact: inspectArtifact,
-                simulatorHelperTriple: simulatorHelperTriple
+                simulatorHelperTriples: simulatorHelperTriples
             )
         }
         return try await installer.installLocked(cohort)
@@ -259,7 +259,7 @@ func createReleaseManifest(
         isDirectory: true
     )
     let artifactURLs = Dictionary(
-        uniqueKeysWithValues: InstallArtifactName.allCases.map { artifact in
+        uniqueKeysWithValues: ReleaseManifestSchema.current.artifactNames.map { artifact in
             (
                 artifact,
                 artifactDirectory.appendingPathComponent(
@@ -307,8 +307,17 @@ func makeReleaseManifest(
     inspectArtifact: ReleaseArtifactInspector
 ) async throws -> ReleaseManifest {
     try Task.checkCancellation()
+    let requiredArtifactNames = ReleaseManifestSchema.current.artifactNames
+    let expectedArtifactNames = Set(requiredArtifactNames)
+    guard artifactURLs.count == expectedArtifactNames.count,
+          Set(artifactURLs.keys) == expectedArtifactNames
+    else {
+        throw InstallError.message(
+            "release artifacts must contain exactly: \(expectedArtifactNames.map(\.rawValue).sorted().joined(separator: ", "))"
+        )
+    }
     var records: [ReleaseArtifactRecord] = []
-    for artifact in InstallArtifactName.allCases {
+    for artifact in requiredArtifactNames {
         guard let url = artifactURLs[artifact] else {
             throw InstallError.message(
                 "missing release artifact: \(artifact.rawValue)"
@@ -338,7 +347,7 @@ func buildSourceCohort(
     runner: CommandRunning,
     fileManager: FileManager,
     inspectArtifact: ReleaseArtifactInspector,
-    simulatorHelperTriple: String? = nil
+    simulatorHelperTriples: [SimulatorPlatform: String] = [:]
 ) async throws -> ReleaseCohort {
     try Task.checkCancellation()
     let sourceBeforeBuild = try await captureSourceSnapshot(
@@ -356,35 +365,12 @@ func buildSourceCohort(
         in: repoRoot,
         runner: runner
     )
-    let simulatorSDKPath = try await resolveSimulatorSDKPath(runner: runner)
-    let simulatorTriple = try simulatorHelperTriple ?? defaultSimulatorHelperTriple()
-    let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
-        repoRoot: repoRoot,
-        triple: simulatorTriple
-    )
-    try await buildSimulatorHelper(
-        in: repoRoot,
-        configuration: configuration,
-        scratchPath: simulatorScratchPath,
-        sdkPath: simulatorSDKPath,
-        runner: runner,
-        simulatorHelperTriple: simulatorTriple
-    )
-
     let hostBinDirectory = try await resolveSwiftBinDir(
         repoRoot: repoRoot,
         runner: runner,
         configuration: configuration
     )
-    let simulatorBinDirectory = try await resolveSwiftBinDir(
-        repoRoot: repoRoot,
-        runner: runner,
-        configuration: configuration,
-        scratchPath: simulatorScratchPath,
-        triple: simulatorTriple,
-        sdkPath: simulatorSDKPath
-    )
-    let artifactURLs: [InstallArtifactName: URL] = [
+    var artifactURLs: [InstallArtifactName: URL] = [
         .publicCommand: hostBinDirectory.appendingPathComponent(
             InstallArtifactName.publicCommand.rawValue,
             isDirectory: false
@@ -393,11 +379,40 @@ func buildSourceCohort(
             InstallArtifactName.rawDumpHelper.rawValue,
             isDirectory: false
         ),
-        .simulatorHelper: simulatorBinDirectory.appendingPathComponent(
+    ]
+    for artifact in ReleaseManifestSchema.current.artifactNames {
+        guard let platform = artifact.simulatorPlatform else { continue }
+        let simulatorTriple = try simulatorHelperTriples[platform]
+            ?? defaultSimulatorHelperTriple(platform: platform)
+        let simulatorSDKPath = try await resolveSimulatorSDKPath(
+            platform: platform,
+            runner: runner
+        )
+        let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
+            repoRoot: repoRoot,
+            triple: simulatorTriple
+        )
+        try await buildSimulatorHelper(
+            in: repoRoot,
+            configuration: configuration,
+            scratchPath: simulatorScratchPath,
+            sdkPath: simulatorSDKPath,
+            runner: runner,
+            simulatorHelperTriple: simulatorTriple
+        )
+        let simulatorBinDirectory = try await resolveSwiftBinDir(
+            repoRoot: repoRoot,
+            runner: runner,
+            configuration: configuration,
+            scratchPath: simulatorScratchPath,
+            triple: simulatorTriple,
+            sdkPath: simulatorSDKPath
+        )
+        artifactURLs[artifact] = simulatorBinDirectory.appendingPathComponent(
             InstallArtifactName.simulatorHelper.rawValue,
             isDirectory: false
-        ),
-    ]
+        )
+    }
     for (artifact, url) in artifactURLs {
         guard fileManager.fileExists(atPath: url.path) else {
             throw InstallError.message(
@@ -481,9 +496,12 @@ func buildSimulatorHelper(
     try Task.checkCancellation()
 }
 
-func resolveSimulatorSDKPath(runner: CommandRunning) async throws -> String {
+func resolveSimulatorSDKPath(
+    platform: SimulatorPlatform,
+    runner: CommandRunning
+) async throws -> String {
     let output = try await runner.runCapture(
-        ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+        ["xcrun", "--sdk", platform.sdkName, "--show-sdk-path"],
         env: nil,
         cwd: nil
     )
@@ -493,7 +511,9 @@ func resolveSimulatorSDKPath(runner: CommandRunning) async throws -> String {
         .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
         .last(where: { !$0.isEmpty })
     else {
-        throw InstallError.message("failed to resolve iPhone Simulator SDK path")
+        throw InstallError.message(
+            "failed to resolve \(platform.userFacingSimulatorName) SDK path"
+        )
     }
     return path
 }
@@ -602,12 +622,13 @@ func nativeHostSimulatorArchitecture(
         return executableArchitecture
     default:
         throw InstallError.message(
-            "unsupported host architecture for iOS simulator helper: \(executableArchitecture)"
+            "unsupported host architecture for simulator helpers: \(executableArchitecture)"
         )
     }
 }
 
 func defaultSimulatorHelperTriple(
+    platform: SimulatorPlatform,
     executableArchitecture: String = currentExecutableArchitectureName(),
     supportsNativeArm64: Bool = hostSupportsNativeArm64()
 ) throws -> String {
@@ -615,13 +636,13 @@ func defaultSimulatorHelperTriple(
         executableArchitecture: executableArchitecture,
         supportsNativeArm64: supportsNativeArm64
     )
-    return "\(architecture)-apple-ios-simulator"
+    return platform.swiftPMTriple(architecture: architecture)
 }
 
 func dryRunInstallMessages(layout: InstallLayout) -> [String] {
     var messages = [
         "Would acquire install lock: \(layout.lockURL.path)",
-        "Would stage all three artifacts under: \(layout.versionsDirectory.path)",
+        "Would stage all four artifacts under: \(layout.versionsDirectory.path)",
         "Would atomically switch: \(layout.currentURL.path)",
         "Would maintain stable command symlink: \(layout.publicCommandURL.path)",
     ]

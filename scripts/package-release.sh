@@ -86,6 +86,7 @@ expected_stage_entries="$(printf '%s\n' \
   "cohort/privateheaderkit" \
   "cohort/privateheaderkit-raw-helper" \
   "cohort/privateheaderkit-sim-helper" \
+  "cohort/privateheaderkit-watch-sim-helper" \
   "cohort/release.json")"
 if [[ ! -d "$stage_root" || -L "$stage_root" ]]; then
   echo "Missing staged release cohort: $stage_root" >&2
@@ -111,6 +112,7 @@ for file in \
   "$stage_root/cohort/privateheaderkit" \
   "$stage_root/cohort/privateheaderkit-raw-helper" \
   "$stage_root/cohort/privateheaderkit-sim-helper" \
+  "$stage_root/cohort/privateheaderkit-watch-sim-helper" \
   "$stage_root/cohort/release.json"
 do
   if [[ ! -f "$file" || -L "$file" ]]; then
@@ -198,6 +200,7 @@ COPYFILE_DISABLE=1 tar -C "$stage_root" -czf "$archive" \
   "cohort/privateheaderkit" \
   "cohort/privateheaderkit-raw-helper" \
   "cohort/privateheaderkit-sim-helper" \
+  "cohort/privateheaderkit-watch-sim-helper" \
   "cohort/release.json"
 
 "$repo_root/scripts/render-install-script.sh" \

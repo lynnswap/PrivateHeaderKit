@@ -14,7 +14,7 @@ struct ReleaseCohort: Sendable {
         artifactURLs: [InstallArtifactName: URL]
     ) throws {
         try manifest.validate()
-        let expected = Set(InstallArtifactName.allCases)
+        let expected = Set(try manifest.requiredArtifactNames)
         guard Set(artifactURLs.keys) == expected,
               artifactURLs.count == expected.count
         else {
@@ -38,18 +38,6 @@ struct ReleaseCohort: Sendable {
                 "release cohort is not a real directory: \(directory.path)"
             )
         }
-        let expectedEntries = Set(
-            InstallArtifactName.allCases.map(\.rawValue) + [ReleaseManifest.fileName]
-        )
-        let actualEntries = Set(
-            try fileManager.contentsOfDirectory(atPath: directory.path)
-        )
-        guard actualEntries == expectedEntries else {
-            throw InstallError.message(
-                "release cohort entries do not match the required set; expected \(expectedEntries.sorted()), got \(actualEntries.sorted())"
-            )
-        }
-
         let manifestURL = directory.appendingPathComponent(
             ReleaseManifest.fileName,
             isDirectory: false
@@ -63,10 +51,22 @@ struct ReleaseCohort: Sendable {
             )
         }
         let manifest = try ReleaseManifest.read(from: manifestURL)
+        let requiredArtifactNames = try manifest.requiredArtifactNames
+        let expectedEntries = Set(
+            requiredArtifactNames.map(\.rawValue) + [ReleaseManifest.fileName]
+        )
+        let actualEntries = Set(
+            try fileManager.contentsOfDirectory(atPath: directory.path)
+        )
+        guard actualEntries == expectedEntries else {
+            throw InstallError.message(
+                "release cohort entries do not match the required set; expected \(expectedEntries.sorted()), got \(actualEntries.sorted())"
+            )
+        }
         return try ReleaseCohort(
             manifest: manifest,
             artifactURLs: Dictionary(
-                uniqueKeysWithValues: InstallArtifactName.allCases.map { artifact in
+                uniqueKeysWithValues: requiredArtifactNames.map { artifact in
                     (
                         artifact,
                         directory.appendingPathComponent(artifact.rawValue, isDirectory: false)
@@ -226,7 +226,8 @@ struct VersionCohortInstaller {
             }
         }
 
-        for artifact in InstallArtifactName.allCases.sorted() {
+        let requiredArtifactNames = try cohort.manifest.requiredArtifactNames
+        for artifact in requiredArtifactNames.sorted() {
             let sourceURL = try sourceURL(for: artifact, in: cohort)
             let destinationURL = stagingDirectory.appendingPathComponent(
                 artifact.rawValue,
@@ -395,7 +396,7 @@ extension VersionCohortInstaller {
     func preflight(_ cohort: ReleaseCohort) async throws {
         try Task.checkCancellation()
         try cohort.manifest.validate()
-        for artifact in InstallArtifactName.allCases {
+        for artifact in try cohort.manifest.requiredArtifactNames {
             let sourceURL = try sourceURL(for: artifact, in: cohort)
             let expected = try cohort.manifest.artifact(named: artifact)
             let actual = try await inspectArtifact(artifact, sourceURL)

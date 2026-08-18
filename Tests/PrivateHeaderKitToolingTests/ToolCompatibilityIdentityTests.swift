@@ -147,6 +147,58 @@ struct ToolCompatibilityIdentityTests {
         #expect(reordered == first)
     }
 
+    @Test func SwiftPMIdentityIncludesSimulatorSDKName() async throws {
+        let fixture = try makeSwiftPMIdentityFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = await identityRunner(description: fixture.packageDescription)
+        let sdkPath = "/SDK"
+        let triple = "arm64-apple-simulator"
+        await runner.setCaptureOutput(
+            #"{"compilerVersion":"Swift test","target":{"triple":"arm64-apple-simulator"}}"#,
+            for: [
+                "swift", "-sdk", sdkPath,
+                "-target", triple,
+                "-print-target-info",
+            ]
+        )
+        for sdkName in ["iphonesimulator", "watchsimulator"] {
+            await runner.setCaptureOutput(
+                "TEST_SIMULATOR_SDK",
+                for: ["xcrun", "--sdk", sdkName, "--show-sdk-build-version"]
+            )
+        }
+
+        func context(platform: SimulatorPlatform) -> SwiftPMToolIdentityContext {
+            identityContext(
+                repoRoot: fixture.root,
+                builds: [
+                    SwiftPMToolBuildRecipe(
+                        product: "privateheaderkit-raw-helper",
+                        configuration: "debug",
+                        destination: .simulator(
+                            platform: platform,
+                            sdkPath: sdkPath,
+                            triple: triple
+                        )
+                    ),
+                ]
+            )
+        }
+
+        let ios = try await captureSwiftPMToolSnapshot(
+            context: context(platform: .iOS),
+            runner: runner,
+            fileManager: .default
+        )
+        let watchOS = try await captureSwiftPMToolSnapshot(
+            context: context(platform: .watchOS),
+            runner: runner,
+            fileManager: .default
+        )
+
+        #expect(ios != watchOS)
+    }
+
     @Test func SwiftPMIdentityRejectsDirtyResolvedDependencyCheckout() async throws {
         let fixture = try makeSwiftPMIdentityFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -258,18 +310,19 @@ private func makeSwiftPMIdentityFixture() throws -> SwiftPMIdentityFixture {
 
 private func identityContext(
     repoRoot: URL,
-    runningExecutableIdentity: String = "macho-uuid:cli"
+    runningExecutableIdentity: String = "macho-uuid:cli",
+    builds: [SwiftPMToolBuildRecipe] = [
+        SwiftPMToolBuildRecipe(
+            product: "privateheaderkit-raw-helper",
+            configuration: "debug",
+            destination: .host
+        ),
+    ]
 ) -> SwiftPMToolIdentityContext {
     SwiftPMToolIdentityContext(
         repoRoot: repoRoot,
         runningExecutableIdentity: runningExecutableIdentity,
-        builds: [
-            SwiftPMToolBuildRecipe(
-                product: "privateheaderkit-raw-helper",
-                configuration: "debug",
-                destination: .host
-            ),
-        ],
+        builds: builds,
         buildEnvironment: [:]
     )
 }
