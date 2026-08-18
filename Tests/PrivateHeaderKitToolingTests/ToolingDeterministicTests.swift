@@ -119,18 +119,31 @@ struct SimctlDeterministicTests {
         #expect(await runner.captureCommandSnapshot().map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
     }
 
-    @Test func listRuntimesRequiresExplicitPlatformMetadata() async {
+    @Test func listRuntimesSupportsLegacyPlatformEvidenceWithoutOverridingExplicitMetadata() async throws {
         let runner = RecordingCommandRunner()
         await runner.setCaptureOutput(
             """
-            {"runtimes":[{"name":"iOS 27.0","version":"27.0","identifier":"ios-27","runtimeRoot":"/runtimes/27","isAvailable":true}]}
+            {"runtimes":[
+              {"name":"iOS 18.0","version":"18.0","identifier":"legacy-name","runtimeRoot":"/runtimes/iOS-name","isAvailable":true},
+              {"version":"18.1","identifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-1","runtimeRoot":"/runtimes/iOS-identifier","isAvailable":true},
+              {"name":"watchOS 11.0","version":"11.0","identifier":"legacy-watch-name","runtimeRoot":"/runtimes/watchOS-name","isAvailable":true},
+              {"version":"11.1","identifier":"com.apple.CoreSimulator.SimRuntime.watchOS-11-1","runtimeRoot":"/runtimes/watchOS-identifier","isAvailable":true},
+              {"name":"iOS 18.2","platform":"tvOS","version":"18.2","identifier":"explicit-tvOS","runtimeRoot":"/runtimes/tvOS","isAvailable":true},
+              {"name":"unknown","version":"1.0","identifier":"unknown","runtimeRoot":"/runtimes/unknown","isAvailable":true}
+            ]}
             """,
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        await #expect(throws: DecodingError.self) {
-            _ = try await Simctl.listRuntimes(runner: runner)
-        }
+        let runtimes = try await Simctl.listRuntimes(runner: runner)
+
+        #expect(runtimes.map(\.platform) == [.iOS, .iOS, .watchOS, .watchOS])
+        #expect(runtimes.map(\.identifier) == [
+            "legacy-name",
+            "com.apple.CoreSimulator.SimRuntime.iOS-18-1",
+            "legacy-watch-name",
+            "com.apple.CoreSimulator.SimRuntime.watchOS-11-1",
+        ])
     }
 
     @Test func findRuntimeSeparatesPlatformsWithTheSameVersionAndBuild() async throws {

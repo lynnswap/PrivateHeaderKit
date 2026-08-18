@@ -66,7 +66,8 @@ public enum Simctl {
 
     private struct RuntimeList: Decodable {
         struct RuntimeEntry: Decodable {
-            let platform: String
+            let name: String?
+            let platform: String?
             let version: String?
             let identifier: String?
             let runtimeRoot: String?
@@ -98,7 +99,9 @@ public enum Simctl {
         var results: [RuntimeInfo] = []
         for entry in decoded.runtimes ?? [] {
             guard let platform = SimulatorPlatform(
-                coreSimulatorPlatformName: entry.platform
+                coreSimulatorPlatformName: entry.platform,
+                runtimeName: entry.name,
+                runtimeIdentifier: entry.identifier
             ) else { continue }
             guard entry.isAvailable == true else { continue }
             guard let version = entry.version, !version.isEmpty else { continue }
