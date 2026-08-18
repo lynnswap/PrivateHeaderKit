@@ -15,6 +15,17 @@ struct PrivateHeaderGenerationTests {
     #expect(source.storageIdentifier == "ios-v1-27.0-b1-24~415355~71")
   }
 
+  @Test func watchOSSourceHasItsOwnStableStorageIdentity() throws {
+    let source = try PrivateHeaderGeneration.Source(
+      platform: .watchOS,
+      version: "27.0",
+      build: "24R5325f"
+    )
+
+    #expect(source.label.displayName == "watchOS 27.0 (24R5325f)")
+    #expect(source.storageIdentifier == "watchos-v1-27.0-b1-24~525325~66")
+  }
+
   @Test func storageIdentityDistinguishesAmbiguousLabelsAndFilesystemAliases() throws {
     let versionContainsBuild = try PrivateHeaderGeneration.Source(
       platform: .iOS,

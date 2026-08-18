@@ -66,6 +66,8 @@ extension PrivateHeaderGeneration {
         platformName = "ios"
       case .macOS:
         platformName = "macos"
+      case .watchOS:
+        platformName = "watchos"
       }
 
       let version = encodeStorageField(version)
@@ -112,6 +114,7 @@ extension PrivateHeaderGeneration {
     package enum Platform: String, Codable, CaseIterable, Hashable, Sendable {
       case iOS = "iOS"
       case macOS = "macOS"
+      case watchOS = "watchOS"
 
       package var displayName: String { rawValue }
     }

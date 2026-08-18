@@ -6,6 +6,7 @@ let package = Package(
     platforms: [
         .macOS(.v14),
         .iOS(.v17),
+        .watchOS(.v10),
     ],
     products: [
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
@@ -73,7 +74,7 @@ let package = Package(
                 "PrivateHeaderKitExecutableResolution",
                 .target(
                     name: "PrivateHeaderKitRawDumpRuntimeObjC",
-                    condition: .when(platforms: [.macOS, .iOS])
+                    condition: .when(platforms: [.macOS, .iOS, .watchOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
@@ -178,7 +179,7 @@ let package = Package(
                 "PrivateHeaderKitTestSupport",
                 .target(
                     name: "PrivateHeaderKitRawDumpRuntimeObjC",
-                    condition: .when(platforms: [.macOS, .iOS])
+                    condition: .when(platforms: [.macOS, .iOS, .watchOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),

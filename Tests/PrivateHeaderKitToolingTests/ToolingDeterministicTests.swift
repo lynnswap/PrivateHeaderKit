@@ -5,6 +5,21 @@ import PrivateHeaderKitTestSupport
 
 @Suite
 struct PathAndVersionTests {
+    @Test func simulatorPlatformOwnsSDKTripleAndDeviceFamily() {
+        #expect(SimulatorPlatform.iOS.sdkName == "iphonesimulator")
+        #expect(
+            SimulatorPlatform.iOS.swiftPMTriple(architecture: "arm64")
+                == "arm64-apple-ios-simulator"
+        )
+        #expect(SimulatorPlatform.iOS.preferredDeviceFamily == "iPhone")
+        #expect(SimulatorPlatform.watchOS.sdkName == "watchsimulator")
+        #expect(
+            SimulatorPlatform.watchOS.swiftPMTriple(architecture: "arm64")
+                == "arm64-apple-watchos-simulator"
+        )
+        #expect(SimulatorPlatform.watchOS.preferredDeviceFamily == "Apple Watch")
+    }
+
     @Test func versionKeyParsesNumericComponents() {
         #expect(VersionUtils.versionKey("26.10.1") == [26, 10, 1])
         #expect(VersionUtils.versionKey("26.beta.3") == [26, 0, 3])
@@ -63,7 +78,7 @@ struct PathAndVersionTests {
 
 @Suite
 struct SimctlDeterministicTests {
-    @Test func listRuntimesParsesAvailableIOSRuntimesInVersionOrder() async throws {
+    @Test func listRuntimesParsesSupportedPlatformsInPlatformAndVersionOrder() async throws {
         let runner = RecordingCommandRunner()
         await runner.setCaptureOutput(
             """
@@ -71,6 +86,7 @@ struct SimctlDeterministicTests {
               "runtimes": [
                 {
                   "name": "iOS 26.10",
+                  "platform": "iOS",
                   "version": "26.10",
                   "identifier": "ios-26-10",
                   "runtimeRoot": "/runtimes/26.10",
@@ -80,9 +96,10 @@ struct SimctlDeterministicTests {
                     {"name":"iPhone 17","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17","productFamily":"iPhone"}
                   ]
                 },
-                {"name": "iOS 26.2", "version": "26.2", "identifier": "ios-26-2", "runtimeRoot": "/runtimes/26.2", "isAvailable": true, "buildversion": "23C54"},
-                {"name": "iOS 25.0", "version": "25.0", "identifier": "ios-25-0", "runtimeRoot": "/runtimes/25.0", "isAvailable": false},
-                {"name": "watchOS 26.0", "version": "26.0", "identifier": "watch-26-0", "runtimeRoot": "/runtimes/watch", "isAvailable": true}
+                {"name": "iOS 26.2", "platform": "iOS", "version": "26.2", "identifier": "ios-26-2", "runtimeRoot": "/runtimes/26.2", "isAvailable": true, "buildversion": "23C54"},
+                {"name": "iOS 25.0", "platform": "iOS", "version": "25.0", "identifier": "ios-25-0", "runtimeRoot": "/runtimes/25.0", "isAvailable": false},
+                {"name": "watchOS 26.0", "platform": "watchOS", "version": "26.0", "identifier": "watch-26-0", "runtimeRoot": "/runtimes/watch", "isAvailable": true, "buildversion": "23T1"},
+                {"name": "tvOS 26.0", "platform": "tvOS", "version": "26.0", "identifier": "tv-26-0", "runtimeRoot": "/runtimes/tv", "isAvailable": true}
               ]
             }
             """,
@@ -91,10 +108,58 @@ struct SimctlDeterministicTests {
 
         let runtimes = try await Simctl.listRuntimes(runner: runner)
 
-        #expect(runtimes.map(\.version) == ["26.2", "26.10"])
+        #expect(runtimes.map(\.platform) == [.iOS, .iOS, .watchOS])
+        #expect(runtimes.map(\.version) == ["26.2", "26.10", "26.0"])
         #expect(runtimes.first?.build == "23C54")
-        #expect(runtimes.last?.supportedDeviceTypes.first?.identifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-17")
+        #expect(
+            runtimes.first(where: { $0.platform == .iOS && $0.version == "26.10" })?
+                .supportedDeviceTypes.first?.identifier
+                == "com.apple.CoreSimulator.SimDeviceType.iPhone-17"
+        )
         #expect(await runner.captureCommandSnapshot().map(\.command) == [["xcrun", "simctl", "list", "runtimes", "-j"]])
+    }
+
+    @Test func listRuntimesRequiresExplicitPlatformMetadata() async {
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            """
+            {"runtimes":[{"name":"iOS 27.0","version":"27.0","identifier":"ios-27","runtimeRoot":"/runtimes/27","isAvailable":true}]}
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+
+        await #expect(throws: DecodingError.self) {
+            _ = try await Simctl.listRuntimes(runner: runner)
+        }
+    }
+
+    @Test func findRuntimeSeparatesPlatformsWithTheSameVersionAndBuild() async throws {
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            """
+            {"runtimes":[
+              {"name":"iOS 27.0","platform":"iOS","version":"27.0","buildversion":"24A1","identifier":"ios-27","runtimeRoot":"/runtimes/iOS","isAvailable":true},
+              {"name":"watchOS 27.0","platform":"watchOS","version":"27.0","buildversion":"24A1","identifier":"watch-27","runtimeRoot":"/runtimes/watchOS","isAvailable":true}
+            ]}
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+
+        let ios = try await Simctl.findRuntime(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A1",
+            runner: runner
+        )
+        let watchOS = try await Simctl.findRuntime(
+            platform: .watchOS,
+            version: "27.0",
+            build: "24A1",
+            runner: runner
+        )
+
+        #expect(ios.identifier == "ios-27")
+        #expect(watchOS.identifier == "watch-27")
     }
 
     @Test func listRuntimesOrdersEqualVersionsByBuildAndIdentity() async throws {
@@ -103,9 +168,9 @@ struct SimctlDeterministicTests {
             """
             {
               "runtimes": [
-                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-z", "runtimeRoot": "/runtimes/Z", "isAvailable": true, "buildversion": "24B2"},
-                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/B", "isAvailable": true, "buildversion": "24A1"},
-                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/A", "isAvailable": true, "buildversion": "24A1"}
+                {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-z", "runtimeRoot": "/runtimes/Z", "isAvailable": true, "buildversion": "24B2"},
+                {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/B", "isAvailable": true, "buildversion": "24A1"},
+                {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/A", "isAvailable": true, "buildversion": "24A1"}
               ]
             }
             """,
@@ -123,15 +188,20 @@ struct SimctlDeterministicTests {
             """
             {
               "runtimes": [
-                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"},
-                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24B2"}
+                {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"},
+                {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24B2"}
               ]
             }
             """,
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        let runtime = try await Simctl.findRuntime(version: "27.0", build: "24B2", runner: runner)
+        let runtime = try await Simctl.findRuntime(
+            platform: .iOS,
+            version: "27.0",
+            build: "24B2",
+            runner: runner
+        )
 
         #expect(runtime.identifier == "ios-27-b")
         #expect(runtime.runtimeRoot == "/runtimes/27B")
@@ -140,10 +210,10 @@ struct SimctlDeterministicTests {
     @Test func findRuntimeRejectsDuplicateExplicitBuildRegardlessOfInputOrder() async {
         let entries = [
             """
-            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24A1"}
+            {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24A1"}
             """,
             """
-            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
+            {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
             """,
         ]
         let expectedError = "multiple available iOS runtimes match version 27.0 build 24A1: "
@@ -160,7 +230,12 @@ struct SimctlDeterministicTests {
             )
 
             let error = await runtimeResolutionError {
-                try await Simctl.findRuntime(version: "27.0", build: "24A1", runner: runner)
+                try await Simctl.findRuntime(
+                    platform: .iOS,
+                    version: "27.0",
+                    build: "24A1",
+                    runner: runner
+                )
             }
             #expect(error == expectedError)
         }
@@ -172,15 +247,20 @@ struct SimctlDeterministicTests {
             """
             {
               "runtimes": [
-                {"name": "iOS 26.0", "version": "26.0", "identifier": "ios-26", "runtimeRoot": "/runtimes/26", "isAvailable": true, "buildversion": "23A1"},
-                {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27", "runtimeRoot": "/runtimes/27", "isAvailable": true, "buildversion": "24A1"}
+                {"name": "iOS 26.0", "platform": "iOS", "version": "26.0", "identifier": "ios-26", "runtimeRoot": "/runtimes/26", "isAvailable": true, "buildversion": "23A1"},
+                {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27", "runtimeRoot": "/runtimes/27", "isAvailable": true, "buildversion": "24A1"}
               ]
             }
             """,
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
 
-        let runtime = try await Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
+        let runtime = try await Simctl.findRuntime(
+            platform: .iOS,
+            version: "27.0",
+            build: nil,
+            runner: runner
+        )
 
         #expect(runtime.identifier == "ios-27")
     }
@@ -188,10 +268,10 @@ struct SimctlDeterministicTests {
     @Test func findRuntimeWithoutBuildRejectsAmbiguousBuildsRegardlessOfInputOrder() async {
         let entries = [
             """
-            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
+            {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-a", "runtimeRoot": "/runtimes/27A", "isAvailable": true, "buildversion": "24A1"}
             """,
             """
-            {"name": "iOS 27.0", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24B2"}
+            {"name": "iOS 27.0", "platform": "iOS", "version": "27.0", "identifier": "ios-27-b", "runtimeRoot": "/runtimes/27B", "isAvailable": true, "buildversion": "24B2"}
             """,
         ]
         let expectedError = "multiple available iOS runtimes match version 27.0 "
@@ -207,7 +287,12 @@ struct SimctlDeterministicTests {
             )
 
             let error = await runtimeResolutionError {
-                try await Simctl.findRuntime(version: "27.0", build: nil, runner: runner)
+                try await Simctl.findRuntime(
+                    platform: .iOS,
+                    version: "27.0",
+                    build: nil,
+                    runner: runner
+                )
             }
             #expect(error == expectedError)
         }
@@ -257,6 +342,7 @@ struct SimctlDeterministicTests {
     @Test func resolveDeviceCreatesRelistsClonesAndBootsWhenRuntimeHasNoDevices() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
+            platform: .iOS,
             version: "27.0",
             build: "24A5355q",
             identifier: "ios-27",
@@ -314,6 +400,7 @@ struct SimctlDeterministicTests {
     @Test func createDefaultDeviceFallsBackToRuntimeCompatibleDeviceTypes() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
+            platform: .iOS,
             version: "27.0",
             build: "24A5355q",
             identifier: "ios-27",
@@ -367,6 +454,7 @@ struct SimctlDeterministicTests {
     @Test func createDefaultDeviceFallsBackToNumericRuntimeCompatibleDeviceTypes() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
+            platform: .iOS,
             version: "27.0",
             build: "24A5355q",
             identifier: "ios-27",
@@ -427,6 +515,7 @@ struct SimctlDeterministicTests {
     @Test func createDefaultDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
+            platform: .iOS,
             version: "27.0",
             build: "24A5355q",
             identifier: "ios-27",
@@ -462,6 +551,46 @@ struct SimctlDeterministicTests {
                 "iPhone 16 (27.0)",
                 "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
                 "ios-27",
+            ],
+        ])
+    }
+
+    @Test func createDefaultWatchDevicePrefersAppleWatchFamily() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .watchOS,
+            version: "27.0",
+            build: "24R5325f",
+            identifier: "watch-27",
+            runtimeRoot: "/runtimes/watch-27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+                DeviceTypeInfo(
+                    name: "Apple Watch Series 11 (46mm)",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11-46mm",
+                    productFamily: "Apple Watch"
+                ),
+            ]
+        )
+
+        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+
+        #expect(
+            Simctl.defaultCloneName(platform: .watchOS, version: "27.0")
+                == "Dumping Device (watchOS 27.0)"
+        )
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            [
+                "xcrun",
+                "simctl",
+                "create",
+                "Apple Watch Series 11 (46mm) (27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11-46mm",
+                "watch-27",
             ],
         ])
     }
