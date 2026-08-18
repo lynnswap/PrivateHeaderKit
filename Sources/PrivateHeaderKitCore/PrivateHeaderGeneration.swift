@@ -59,14 +59,6 @@ extension PrivateHeaderGeneration {
       )
     }
 
-    package static func buildIndicatesBeta(_ build: String?) -> Bool {
-      let normalizedBuild =
-        build
-        .map(\.precomposedStringWithCanonicalMapping)
-        .flatMap { $0.isEmpty ? nil : $0 }
-      return releaseChannel(for: normalizedBuild) == .beta
-    }
-
     package static func validateReleaseMetadata(
       build: String?,
       metadataIsSeed: Bool
