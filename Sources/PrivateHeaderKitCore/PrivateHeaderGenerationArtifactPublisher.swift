@@ -829,29 +829,34 @@ package struct ArtifactPublisher: Sendable {
     case .managed:
       return
     case .absent:
-      let temporary = artifactBaseDirectory.appendingPathComponent(
-        ".privateheaderkit-link-\(UUID().uuidString.lowercased())",
-        isDirectory: false
-      )
-      try createSymbolicLink(at: temporary, destination: stableLinkDestination)
-      do {
-        try atomicRename(from: temporary, to: stableURL)
-      } catch {
-        let renameError = error
-        do {
-          try FileManager.default.removeItem(at: temporary)
-        } catch {
-          throw PublisherError.unexpectedItem(
-            path: temporary.path,
-            description:
-              "stable pointer switch failed with \(renameError), and temporary link cleanup failed: \(error)"
-          )
-        }
-        throw renameError
+      try installStablePointer { source, destination in
+        try atomicRename(from: source, to: destination)
       }
-      try syncDirectory(artifactBaseDirectory)
     case .legacyDirectory:
       try swapLegacyDirectoryForStableLink()
+    }
+  }
+
+  package func restoreStablePointer(
+    to generationID: PrivateHeaderGeneration.GenerationID
+  ) throws {
+    guard try readCurrentGenerationID() == generationID else {
+      throw PublisherError.markerMismatch(
+        "current generation changed before stable pointer restoration"
+      )
+    }
+    _ = try validateGeneration(at: generationURL(generationID), expectedID: generationID)
+    guard try stablePathState() == .absent else {
+      throw PublisherError.markerMismatch(
+        "stable path became occupied before pointer restoration"
+      )
+    }
+    try installStablePointer { source, destination in
+      do {
+        try ManagedFileSystem.atomicRenameExclusively(from: source, to: destination)
+      } catch let error as ManagedFileSystem.Failure {
+        throw Self.mapManagedFileSystemFailure(error)
+      }
     }
   }
 
@@ -1679,6 +1684,32 @@ extension ArtifactPublisher {
     #endif
     try syncDirectory(artifactBaseDirectory)
     try syncDirectory(legacyBackupsURL)
+  }
+
+  fileprivate func installStablePointer(
+    using renamePointer: (URL, URL) throws -> Void
+  ) throws {
+    let temporary = artifactBaseDirectory.appendingPathComponent(
+      ".privateheaderkit-link-\(UUID().uuidString.lowercased())",
+      isDirectory: false
+    )
+    try createSymbolicLink(at: temporary, destination: stableLinkDestination)
+    do {
+      try renamePointer(temporary, stableURL)
+    } catch {
+      let renameError = error
+      do {
+        try FileManager.default.removeItem(at: temporary)
+      } catch {
+        throw PublisherError.unexpectedItem(
+          path: temporary.path,
+          description:
+            "stable pointer publication failed with \(renameError), and temporary link cleanup failed: \(error)"
+        )
+      }
+      throw renameError
+    }
+    try syncDirectory(artifactBaseDirectory)
   }
 
   fileprivate func createSymbolicLink(at url: URL, destination: String) throws {
