@@ -129,6 +129,28 @@ struct PrivateHeaderGenerationStoreTests {
     )
   }
 
+  @Test func committedIntentRepairsMissingStablePointer() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let ids = try await fixture.prepareCompletedPublication()
+    try await fixture.store.markPointerPublished(ids.generationID)
+    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
+
+    let action = try await fixture.store.recover(
+      using: .init(
+        currentGenerationID: ids.generationID,
+        stablePathState: .absent,
+        markers: [ids.generationID: fixture.marker(ids.generationID)]
+      ),
+      at: fixture.date
+    )
+
+    #expect(action == .completeStablePointer(ids.generationID))
+    #expect(
+      try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .committed
+    )
+  }
+
   @Test func publishedTargetAttemptBecomesImmediatelyResumable() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
@@ -189,6 +211,25 @@ struct PrivateHeaderGenerationStoreTests {
           currentGenerationID: ids.generationID,
           stablePathState: .managed,
           markers: [ids.generationID: mismatched]
+        ),
+        at: fixture.date
+      )
+    }
+  }
+
+  @Test func committedIntentRejectsUnmanagedStableDirectory() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let ids = try await fixture.prepareCompletedPublication()
+    try await fixture.store.markPointerPublished(ids.generationID)
+    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: ids.generationID,
+          stablePathState: .legacyDirectory,
+          markers: [ids.generationID: fixture.marker(ids.generationID)]
         ),
         at: fixture.date
       )

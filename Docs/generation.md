@@ -140,6 +140,11 @@ State, attempts, publication intent, and run diagnostics are stored in
 link and `.privateheaderkit` tree are internal recovery artifacts; consumers
 should not use them instead of the printed `Headers` directory.
 
+If the printed header directory or top-level source link is removed while the
+authenticated current generation remains available, the next run recreates
+the managed link and restores the missing published files before deciding
+whether to continue or restart.
+
 ## Continue or Restart
 
 - `--resume` continues the latest compatible plan and runs only unfinished or

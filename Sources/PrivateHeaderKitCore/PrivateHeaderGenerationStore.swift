@@ -661,7 +661,6 @@ package actor GenerationStore {
 
       if intent.state == .committed {
         guard publication.currentGenerationID == intent.generationID,
-          publication.stablePathState == .managed,
           let marker = publication.currentMarker,
           marker.planFingerprint == intent.planFingerprint,
           marker.artifactChecksum == intent.artifactChecksum
@@ -670,8 +669,19 @@ package actor GenerationStore {
             "committed generation \(intent.generationID.rawValue) does not match current publication"
           )
         }
+        let action: PrivateHeaderGeneration.RecoveryAction
+        switch publication.stablePathState {
+        case .managed:
+          action = .none
+        case .absent:
+          action = .completeStablePointer(intent.generationID)
+        case .legacyDirectory:
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "committed generation \(intent.generationID.rawValue) conflicts with an unmanaged stable publication"
+          )
+        }
         try Self.interruptDanglingRuns(db, at: date)
-        return .none
+        return action
       }
       if intent.state == .aborted {
         guard publication.currentGenerationID == intent.previousGenerationID else {
