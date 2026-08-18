@@ -216,6 +216,29 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         ])
     }
 
+    @Test func parentCacheImageDoesNotAdmitSameNamedResourceOnlyChild() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parent = "System/Library/Frameworks/Foo.framework"
+        try createDirectory(parent + "/XPCServices/Foo.xpc", in: root)
+
+        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+            in: root,
+            sharedCacheImagePaths: [
+                "/System/Library/Frameworks/Foo.framework/Versions/A/Foo"
+            ]
+        )
+        let group = try #require(catalog.groups.first)
+
+        #expect(group.selectionCandidate.displayName == "Foo")
+        #expect(group.primaryTarget?.candidate.identifier == "framework:Foo.framework")
+        #expect(group.childTargets.isEmpty)
+        #expect(catalog.allExecutionTargets.map(\.candidate.identifier) == [
+            "framework:Foo.framework"
+        ])
+    }
+
     @Test func loadableNestedChildSurvivesResourceOnlyParent() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

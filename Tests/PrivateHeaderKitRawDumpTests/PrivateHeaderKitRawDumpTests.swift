@@ -171,6 +171,21 @@ struct PrivateHeaderKitRawDumpPathTests {
         #expect(paths.contains("/Runtime/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
         #expect(Set(paths).count == paths.count)
 
+        let nestedPaths = normalizedCacheImagePaths(
+            for: "/Runtime/System/Library/Frameworks/Foo.framework/XPCServices/Foo.xpc/Foo",
+            environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+        )
+        #expect(
+            nestedPaths.contains(
+                "/System/Library/Frameworks/Foo.framework/XPCServices/Foo.xpc/Foo"
+            )
+        )
+        #expect(
+            !nestedPaths.contains(
+                "/System/Library/Frameworks/Foo.framework/Versions/A/Foo"
+            )
+        )
+
         let usrPaths = normalizedCacheImagePaths(
             for: "/Runtime/usr/lib/libobjc.A.dylib",
             environment: ["PH_RUNTIME_ROOT": "/Runtime"]

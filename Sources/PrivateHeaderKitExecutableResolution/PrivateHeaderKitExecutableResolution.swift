@@ -74,9 +74,15 @@ package enum ExecutableResolution {
             else {
                 continue
             }
+            let frameworkRelativePath = basePath[frameworkRange.upperBound...]
+            guard
+                !frameworkRelativePath.isEmpty,
+                !frameworkRelativePath.contains("/")
+            else {
+                continue
+            }
             let frameworkPrefix = String(basePath[..<frameworkRange.upperBound])
-            let imageName = URL(fileURLWithPath: basePath).lastPathComponent
-            guard !imageName.isEmpty else { continue }
+            let imageName = String(frameworkRelativePath)
             results.append(frameworkPrefix + "Versions/Current/" + imageName)
             results.append(frameworkPrefix + "Versions/A/" + imageName)
             results.append(frameworkPrefix + "Versions/B/" + imageName)
