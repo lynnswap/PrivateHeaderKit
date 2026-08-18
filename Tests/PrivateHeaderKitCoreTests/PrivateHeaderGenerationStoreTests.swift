@@ -145,9 +145,46 @@ struct PrivateHeaderGenerationStoreTests {
       at: fixture.date
     )
 
-    #expect(action == .completeStablePointer(ids.generationID))
+    #expect(action == .restoreStablePointer(ids.generationID))
     #expect(
       try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .committed
+    )
+  }
+
+  @Test func abortedIntentRepairsMissingStablePointerForCommittedPreviousGeneration()
+    async throws
+  {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let previous = try await fixture.prepareCompletedPublication(
+      runID: .init(rawValue: "run-old"),
+      generationID: previousGenerationID
+    )
+    try await fixture.store.markPointerPublished(previous.generationID)
+    _ = try await fixture.store.completePublication(previous.generationID, at: fixture.date)
+    let aborted = try await fixture.prepareCompletedPublication(
+      previousGenerationID: previousGenerationID,
+      runID: .init(rawValue: "run-aborted"),
+      generationID: .init(rawValue: "generation-aborted")
+    )
+    let publication = PrivateHeaderGeneration.PublicationSnapshot(
+      currentGenerationID: previousGenerationID,
+      stablePathState: .absent,
+      markers: [previousGenerationID: fixture.marker(previousGenerationID)]
+    )
+
+    #expect(
+      try await fixture.store.recover(using: publication, at: fixture.date)
+        == .discardGeneration(aborted.generationID)
+    )
+    #expect(
+      try await fixture.store.recover(using: publication, at: fixture.date)
+        == .restoreStablePointer(previousGenerationID)
+    )
+    #expect(
+      try await fixture.store.publicationIntent(generationID: aborted.generationID)?.state
+        == .aborted
     )
   }
 
@@ -793,12 +830,12 @@ private final class StoreFixture: @unchecked Sendable {
 
   func prepareCompletedPublication(
     previousGenerationID: PrivateHeaderGeneration.GenerationID? = nil,
-    targetIDs: [String] = ["framework:Foo"]
+    targetIDs: [String] = ["framework:Foo"],
+    runID: PrivateHeaderGeneration.RunID = .init(rawValue: "run-publication"),
+    generationID: PrivateHeaderGeneration.GenerationID = .init(rawValue: "generation-new")
   ) async throws -> (
     runID: PrivateHeaderGeneration.RunID, generationID: PrivateHeaderGeneration.GenerationID
   ) {
-    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-publication")
-    let generationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-new")
     _ = try await store.beginRun(id: runID, plan: plan(targetIDs: targetIDs), at: date)
     for targetID in targetIDs {
       try await store.beginTargetAttempt(

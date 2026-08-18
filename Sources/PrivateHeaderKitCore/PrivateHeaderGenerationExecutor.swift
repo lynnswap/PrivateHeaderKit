@@ -1456,6 +1456,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         terminalReason: terminalReason
       )
       switch action {
+      case .restoreStablePointer(let generationID):
+        try publisher.restoreStablePointer(to: generationID)
+        continue
       case .completeStablePointer:
         try publisher.ensureStablePointer()
         continue

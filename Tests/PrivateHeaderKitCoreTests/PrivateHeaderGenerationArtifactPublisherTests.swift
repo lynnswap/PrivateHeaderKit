@@ -34,6 +34,39 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         encoding: .utf8) == "new")
   }
 
+  @Test func stablePointerRestorationRejectsAnOccupiedDestination() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let generationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-current")
+    try fixture.publish(
+      fixture.prepare(
+        generationID: generationID,
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    try FileManager.default.removeItem(at: fixture.publisher.stableURL)
+    try FileManager.default.createDirectory(
+      at: fixture.publisher.stableURL,
+      withIntermediateDirectories: false
+    )
+    let userFile = fixture.publisher.stableURL.appendingPathComponent("user.txt")
+    try Data("keep".utf8).write(to: userFile)
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      try fixture.publisher.restoreStablePointer(to: generationID)
+    }
+
+    #expect(try String(contentsOf: userFile, encoding: .utf8) == "keep")
+    #expect(try fixture.publisher.inspect().stablePathState == .legacyDirectory)
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: fixture.publisher.managedRoot.appendingPathComponent("legacy-backups").path
+      )
+    )
+  }
+
   @Test func legacyFreshMigrationPreservesOpaqueContentAndRetainsOriginalTree() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
