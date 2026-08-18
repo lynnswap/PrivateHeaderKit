@@ -18,9 +18,12 @@ struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let build: String?
     let systemRoot: String?
 
+    var versionAndBuildDisplayName: String {
+        build.map { "\(version) (\($0))" } ?? version
+    }
+
     var displayName: String {
-        let base = "\(platform.rawValue) \(version)"
-        return build.map { "\(base) (\($0))" } ?? base
+        "\(platform.rawValue) \(versionAndBuildDisplayName)"
     }
 }
 
@@ -308,8 +311,14 @@ private func renderInteractiveSourceScreen(
     outputLogger("Generate private headers from an installed runtime or this Mac.")
     outputLogger("")
     outputLogger("Step 1 of 3: Source")
+    var previousPlatform: PrivateHeaderKitGenerateCommand.Platform?
     for (index, source) in sources.enumerated() {
-        outputLogger("  [\(index + 1)] \(source.displayName)")
+        if source.platform != previousPlatform {
+            outputLogger("")
+            outputLogger(source.platform.rawValue)
+            previousPlatform = source.platform
+        }
+        outputLogger("  [\(index + 1)] \(source.versionAndBuildDisplayName)")
     }
     outputLogger("")
     outputLogger("Press Escape to cancel.")
