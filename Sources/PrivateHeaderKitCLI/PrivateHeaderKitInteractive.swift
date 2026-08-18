@@ -16,12 +16,28 @@ struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let platform: PrivateHeaderKitGenerateCommand.Platform
     let version: String
     let build: String?
+    let metadataIsSeed: Bool
     let systemRoot: String?
+
+    init(
+        platform: PrivateHeaderKitGenerateCommand.Platform,
+        version: String,
+        build: String?,
+        metadataIsSeed: Bool = false,
+        systemRoot: String?
+    ) {
+        self.platform = platform
+        self.version = version
+        self.build = build
+        self.metadataIsSeed = metadataIsSeed
+        self.systemRoot = systemRoot
+    }
 
     var versionAndBuildDisplayName: String {
         PrivateHeaderGeneration.Source.versionAndBuildDisplayName(
             version: version,
-            build: build
+            build: build,
+            releaseChannel: metadataIsSeed ? .beta : .release
         )
     }
 

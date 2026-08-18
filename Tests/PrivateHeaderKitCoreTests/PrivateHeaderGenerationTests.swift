@@ -13,7 +13,7 @@ struct PrivateHeaderGenerationTests {
       metadataIsSeed: true
     )
     #expect(source.label.displayName == "iOS 27.0 beta (24A5355q)")
-    #expect(source.artifactDirectoryName == "27.0 beta (24A5355q)")
+    #expect(source.artifactDirectoryName == "27.0_beta_24A5355q")
     #expect(source.storageIdentifier == "ios-v1-27.0-b1-24~415355~71")
   }
 
@@ -93,7 +93,7 @@ struct PrivateHeaderGenerationTests {
 
     #expect(!source.artifactDirectoryName.contains("/"))
     #expect(!source.artifactDirectoryName.contains("\0"))
-    #expect(!source.artifactDirectoryName.contains(" beta"))
+    #expect(!source.artifactDirectoryName.contains("_beta_"))
   }
 
   @Test func sourceRejectsArtifactDirectoryNameLongerThanAPathComponent() {
@@ -106,20 +106,33 @@ struct PrivateHeaderGenerationTests {
     }
   }
 
-  @Test func sourceRejectsReleaseMetadataThatDisagreesWithBuildIdentity() {
+  @Test func releaseMetadataOwnsBetaClassificationInsteadOfBuildSuffix() throws {
+    let rapidSecurityResponse = try PrivateHeaderGeneration.Source(
+      platform: .iOS,
+      version: "16.4.1",
+      build: "20E772520a",
+      metadataIsSeed: false
+    )
+    let betaWithoutSuffix = try PrivateHeaderGeneration.Source(
+      platform: .iOS,
+      version: "27.0",
+      build: "24A123",
+      metadataIsSeed: true
+    )
+
+    #expect(rapidSecurityResponse.releaseChannel == .release)
+    #expect(rapidSecurityResponse.label.displayName == "iOS 16.4.1 (20E772520a)")
+    #expect(rapidSecurityResponse.artifactDirectoryName == "16.4.1_20E772520a")
+    #expect(betaWithoutSuffix.releaseChannel == .beta)
+    #expect(betaWithoutSuffix.label.displayName == "iOS 27.0 beta (24A123)")
+    #expect(betaWithoutSuffix.artifactDirectoryName == "27.0_beta_24A123")
+  }
+
+  @Test func seedSourceRequiresAnExactBuild() {
     #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
       _ = try PrivateHeaderGeneration.Source(
         platform: .iOS,
         version: "27.0",
-        build: "24A5390f",
-        metadataIsSeed: false
-      )
-    }
-    #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
-      _ = try PrivateHeaderGeneration.Source(
-        platform: .iOS,
-        version: "27.0",
-        build: "24A123",
         metadataIsSeed: true
       )
     }
@@ -139,7 +152,7 @@ struct PrivateHeaderGenerationTests {
 
     #expect(
       plan.artifactDirectory.path
-        == "/tmp/PrivateHeaderKit/generated-headers/macOS/16.0 (25A000)")
+        == "/tmp/PrivateHeaderKit/generated-headers/macOS/16.0_25A000")
     #expect(
       plan.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/macos-v1-16.0-b1-25~41000")
     #expect(

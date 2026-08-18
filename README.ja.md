@@ -26,7 +26,7 @@ privateheaderkit
 source を選び、全 target または個別の framework、bundle、dylib 名を指定します。
 デフォルトでは `~/PrivateHeaderKit` に生成し、実際の出力先を `Headers` として表示します。
 生成した header は platform と正確な source ごとに整理されます。たとえば
-`generated-headers/iOS/27.0 beta (24A5390f)` です。
+`generated-headers/iOS/27.0_beta_24A5390f` です。
 
 installer が shell profile を勝手に編集することはありません。
 

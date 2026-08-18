@@ -21,6 +21,7 @@ extension PrivateHeaderGeneration {
     package let platform: Platform
     package let version: String
     package let build: String?
+    package let releaseChannel: ReleaseChannel
 
     private struct NormalizedIdentity {
       let version: String
@@ -38,13 +39,25 @@ extension PrivateHeaderGeneration {
         version: version,
         build: build
       )
-      try Self.validateReleaseMetadata(
+      let releaseChannel: ReleaseChannel = metadataIsSeed ? .beta : .release
+      guard releaseChannel != .beta || identity.build != nil else {
+        throw ValidationError.seedBuildMissing
+      }
+      let artifactDirectoryName = Self.makeArtifactDirectoryName(
+        version: identity.version,
         build: identity.build,
-        metadataIsSeed: metadataIsSeed
+        releaseChannel: releaseChannel
       )
+      guard artifactDirectoryName.utf8.count <= Int(NAME_MAX) else {
+        throw ValidationError.artifactDirectoryNameTooLong(
+          actualUTF8Count: artifactDirectoryName.utf8.count,
+          maximumUTF8Count: Int(NAME_MAX)
+        )
+      }
       self.platform = platform
       self.version = identity.version
       self.build = identity.build
+      self.releaseChannel = releaseChannel
     }
 
     package static func validateIdentity(
@@ -59,25 +72,10 @@ extension PrivateHeaderGeneration {
       )
     }
 
-    package static func validateReleaseMetadata(
-      build: String?,
-      metadataIsSeed: Bool
-    ) throws {
-      let normalizedBuild =
-        build
-        .map(\.precomposedStringWithCanonicalMapping)
-        .flatMap { $0.isEmpty ? nil : $0 }
-      guard metadataIsSeed == (releaseChannel(for: normalizedBuild) == .beta) else {
-        throw ValidationError.releaseMetadataMismatch(
-          build: normalizedBuild,
-          metadataIsSeed: metadataIsSeed
-        )
-      }
-    }
-
     package static func versionAndBuildDisplayName(
       version: String,
-      build: String?
+      build: String?,
+      releaseChannel: ReleaseChannel
     ) -> String {
       let normalizedVersion = version.precomposedStringWithCanonicalMapping
       let normalizedBuild =
@@ -85,7 +83,7 @@ extension PrivateHeaderGeneration {
         .map(\.precomposedStringWithCanonicalMapping)
         .flatMap { $0.isEmpty ? nil : $0 }
       var name = normalizedVersion
-      if releaseChannel(for: normalizedBuild) == .beta {
+      if releaseChannel == .beta {
         name += " beta"
       }
       if let normalizedBuild {
@@ -98,16 +96,13 @@ extension PrivateHeaderGeneration {
       Label(
         platform: platform,
         version: version,
-        build: build
+        build: build,
+        releaseChannel: releaseChannel
       )
     }
 
     package var storageIdentifier: String {
       Self.makeStorageIdentifier(platform: platform, version: version, build: build)
-    }
-
-    package var releaseChannel: ReleaseChannel {
-      Self.releaseChannel(for: build)
     }
 
     package var artifactDirectoryName: String {
@@ -142,31 +137,7 @@ extension PrivateHeaderGeneration {
           maximumUTF8Count: Int(NAME_MAX)
         )
       }
-      let artifactDirectoryName = makeArtifactDirectoryName(
-        version: version,
-        build: build,
-        releaseChannel: releaseChannel(for: build)
-      )
-      guard artifactDirectoryName.utf8.count <= Int(NAME_MAX) else {
-        throw ValidationError.artifactDirectoryNameTooLong(
-          actualUTF8Count: artifactDirectoryName.utf8.count,
-          maximumUTF8Count: Int(NAME_MAX)
-        )
-      }
       return NormalizedIdentity(version: version, build: build)
-    }
-
-    private static func releaseChannel(for build: String?) -> ReleaseChannel {
-      // Keep the public path a pure function of the build identity. Installed runtime metadata
-      // validates the suffix convention, but is not stored as a second source of path identity.
-      guard let build,
-        isHumanReadableBuild(build),
-        let suffix = build.utf8.last,
-        (0x61...0x7a).contains(suffix)
-      else {
-        return .release
-      }
-      return .beta
     }
 
     private static func makeStorageIdentifier(
@@ -196,16 +167,18 @@ extension PrivateHeaderGeneration {
       build: String?,
       releaseChannel: ReleaseChannel
     ) -> String {
-      var name = isHumanReadableVersion(version) ? version : encodeArtifactField(version)
+      var components = [
+        isHumanReadableVersion(version) ? version : encodeArtifactField(version)
+      ]
       if releaseChannel == .beta {
-        name += " beta"
+        components.append("beta")
       }
       if let build {
-        let displayedBuild =
+        components.append(
           isHumanReadableBuild(build) ? build : encodeArtifactField(build)
-        name += " (\(displayedBuild))"
+        )
       }
-      return name
+      return components.joined(separator: "_")
     }
 
     private static func isHumanReadableVersion(_ value: String) -> Bool {
@@ -275,7 +248,7 @@ extension PrivateHeaderGeneration {
       case emptyComponent(field: String)
       case storageIdentifierTooLong(actualUTF8Count: Int, maximumUTF8Count: Int)
       case artifactDirectoryNameTooLong(actualUTF8Count: Int, maximumUTF8Count: Int)
-      case releaseMetadataMismatch(build: String?, metadataIsSeed: Bool)
+      case seedBuildMissing
 
       package var description: String {
         switch self {
@@ -287,9 +260,8 @@ extension PrivateHeaderGeneration {
         case .artifactDirectoryNameTooLong(let actualUTF8Count, let maximumUTF8Count):
           "source artifact directory name is \(actualUTF8Count) UTF-8 bytes; "
             + "the maximum is \(maximumUTF8Count)"
-        case .releaseMetadataMismatch(let build, let metadataIsSeed):
-          "source build \(build ?? "<missing>") and runtime seed metadata disagree "
-            + "(IsSeed=\(metadataIsSeed))"
+        case .seedBuildMissing:
+          "source build is required for a seed runtime"
         }
       }
     }
@@ -315,10 +287,15 @@ extension PrivateHeaderGeneration {
       fileprivate init(
         platform: Platform,
         version: String,
-        build: String?
+        build: String?,
+        releaseChannel: ReleaseChannel
       ) {
         displayName = "\(platform.displayName) "
-          + Source.versionAndBuildDisplayName(version: version, build: build)
+          + Source.versionAndBuildDisplayName(
+            version: version,
+            build: build,
+            releaseChannel: releaseChannel
+          )
       }
 
       package var description: String { displayName }

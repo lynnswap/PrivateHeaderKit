@@ -1095,8 +1095,10 @@ func resolvePrivateHeaderKitSimulator(
         in: canonicalDirectoryURL(path: runtime.runtimeRoot),
         layout: .simulator
     )
-    try PrivateHeaderGeneration.Source.validateReleaseMetadata(
-        build: runtime.build,
+    _ = try PrivateHeaderGeneration.Source(
+        platform: command.platform.corePlatform,
+        version: runtime.version,
+        build: runtime.build.isEmpty ? nil : runtime.build,
         metadataIsSeed: metadataIsSeed
     )
     let device = try await Simctl.resolveDevice(
@@ -1114,26 +1116,42 @@ func resolvePrivateHeaderKitSimulator(
 func discoverPrivateHeaderKitInteractiveSources() async throws
     -> [PrivateHeaderKitInteractiveSource]
 {
-    try await discoverPrivateHeaderKitInteractiveSources(runner: ProcessRunner())
+    try await discoverPrivateHeaderKitInteractiveSources(
+        runner: ProcessRunner(),
+        releaseMetadataResolver: resolvePrivateHeaderKitReleaseMetadata
+    )
 }
 
 func discoverPrivateHeaderKitInteractiveSources(
-    runner: CommandRunning
+    runner: CommandRunning,
+    releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver =
+        resolvePrivateHeaderKitReleaseMetadata
 ) async throws -> [PrivateHeaderKitInteractiveSource] {
     var sources = try await (Simctl.listRuntimesIfAvailable(runner: runner) ?? []).map {
-        PrivateHeaderKitInteractiveSource(
+        let metadataIsSeed = try releaseMetadataResolver(
+            canonicalDirectoryURL(path: $0.runtimeRoot),
+            .simulator
+        )
+        return PrivateHeaderKitInteractiveSource(
             platform: .init(simulatorPlatform: $0.platform),
             version: $0.version,
             build: $0.build.isEmpty ? nil : $0.build,
+            metadataIsSeed: metadataIsSeed,
             systemRoot: nil
         )
     }
-    sources.append(try await currentMacOSInteractiveSource(runner: runner))
+    sources.append(
+        try await currentMacOSInteractiveSource(
+            runner: runner,
+            releaseMetadataResolver: releaseMetadataResolver
+        )
+    )
     return sources
 }
 
 private func currentMacOSInteractiveSource(
-    runner: CommandRunning
+    runner: CommandRunning,
+    releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver
 ) async throws -> PrivateHeaderKitInteractiveSource {
     let version = try await runner.runCapture(
         ["/usr/bin/sw_vers", "-productVersion"],
@@ -1145,10 +1163,15 @@ private func currentMacOSInteractiveSource(
         env: nil,
         cwd: nil
     ).trimmingCharacters(in: .whitespacesAndNewlines)
+    let metadataIsSeed = try releaseMetadataResolver(
+        URL(fileURLWithPath: "/", isDirectory: true),
+        .macOS
+    )
     return PrivateHeaderKitInteractiveSource(
         platform: .macOS,
         version: version,
         build: build.isEmpty ? nil : build,
+        metadataIsSeed: metadataIsSeed,
         systemRoot: "/"
     )
 }

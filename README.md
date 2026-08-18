@@ -27,7 +27,7 @@ Choose a source, then generate all targets or enter specific framework, bundle,
 or dylib names. PrivateHeaderKit writes to `~/PrivateHeaderKit` by default and
 prints the exact `Headers` directory for the generated files.
 Generated headers are grouped by platform and exact source, for example
-`generated-headers/iOS/27.0 beta (24A5390f)`.
+`generated-headers/iOS/27.0_beta_24A5390f`.
 
 The installer does not edit shell profiles.
 

@@ -93,14 +93,16 @@ Platform directories use the displayed Apple platform name: `iOS`, `watchOS`,
 or `macOS`. Release directories include the exact build when it is available:
 
 ```text
-iOS/26.4 (23E244)/
-iOS/27.0 beta (24A5390f)/
+iOS/26.4_23E244/
+iOS/27.0_beta_24A5390f/
 ```
 
-PrivateHeaderKit does not infer a beta number because installed runtime metadata
-does not provide one. A beta-shaped Apple build identifier is accepted only
-when the source runtime's seed metadata agrees; disagreement or unreadable
-metadata stops generation instead of publishing under a guessed name.
+Release directory fields use underscores so paths do not require shell quoting.
+PrivateHeaderKit derives the `beta` field from the source runtime's seed
+metadata, not from the build suffix; this keeps lowercase-suffixed public
+releases out of the beta namespace. Installed metadata does not provide a beta
+number, so the build disambiguates beta sources. Missing or unreadable metadata
+stops generation instead of publishing under a guessed name.
 
 The complete output base is:
 
