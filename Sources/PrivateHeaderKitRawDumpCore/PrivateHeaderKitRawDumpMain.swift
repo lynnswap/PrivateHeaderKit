@@ -1523,6 +1523,7 @@ private func collectClassInfos<T: ObjCClassProtocol>(
     for cls in classes {
         let result = cls.readInfo(in: machO, options: readOptions)
         options.objcDiagnostics.append(contentsOf: result.diagnostics)
+        options.objcDiagnostics.append(contentsOf: result.memberListDiagnostics)
         if let info = result.value {
             classInfos[info.name] = info
         } else if options.verbose && options.logSkippedClasses {
@@ -1541,6 +1542,7 @@ private func collectClassInfos<T: ObjCClassProtocol>(
     for cls in classes {
         let result = cls.readInfo(in: machO, options: readOptions)
         options.objcDiagnostics.append(contentsOf: result.diagnostics)
+        options.objcDiagnostics.append(contentsOf: result.memberListDiagnostics)
         if let info = result.value {
             classInfos[info.name] = info
         } else if options.verbose && options.logSkippedClasses {
