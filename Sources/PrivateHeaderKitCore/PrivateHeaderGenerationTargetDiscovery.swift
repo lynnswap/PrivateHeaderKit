@@ -1,4 +1,5 @@
 import Foundation
+import PrivateHeaderKitExecutableResolution
 
 #if canImport(Darwin)
 import Darwin
@@ -18,52 +19,64 @@ extension PrivateHeaderGeneration {
             guard try isDirectory(root, fileManager: fileManager) else {
                 throw Error.missingSystemRoot(root.path)
             }
+            let sharedCacheImages = SharedCacheImageIndex(paths: sharedCacheImagePaths)
 
-            var targets: [DiscoveredTarget] = []
-            targets += try discoverFrameworks(
+            var groups: [DiscoveredTargetGroup] = []
+            groups += try discoverFrameworks(
                 in: root,
                 location: .publicFramework,
                 includeNestedChildren: includeNestedChildren,
+                sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
-            targets += try discoverFrameworks(
+            groups += try discoverFrameworks(
                 in: root,
                 location: .privateFramework,
                 includeNestedChildren: includeNestedChildren,
+                sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
-            targets += try discoverSystemLibraryBundles(
+            groups += try discoverSystemLibraryBundles(
                 in: root,
                 includeNestedChildren: includeNestedChildren,
+                sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
-            targets += try discoverUsrLibDylibs(
+            groups += try discoverUsrLibDylibs(
                 in: root,
                 sharedCacheImagePaths: sharedCacheImagePaths,
                 fileManager: fileManager
             )
 
-            return Catalog(targets: targets)
+            return Catalog(groups: groups)
         }
     }
 }
 
 extension PrivateHeaderGeneration.TargetDiscovery {
     struct Catalog: Hashable, Sendable {
-        let targets: [DiscoveredTarget]
+        let groups: [DiscoveredTargetGroup]
 
         var resolverCandidates: [PrivateHeaderGeneration.TargetCandidate] {
-            targets.map(\.candidate)
+            groups.map(\.selectionCandidate)
         }
 
         var resolver: PrivateHeaderGeneration.TargetResolver {
             PrivateHeaderGeneration.TargetResolver(candidates: resolverCandidates)
         }
 
-        var allTargetsIncludingNestedChildren: [DiscoveredTarget] {
-            targets.flatMap { target in
-                [target] + target.childTargets
-            }
+        var allExecutionTargets: [DiscoveredTarget] {
+            groups.flatMap(\.executionTargets)
+        }
+    }
+
+    struct DiscoveredTargetGroup: Hashable, Sendable {
+        let selectionCandidate: PrivateHeaderGeneration.TargetCandidate
+        let primaryTarget: DiscoveredTarget?
+        let childTargets: [DiscoveredTarget]
+
+        var executionTargets: [DiscoveredTarget] {
+            primaryTarget.map { [$0] + childTargets } ?? childTargets
         }
     }
 
@@ -73,7 +86,6 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         let artifactRoot: PrivateHeaderGeneration.ArtifactPath
         let inputPath: String
         let runtimeInputPath: String
-        let childTargets: [DiscoveredTarget]
     }
 
     enum SourceMetadata: Hashable, Sendable {
@@ -182,13 +194,31 @@ extension PrivateHeaderGeneration.TargetDiscovery {
     }
 }
 
+private struct SharedCacheImageIndex {
+    private let exactPaths: Set<String>
+
+    init(paths: [String]) {
+        self.exactPaths = Set(paths.compactMap(Self.normalizedAbsolutePath))
+    }
+
+    func containsAny(_ candidates: [String]) -> Bool {
+        candidates.contains { exactPaths.contains($0) }
+    }
+
+    private static func normalizedAbsolutePath(_ path: String) -> String? {
+        guard path.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: false).standardizedFileURL.path
+    }
+}
+
 private extension PrivateHeaderGeneration.TargetDiscovery {
     static func discoverFrameworks(
         in systemRoot: URL,
         location: FrameworkLocation,
         includeNestedChildren: Bool,
+        sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
-    ) throws -> [DiscoveredTarget] {
+    ) throws -> [DiscoveredTargetGroup] {
         let frameworksDirectory = systemRoot
             .appendingPathComponent("System", isDirectory: true)
             .appendingPathComponent("Library", isDirectory: true)
@@ -210,37 +240,42 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         .map(\.lastPathComponent)
         .sorted()
 
-        return try bundleNames.map { bundleName in
+        return try bundleNames.compactMap { bundleName in
             let source = FrameworkSource(
                 location: location,
                 bundleName: bundleName
             )
             let sourceMetadata = SourceMetadata.framework(source)
-            let artifactRoot = try artifactRoot(
-                systemLibraryRelativePath: source.systemLibraryRelativePath
-            )
+            let bundleURL = frameworksDirectory.appendingPathComponent(bundleName, isDirectory: true)
             let childTargets = try includeNestedChildren ? nestedChildTargets(
                 parentSystemLibraryRelativePath: source.systemLibraryRelativePath,
-                parentURL: frameworksDirectory.appendingPathComponent(bundleName, isDirectory: true),
+                parentURL: bundleURL,
                 systemRoot: systemRoot,
+                sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             ) : []
-
-            return DiscoveredTarget(
-                candidate: try PrivateHeaderGeneration.TargetCandidate(
-                    identifier: "\(location.identifierPrefix):\(bundleName)",
-                    displayName: source.frameworkName,
-                    kind: location.targetKind,
-                    aliases: [
-                        bundleName,
-                        source.systemLibraryRelativePath,
-                        "/System/Library/\(source.systemLibraryRelativePath)",
-                    ]
-                ),
+            let selectionCandidate = try PrivateHeaderGeneration.TargetCandidate(
+                identifier: "\(location.identifierPrefix):\(bundleName)",
+                displayName: source.frameworkName,
+                kind: location.targetKind,
+                aliases: [
+                    bundleName,
+                    source.systemLibraryRelativePath,
+                    "/System/Library/\(source.systemLibraryRelativePath)",
+                ]
+            )
+            let primaryTarget = try loadableBundleTarget(
+                candidate: selectionCandidate,
                 source: sourceMetadata,
-                artifactRoot: artifactRoot,
-                inputPath: hostInputPath(for: sourceMetadata, in: systemRoot),
-                runtimeInputPath: sourceMetadata.runtimeInputPath,
+                bundleURL: bundleURL,
+                systemRoot: systemRoot,
+                sharedCacheImages: sharedCacheImages,
+                fileManager: fileManager
+            )
+            guard primaryTarget != nil || !childTargets.isEmpty else { return nil }
+            return DiscoveredTargetGroup(
+                selectionCandidate: selectionCandidate,
+                primaryTarget: primaryTarget,
                 childTargets: childTargets
             )
         }
@@ -249,8 +284,9 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     static func discoverSystemLibraryBundles(
         in systemRoot: URL,
         includeNestedChildren: Bool,
+        sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
-    ) throws -> [DiscoveredTarget] {
+    ) throws -> [DiscoveredTargetGroup] {
         let systemLibraryDirectory = systemRoot
             .appendingPathComponent("System", isDirectory: true)
             .appendingPathComponent("Library", isDirectory: true)
@@ -285,7 +321,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             )
         }
 
-        var targets: [DiscoveredTarget] = []
+        var groups: [DiscoveredTargetGroup] = []
         while let url = enumerator.nextObject() as? URL {
             let standardizedPath = url.standardizedFileURL.path
             if excludedDirectories.contains(standardizedPath) {
@@ -313,29 +349,32 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 bundleKind: bundleKind,
                 role: .topLevel
             )
-            targets.append(
-                try systemLibraryBundleTarget(
-                    source: source,
-                    bundleURL: url,
-                    systemRoot: systemRoot,
-                    includeNestedChildren: includeNestedChildren,
-                    fileManager: fileManager
-                )
-            )
+            if let group = try systemLibraryBundleGroup(
+                source: source,
+                bundleURL: url,
+                systemRoot: systemRoot,
+                includeNestedChildren: includeNestedChildren,
+                sharedCacheImages: sharedCacheImages,
+                fileManager: fileManager
+            ) {
+                groups.append(group)
+            }
             enumerator.skipDescendants()
         }
         if let (url, error) = enumerationFailure {
             throw Error.enumerationFailed(path: url.path, message: String(describing: error))
         }
 
-        return targets.sorted { $0.source.runtimeInputPath < $1.source.runtimeInputPath }
+        return groups.sorted {
+            $0.selectionCandidate.identifier < $1.selectionCandidate.identifier
+        }
     }
 
     static func discoverUsrLibDylibs(
         in systemRoot: URL,
         sharedCacheImagePaths: [String],
         fileManager: FileManager
-    ) throws -> [DiscoveredTarget] {
+    ) throws -> [DiscoveredTargetGroup] {
         let usrLibDirectory = systemRoot
             .appendingPathComponent("usr", isDirectory: true)
             .appendingPathComponent("lib", isDirectory: true)
@@ -377,19 +416,24 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             let inputPath = filesystemDylibNameSet.contains(name)
                 ? hostInputPath(for: sourceMetadata, in: systemRoot)
                 : sourceMetadata.runtimeInputPath
-            return DiscoveredTarget(
-                candidate: try PrivateHeaderGeneration.TargetCandidate(
-                    identifier: "usr-lib:\(name)",
-                    displayName: name,
-                    kind: .usrLibDylib,
-                    aliases: [
-                        "usr/lib/\(name)",
-                    ]
-                ),
+            let candidate = try PrivateHeaderGeneration.TargetCandidate(
+                identifier: "usr-lib:\(name)",
+                displayName: name,
+                kind: .usrLibDylib,
+                aliases: [
+                    "usr/lib/\(name)",
+                ]
+            )
+            let target = DiscoveredTarget(
+                candidate: candidate,
                 source: sourceMetadata,
                 artifactRoot: try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(name)"),
                 inputPath: inputPath,
-                runtimeInputPath: sourceMetadata.runtimeInputPath,
+                runtimeInputPath: sourceMetadata.runtimeInputPath
+            )
+            return DiscoveredTargetGroup(
+                selectionCandidate: candidate,
+                primaryTarget: target,
                 childTargets: []
             )
         }
@@ -399,6 +443,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         parentSystemLibraryRelativePath: String,
         parentURL: URL,
         systemRoot: URL,
+        sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
     ) throws -> [DiscoveredTarget] {
         guard try isDirectory(parentURL, fileManager: fileManager) else {
@@ -437,59 +482,157 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                     bundleKind: container.bundleKind,
                     role: .nestedChild(parentRelativePath: parentSystemLibraryRelativePath)
                 )
-                targets.append(
-                    try systemLibraryBundleTarget(
-                        source: source,
-                        bundleURL: entry,
-                        systemRoot: systemRoot,
-                        includeNestedChildren: false,
-                        fileManager: fileManager
-                    )
-                )
+                let candidate = try systemLibraryCandidate(for: source)
+                if let target = try loadableBundleTarget(
+                    candidate: candidate,
+                    source: .systemLibraryBundle(source),
+                    bundleURL: entry,
+                    systemRoot: systemRoot,
+                    sharedCacheImages: sharedCacheImages,
+                    fileManager: fileManager
+                ) {
+                    targets.append(target)
+                }
             }
         }
 
         return targets.sorted { $0.source.runtimeInputPath < $1.source.runtimeInputPath }
     }
 
-    static func systemLibraryBundleTarget(
+    static func systemLibraryBundleGroup(
         source: SystemLibraryBundleSource,
         bundleURL: URL,
         systemRoot: URL,
         includeNestedChildren: Bool,
+        sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
-    ) throws -> DiscoveredTarget {
-        let kind: PrivateHeaderGeneration.TargetKind
-        switch source.role {
-        case .topLevel:
-            kind = .systemBundle
-        case .nestedChild:
-            kind = .nestedBundle
-        }
-
+    ) throws -> DiscoveredTargetGroup? {
         let childTargets = try includeNestedChildren ? nestedChildTargets(
             parentSystemLibraryRelativePath: source.relativePath,
             parentURL: bundleURL,
             systemRoot: systemRoot,
+            sharedCacheImages: sharedCacheImages,
             fileManager: fileManager
         ) : []
         let sourceMetadata = SourceMetadata.systemLibraryBundle(source)
-
-        return DiscoveredTarget(
-            candidate: try PrivateHeaderGeneration.TargetCandidate(
-                identifier: systemLibraryIdentifier(for: source),
-                displayName: source.relativePath,
-                kind: kind,
-                aliases: [
-                    "/System/Library/\(source.relativePath)",
-                ]
-            ),
+        let selectionCandidate = try systemLibraryCandidate(for: source)
+        let primaryTarget = try loadableBundleTarget(
+            candidate: selectionCandidate,
             source: sourceMetadata,
-            artifactRoot: try artifactRoot(systemLibraryRelativePath: source.relativePath),
-            inputPath: hostInputPath(for: sourceMetadata, in: systemRoot),
-            runtimeInputPath: sourceMetadata.runtimeInputPath,
+            bundleURL: bundleURL,
+            systemRoot: systemRoot,
+            sharedCacheImages: sharedCacheImages,
+            fileManager: fileManager
+        )
+        guard primaryTarget != nil || !childTargets.isEmpty else { return nil }
+        return DiscoveredTargetGroup(
+            selectionCandidate: selectionCandidate,
+            primaryTarget: primaryTarget,
             childTargets: childTargets
         )
+    }
+
+    static func systemLibraryCandidate(
+        for source: SystemLibraryBundleSource
+    ) throws -> PrivateHeaderGeneration.TargetCandidate {
+        let kind: PrivateHeaderGeneration.TargetKind = switch source.role {
+        case .topLevel: .systemBundle
+        case .nestedChild: .nestedBundle
+        }
+        return try PrivateHeaderGeneration.TargetCandidate(
+            identifier: systemLibraryIdentifier(for: source),
+            displayName: source.relativePath,
+            kind: kind,
+            aliases: [
+                "/System/Library/\(source.relativePath)",
+            ]
+        )
+    }
+
+    static func loadableBundleTarget(
+        candidate: PrivateHeaderGeneration.TargetCandidate,
+        source: SourceMetadata,
+        bundleURL: URL,
+        systemRoot: URL,
+        sharedCacheImages: SharedCacheImageIndex,
+        fileManager: FileManager
+    ) throws -> DiscoveredTarget? {
+        guard
+            let executableURL = selectedBundleExecutableURL(
+                bundleURL: bundleURL,
+                fileManager: fileManager
+            ),
+            safeExecutableName(executableURL.lastPathComponent) != nil
+        else {
+            return nil
+        }
+        let hasDiskExecutable = try isRegularFileOrSymlinkToRegularFile(
+            executableURL,
+            fileManager: fileManager
+        )
+        let hasSharedCacheExecutable = sharedCacheImages.containsAny(
+            ExecutableResolution.normalizedCacheImagePaths(
+                for: executableURL.path,
+                environment: ["PH_RUNTIME_ROOT": systemRoot.path]
+            )
+        )
+        guard hasDiskExecutable || hasSharedCacheExecutable else {
+            return nil
+        }
+        guard let systemLibraryRelativePath = bundleSystemLibraryRelativePath(for: source) else {
+            return nil
+        }
+        return DiscoveredTarget(
+            candidate: candidate,
+            source: source,
+            artifactRoot: try artifactRoot(systemLibraryRelativePath: systemLibraryRelativePath),
+            inputPath: hostInputPath(for: source, in: systemRoot),
+            runtimeInputPath: source.runtimeInputPath
+        )
+    }
+
+    static func bundleSystemLibraryRelativePath(for source: SourceMetadata) -> String? {
+        switch source {
+        case .framework(let framework): framework.systemLibraryRelativePath
+        case .systemLibraryBundle(let bundle): bundle.relativePath
+        case .usrLibDylib: nil
+        }
+    }
+
+    static func selectedBundleExecutableURL(
+        bundleURL: URL,
+        fileManager: FileManager
+    ) -> URL? {
+        ExecutableResolution.resolveBundleExecutableURL(
+            bundleURL,
+            fileExists: fileManager.fileExists(atPath:)
+        )
+    }
+
+    static func isRegularFileOrSymlinkToRegularFile(
+        _ url: URL,
+        fileManager: FileManager
+    ) throws -> Bool {
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try fileManager.attributesOfItem(atPath: url.path)
+        } catch where isMissingFileError(error) {
+            return false
+        }
+        let type = attributes[.type] as? FileAttributeType
+        if type == .typeRegular {
+            return true
+        }
+        guard type == .typeSymbolicLink else {
+            return false
+        }
+        let resolvedURL = url.resolvingSymlinksInPath().standardizedFileURL
+        do {
+            let resolvedAttributes = try fileManager.attributesOfItem(atPath: resolvedURL.path)
+            return resolvedAttributes[.type] as? FileAttributeType == .typeRegular
+        } catch where isMissingFileError(error) {
+            return false
+        }
     }
 
     static var nestedBundleContainers: [(directoryName: String, bundleKind: BundleKind)] {
@@ -636,6 +779,19 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         }
         return false
     }
+}
+
+private func safeExecutableName(_ value: String) -> String? {
+    guard
+        !value.isEmpty,
+        value != ".",
+        value != "..",
+        !value.contains("/"),
+        !value.contains("\0")
+    else {
+        return nil
+    }
+    return value
 }
 
 private extension String {
