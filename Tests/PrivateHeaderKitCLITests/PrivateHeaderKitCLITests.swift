@@ -2333,13 +2333,15 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let systemRoot = root.appendingPathComponent("SystemRoot", isDirectory: true)
+    let frameworkURL = systemRoot.appendingPathComponent(
+        "System/Library/Frameworks/Foo.framework",
+        isDirectory: true
+    )
     try FileManager.default.createDirectory(
-        at: systemRoot.appendingPathComponent(
-            "System/Library/Frameworks/Foo.framework",
-            isDirectory: true
-        ),
+        at: frameworkURL,
         withIntermediateDirectories: true
     )
+    try Data().write(to: frameworkURL.appendingPathComponent("Foo", isDirectory: false))
     let outputBase = root.appendingPathComponent("Output", isDirectory: true)
     let detectedURL: URL
     switch kind {
@@ -2463,13 +2465,15 @@ private func unfinishedResumeSummaryFixture() async throws
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let systemRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+    let frameworkURL = systemRoot.appendingPathComponent(
+        "System/Library/Frameworks/Foo.framework",
+        isDirectory: true
+    )
     try FileManager.default.createDirectory(
-        at: systemRoot.appendingPathComponent(
-            "System/Library/Frameworks/Foo.framework",
-            isDirectory: true
-        ),
+        at: frameworkURL,
         withIntermediateDirectories: true
     )
+    try Data().write(to: frameworkURL.appendingPathComponent("Foo", isDirectory: false))
     let source = try PrivateHeaderGeneration.Source(
         platform: .macOS,
         version: "16.0"

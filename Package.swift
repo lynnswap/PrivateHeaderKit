@@ -57,6 +57,10 @@ let package = Package(
             dependencies: []
         ),
         .target(
+            name: "PrivateHeaderKitExecutableResolution",
+            dependencies: []
+        ),
+        .target(
             name: "PrivateHeaderKitRawDumpRuntimeObjC",
             dependencies: [],
             path: "Sources/PrivateHeaderKitRawDumpRuntimeObjC",
@@ -66,6 +70,7 @@ let package = Package(
             name: "PrivateHeaderKitRawDumpCore",
             dependencies: [
                 "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitExecutableResolution",
                 .target(
                     name: "PrivateHeaderKitRawDumpRuntimeObjC",
                     condition: .when(platforms: [.macOS, .iOS])
@@ -95,6 +100,7 @@ let package = Package(
             name: "PrivateHeaderKitCore",
             dependencies: [
                 "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitExecutableResolution",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),

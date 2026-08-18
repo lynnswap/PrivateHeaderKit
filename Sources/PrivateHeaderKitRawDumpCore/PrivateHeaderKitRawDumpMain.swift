@@ -4,6 +4,7 @@ import MachOKit
 import MachOObjCSection
 import MachOSwiftSection
 import ObjCDump
+import PrivateHeaderKitExecutableResolution
 import PrivateHeaderKitHelperProtocol
 import SwiftDeclaration
 import SwiftDeclarationRendering
@@ -402,43 +403,11 @@ func resolveBundleExecutableURL(
     fileManager: FileExistenceChecking = FileManager.default,
     bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
 ) -> URL? {
-    if let executableURL = bundleExecutableURL(bundleURL) {
-        // `Bundle(url:)` may resolve symlinks, returning an executable inside the real path
-        // (e.g. `/System/Cryptexes/OS/...`). Prefer rebasing back onto the original bundle URL
-        // so output paths remain stable under `/System/Library/...` when possible.
-        let bundleName = bundleURL.lastPathComponent
-        let components = executableURL.pathComponents
-        if let bundleIndex = components.lastIndex(of: bundleName), bundleIndex + 1 < components.count {
-            let suffixComponents = components[(bundleIndex + 1)...]
-            var rebased = bundleURL
-            for component in suffixComponents {
-                rebased.appendPathComponent(component)
-            }
-            if fileManager.fileExists(atPath: rebased.path) {
-                return rebased
-            }
-        }
-        return executableURL
-    }
-
-    let baseName = bundleURL.deletingPathExtension().lastPathComponent
-    let candidates = [
-        bundleURL.appendingPathComponent(baseName),
-        bundleURL.appendingPathComponent("Versions/Current/\(baseName)"),
-        bundleURL.appendingPathComponent("Versions/A/\(baseName)"),
-        bundleURL.appendingPathComponent("Versions/B/\(baseName)"),
-        bundleURL.appendingPathComponent("Versions/C/\(baseName)")
-    ]
-    for candidate in candidates {
-        if fileManager.fileExists(atPath: candidate.path) {
-            return candidate
-        }
-    }
-
-    // Some system bundles (especially on modern macOS) only expose a dyld shared-cache image path
-    // while the on-disk executable symlink is intentionally absent/broken. Return the canonical
-    // in-bundle executable path so shared-cache lookup can still resolve the image.
-    return bundleURL.appendingPathComponent(baseName)
+    ExecutableResolution.resolveBundleExecutableURL(
+        bundleURL,
+        fileExists: fileManager.fileExists(atPath:),
+        bundleExecutableURL: bundleExecutableURL
+    )
 }
 
 private func dumpImage(
@@ -608,52 +577,10 @@ func normalizedCacheImagePaths(
     for path: String,
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> [String] {
-    var basePaths: [String] = [path]
-
-    let rootCandidates = [
-        environment["PH_RUNTIME_ROOT"],
-        environment["DYLD_ROOT_PATH"],
-        environment["SIMCTL_CHILD_DYLD_ROOT_PATH"]
-    ].compactMap { $0 }
-
-    for runtimeRoot in rootCandidates {
-        let trimmedRoot = runtimeRoot.hasSuffix("/") ? String(runtimeRoot.dropLast()) : runtimeRoot
-        if path.hasPrefix(trimmedRoot + "/") {
-            let suffix = String(path.dropFirst(trimmedRoot.count))
-            if !suffix.isEmpty {
-                basePaths.append(suffix)
-            }
-        }
-    }
-
-    if let range = path.range(of: "/System/Library/") {
-        basePaths.append(String(path[range.lowerBound...]))
-    }
-    if let range = path.range(of: "/usr/lib/") {
-        basePaths.append(String(path[range.lowerBound...]))
-    }
-
-    var results = basePaths
-    for basePath in basePaths {
-        // Shared-cache framework identities are commonly versioned even when the
-        // filesystem-facing source path uses the unversioned bundle symlink.
-        guard let frameworkRange = basePath.range(of: ".framework/"),
-              !basePath.contains(".framework/Versions/")
-        else { continue }
-        let frameworkPrefix = String(basePath[..<frameworkRange.upperBound])
-        let imageName = URL(fileURLWithPath: basePath).lastPathComponent
-        guard !imageName.isEmpty else { continue }
-        results.append(frameworkPrefix + "Versions/Current/" + imageName)
-        results.append(frameworkPrefix + "Versions/A/" + imageName)
-        results.append(frameworkPrefix + "Versions/B/" + imageName)
-        results.append(frameworkPrefix + "Versions/C/" + imageName)
-    }
-
-    var unique: [String] = []
-    for item in results where !unique.contains(item) {
-        unique.append(item)
-    }
-    return unique
+    ExecutableResolution.normalizedCacheImagePaths(
+        for: path,
+        environment: environment
+    )
 }
 
 func writeDirectory(for imagePath: String, outputRoot: URL, options: DumpOptions) -> URL {

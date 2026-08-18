@@ -2058,6 +2058,71 @@ struct PrivateHeaderGenerationExecutorTests {
     }
   }
 
+  @Test func parentShellQueryRunsEligibleNestedChildrenOnly() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createResourceOnlyFramework(
+      "Shell.framework",
+      nestedBundle: "XPCServices/LiveService.xpc"
+    )
+    let runner = RecordingRunner(contents: "nested")
+
+    let result = try await fixture.executor(
+      runner: runner,
+      runID: "run-shell-child",
+      generationID: "generation-shell-child"
+    ).run(plan: try fixture.plan(.query("Shell")))
+
+    #expect(await runner.invocationCount == 1)
+    #expect(result.generatedTargets.map(\.identifier) == [
+      "nested-bundle:Frameworks/Shell.framework/XPCServices/LiveService.xpc"
+    ])
+    let invocations = await runner.invocations
+    let invocation = try #require(invocations.first)
+    #expect(invocation.inputPath.hasSuffix("/Shell.framework/XPCServices/LiveService.xpc"))
+  }
+
+  @Test func selectionOnlyParentIdentifierIsNotAnExecutionTarget() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createResourceOnlyFramework(
+      "Shell.framework",
+      nestedBundle: "XPCServices/LiveService.xpc"
+    )
+
+    await #expect(
+      throws: PrivateHeaderGeneration.GenerationError.unknownSelectedTargets([
+        "framework:Shell.framework"
+      ])
+    ) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "unused"),
+        runID: "run-parent-identifier",
+        generationID: "generation-parent-identifier"
+      ).run(plan: try fixture.plan(.identifiers(["framework:Shell.framework"])))
+    }
+  }
+
+  @Test func exactNestedIdentifierRunsOnlyThatExecutionTarget() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createResourceOnlyFramework(
+      "Shell.framework",
+      nestedBundle: "XPCServices/LiveService.xpc"
+    )
+    let childID = "nested-bundle:Frameworks/Shell.framework/XPCServices/LiveService.xpc"
+    let runner = RecordingRunner(contents: "nested")
+
+    let result = try await fixture.executor(
+      runner: runner,
+      runID: "run-child-identifier",
+      generationID: "generation-child-identifier"
+    ).run(plan: try fixture.plan(.identifiers([childID])))
+
+    #expect(await runner.invocationCount == 1)
+    #expect(result.generatedTargets.map(\.identifier) == [childID])
+  }
+
   @Test func committedRunStaysSuccessfulWhenCleanupAndWarningPersistenceFail() async throws {
     let fixture = try ExecutorFixture()
     defer {
@@ -2365,19 +2430,50 @@ private struct ExecutorFixture {
   }
 
   func createFramework(_ name: String) throws {
+    let bundleURL = systemRoot.appendingPathComponent(
+      "System/Library/Frameworks/\(name)",
+      isDirectory: true
+    )
     try FileManager.default.createDirectory(
-      at: systemRoot.appendingPathComponent("System/Library/Frameworks/\(name)", isDirectory: true),
+      at: bundleURL,
       withIntermediateDirectories: true
     )
+    let executableName = bundleURL.deletingPathExtension().lastPathComponent
+    try Data().write(to: bundleURL.appendingPathComponent(executableName, isDirectory: false))
   }
 
   func createSystemBundle(_ relativePath: String) throws {
+    let bundleURL = systemRoot.appendingPathComponent(
+      "System/Library/\(relativePath)",
+      isDirectory: true
+    )
     try FileManager.default.createDirectory(
-      at: systemRoot.appendingPathComponent(
-        "System/Library/\(relativePath)",
-        isDirectory: true
-      ),
+      at: bundleURL,
       withIntermediateDirectories: true
+    )
+    let executableName = bundleURL.deletingPathExtension().lastPathComponent
+    try Data().write(to: bundleURL.appendingPathComponent(executableName, isDirectory: false))
+  }
+
+  func createResourceOnlyFramework(
+    _ name: String,
+    nestedBundle relativeNestedBundlePath: String
+  ) throws {
+    let frameworkURL = systemRoot.appendingPathComponent(
+      "System/Library/Frameworks/\(name)",
+      isDirectory: true
+    )
+    let nestedBundleURL = frameworkURL.appendingPathComponent(
+      relativeNestedBundlePath,
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: nestedBundleURL,
+      withIntermediateDirectories: true
+    )
+    let executableName = nestedBundleURL.deletingPathExtension().lastPathComponent
+    try Data().write(
+      to: nestedBundleURL.appendingPathComponent(executableName, isDirectory: false)
     )
   }
 

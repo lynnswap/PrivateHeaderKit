@@ -1532,28 +1532,29 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     switch request {
     case .frameworks:
       return deduplicated(
-        catalog.targets.flatMap {
-          target -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-          guard target.candidate.kind == .framework || target.candidate.kind == .privateFramework
+        catalog.groups.flatMap {
+          group -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
+          guard group.selectionCandidate.kind == .framework
+            || group.selectionCandidate.kind == .privateFramework
           else {
             return []
           }
-          return [target] + target.childTargets
+          return group.executionTargets
         }
       )
     case .system:
       return deduplicated(
-        catalog.targets.flatMap {
-          target -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-          guard target.candidate.kind != .usrLibDylib else { return [] }
-          return [target] + target.childTargets
+        catalog.groups.flatMap {
+          group -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
+          guard group.selectionCandidate.kind != .usrLibDylib else { return [] }
+          return group.executionTargets
         }
       )
     case .allAvailable:
-      return deduplicated(catalog.allTargetsIncludingNestedChildren)
+      return deduplicated(catalog.allExecutionTargets)
     case .identifiers(let targetIDs):
       let requested = deduplicatedTargetIDs(targetIDs)
-      let all = catalog.allTargetsIncludingNestedChildren
+      let all = catalog.allExecutionTargets
       let selected = requested.compactMap { id in all.first { $0.candidate.identifier == id } }
       if selected.count != requested.count {
         let found = Set(selected.map(\.candidate.identifier))
@@ -1566,7 +1567,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       let targetQuery = try PrivateHeaderGeneration.TargetQuery(commaSeparated: query)
       switch catalog.resolver.resolve(targetQuery) {
       case .selected(.allAvailable):
-        return deduplicated(catalog.allTargetsIncludingNestedChildren)
+        return deduplicated(catalog.allExecutionTargets)
       case .selected(.targets(let candidates)):
         return deduplicated(
           candidates.flatMap { candidate in
@@ -1582,12 +1583,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     identifier: String,
     catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
   ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
-    for target in catalog.targets where target.candidate.identifier == identifier {
-      return [target] + target.childTargets
+    for group in catalog.groups where group.selectionCandidate.identifier == identifier {
+      return group.executionTargets
     }
-    return catalog.allTargetsIncludingNestedChildren.filter {
-      $0.candidate.identifier == identifier
-    }
+    return []
   }
 
   fileprivate static func deduplicated(
