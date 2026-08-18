@@ -76,6 +76,7 @@ expected_entries="$(printf '%s\n' \
   "cohort/privateheaderkit" \
   "cohort/privateheaderkit-raw-helper" \
   "cohort/privateheaderkit-sim-helper" \
+  "cohort/privateheaderkit-watch-sim-helper" \
   "cohort/release.json")"
 
 validate_replaceable_stage() {
@@ -102,6 +103,7 @@ validate_replaceable_stage() {
     "$stage_root/cohort/privateheaderkit" \
     "$stage_root/cohort/privateheaderkit-raw-helper" \
     "$stage_root/cohort/privateheaderkit-sim-helper" \
+    "$stage_root/cohort/privateheaderkit-watch-sim-helper" \
     "$stage_root/cohort/release.json"
   do
     if [[ ! -f "$file" || -L "$file" ]]; then
@@ -167,8 +169,12 @@ host_products=(
   "privateheaderkit-raw-helper"
 )
 simulator_product="privateheaderkit-sim-helper"
-simulator_triple="arm64-apple-ios-simulator"
-simulator_scratch_path="$repo_root/.build/privateheaderkit-simulator/$simulator_triple"
+ios_simulator_artifact="privateheaderkit-sim-helper"
+ios_simulator_triple="arm64-apple-ios-simulator"
+ios_simulator_scratch_path="$repo_root/.build/privateheaderkit-simulator/$ios_simulator_triple"
+watch_simulator_artifact="privateheaderkit-watch-sim-helper"
+watch_simulator_triple="arm64-apple-watchos-simulator"
+watch_simulator_scratch_path="$repo_root/.build/privateheaderkit-simulator/$watch_simulator_triple"
 
 pushd "$repo_root" >/dev/null
 for product in "${host_products[@]}"; do
@@ -177,20 +183,34 @@ for product in "${host_products[@]}"; do
     swift build -c release --arch arm64 --product "$product"
 done
 
-simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+ios_simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 PRIVATEHEADERKIT_BUILD_VERSION="$version" \
 PRIVATEHEADERKIT_BUILD_COMMIT="$commit" \
   swift build -c release \
-    --scratch-path "$simulator_scratch_path" \
-    --sdk "$simulator_sdk" \
-    --triple "$simulator_triple" \
+    --scratch-path "$ios_simulator_scratch_path" \
+    --sdk "$ios_simulator_sdk" \
+    --triple "$ios_simulator_triple" \
     --product "$simulator_product"
 
 host_bin="$(swift build -c release --arch arm64 --show-bin-path)"
-simulator_bin="$(swift build -c release \
-  --scratch-path "$simulator_scratch_path" \
-  --sdk "$simulator_sdk" \
-  --triple "$simulator_triple" \
+ios_simulator_bin="$(swift build -c release \
+  --scratch-path "$ios_simulator_scratch_path" \
+  --sdk "$ios_simulator_sdk" \
+  --triple "$ios_simulator_triple" \
+  --show-bin-path)"
+
+watch_simulator_sdk="$(xcrun --sdk watchsimulator --show-sdk-path)"
+PRIVATEHEADERKIT_BUILD_VERSION="$version" \
+PRIVATEHEADERKIT_BUILD_COMMIT="$commit" \
+  swift build -c release \
+    --scratch-path "$watch_simulator_scratch_path" \
+    --sdk "$watch_simulator_sdk" \
+    --triple "$watch_simulator_triple" \
+    --product "$simulator_product"
+watch_simulator_bin="$(swift build -c release \
+  --scratch-path "$watch_simulator_scratch_path" \
+  --sdk "$watch_simulator_sdk" \
+  --triple "$watch_simulator_triple" \
   --show-bin-path)"
 popd >/dev/null
 
@@ -202,8 +222,12 @@ for product in "${host_products[@]}"; do
     exit 1
   fi
 done
-if [[ ! -f "$simulator_bin/$simulator_product" ]]; then
-  echo "Built artifact is missing: $simulator_bin/$simulator_product" >&2
+if [[ ! -f "$ios_simulator_bin/$simulator_product" ]]; then
+  echo "Built artifact is missing: $ios_simulator_bin/$simulator_product" >&2
+  exit 1
+fi
+if [[ ! -f "$watch_simulator_bin/$simulator_product" ]]; then
+  echo "Built artifact is missing: $watch_simulator_bin/$simulator_product" >&2
   exit 1
 fi
 
@@ -220,12 +244,14 @@ mkdir -p "$stage_bin" "$stage_cohort"
 cp "$host_bin/privateheaderkit-install" "$stage_bin/privateheaderkit-install"
 cp "$host_bin/privateheaderkit" "$stage_cohort/privateheaderkit"
 cp "$host_bin/privateheaderkit-raw-helper" "$stage_cohort/privateheaderkit-raw-helper"
-cp "$simulator_bin/$simulator_product" "$stage_cohort/$simulator_product"
+cp "$ios_simulator_bin/$simulator_product" "$stage_cohort/$ios_simulator_artifact"
+cp "$watch_simulator_bin/$simulator_product" "$stage_cohort/$watch_simulator_artifact"
 chmod 755 \
   "$stage_bin/privateheaderkit-install" \
   "$stage_cohort/privateheaderkit" \
   "$stage_cohort/privateheaderkit-raw-helper" \
-  "$stage_cohort/privateheaderkit-sim-helper"
+  "$stage_cohort/privateheaderkit-sim-helper" \
+  "$stage_cohort/privateheaderkit-watch-sim-helper"
 
 validate_binary() {
   local path="$1"
@@ -255,6 +281,7 @@ validate_binary "$stage_bin/privateheaderkit-install" "MACOS"
 validate_binary "$stage_cohort/privateheaderkit" "MACOS"
 validate_binary "$stage_cohort/privateheaderkit-raw-helper" "MACOS"
 validate_binary "$stage_cohort/privateheaderkit-sim-helper" "IOSSIMULATOR"
+validate_binary "$stage_cohort/privateheaderkit-watch-sim-helper" "WATCHOSSIMULATOR"
 
 "$stage_bin/privateheaderkit-install" \
   --create-release-manifest \
@@ -284,6 +311,7 @@ for file in \
   "$stage_cohort/privateheaderkit" \
   "$stage_cohort/privateheaderkit-raw-helper" \
   "$stage_cohort/privateheaderkit-sim-helper" \
+  "$stage_cohort/privateheaderkit-watch-sim-helper" \
   "$stage_cohort/release.json"
 do
   if [[ ! -f "$file" || -L "$file" ]]; then

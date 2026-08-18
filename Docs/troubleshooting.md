@@ -10,21 +10,22 @@ terminal if the profile already contains the printed entry.
 Rerunning the installer is safe and will print the guidance again when needed.
 The installer does not edit or source shell profiles itself.
 
-## No iOS source appears in the wizard
+## No iOS or watchOS source appears in the wizard
 
-iOS generation requires full Xcode and an installed iOS Simulator runtime.
-Confirm that Xcode's command-line tools are selected and inspect the available
-runtimes:
+iOS and watchOS generation require full Xcode and a matching installed
+Simulator runtime. Confirm that Xcode's command-line tools are selected and
+inspect the available runtimes:
 
 ```bash
 xcode-select -p
 xcrun simctl list runtimes
 ```
 
-Install the desired runtime from Xcode settings, then rerun `privateheaderkit`.
-macOS generation remains available without an iOS runtime.
+Install the desired iOS or watchOS runtime from Xcode settings, then rerun
+`privateheaderkit`. macOS generation remains available without either runtime.
+A paired physical device does not substitute for a Simulator runtime.
 
-## More than one iOS runtime matches `--version`
+## More than one Simulator runtime matches `--version`
 
 Use the interactive wizard, or add the source build identifier in automation:
 
@@ -37,8 +38,9 @@ privateheaderkit \
   --target all
 ```
 
-Replace the example version and build with a pair listed by `xcrun simctl list
-runtimes`.
+Replace the example platform, version, and build with a combination listed by
+`xcrun simctl list runtimes`. Runtime matching is scoped to `--platform`, so iOS
+and watchOS runtimes with the same version do not conflict.
 
 ## An unfinished run already exists
 
@@ -67,5 +69,5 @@ If activation itself fails, the installer reports whether restoring the
 previous cohort also failed.
 
 Run the same install command again after correcting the reported cause. Do not
-manually replace individual helper binaries; the public command and both
-helpers are validated and activated as one cohort.
+manually replace individual helper binaries; the public command, both simulator
+helpers, and the raw macOS helper are validated and activated as one cohort.

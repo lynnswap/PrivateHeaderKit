@@ -1,7 +1,8 @@
 # Contributing
 
 PrivateHeaderKit uses Swift 6.3 as its baseline. Source builds and release
-cohorts require Xcode with `xcrun` and an installed iOS Simulator SDK.
+cohorts require Xcode with `xcrun`, the iOS Simulator SDK, and the watchOS
+Simulator SDK.
 
 ## Tests
 
@@ -45,6 +46,36 @@ swift build \
   --triple "$PHK_IOS_SIMULATOR_TRIPLE" \
   --target PrivateHeaderKitCoreTests
 ```
+
+## watchOS Compile Check
+
+Compile the Core surface, its test surface, and the shared simulator-helper
+product for watchOS without launching a simulator:
+
+```bash
+PHK_WATCHOS_SIMULATOR_SDK="$(xcrun --sdk watchsimulator --show-sdk-path)"
+PHK_WATCHOS_SIMULATOR_TRIPLE="arm64-apple-watchos-simulator"
+PHK_WATCHOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-watchos-compile/$PHK_WATCHOS_SIMULATOR_TRIPLE"
+swift build \
+  --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
+  --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
+  --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+  --target PrivateHeaderKitCore
+swift build \
+  --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
+  --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
+  --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+  --target PrivateHeaderKitCoreTests
+swift build \
+  --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
+  --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
+  --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+  --product privateheaderkit-sim-helper
+```
+
+The SwiftPM product keeps the name `privateheaderkit-sim-helper` for both
+Simulator platforms. Release staging installs the watchOS build as
+`privateheaderkit-watch-sim-helper` so each Mach-O platform remains explicit.
 
 ## Releases
 

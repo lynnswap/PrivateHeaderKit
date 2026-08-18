@@ -2,12 +2,13 @@
 
 [日本語](README.ja.md)
 
-Generate searchable private headers from this Mac or an installed iOS Simulator
-runtime.
+Generate searchable private headers from this Mac or an installed iOS or
+watchOS Simulator runtime.
 
-Requires macOS 14 or later. Prebuilt releases require Apple Silicon. iOS
-generation requires Xcode and an installed iOS Simulator runtime. Source
-installation requires Swift 6.3 and Xcode with an iOS Simulator SDK.
+Requires macOS 14 or later. Prebuilt releases require Apple Silicon. iOS and
+watchOS generation require Xcode and a matching installed Simulator runtime;
+physical devices are not generation sources. Source installation requires
+Swift 6.3 and Xcode with iOS and watchOS Simulator SDKs.
 
 ## Quick Start
 
@@ -38,7 +39,7 @@ cd PrivateHeaderKit
 swift run -c release privateheaderkit-install
 ```
 
-The installer builds `privateheaderkit` and both internal helpers from the same
+The installer builds `privateheaderkit` and three internal helpers from the same
 checkout. It accepts the same `--prefix` and `--bindir` options as `install.sh`.
 
 ## Install Options
@@ -77,9 +78,17 @@ privateheaderkit \
   --target SwiftUI,UIKit
 ```
 
-Use `privateheaderkit --help` for the complete option list. If more than one iOS
-runtime matches a version, add `--build <build>`. Replace the example iOS
-version with an installed runtime version.
+```bash
+privateheaderkit \
+  --platform watchOS \
+  --version 27.0 \
+  --out ~/PrivateHeaderKit \
+  --target WatchKit
+```
+
+Use `privateheaderkit --help` for the complete option list. Replace each example
+version with an installed runtime version. If more than one runtime for the
+selected platform matches a version, add `--build <build>`.
 
 ## Documentation
 

@@ -1,8 +1,8 @@
 # Installation and Updates
 
-PrivateHeaderKit installs one public command, `privateheaderkit`. The raw macOS
-and iOS Simulator helpers are internal artifacts that are installed and updated
-with it as one validated cohort.
+PrivateHeaderKit installs one public command, `privateheaderkit`. The raw macOS,
+iOS Simulator, and watchOS Simulator helpers are internal artifacts that are
+installed and updated with it as one validated cohort.
 
 ## Requirements
 
@@ -11,8 +11,9 @@ GitHub release installation requires:
 - an Apple Silicon Mac
 - macOS 14 or later
 
-It does not require a Swift toolchain. Generating iOS headers additionally
-requires Xcode with the matching iOS Simulator runtime.
+It does not require a Swift toolchain. Generating iOS or watchOS headers
+additionally requires Xcode with the matching Simulator runtime. Connected
+physical devices are not generation sources.
 
 ## Install a Release
 
@@ -66,7 +67,7 @@ https://github.com/lynnswap/PrivateHeaderKit/releases/download/<version>/install
 
 ## Install from Source
 
-Source installation builds the public command and both internal helpers from
+Source installation builds the public command and three internal helpers from
 the same checkout:
 
 ```bash
@@ -75,10 +76,11 @@ cd PrivateHeaderKit
 swift run -c release privateheaderkit-install
 ```
 
-This path requires Swift 6.3 and Xcode with `xcrun` and an installed iOS
-Simulator SDK because the installed cohort always includes the simulator
-helper. It does not download release assets. `--prefix` and `--bindir` are also
-available for source installation.
+This path requires Swift 6.3 and Xcode with `xcrun`, the iOS Simulator SDK, and
+the watchOS Simulator SDK because the installed cohort always includes both
+simulator helpers. It does not require either runtime merely to build the
+helpers, and it does not download release assets. `--prefix` and `--bindir` are
+also available for source installation.
 
 ## Update
 
@@ -104,6 +106,7 @@ The default layout is:
     privateheaderkit
     privateheaderkit-raw-helper
     privateheaderkit-sim-helper
+    privateheaderkit-watch-sim-helper
     release.json
 ```
 

@@ -33,6 +33,7 @@ jobs:
           xcodebuild -version
           swift --version
           xcrun --sdk iphonesimulator --show-sdk-path
+          xcrun --sdk watchsimulator --show-sdk-path
 
       - name: Run Swift tests
         run: swift test
@@ -56,3 +57,25 @@ jobs:
             --sdk "$PHK_IOS_SIMULATOR_SDK" \
             --triple "$PHK_IOS_SIMULATOR_TRIPLE" \
             --target PrivateHeaderKitCoreTests
+
+      - name: Compile watchOS surfaces
+        run: |
+          set -euo pipefail
+          PHK_WATCHOS_SIMULATOR_SDK="$(xcrun --sdk watchsimulator --show-sdk-path)"
+          PHK_WATCHOS_SIMULATOR_TRIPLE="arm64-apple-watchos-simulator"
+          PHK_WATCHOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-watchos-compile/$PHK_WATCHOS_SIMULATOR_TRIPLE"
+          swift build \
+            --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
+            --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
+            --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+            --target PrivateHeaderKitCore
+          swift build \
+            --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
+            --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
+            --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+            --target PrivateHeaderKitCoreTests
+          swift build \
+            --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
+            --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
+            --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+            --product privateheaderkit-sim-helper

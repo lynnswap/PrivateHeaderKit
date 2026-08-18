@@ -10,16 +10,18 @@ privateheaderkit
 
 The wizard guides you through:
 
-1. an installed iOS Simulator runtime or the current macOS installation
+1. an installed iOS or watchOS Simulator runtime, or the current macOS
+   installation
 2. all available targets or a comma-separated list of target names
 3. Continue or Restart when compatible unfinished work exists
 
 The default output base is `~/PrivateHeaderKit`. The command prints the concrete
 header directory when a run starts and again in the completion summary.
 
-macOS generation works from the host system. iOS generation requires Xcode,
-`xcrun`, `simctl`, and the selected iOS Simulator runtime. PrivateHeaderKit
-selects and boots a compatible simulator device for the run.
+macOS generation works from the host system. iOS and watchOS generation require
+Xcode, `xcrun`, `simctl`, and the selected Simulator runtime. PrivateHeaderKit
+selects and boots a compatible simulator device for the run. It does not use a
+connected iPhone or Apple Watch as a generation source.
 
 ## Automation
 
@@ -48,21 +50,31 @@ privateheaderkit \
   --target SwiftUI,UIKit
 ```
 
+### watchOS
+
+```bash
+privateheaderkit \
+  --platform watchOS \
+  --version 27.0 \
+  --out ~/PrivateHeaderKit \
+  --target WatchKit
+```
+
 `--platform`, `--version`, `--out`, and `--target` are required in automation
-mode. `--system-root` is also required for macOS. For iOS, PrivateHeaderKit
-resolves the runtime root; supply `--build` when a version matches more than one
-runtime.
+mode. `--system-root` is also required for macOS. For iOS and watchOS,
+PrivateHeaderKit resolves the runtime root; supply `--build` when more than one
+runtime for the selected platform matches a version.
 
 | Option | Meaning |
 | --- | --- |
-| `--platform iOS\|macOS` | Source platform. |
+| `--platform iOS\|watchOS\|macOS` | Source platform. |
 | `--version <version>` | Source OS version. |
-| `--build <build>` | Source build identifier; needed for ambiguous iOS versions. |
-| `--system-root <path>` | Runtime root; required for macOS and optional as an iOS override. |
+| `--build <build>` | Source build identifier; needed for ambiguous Simulator runtime versions. |
+| `--system-root <path>` | Runtime root; required for macOS and optional as a Simulator override. |
 | `--out <path>` | Output base for generated headers and state. |
 | `--target all\|<query>` | All targets or comma-separated target names. |
-| `--device <name-or-udid>` | Preferred iOS Simulator device. |
-| `--sim-helper <path>` | Explicit simulator helper for controlled automation. |
+| `--device <name-or-udid>` | Preferred compatible iOS or watchOS Simulator device. |
+| `--sim-helper <path>` | Explicit helper for the selected Simulator platform. |
 | `--resume` | Continue the latest compatible unfinished plan. |
 | `--fresh` | Start a new run and permit explicit legacy migration. |
 
