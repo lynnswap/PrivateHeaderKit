@@ -1,5 +1,6 @@
 import Foundation
 import PrivateHeaderKitCore
+import PrivateHeaderKitHelperProtocol
 import PrivateHeaderKitTooling
 
 struct PrivateHeaderKitGenerationRequest: Sendable {
@@ -109,13 +110,126 @@ func runPrivateHeaderKitRawDump(
         env: invocation.environment,
         cwd: nil
     )
+    guard processResult.status == 0, !processResult.wasKilled else {
+        try? FileManager.default.removeItem(at: invocation.diagnosticsReportURL)
+        return PrivateHeaderGeneration.RawDumping.Result(
+            terminationStatus: processResult.status,
+            wasKilled: processResult.wasKilled,
+            failureSummary: processResult.lastLines.isEmpty
+                ? nil
+                : processResult.lastLines.joined(separator: "\n")
+        )
+    }
+
+    let report = try consumeRawDumpDiagnosticsReport(
+        at: invocation.diagnosticsReportURL
+    )
     return PrivateHeaderGeneration.RawDumping.Result(
         terminationStatus: processResult.status,
         wasKilled: processResult.wasKilled,
         failureSummary: processResult.lastLines.isEmpty
             ? nil
-            : processResult.lastLines.joined(separator: "\n")
+            : processResult.lastLines.joined(separator: "\n"),
+        diagnosticsReport: report
     )
+}
+
+enum PrivateHeaderKitRawDumpContractError: Error, Equatable, CustomStringConvertible {
+    case missingDiagnosticsReport(String)
+    case invalidDiagnosticsReport(path: String, reason: String)
+    case diagnosticsReportTooLarge(path: String, actual: Int, maximum: Int)
+    case diagnosticsReportCleanupFailed(path: String, reason: String)
+
+    var description: String {
+        switch self {
+        case .missingDiagnosticsReport(let path):
+            "raw helper contract failure: successful helper did not write diagnostics report at \(path)"
+        case .invalidDiagnosticsReport(let path, let reason):
+            "raw helper contract failure: invalid diagnostics report at \(path): \(reason)"
+        case .diagnosticsReportTooLarge(let path, let actual, let maximum):
+            "raw helper contract failure: diagnostics report at \(path) is \(actual) bytes; maximum is \(maximum)"
+        case .diagnosticsReportCleanupFailed(let path, let reason):
+            "raw helper contract failure: could not remove diagnostics report at \(path): \(reason)"
+        }
+    }
+}
+
+private func consumeRawDumpDiagnosticsReport(
+    at reportURL: URL,
+    fileManager: FileManager = .default
+) throws -> PrivateHeaderKitRawDumpDiagnosticsReport {
+    let path = reportURL.path
+    guard fileManager.fileExists(atPath: path) else {
+        throw PrivateHeaderKitRawDumpContractError.missingDiagnosticsReport(path)
+    }
+
+    let data: Data
+    do {
+        let values = try reportURL.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .fileSizeKey,
+        ])
+        guard values.isRegularFile == true else {
+            throw PrivateHeaderKitRawDumpContractError.invalidDiagnosticsReport(
+                path: path,
+                reason: "report is not a regular file"
+            )
+        }
+        guard let fileSize = values.fileSize else {
+            throw PrivateHeaderKitRawDumpContractError.invalidDiagnosticsReport(
+                path: path,
+                reason: "report size is unavailable"
+            )
+        }
+        guard fileSize <= PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount else {
+            throw PrivateHeaderKitRawDumpContractError.diagnosticsReportTooLarge(
+                path: path,
+                actual: fileSize,
+                maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
+            )
+        }
+        data = try Data(contentsOf: reportURL)
+        guard data.count <= PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount else {
+            throw PrivateHeaderKitRawDumpContractError.diagnosticsReportTooLarge(
+                path: path,
+                actual: data.count,
+                maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
+            )
+        }
+    } catch let error as PrivateHeaderKitRawDumpContractError {
+        try? fileManager.removeItem(at: reportURL)
+        throw error
+    } catch {
+        try? fileManager.removeItem(at: reportURL)
+        throw PrivateHeaderKitRawDumpContractError.invalidDiagnosticsReport(
+            path: path,
+            reason: String(describing: error)
+        )
+    }
+
+    let report: PrivateHeaderKitRawDumpDiagnosticsReport
+    do {
+        report = try JSONDecoder().decode(
+            PrivateHeaderKitRawDumpDiagnosticsReport.self,
+            from: data
+        )
+    } catch {
+        try? fileManager.removeItem(at: reportURL)
+        throw PrivateHeaderKitRawDumpContractError.invalidDiagnosticsReport(
+            path: path,
+            reason: String(describing: error)
+        )
+    }
+
+    do {
+        try fileManager.removeItem(at: reportURL)
+    } catch {
+        throw PrivateHeaderKitRawDumpContractError.diagnosticsReportCleanupFailed(
+            path: path,
+            reason: String(describing: error)
+        )
+    }
+    return report
 }
 
 private func capturePrivateHeaderKitSharedCacheInventory(

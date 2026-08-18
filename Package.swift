@@ -35,8 +35,8 @@ let package = Package(
             from: "0.51.101"
         ),
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
-            from: "0.7.103"
+            url: "https://github.com/lynnswap/MachOObjCSection.git",
+            revision: "7d159a0216565edae417bf40716dd447bf295e7b"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
@@ -44,7 +44,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "c1e9e6eade17dc2a617326719d61f6cf9025e43f"
+            revision: "030963e9f69118f4c4b22a41a90a03cc51a79833"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
@@ -114,6 +114,7 @@ let package = Package(
             name: "PrivateHeaderKitCLI",
             dependencies: [
                 "PrivateHeaderKitCore",
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitTooling",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(
@@ -180,6 +181,7 @@ let package = Package(
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
                 .product(name: "MachOKit", package: "MachOKit"),
+                .product(name: "MachOObjCSection", package: "MachOObjCSection"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
             ]
         ),
@@ -238,6 +240,7 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitCLI",
                 "PrivateHeaderKitCore",
+                "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitTestSupport",
                 "PrivateHeaderKitTooling",
             ]

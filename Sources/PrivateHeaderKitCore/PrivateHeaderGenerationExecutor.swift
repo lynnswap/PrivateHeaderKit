@@ -4,6 +4,8 @@ import PrivateHeaderKitHelperProtocol
 
 extension PrivateHeaderGeneration {
   package struct GenerationExecutor: Sendable {
+    package static let maximumPresentedObjCMetadataWarningCount = 256
+
     private struct DeliberateFault: Error, @unchecked Sendable {
       let underlying: any Error
     }
@@ -189,11 +191,47 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let completedFiles: [PrivateHeaderGeneration.ArtifactPath: URL]
     let stagedSourceDirectory: URL?
     let artifactRoot: PrivateHeaderGeneration.ArtifactPath?
+    let warnings: [PrivateHeaderGeneration.GenerationWarning]
   }
 
   fileprivate struct StagedArtifacts {
     let files: [PrivateHeaderGeneration.ArtifactPath: URL]
     let sourceDirectory: URL?
+  }
+
+  fileprivate struct ObjCMetadataWarningPresentationBudget {
+    private var retained = Set<PrivateHeaderGeneration.GenerationWarning>()
+    private(set) var omittedCount: UInt = 0
+
+    mutating func consume(
+      _ warnings: [PrivateHeaderGeneration.GenerationWarning]
+    ) -> [PrivateHeaderGeneration.GenerationWarning] {
+      var accepted: [PrivateHeaderGeneration.GenerationWarning] = []
+      for warning in warnings {
+        guard !retained.contains(warning) else { continue }
+        guard retained.count
+                < PrivateHeaderGeneration.GenerationExecutor
+                    .maximumPresentedObjCMetadataWarningCount
+        else {
+          omittedCount = omittedCount == UInt.max ? UInt.max : omittedCount + 1
+          continue
+        }
+        retained.insert(warning)
+        accepted.append(warning)
+      }
+      return accepted
+    }
+
+    var aggregateWarning: PrivateHeaderGeneration.GenerationWarning? {
+      guard omittedCount > 0 else { return nil }
+      return PrivateHeaderGeneration.GenerationWarning(
+        kind: "objc-metadata-warning",
+        relativePath: "generation.sqlite",
+        message:
+          "\(omittedCount) additional Objective-C metadata warnings were hidden from"
+          + " live output; all retained per-target details are persisted in generation.sqlite"
+      )
+    }
   }
 
   fileprivate enum PublishedTargetSource: Equatable {
@@ -331,6 +369,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     )
     _ = try await store.beginRun(id: runID, plan: runPlan, at: dateProvider())
     progressReporter?(.runStarted(runID: runID, totalTargetCount: targetIDsToRun.count))
+    var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+    var objCMetadataWarningBudget = ObjCMetadataWarningPresentationBudget()
 
     do {
       for target in selectedTargets where !targetIDsToRun.contains(target.candidate.identifier) {
@@ -358,7 +398,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       var completedFilesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]] = [:]
       var completedArtifactDigestsByTarget:
         [String: [PrivateHeaderGeneration.ArtifactPath: String]] = [:]
-      var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
       var wasCancelled = false
       var executedIndex = 0
 
@@ -459,6 +498,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
             try await store.recordPublishedTargetAttempt(
               execution.result,
               artifactDigests: replacement.artifactDigests,
+              warnings: execution.warnings,
               in: runID
             )
           } catch {
@@ -479,6 +519,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           completedFilesByTarget[targetID] = execution.completedFiles
           completedArtifactDigestsByTarget[targetID] = replacement.artifactDigests
           generatedTargetIDs.append(targetID)
+          let presentedObjCWarnings = objCMetadataWarningBudget.consume(execution.warnings)
+          warnings.append(contentsOf: presentedObjCWarnings)
+          for warning in presentedObjCWarnings {
+            progressReporter?(.warning(warning))
+          }
           do {
             try liveArtifactStore.finalizeReplacement(replacement)
           } catch {
@@ -714,6 +759,15 @@ extension PrivateHeaderGeneration.GenerationExecutor {
             progressReporter: progressReporter
           ))
       }
+      if let aggregateWarning = objCMetadataWarningBudget.aggregateWarning {
+        let warning = await persistObjCMetadataAggregateWarning(
+          aggregateWarning,
+          runID: runID,
+          store: store
+        )
+        warnings.append(warning)
+        progressReporter?(.warning(warning))
+      }
       let summary = PrivateHeaderGeneration.RunSummary(
         runID: runID,
         status: finalSnapshot.status,
@@ -763,6 +817,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         stateDirectory: stateDirectory,
         store: store,
         publisher: publisher,
+        accumulatedWarnings: warnings,
+        objCMetadataWarningBudget: objCMetadataWarningBudget,
         progressReporter: progressReporter
       )
     }
@@ -787,6 +843,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     stateDirectory: URL,
     store: GenerationStore,
     publisher: ArtifactPublisher,
+    accumulatedWarnings: [PrivateHeaderGeneration.GenerationWarning],
+    objCMetadataWarningBudget: ObjCMetadataWarningPresentationBudget,
     progressReporter: ProgressReporter?
   ) async throws -> Never {
     let interruptionRequested = cancellationRequested()
@@ -817,7 +875,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           : .failed(message: String(describing: underlyingError))
       )
     }
-    var warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+    var warnings = accumulatedWarnings
     try await Self.recoverTargetReplacements(
       in: stateDirectory,
       artifactDirectory: artifactDirectory,
@@ -849,6 +907,15 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           store: store,
           progressReporter: progressReporter
         ))
+    }
+    if let aggregateWarning = objCMetadataWarningBudget.aggregateWarning {
+      let warning = await persistObjCMetadataAggregateWarning(
+        aggregateWarning,
+        runID: runID,
+        store: store
+      )
+      warnings.append(warning)
+      progressReporter?(.warning(warning))
     }
     let snapshot = try await store.runSnapshot(runID)
     guard snapshot.status != .running else {
@@ -906,6 +973,28 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     return warning
   }
 
+  fileprivate func persistObjCMetadataAggregateWarning(
+    _ warning: PrivateHeaderGeneration.GenerationWarning,
+    runID: PrivateHeaderGeneration.RunID,
+    store: GenerationStore
+  ) async -> PrivateHeaderGeneration.GenerationWarning {
+    do {
+      try await store.recordRunLog(
+        runID: runID,
+        kind: warning.kind,
+        relativePath: warning.relativePath,
+        message: warning.message
+      )
+      return warning
+    } catch {
+      return PrivateHeaderGeneration.GenerationWarning(
+        kind: warning.kind,
+        relativePath: warning.relativePath,
+        message: "\(warning.message); aggregate warning persistence failed: \(error)"
+      )
+    }
+  }
+
   fileprivate func executeTarget(
     _ target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
     plan: PrivateHeaderGeneration.Plan,
@@ -935,7 +1024,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         result: Self.interruptedResult(target: target, at: dateProvider()),
         completedFiles: [:],
         stagedSourceDirectory: nil,
-        artifactRoot: nil
+        artifactRoot: nil,
+        warnings: []
       )
     } catch {
       return Self.failedExecution(
@@ -951,7 +1041,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         result: Self.interruptedResult(target: target, at: dateProvider()),
         completedFiles: [:],
         stagedSourceDirectory: nil,
-        artifactRoot: nil
+        artifactRoot: nil,
+        warnings: []
       )
     }
     let artifactRoot = try Self.artifactRoot(for: target, layout: plan.options.layout)
@@ -988,7 +1079,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         ),
         completedFiles: staged.files,
         stagedSourceDirectory: staged.sourceDirectory,
-        artifactRoot: artifactRoot
+        artifactRoot: artifactRoot,
+        warnings: Self.objCMetadataWarnings(
+          rawResult,
+          relativePath: artifactRoot.rawValue
+        )
       )
     }
     return Self.failedExecution(
@@ -1020,8 +1115,38 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       ),
       completedFiles: [:],
       stagedSourceDirectory: nil,
-      artifactRoot: nil
+      artifactRoot: nil,
+      warnings: []
     )
+  }
+
+  fileprivate static func objCMetadataWarnings(
+    _ result: PrivateHeaderGeneration.RawDumping.Result,
+    relativePath: String
+  ) -> [PrivateHeaderGeneration.GenerationWarning] {
+    var warnings = result.diagnostics.map { diagnostic in
+      PrivateHeaderGeneration.GenerationWarning(
+        kind: "objc-metadata-warning",
+        relativePath: relativePath,
+        message: "\(diagnostic.owner): \(diagnostic.degradation)"
+      )
+    }
+    if result.omittedDiagnosticCount > 0 {
+      warnings.append(
+        PrivateHeaderGeneration.GenerationWarning(
+          kind: "objc-metadata-warning",
+          relativePath: relativePath,
+          message:
+            "Objective-C metadata diagnostics: \(result.omittedDiagnosticCount)"
+            + " additional diagnostics were omitted by the bounded helper report"
+        )
+      )
+    }
+    return Array(Set(warnings)).sorted {
+      if $0.relativePath != $1.relativePath { return $0.relativePath < $1.relativePath }
+      if $0.kind != $1.kind { return $0.kind < $1.kind }
+      return $0.message < $1.message
+    }
   }
 
   fileprivate static func interruptedResult(

@@ -26,10 +26,15 @@ struct PrivateHeaderGenerationRawDumpingTests {
 
     #expect(invocation.helperURL == helperURLs.host)
     #expect(
+      invocation.diagnosticsReportURL.deletingLastPathComponent()
+        == stageDirectory.deletingLastPathComponent()
+    )
+    #expect(
       invocation.command == [
         "/opt/privateheaderkit/bin/privateheaderkit", "__raw-dump", "-o", stageDirectory.path,
         "-b", "-h", "-s", "-c", "--expected-cache-uuid",
-        cacheUUID.uuidString.lowercased(), "-D", "-R",
+        cacheUUID.uuidString.lowercased(), "-D", "-R", "--diagnostics-report",
+        invocation.diagnosticsReportURL.path,
         "/System/Library/PrivateFrameworks/Foo.framework",
       ])
     #expect(invocation.environment == ["PH_PROFILE": "1"])
@@ -58,6 +63,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
       invocation.command == [
         "xcrun", "simctl", "spawn", "SIM-001", "/opt/privateheaderkit/bin/privateheaderkit-sim",
         "__raw-dump", "-o", stageDirectory.path, "-b", "-h",
+        "--diagnostics-report", invocation.diagnosticsReportURL.path,
         "/System/Library/Frameworks/UIKit.framework",
       ])
     #expect(

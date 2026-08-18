@@ -5,13 +5,24 @@ extension PrivateHeaderGeneration {
   package enum RawDumping {
     package static func makeInvocation(_ request: Request) -> Invocation {
       let helperURL = request.executionMode.helperURL(from: request.helperURLs)
+      let diagnosticsReportURL = request.stagingOutputDirectory
+        .deletingLastPathComponent()
+        .appendingPathComponent(
+        ".privateheaderkit-raw-diagnostics-\(UUID().uuidString.lowercased()).json",
+        isDirectory: false
+      )
       return Invocation(
         phaseLabel: "raw-header-dump",
         executionMode: request.executionMode,
         helperURL: helperURL,
         inputPath: request.inputPath,
         stagingOutputDirectory: request.stagingOutputDirectory,
-        command: makeCommand(helperURL: helperURL, request: request),
+        diagnosticsReportURL: diagnosticsReportURL,
+        command: makeCommand(
+          helperURL: helperURL,
+          request: request,
+          diagnosticsReportURL: diagnosticsReportURL
+        ),
         environment: makeEnvironment(for: request)
       )
     }
@@ -47,7 +58,11 @@ extension PrivateHeaderGeneration {
       )
     }
 
-    private static func makeCommand(helperURL: URL, request: Request) -> [String] {
+    private static func makeCommand(
+      helperURL: URL,
+      request: Request,
+      diagnosticsReportURL: URL
+    ) -> [String] {
       var command: [String]
       switch request.executionMode {
       case .host:
@@ -83,6 +98,7 @@ extension PrivateHeaderGeneration {
       if request.executionMode.isHost, request.options.preferRuntimeMetadata {
         command.append("-R")
       }
+      command += ["--diagnostics-report", diagnosticsReportURL.path]
       command.append(request.inputPath)
       return command
     }
@@ -224,6 +240,7 @@ extension PrivateHeaderGeneration.RawDumping {
     package let helperURL: URL
     package let inputPath: String
     package let stagingOutputDirectory: URL
+    package let diagnosticsReportURL: URL
     package let command: [String]
     package let environment: [String: String]
   }
@@ -240,15 +257,42 @@ extension PrivateHeaderGeneration.RawDumping {
     package let terminationStatus: Int32
     package let wasKilled: Bool
     package let failureSummary: String?
+    package let diagnosticsReport: PrivateHeaderKitRawDumpDiagnosticsReport
 
     package init(
       terminationStatus: Int32,
       wasKilled: Bool = false,
-      failureSummary: String? = nil
+      failureSummary: String? = nil,
+      diagnostics: [PrivateHeaderKitRawDumpDiagnostic] = [],
+      omittedDiagnosticCount: UInt = 0
     ) {
       self.terminationStatus = terminationStatus
       self.wasKilled = wasKilled
       self.failureSummary = failureSummary
+      self.diagnosticsReport = PrivateHeaderKitRawDumpDiagnosticsReport(
+        diagnostics: diagnostics,
+        omittedDiagnosticCount: omittedDiagnosticCount
+      )
+    }
+
+    package init(
+      terminationStatus: Int32,
+      wasKilled: Bool = false,
+      failureSummary: String? = nil,
+      diagnosticsReport: PrivateHeaderKitRawDumpDiagnosticsReport
+    ) {
+      self.terminationStatus = terminationStatus
+      self.wasKilled = wasKilled
+      self.failureSummary = failureSummary
+      self.diagnosticsReport = diagnosticsReport
+    }
+
+    package var diagnostics: [PrivateHeaderKitRawDumpDiagnostic] {
+      diagnosticsReport.diagnostics
+    }
+
+    package var omittedDiagnosticCount: UInt {
+      diagnosticsReport.omittedDiagnosticCount
     }
 
     package var succeeded: Bool {

@@ -106,6 +106,17 @@ available. Failed or interrupted targets retain their last successfully
 published files. The immutable generation under `.privateheaderkit` is a
 recovery snapshot, not a visibility gate for generated headers.
 
+Objective-C header generation reads only the directly adopted protocol names
+needed by class, category, and protocol declarations. Protocol metadata reads
+are range-checked and traversal is bounded; an unreadable reference, cycle, or
+safety-limit cutoff preserves the metadata that was decoded successfully. Once
+that target is published, PrivateHeaderKit reports the precise owner and
+degradation as an `objc-metadata-warning` and persists the warning in
+`generation.sqlite`. A bounded diagnostics report records when additional
+warnings were omitted, so malformed metadata cannot grow process output without
+limit. Live warning presentation is also capped across the run; one aggregate
+warning points to the retained per-target details in the database.
+
 State, attempts, publication intent, and run diagnostics are stored in
 `generation.sqlite`, outside the published header tree. The top-level source
 link and `.privateheaderkit` tree are internal recovery artifacts; consumers

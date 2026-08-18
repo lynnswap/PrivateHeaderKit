@@ -1,7 +1,7 @@
 import Foundation
 import Dispatch
 import MachOKit
-import MachOObjCSection
+@_spi(Diagnostics) import MachOObjCSection
 import MachOSwiftSection
 import ObjCDump
 import PrivateHeaderKitExecutableResolution
@@ -98,6 +98,8 @@ struct DumpOptions {
     var logSkippedClasses: Bool = false
     var profile: Bool = false
     var logSwiftEvents: Bool = false
+    var diagnosticsReportURL: URL?
+    let objcDiagnostics = RawDumpObjCDiagnosticsAccumulator()
 }
 
 public struct PrivateHeaderKitRawDumpCLI {
@@ -127,7 +129,13 @@ public struct PrivateHeaderKitRawDumpCLI {
 
         do {
             try await run(parsed: parsed)
+            try writeDiagnosticsReportIfRequested(parsed.options)
         } catch {
+            do {
+                try writeDiagnosticsReportIfRequested(parsed.options)
+            } catch {
+                fputs("privateheaderkit __raw-dump: diagnostics report error: \(error)\n", stderr)
+            }
             fputs("privateheaderkit __raw-dump: error: \(error)\n", stderr)
             exit(EXIT_FAILURE)
         }
@@ -186,6 +194,11 @@ func parseArguments(
             options.verbose = true
         case "-R":
             options.useRuntimeFallback = true
+        case "--diagnostics-report":
+            let nextIndex = index + 1
+            guard nextIndex < args.count else { return nil }
+            options.diagnosticsReportURL = URL(fileURLWithPath: args[nextIndex])
+            index += 1
         default:
             if arg.hasPrefix("-") {
                 // ignore unknown flags for compatibility
@@ -226,8 +239,15 @@ private func printUsage() {
              Require the helper process to use the expected dyld shared cache
         -D   Verbose logging
         -R   Prefer Objective-C runtime metadata (auto-enabled in simulator)
+        --diagnostics-report <path>
+             Write the versioned Objective-C metadata diagnostics report
     """
     print(text)
+}
+
+private func writeDiagnosticsReportIfRequested(_ options: DumpOptions) throws {
+    guard let reportURL = options.diagnosticsReportURL else { return }
+    try writeRawDumpDiagnosticsReport(options.objcDiagnostics.report, to: reportURL)
 }
 
 func shouldUseRuntimeFallback(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
@@ -1100,7 +1120,11 @@ private func collectObjCMetadata<Section: ObjCSectionRepresentable>(
     if let list = objc.protocols32 { protocolCandidates.append(contentsOf: list) }
 
     for proto in protocolCandidates {
-        if let info = protocolInfo(proto, in: machO) {
+        if let info = protocolInfo(
+            proto,
+            in: machO,
+            diagnostics: options.objcDiagnostics
+        ) {
             metadata.protocolInfos[info.name] = info
         }
     }
@@ -1114,7 +1138,11 @@ private func collectObjCMetadata<Section: ObjCSectionRepresentable>(
     if let list = objc.categories2_32 { categoryCandidates.append(contentsOf: list) }
 
     for category in categoryCandidates {
-        if let info = categoryInfo(category, in: machO) {
+        if let info = categoryInfo(
+            category,
+            in: machO,
+            diagnostics: options.objcDiagnostics
+        ) {
             let key = "\(info.className)(\(info.name))"
             metadata.categoryInfos[key] = info
         }
@@ -1406,25 +1434,37 @@ private func collectClassInfos<T: ObjCClassProtocol>(
 
 private func protocolInfo(
     _ proto: any ObjCProtocolProtocol,
-    in machO: RawMachO
+    in machO: RawMachO,
+    diagnostics: RawDumpObjCDiagnosticsAccumulator
 ) -> ObjCProtocolInfo? {
+    let options = rawDumpObjCProtocolInfoOptions(for: .protocol)
     switch machO {
     case .file(let file):
-        proto.info(in: file)
+        let result = proto.readInfo(in: file, options: options)
+        diagnostics.append(contentsOf: result.diagnostics)
+        return result.value
     case .loaded(let image):
-        proto.info(in: image)
+        let result = proto.readInfo(in: image, options: options)
+        diagnostics.append(contentsOf: result.diagnostics)
+        return result.value
     }
 }
 
 private func categoryInfo(
     _ category: any ObjCCategoryProtocol,
-    in machO: RawMachO
+    in machO: RawMachO,
+    diagnostics: RawDumpObjCDiagnosticsAccumulator
 ) -> ObjCCategoryInfo? {
+    let options = rawDumpObjCInfoOptions(for: .category)
     switch machO {
     case .file(let file):
-        category.info(in: file)
+        let result = category.readInfo(in: file, options: options)
+        diagnostics.append(contentsOf: result.diagnostics)
+        return result.value
     case .loaded(let image):
-        category.info(in: image)
+        let result = category.readInfo(in: image, options: options)
+        diagnostics.append(contentsOf: result.diagnostics)
+        return result.value
     }
 }
 
@@ -1434,8 +1474,11 @@ private func collectClassInfos<T: ObjCClassProtocol>(
     options: DumpOptions,
     classInfos: inout [String: ObjCClassInfo]
 ) {
+    let readOptions = rawDumpObjCInfoOptions(for: .class)
     for cls in classes {
-        if let info = cls.info(in: machO) {
+        let result = cls.readInfo(in: machO, options: readOptions)
+        options.objcDiagnostics.append(contentsOf: result.diagnostics)
+        if let info = result.value {
             classInfos[info.name] = info
         } else if options.verbose && options.logSkippedClasses {
             logClassInfoFailure(cls, in: machO)
@@ -1449,8 +1492,11 @@ private func collectClassInfos<T: ObjCClassProtocol>(
     options: DumpOptions,
     classInfos: inout [String: ObjCClassInfo]
 ) {
+    let readOptions = rawDumpObjCInfoOptions(for: .class)
     for cls in classes {
-        if let info = cls.info(in: machO) {
+        let result = cls.readInfo(in: machO, options: readOptions)
+        options.objcDiagnostics.append(contentsOf: result.diagnostics)
+        if let info = result.value {
             classInfos[info.name] = info
         } else if options.verbose && options.logSkippedClasses {
             logClassInfoFailure(cls, in: machO)

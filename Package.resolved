@@ -58,10 +58,9 @@
     {
       "identity" : "machoobjcsection",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
+      "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
-        "revision" : "edac0dafad8693e0b09869fa7e4d13adf1ef8db7",
-        "version" : "0.8.104"
+        "revision" : "7d159a0216565edae417bf40716dd447bf295e7b"
       }
     },
     {
@@ -69,7 +68,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "c1e9e6eade17dc2a617326719d61f6cf9025e43f"
+        "revision" : "030963e9f69118f4c4b22a41a90a03cc51a79833"
       }
     },
     {

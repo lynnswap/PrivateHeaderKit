@@ -1,4 +1,5 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 import Testing
 
 #if canImport(Darwin)
@@ -603,6 +604,14 @@ struct PrivateHeaderKitCLIExecutionTests {
             try Data("// generated\n".utf8).write(
                 to: headerDirectory.appendingPathComponent("Generated.h")
             )
+            guard let reportIndex = command.firstIndex(of: "--diagnostics-report"),
+                  reportIndex + 1 < command.count
+            else {
+                throw ToolingError.message("raw dump command is missing its diagnostics report")
+            }
+            try Data(
+                #"{"schemaVersion":1,"diagnostics":[],"omittedDiagnosticCount":0}"#.utf8
+            ).write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
             return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
         }
 
@@ -662,6 +671,99 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(result.terminationStatus == 19)
         #expect(!result.wasKilled)
         #expect(result.failureSummary == "helper-warning\nfatal-tail")
+        #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
+    }
+
+    @Test func successfulRawDumpRequiresConsumesAndReturnsDiagnosticsReport() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stage = root.appendingPathComponent("stage", isDirectory: true)
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
+            try .init(
+                helperURLs: .init(host: root.appendingPathComponent("helper"), simulator: root),
+                executionMode: .host,
+                inputPath: "/System/Library/Frameworks/AppKit.framework",
+                stagingOutputDirectory: stage
+            )
+        )
+        let runner = RecordingCommandRunner()
+        await runner.setStreamingHandler { command, _, _ in
+            guard let reportIndex = command.firstIndex(of: "--diagnostics-report") else {
+                throw ToolingError.message("missing diagnostics report argument")
+            }
+            try Data(
+                #"{"schemaVersion":1,"diagnostics":[{"owner":"Objective-C protocol P","degradation":"list was truncated"}],"omittedDiagnosticCount":2}"#.utf8
+            ).write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
+            return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+        }
+
+        let result = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
+
+        #expect(result.diagnostics.count == 1)
+        #expect(result.diagnostics.first?.owner == "Objective-C protocol P")
+        #expect(result.omittedDiagnosticCount == 2)
+        #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
+    }
+
+    @Test func successfulRawDumpRejectsMissingOrMalformedDiagnosticsReport() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stage = root.appendingPathComponent("stage", isDirectory: true)
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+
+        for malformed in [false, true] {
+            let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
+                try .init(
+                    helperURLs: .init(
+                        host: root.appendingPathComponent("helper"),
+                        simulator: root
+                    ),
+                    executionMode: .host,
+                    inputPath: "/System/Library/Frameworks/AppKit.framework",
+                    stagingOutputDirectory: stage
+                )
+            )
+            let runner = RecordingCommandRunner()
+            if malformed {
+                await runner.setStreamingHandler { _, _, _ in
+                    try Data("not-json".utf8).write(to: invocation.diagnosticsReportURL)
+                    return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+                }
+            }
+
+            await #expect(throws: PrivateHeaderKitRawDumpContractError.self) {
+                _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
+            }
+            #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
+        }
+    }
+
+    @Test func successfulRawDumpRejectsOversizedDiagnosticsBeforeDecode() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stage = root.appendingPathComponent("stage", isDirectory: true)
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
+            try .init(
+                helperURLs: .init(host: root.appendingPathComponent("helper"), simulator: root),
+                executionMode: .host,
+                inputPath: "/System/Library/Frameworks/AppKit.framework",
+                stagingOutputDirectory: stage
+            )
+        )
+        let runner = RecordingCommandRunner()
+        await runner.setStreamingHandler { _, _, _ in
+            try Data(
+                count: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount + 1
+            ).write(to: invocation.diagnosticsReportURL)
+            return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+        }
+
+        await #expect(throws: PrivateHeaderKitRawDumpContractError.self) {
+            _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
+        }
+        #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
     @Test func signalCoordinatorWaitsForOperationCleanupBeforeReturningSignalStatus() async {
@@ -1716,7 +1818,13 @@ private struct BufferedRawDumpProbeRunner: CommandRunning {
         env: [String: String]?,
         cwd: URL?
     ) async throws -> StreamingCommandResult {
-        StreamingCommandResult(
+        if let reportIndex = command.firstIndex(of: "--diagnostics-report") {
+            try Data("not-json".utf8).write(
+                to: URL(fileURLWithPath: command[reportIndex + 1]),
+                options: .atomic
+            )
+        }
+        return StreamingCommandResult(
             status: 19,
             wasKilled: false,
             lastLines: ["helper-warning", "fatal-tail"]

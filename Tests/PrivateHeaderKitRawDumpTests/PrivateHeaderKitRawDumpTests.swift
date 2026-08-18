@@ -1,5 +1,6 @@
 import Foundation
 import MachOKit
+@_spi(Core) @_spi(Diagnostics) @testable import MachOObjCSection
 import PrivateHeaderKitHelperProtocol
 import Testing
 #if canImport(PrivateHeaderKitRawDumpRuntimeObjC)
@@ -42,6 +43,7 @@ struct PrivateHeaderKitRawDumpArgumentTests {
             "--expected-cache-uuid", "11111111-2222-3333-4444-555555555555",
             "-D",
             "-R",
+            "--diagnostics-report", "/tmp/report.json",
             "/tmp/input"
         ]
 
@@ -59,6 +61,7 @@ struct PrivateHeaderKitRawDumpArgumentTests {
         #expect(parsed?.options.expectedCacheUUID == UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         #expect(parsed?.options.verbose == true)
         #expect(parsed?.options.useRuntimeFallback == true)
+        #expect(parsed?.options.diagnosticsReportURL?.path == "/tmp/report.json")
     }
 
     @Test func parseArgumentsIgnoresUnknownFlags() {
@@ -102,6 +105,154 @@ struct PrivateHeaderKitRawDumpArgumentTests {
         #expect(didPrint == true)
     }
 }
+
+@Suite
+struct PrivateHeaderKitRawDumpObjCPolicyTests {
+    @Test func headerOwnersUseBoundedDirectProtocolNames() {
+        #expect(rawDumpObjCProtocolReadPolicy(for: .class) == .headerDump)
+        #expect(rawDumpObjCProtocolReadPolicy(for: .category) == .headerDump)
+        assertDirectProtocolNames(rawDumpObjCInfoOptions(for: .class).protocolInfoOptions)
+        assertDirectProtocolNames(rawDumpObjCInfoOptions(for: .category).protocolInfoOptions)
+    }
+
+    @Test func topLevelProtocolsUseBoundedDirectProtocolNames() {
+        #expect(rawDumpObjCProtocolReadPolicy(for: .protocol) == .directProtocolNames)
+        assertDirectProtocolNames(rawDumpObjCProtocolInfoOptions(for: .protocol))
+    }
+
+    @Test func typedDiagnosticsAreBoundedFormattedAndWrittenThroughTheWireCodec() throws {
+#if canImport(Darwin)
+        let fixture = try InvalidIdentityProtocolFixture(count: 257)
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+        for objcProtocol in fixture.protocols {
+            accumulator.append(contentsOf: objcProtocol.readInfo(in: fixture.machO).diagnostics)
+        }
+        let report = accumulator.report
+        #expect(
+            report.diagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        )
+        #expect(report.omittedDiagnosticCount == 1)
+        #expect(report.diagnostics.allSatisfy { $0.owner.hasPrefix("Objective-C protocol") })
+        #expect(
+            report.diagnostics.allSatisfy {
+                $0.degradation.contains("has no stable identity")
+            }
+        )
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "PrivateHeaderKitRawDumpDiagnosticTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reportURL = root.appendingPathComponent("diagnostics.json")
+        try writeRawDumpDiagnosticsReport(report, to: reportURL)
+        let decoded = try JSONDecoder().decode(
+            PrivateHeaderKitRawDumpDiagnosticsReport.self,
+            from: Data(contentsOf: reportURL)
+        )
+        #expect(decoded == report)
+#endif
+    }
+
+    private func assertDirectProtocolNames(_ options: ObjCProtocolInfoOptions) {
+        switch options.traversal {
+        case .depth(let depth):
+            #expect(depth == 1)
+        case .recursive:
+            Issue.record("raw header dumping must not recursively expand adopted protocols")
+        }
+        switch options.referencedProtocolInfo {
+        case .nameOnly:
+            break
+        case .full:
+            Issue.record("raw header dumping only needs adopted protocol names")
+        }
+    }
+}
+
+#if canImport(Darwin)
+private final class InvalidIdentityProtocolFixture {
+    let machO: MachOFile
+    let protocols: [ObjCProtocol64]
+    private let url: URL
+
+    init(count: Int) throws {
+        let fileSize = 0x20_000
+        let vmAddress: UInt64 = 0x1_0000_0000
+        let nameBaseOffset = 0x1_000
+        let nameStride = 0x40
+        var data = Data(count: fileSize)
+
+        var header = mach_header_64()
+        header.magic = UInt32(MH_MAGIC_64)
+        header.cputype = CPU_TYPE_ARM64
+        header.cpusubtype = CPU_SUBTYPE_ARM64_ALL
+        header.filetype = UInt32(MH_DYLIB)
+        header.ncmds = 1
+        header.sizeofcmds = UInt32(MemoryLayout<segment_command_64>.size)
+        data.storeValue(header, at: 0)
+
+        var segment = segment_command_64()
+        segment.cmd = UInt32(LC_SEGMENT_64)
+        segment.cmdsize = UInt32(MemoryLayout<segment_command_64>.size)
+        segment.vmaddr = vmAddress
+        segment.vmsize = UInt64(fileSize)
+        segment.filesize = UInt64(fileSize)
+        segment.maxprot = VM_PROT_READ
+        segment.initprot = VM_PROT_READ
+        data.storeValue(segment, at: MemoryLayout<mach_header_64>.size)
+
+        var protocols: [ObjCProtocol64] = []
+        protocols.reserveCapacity(count)
+        for index in 0..<count {
+            let nameOffset = nameBaseOffset + index * nameStride
+            data.storeCString("P\(String(format: "%03d", index))", at: nameOffset)
+            let layout = ObjCProtocol64.Layout(
+                isa: 0,
+                mangledName: vmAddress + UInt64(nameOffset),
+                protocols: 0,
+                instanceMethods: 0,
+                classMethods: 0,
+                optionalInstanceMethods: 0,
+                optionalClassMethods: 0,
+                instanceProperties: 0,
+                size: UInt32(MemoryLayout<ObjCProtocol64.Layout>.size),
+                flags: 0,
+                _extendedMethodTypes: 0,
+                _demangledName: 0,
+                _classProperties: 0
+            )
+            protocols.append(ObjCProtocol64(layout: layout, offset: -(index + 1)))
+        }
+
+        url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "PrivateHeaderKitInvalidIdentityProtocol-\(UUID().uuidString)"
+        )
+        try data.write(to: url)
+        machO = try MachOFile(url: url)
+        self.protocols = protocols
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+private extension Data {
+    mutating func storeValue<Value>(_ value: Value, at offset: Int) {
+        Swift.withUnsafeBytes(of: value) { bytes in
+            replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+        }
+    }
+
+    mutating func storeCString(_ value: String, at offset: Int) {
+        let bytes = Array(value.utf8) + [0]
+        replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+    }
+}
+#endif
 
 @Suite
 struct PrivateHeaderKitRawDumpEnvironmentTests {
