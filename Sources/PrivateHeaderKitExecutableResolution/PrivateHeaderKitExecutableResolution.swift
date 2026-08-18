@@ -7,6 +7,9 @@ package enum ExecutableResolution {
         bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
     ) -> URL? {
         if let executableURL = bundleExecutableURL(bundleURL) {
+            // `Bundle(url:)` may resolve symlinks, returning an executable inside the real path
+            // (e.g. `/System/Cryptexes/OS/...`). Prefer rebasing back onto the original bundle URL
+            // so output paths remain stable under `/System/Library/...` when possible.
             let bundleName = bundleURL.lastPathComponent
             let components = executableURL.pathComponents
             if let bundleIndex = components.lastIndex(of: bundleName),
@@ -35,6 +38,10 @@ package enum ExecutableResolution {
         for candidate in candidates where fileExists(candidate.path) {
             return candidate
         }
+
+        // Some system bundles (especially on modern macOS) only expose a dyld shared-cache image
+        // path while the on-disk executable symlink is intentionally absent/broken. Return the
+        // canonical in-bundle executable path so shared-cache lookup can still resolve the image.
         return bundleURL.appendingPathComponent(baseName)
     }
 
@@ -69,6 +76,9 @@ package enum ExecutableResolution {
 
         var results = basePaths
         for basePath in basePaths {
+            // Shared-cache framework identities are commonly versioned even when the
+            // filesystem-facing source path uses the unversioned bundle symlink. Restrict these
+            // aliases to direct framework images so a nested child cannot match its parent's image.
             guard let frameworkRange = basePath.range(of: ".framework/"),
                   !basePath.contains(".framework/Versions/")
             else {
