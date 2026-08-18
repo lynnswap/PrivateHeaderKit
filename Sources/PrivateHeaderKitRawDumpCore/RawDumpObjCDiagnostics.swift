@@ -175,10 +175,6 @@ private func failureDescription(
         "image header at address \(address) is not readable for \(byteCount) bytes"
     case .invalidRelativeEntrySize(let advertised, let minimum):
         "relative entry size \(advertised) is smaller than \(minimum)"
-    case .missingRelativeImageIndex:
-        "dyld-cache image index is unavailable"
-    case .relativeEntryNotFound(let imageIndex):
-        "relative entry for cache image index \(imageIndex) was not found"
     case .invalidRelativeListLocation:
         "relative list location could not be mapped"
     case .relativeImageUnavailable(let imageIndex):
