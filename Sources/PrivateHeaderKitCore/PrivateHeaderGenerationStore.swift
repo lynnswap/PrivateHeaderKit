@@ -660,18 +660,24 @@ package actor GenerationStore {
       }
 
       if intent.state == .committed {
-        guard publication.currentGenerationID == intent.generationID,
-          publication.stablePathState == .managed,
-          let marker = publication.currentMarker,
-          marker.planFingerprint == intent.planFingerprint,
-          marker.artifactChecksum == intent.artifactChecksum
-        else {
+        guard Self.currentPublicationMatchesCommittedIntent(publication, intent: intent) else {
           throw PrivateHeaderGeneration.StateError.corruptPublication(
             "committed generation \(intent.generationID.rawValue) does not match current publication"
           )
         }
+        let action: PrivateHeaderGeneration.RecoveryAction
+        switch publication.stablePathState {
+        case .managed:
+          action = .none
+        case .absent:
+          action = .restoreStablePointer(intent.generationID)
+        case .legacyDirectory:
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "committed generation \(intent.generationID.rawValue) conflicts with an unmanaged stable publication"
+          )
+        }
         try Self.interruptDanglingRuns(db, at: date)
-        return .none
+        return action
       }
       if intent.state == .aborted {
         guard publication.currentGenerationID == intent.previousGenerationID else {
@@ -679,16 +685,31 @@ package actor GenerationStore {
             "aborted generation \(intent.generationID.rawValue) does not preserve its previous current generation"
           )
         }
+        let stableRecoveryAction: PrivateHeaderGeneration.RecoveryAction?
         switch (intent.previousGenerationID, publication.stablePathState) {
         case (nil, .absent), (nil, .legacyDirectory):
-          break
+          stableRecoveryAction = nil
         case (.some, .managed):
           guard publication.currentMarker != nil else {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
               "aborted generation \(intent.generationID.rawValue) has no marker for its previous current generation"
             )
           }
-        case (nil, .managed), (.some, .absent), (.some, .legacyDirectory):
+          stableRecoveryAction = nil
+        case (.some(let previousGenerationID), .absent):
+          guard
+            let previousIntent = try Self.fetchPublicationIntentIfPresent(
+              db,
+              generationID: previousGenerationID
+            ),
+            Self.currentPublicationMatchesCommittedIntent(publication, intent: previousIntent)
+          else {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "aborted generation \(intent.generationID.rawValue) has no authenticated committed previous generation"
+            )
+          }
+          stableRecoveryAction = .restoreStablePointer(previousGenerationID)
+        case (nil, .managed), (.some, .legacyDirectory):
           throw PrivateHeaderGeneration.StateError.corruptPublication(
             "aborted generation \(intent.generationID.rawValue) has inconsistent stable publication state"
           )
@@ -697,7 +718,7 @@ package actor GenerationStore {
         if publication.validGenerationIDs.contains(intent.generationID) {
           return .discardGeneration(intent.generationID)
         }
-        return .recognized(publication.currentGenerationID)
+        return stableRecoveryAction ?? .recognized(publication.currentGenerationID)
       }
 
       guard publication.validGenerationIDs.contains(intent.generationID) else {
@@ -1556,6 +1577,21 @@ extension GenerationStore {
       return nil
     }
     return try fetchPublicationIntent(db, generationID: PrivateHeaderGeneration.GenerationID(id))
+  }
+
+  fileprivate static func currentPublicationMatchesCommittedIntent(
+    _ publication: PrivateHeaderGeneration.PublicationSnapshot,
+    intent: PrivateHeaderGeneration.PublicationIntent
+  ) -> Bool {
+    guard intent.state == .committed,
+      publication.currentGenerationID == intent.generationID,
+      let marker = publication.currentMarker
+    else {
+      return false
+    }
+    return marker.generationID == intent.generationID
+      && marker.planFingerprint == intent.planFingerprint
+      && marker.artifactChecksum == intent.artifactChecksum
   }
 
   fileprivate static func fetchPublicationIntentIfPresent(

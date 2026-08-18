@@ -357,6 +357,7 @@ extension PrivateHeaderGeneration {
     case none
     case recognized(GenerationID?)
     case discardGeneration(GenerationID)
+    case restoreStablePointer(GenerationID)
     case completeStablePointer(GenerationID)
     case rolledForward(GenerationID)
   }

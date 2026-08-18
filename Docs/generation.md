@@ -159,6 +159,11 @@ and new directories exist, PrivateHeaderKit leaves both unchanged and stops;
 it never guesses how to merge or overwrite them. Unrelated siblings under
 `generated-headers` are not part of this relocation.
 
+If the printed header directory or top-level source link is removed while the
+authenticated current generation remains available, the next run recreates
+the managed link and restores the missing published files before deciding
+whether to continue or restart.
+
 ## Continue or Restart
 
 - `--resume` continues the latest compatible plan and runs only unfinished or
