@@ -86,11 +86,21 @@ for the command's generated reference.
 Consumers should use only the concrete directory printed as `Headers`:
 
 ```text
-<output-base>/generated-headers/<source-storage-id>/
+<output-base>/generated-headers/<platform>/<release-directory>/
 ```
 
-The storage ID is versioned and owned by PrivateHeaderKit. Do not construct it
-from the displayed source name.
+Platform directories use the displayed Apple platform name: `iOS`, `watchOS`,
+or `macOS`. Release directories include the exact build when it is available:
+
+```text
+iOS/26.4 (23E244)/
+iOS/27.0 beta (24A5390f)/
+```
+
+PrivateHeaderKit does not infer a beta number because installed runtime metadata
+does not provide one. A beta-shaped Apple build identifier is accepted only
+when the source runtime's seed metadata agrees; disagreement or unreadable
+metadata stops generation instead of publishing under a guessed name.
 
 The complete output base is:
 
@@ -98,11 +108,12 @@ The complete output base is:
 <output-base>/
   <source-storage-id> -> .privateheaderkit/<source-storage-id>/current
   generated-headers/
-    <source-storage-id>/
-      Frameworks/...
-      PrivateFrameworks/...
-      SystemLibrary/...
-      usr/lib/...
+    <platform>/
+      <release-directory>/
+        Frameworks/...
+        PrivateFrameworks/...
+        SystemLibrary/...
+        usr/lib/...
   .privateheaderkit/
     <source-storage-id>/
       current -> generations/<generation-id>
@@ -139,6 +150,14 @@ State, attempts, publication intent, and run diagnostics are stored in
 `generation.sqlite`, outside the published header tree. The top-level source
 link and `.privateheaderkit` tree are internal recovery artifacts; consumers
 should not use them instead of the printed `Headers` directory.
+
+PrivateHeaderKit automatically relocates its previous managed live directory,
+`generated-headers/<source-storage-id>`, to the platform/release layout while
+holding the same source lease. The whole directory is renamed atomically so
+completed targets from an interrupted run remain resumable. If both the old
+and new directories exist, PrivateHeaderKit leaves both unchanged and stops;
+it never guesses how to merge or overwrite them. Unrelated siblings under
+`generated-headers` are not part of this relocation.
 
 ## Continue or Restart
 

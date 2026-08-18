@@ -1993,6 +1993,118 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try String(contentsOf: additionalHeader, encoding: .utf8) == "stable")
   }
 
+  @Test func storageIdentifierLiveDirectoryMovesToHumanPathBeforeResume() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "incremental"),
+        runID: "run-before-layout-migration",
+        generationID: "generation-before-layout-migration",
+        publicationFaultInjector: { point in
+          if point == .afterPrepared { throw InjectedFault.stop }
+        }
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+
+    try FileManager.default.moveItem(at: fixture.liveURL, to: fixture.legacyStorageLiveURL)
+    let unrelatedFile = fixture.outputBase.appendingPathComponent(
+      "generated-headers/scripts/keep.txt",
+      isDirectory: false
+    )
+    try FileManager.default.createDirectory(
+      at: unrelatedFile.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("unrelated".utf8).write(to: unrelatedFile)
+
+    let summaryExecutor = fixture.executor(
+      runner: RecordingRunner(contents: "must-not-run"),
+      runID: "run-layout-summary",
+      generationID: "generation-layout-summary"
+    )
+    let preparedPlan = try await summaryExecutor.prepare(
+      fixture.plan(.query("Foo"), resumeBehavior: .resume)
+    )
+    #expect(try await summaryExecutor.availableResumeSummary(for: preparedPlan) == nil)
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyStorageLiveURL.path))
+    #expect(try fixture.readLiveHeader() == "incremental")
+
+    let runner = RecordingRunner(contents: "must-not-run")
+    let result = try await fixture.executor(
+      runner: runner,
+      runID: "run-after-layout-migration",
+      generationID: "generation-after-layout-migration"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+
+    #expect(await runner.invocationCount == 0)
+    #expect(result.artifactDirectory == fixture.liveURL)
+    #expect(try fixture.readLiveHeader() == "incremental")
+    #expect(try String(contentsOf: unrelatedFile, encoding: .utf8) == "unrelated")
+  }
+
+  @Test func layoutMigrationRefusesToMergeLegacyAndHumanDirectories() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let legacyFile = fixture.legacyStorageLiveURL.appendingPathComponent("legacy.txt")
+    let currentFile = fixture.liveURL.appendingPathComponent("current.txt")
+    for (url, contents) in [(legacyFile, "legacy"), (currentFile, "current")] {
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try Data(contents.utf8).write(to: url)
+    }
+    let runner = RecordingRunner(contents: "must-not-run")
+
+    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+      _ = try await fixture.executor(
+        runner: runner,
+        runID: "run-conflicting-layouts",
+        generationID: "generation-conflicting-layouts"
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+
+    #expect(await runner.invocationCount == 0)
+    #expect(try String(contentsOf: legacyFile, encoding: .utf8) == "legacy")
+    #expect(try String(contentsOf: currentFile, encoding: .utf8) == "current")
+    #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
+  }
+
+  @Test func humanArtifactPlatformDirectoryCannotBeASymlink() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let external = fixture.root.appendingPathComponent("External", isDirectory: true)
+    try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+    let platformDirectory = fixture.outputBase.appendingPathComponent(
+      "generated-headers/macOS",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: platformDirectory.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createSymbolicLink(
+      at: platformDirectory,
+      withDestinationURL: external
+    )
+    let runner = RecordingRunner(contents: "must-not-run")
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.executor(
+        runner: runner,
+        runID: "run-symlink-platform",
+        generationID: "generation-symlink-platform"
+      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    }
+
+    #expect(await runner.invocationCount == 0)
+    #expect((try FileManager.default.contentsOfDirectory(atPath: external.path)).isEmpty)
+  }
+
   @Test func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
@@ -2636,7 +2748,8 @@ private struct ExecutorFixture {
     source = try PrivateHeaderGeneration.Source(
       platform: .macOS,
       version: "16.0",
-      build: "25A000"
+      build: "25A000",
+      metadataIsSeed: false
     )
     try FileManager.default.createDirectory(at: systemRoot, withIntermediateDirectories: true)
   }
@@ -2644,10 +2757,11 @@ private struct ExecutorFixture {
   var sourceLabel: String { source.storageIdentifier }
   var stableURL: URL { outputBase.appendingPathComponent(sourceLabel, isDirectory: false) }
   var liveURL: URL {
-    outputBase.appendingPathComponent(
-      "generated-headers/\(sourceLabel)",
-      isDirectory: true
-    )
+    PrivateHeaderGeneration.Output(baseDirectory: outputBase).artifactDirectory(for: source)
+  }
+  var legacyStorageLiveURL: URL {
+    PrivateHeaderGeneration.Output(baseDirectory: outputBase)
+      .legacyStorageArtifactDirectory(for: source)
   }
   var stateDirectory: URL {
     outputBase.appendingPathComponent(".state/\(sourceLabel)", isDirectory: true)

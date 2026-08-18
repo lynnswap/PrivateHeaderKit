@@ -133,14 +133,12 @@ extension PrivateHeaderGeneration {
       )
       try publisher.prepareForLease()
       return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
-        let artifactDirectory = Self.canonicalArtifactDirectory(
+        let directories = try Self.prepareSourceDirectories(
           outputBase: publisher.artifactBaseDirectory,
-          sourceLabel: plan.source.storageIdentifier
+          source: plan.source
         )
-        let stateDirectory = Self.canonicalStateDirectory(
-          outputBase: publisher.artifactBaseDirectory,
-          sourceLabel: plan.source.storageIdentifier
-        )
+        let artifactDirectory = directories.artifactDirectory
+        let stateDirectory = directories.stateDirectory
         let databaseURL = stateDirectory.appendingPathComponent(
           "generation.sqlite",
           isDirectory: false
@@ -1556,14 +1554,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     )
     try publisher.prepareForLease()
     return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
-      let artifactDirectory = canonicalArtifactDirectory(
+      let directories = try prepareSourceDirectories(
         outputBase: publisher.artifactBaseDirectory,
-        sourceLabel: plan.source.storageIdentifier
+        source: plan.source
       )
-      let stateDirectory = canonicalStateDirectory(
-        outputBase: publisher.artifactBaseDirectory,
-        sourceLabel: plan.source.storageIdentifier
-      )
+      let artifactDirectory = directories.artifactDirectory
+      let stateDirectory = directories.stateDirectory
       let databaseURL = stateDirectory.appendingPathComponent(
         "generation.sqlite",
         isDirectory: false
@@ -2139,16 +2135,73 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
   }
 
-  fileprivate static func canonicalArtifactDirectory(outputBase: URL, sourceLabel: String) -> URL {
-    outputBase
-      .appendingPathComponent("generated-headers", isDirectory: true)
-      .appendingPathComponent(sourceLabel, isDirectory: true)
+  fileprivate struct SourceDirectories {
+    let artifactDirectory: URL
+    let stateDirectory: URL
   }
 
-  fileprivate static func canonicalStateDirectory(outputBase: URL, sourceLabel: String) -> URL {
-    outputBase
-      .appendingPathComponent(".state", isDirectory: true)
-      .appendingPathComponent(sourceLabel, isDirectory: true)
+  fileprivate static func prepareSourceDirectories(
+    outputBase: URL,
+    source: PrivateHeaderGeneration.Source
+  ) throws -> SourceDirectories {
+    let output = PrivateHeaderGeneration.Output(baseDirectory: outputBase)
+    let artifactDirectory = output.artifactDirectory(for: source)
+    do {
+      try ManagedFileSystem.ensureRealDirectory(output.artifactBaseDirectory)
+      try ManagedFileSystem.ensureRealDirectory(artifactDirectory.deletingLastPathComponent())
+    } catch let error as ManagedFileSystem.Failure {
+      throw stateFileSystemError(error)
+    }
+    try migrateLegacyStorageArtifactDirectory(
+      output.legacyStorageArtifactDirectory(for: source),
+      to: artifactDirectory
+    )
+    return SourceDirectories(
+      artifactDirectory: artifactDirectory,
+      stateDirectory: output.stateDirectory(for: source)
+    )
+  }
+
+  fileprivate static func migrateLegacyStorageArtifactDirectory(
+    _ legacyDirectory: URL,
+    to currentDirectory: URL
+  ) throws {
+    let legacyKind = try publisherItemKind(at: legacyDirectory)
+    let currentKind = try publisherItemKind(at: currentDirectory)
+    if let legacyKind, legacyKind != .directory {
+      throw PrivateHeaderGeneration.StateError.corruptPublication(
+        "legacy generated-header path is \(legacyKind.rawValue), expected directory or missing: "
+          + legacyDirectory.path
+      )
+    }
+    if let currentKind, currentKind != .directory {
+      throw PrivateHeaderGeneration.StateError.corruptPublication(
+        "generated-header path is \(currentKind.rawValue), expected directory or missing: "
+          + currentDirectory.path
+      )
+    }
+    switch (legacyKind != nil, currentKind != nil) {
+    case (false, _):
+      return
+    case (true, false):
+      do {
+        let destinationParent = currentDirectory.deletingLastPathComponent()
+        try ManagedFileSystem.atomicRenameExclusively(
+          from: legacyDirectory,
+          to: currentDirectory
+        )
+        try ManagedFileSystem.syncDirectory(legacyDirectory.deletingLastPathComponent())
+        try ManagedFileSystem.syncDirectory(destinationParent)
+        try ManagedFileSystem.syncDirectory(currentDirectory)
+      } catch let error as ManagedFileSystem.Failure {
+        throw stateFileSystemError(error)
+      }
+    case (true, true):
+      throw PrivateHeaderGeneration.GenerationError.conflictingArtifactDirectories(
+        legacyPath: legacyDirectory.path,
+        currentPath: currentDirectory.path
+      )
+    }
   }
 
   fileprivate static func legacyStateExists(in stateDirectory: URL) throws -> Bool {

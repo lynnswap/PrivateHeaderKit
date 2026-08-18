@@ -19,7 +19,10 @@ struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let systemRoot: String?
 
     var versionAndBuildDisplayName: String {
-        build.map { "\(version) (\($0))" } ?? version
+        PrivateHeaderGeneration.Source.versionAndBuildDisplayName(
+            version: version,
+            build: build
+        )
     }
 
     var displayName: String {
@@ -57,6 +60,7 @@ func runPrivateHeaderKitInteractiveGenerate(
     generationClient: PrivateHeaderKitGenerationClient,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
     helperResolver: PrivateHeaderKitHelperResolver,
+    releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
     outputBaseDirectoryProvider: () -> String,
     screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
@@ -148,6 +152,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                         currentExecutableURL: currentExecutableURL,
                         simulatorResolver: simulatorResolver,
                         helperResolver: helperResolver,
+                        releaseMetadataResolver: releaseMetadataResolver,
                         outputLogger: outputLogger
                     )
                     let preparedGeneration = try await generationClient.prepare(request)
