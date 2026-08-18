@@ -377,6 +377,7 @@ package actor GenerationStore {
   package func recordPublishedTargetAttempt(
     _ result: PrivateHeaderGeneration.TargetAttemptResult,
     artifactDigests: [PrivateHeaderGeneration.ArtifactPath: String],
+    warnings: [PrivateHeaderGeneration.GenerationWarning] = [],
     in runID: PrivateHeaderGeneration.RunID
   ) throws {
     guard result.status == .completed else {
@@ -386,6 +387,11 @@ package actor GenerationStore {
         to: PrivateHeaderGeneration.RunTargetStatus.completed.rawValue
       )
     }
+    for warning in warnings {
+      guard PrivateHeaderGeneration.ArtifactPath.isSafeRelativePath(warning.relativePath) else {
+        throw PrivateHeaderGeneration.StateError.invalidArtifactPath(warning.relativePath)
+      }
+    }
     try databaseQueue.write { db in
       try Self.updateRunTarget(db, result: result, in: runID)
       try Self.upsertPublishedTarget(
@@ -394,6 +400,13 @@ package actor GenerationStore {
         artifactDigests: artifactDigests,
         in: runID
       )
+      for warning in warnings {
+        try faultInjector(.beforeRunLogWrite)
+        try db.execute(
+          sql: "INSERT INTO runLogs(runID, kind, relativePath, message) VALUES (?, ?, ?, ?)",
+          arguments: [runID.rawValue, warning.kind, warning.relativePath, warning.message]
+        )
+      }
       try faultInjector(.afterRunTargetWrite)
     }
   }

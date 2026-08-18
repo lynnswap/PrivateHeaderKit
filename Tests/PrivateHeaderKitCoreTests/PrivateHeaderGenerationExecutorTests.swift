@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import PrivateHeaderKitHelperProtocol
 import Testing
 
@@ -264,6 +265,252 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(
       try await store.targetSnapshot(targetID: "framework:Foo.framework")?.lastSuccessfulRunID
         == result.runID)
+  }
+
+  @Test func successfulTargetPublishesAndPersistsObjectiveCMetadataWarnings() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let rawResult = PrivateHeaderGeneration.RawDumping.Result(
+      terminationStatus: 0,
+      diagnostics: [
+        .init(owner: "Objective-C protocol Z", degradation: "cycle was cut"),
+        .init(owner: "Objective-C class A", degradation: "list entry was unreadable"),
+        .init(owner: "Objective-C protocol Z", degradation: "cycle was cut"),
+      ],
+      omittedDiagnosticCount: 2
+    )
+    let executor = fixture.executor(
+      runner: RecordingRunner(contents: "generated", result: rawResult),
+      runID: "run-objc-warning",
+      generationID: "generation-objc-warning"
+    )
+
+    let result = try await executor.run(plan: try fixture.plan(.query("Foo")))
+
+    #expect(result.targetCounts.completed == 1)
+    #expect(result.warnings.count == 3)
+    #expect(result.warnings.allSatisfy { $0.kind == "objc-metadata-warning" })
+    #expect(result.warnings.map(\.message) == result.warnings.map(\.message).sorted())
+    #expect(try fixture.readLiveHeader() == "generated")
+    let persisted = try DatabaseQueue(path: fixture.databaseURL.path).read { db in
+      try Row.fetchAll(
+        db,
+        sql: "SELECT kind, relativePath, message FROM runLogs WHERE runID = ? ORDER BY message",
+        arguments: [result.runID.rawValue]
+      )
+    }
+    #expect(persisted.count == result.warnings.count)
+    #expect(persisted.map { $0["kind"] as String } == result.warnings.map(\.kind))
+    #expect(persisted.map { $0["message"] as String } == result.warnings.map(\.message))
+  }
+
+  @Test func failedTargetDoesNotPublishOrPersistObjectiveCMetadataWarnings() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let executor = fixture.executor(
+      runner: RecordingRunner(
+        contents: "partial",
+        result: .init(
+          terminationStatus: 1,
+          failureSummary: "helper failed",
+          diagnostics: [
+            .init(owner: "Objective-C class A", degradation: "list entry was unreadable")
+          ]
+        )
+      ),
+      runID: "run-objc-failure",
+      generationID: "generation-objc-failure"
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+      _ = try await executor.run(plan: try fixture.plan(.query("Foo")))
+    }
+
+    #expect(!FileManager.default.fileExists(atPath: fixture.liveHeaderURL(framework: "Foo").path))
+    let persistedCount = try await DatabaseQueue(path: fixture.databaseURL.path).read { db in
+      try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM runLogs WHERE kind = 'objc-metadata-warning'"
+      ) ?? 0
+    }
+    #expect(persistedCount == 0)
+  }
+
+  @Test func objectiveCMetadataWarningPresentationIsBoundedAcrossTheRun() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try fixture.createFramework("Bar.framework")
+    let diagnosticCountPerTarget = 200
+    let diagnostics = (0..<diagnosticCountPerTarget).map { index in
+      PrivateHeaderKitRawDumpDiagnostic(
+        owner: "Objective-C protocol P\(String(format: "%03d", index))",
+        degradation: "cycle was cut"
+      )
+    }
+    let runner = RecordingRunner(
+      contents: "generated",
+      result: .init(
+        terminationStatus: 0,
+        diagnostics: diagnostics,
+        omittedDiagnosticCount: 3
+      )
+    )
+    let progress = ExecutorProgressRecorder()
+    let result = try await fixture.executor(
+      runner: runner,
+      runID: "run-objc-budget",
+      generationID: "generation-objc-budget"
+    ).run(
+      plan: try fixture.plan(
+        .identifiers(["framework:Foo.framework", "framework:Bar.framework"])
+      ),
+      progressReporter: { progress.record($0) }
+    )
+
+    let maximumPresented =
+      PrivateHeaderGeneration.GenerationExecutor.maximumPresentedObjCMetadataWarningCount
+    #expect(result.targetCounts.completed == 2)
+    #expect(result.warnings.count == maximumPresented + 1)
+    let aggregate = try #require(result.warnings.last)
+    #expect(aggregate.relativePath == "generation.sqlite")
+    #expect(
+      aggregate.message.contains(
+        "\(diagnosticCountPerTarget * 2 + 2 - maximumPresented) additional"
+      )
+    )
+    let liveWarnings: [PrivateHeaderGeneration.GenerationWarning] =
+      progress.events.compactMap { event in
+      guard case .warning(let warning) = event else { return nil }
+      return warning
+    }
+    #expect(liveWarnings == result.warnings)
+
+    let persistedCount = try await DatabaseQueue(path: fixture.databaseURL.path).read { db in
+      try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM runLogs WHERE kind = 'objc-metadata-warning'"
+      ) ?? 0
+    }
+    #expect(persistedCount == diagnosticCountPerTarget * 2 + 2 + 1)
+  }
+
+  @Test func objectiveCWarningPersistenceFaultRollsBackTargetAndLiveReplacement() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let executor = fixture.executor(
+      runner: RecordingRunner(
+        contents: "generated",
+        result: .init(
+          terminationStatus: 0,
+          diagnostics: [
+            .init(owner: "Objective-C class A", degradation: "list entry was unreadable")
+          ]
+        )
+      ),
+      runID: "run-objc-warning-fault",
+      generationID: "generation-objc-warning-fault",
+      storeFaultInjector: { point in
+        if point == .beforeRunLogWrite { throw InjectedFault.stop }
+      }
+    )
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await executor.run(plan: try fixture.plan(.query("Foo")))
+    }
+
+    #expect(!FileManager.default.fileExists(atPath: fixture.liveHeaderURL(framework: "Foo").path))
+    let store = try GenerationStore(
+      databaseURL: fixture.databaseURL,
+      toolCompatibilityIdentity: "test"
+    )
+    let snapshot = try await store.runSnapshot(.init(rawValue: "run-objc-warning-fault"))
+    #expect(snapshot.status == .running)
+    #expect(snapshot.targets.first?.status == .running)
+    let persistedCount = try await DatabaseQueue(path: fixture.databaseURL.path).read { db in
+      try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM runLogs WHERE kind = 'objc-metadata-warning'"
+      ) ?? 0
+    }
+    #expect(persistedCount == 0)
+  }
+
+  @Test func infrastructureFailureKeepsObjectiveCWarningPresentationBoundedAndAggregated()
+    async throws
+  {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    for framework in ["Alpha.framework", "Beta.framework", "Zeta.framework"] {
+      try fixture.createFramework(framework)
+    }
+    let diagnosticCountPerCompletedTarget = 200
+    let diagnostics = (0..<diagnosticCountPerCompletedTarget).map { index in
+      PrivateHeaderKitRawDumpDiagnostic(
+        owner: "Objective-C protocol P\(String(format: "%03d", index))",
+        degradation: "cycle was cut"
+      )
+    }
+    let progress = ExecutorProgressRecorder()
+    let executor = fixture.executor(
+      runner: RecordingRunner(
+        contents: "generated",
+        result: .init(terminationStatus: 0, diagnostics: diagnostics),
+        hiddenPayloadFramework: "Zeta.framework"
+      ),
+      runID: "run-objc-budget-failure",
+      generationID: "generation-objc-budget-failure"
+    )
+
+    let summary: PrivateHeaderGeneration.RunSummary
+    do {
+      _ = try await executor.run(
+        plan: try fixture.plan(
+          .identifiers([
+            "framework:Alpha.framework",
+            "framework:Beta.framework",
+            "framework:Zeta.framework",
+          ])
+        ),
+        progressReporter: { progress.record($0) }
+      )
+      Issue.record("hidden raw payload unexpectedly completed")
+      return
+    } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
+      summary = failure.summary
+    }
+
+    let maximumPresented =
+      PrivateHeaderGeneration.GenerationExecutor.maximumPresentedObjCMetadataWarningCount
+    #expect(summary.warnings.count == maximumPresented + 1)
+    #expect(
+      summary.warnings.last?.message.contains(
+        "\(diagnosticCountPerCompletedTarget * 2 - maximumPresented) additional"
+      ) == true
+    )
+    let liveWarnings: [PrivateHeaderGeneration.GenerationWarning] =
+      progress.events.compactMap { event in
+      guard case .warning(let warning) = event else { return nil }
+      return warning
+    }
+    #expect(liveWarnings == summary.warnings)
+    #expect(try fixture.readLiveHeader(framework: "Alpha") == "generated")
+    #expect(try fixture.readLiveHeader(framework: "Beta") == "generated")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: fixture.liveHeaderURL(framework: "Zeta").path
+      )
+    )
+    let persistedCount = try await DatabaseQueue(path: fixture.databaseURL.path).read { db in
+      try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM runLogs WHERE kind = 'objc-metadata-warning'"
+      ) ?? 0
+    }
+    #expect(persistedCount == diagnosticCountPerCompletedTarget * 2 + 1)
   }
 
   @Test func completedTargetIsVisibleWhenItsFinishedEventIsReported() async throws {
