@@ -242,7 +242,8 @@ struct PrivateHeaderKitCLIExecutionTests {
             from: iosGenerateCommand(build: nil, systemRoot: nil),
             helperURLs: testPrivateHeaderKitHelperURLs,
             toolCompatibilityIdentity: "test-tool-identity",
-            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
 
         #expect(request.source.build == "24A123")
@@ -255,12 +256,60 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
     }
 
+    @Test func betaRuntimeProducesHumanReadableArtifactPath() throws {
+        let resolution = PrivateHeaderKitSimulatorResolution(
+            runtimeVersion: "27.0",
+            runtimeBuild: "24A5390f",
+            runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+            resolvedRuntimeRoot: "/ResolvedBetaRuntime",
+            metadataIsSeed: true,
+            deviceName: "iPhone 17 Pro",
+            deviceUDID: "SIM-BETA"
+        )
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: nil, systemRoot: nil),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: resolution
+        )
+
+        #expect(request.source.label.displayName == "iOS 27.0 beta (24A5390f)")
+        #expect(
+            request.output.artifactDirectory(for: request.source).path
+                == "/tmp/PrivateHeaderKit/generated-headers/iOS/27.0_beta_24A5390f"
+        )
+        #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~415390~66")
+    }
+
+    @Test func simulatorReleaseMetadataIsValidatedBeforeResolvingADevice() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            """
+            {"runtimes":[{"name":"iOS 27.0","platform":"iOS","version":"27.0","buildversion":"24A5390f","identifier":"ios-27","runtimeRoot":"\(runtimeRoot.path)","isAvailable":true}]}
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+
+        await #expect(throws: ToolingError.self) {
+            _ = try await resolvePrivateHeaderKitSimulator(
+                for: iosGenerateCommand(build: nil, systemRoot: nil),
+                runner: runner
+            )
+        }
+        #expect(await runner.simpleCommandSnapshot().isEmpty)
+    }
+
     @Test func explicitIOSSystemRootDoesNotBorrowResolvedRuntimeBuild() throws {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: nil, systemRoot: "/OverrideRuntime"),
             helperURLs: testPrivateHeaderKitHelperURLs,
             toolCompatibilityIdentity: "test-tool-identity",
-            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
 
         #expect(request.source.build == nil)
@@ -271,6 +320,58 @@ struct PrivateHeaderKitCLIExecutionTests {
             request.options.executionMode
                 == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/OverrideRuntime")
         )
+    }
+
+    @Test func explicitIOSSeedRootRequiresBuildButNotALowercaseSuffix() throws {
+        let metadataResolver: PrivateHeaderKitReleaseMetadataResolver = { _, layout in
+            if case .macOS = layout {
+                Issue.record("expected simulator metadata layout")
+            }
+            return true
+        }
+        #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
+            _ = try makePrivateHeaderGenerationRequest(
+                from: iosGenerateCommand(build: nil, systemRoot: "/OverrideSeedRuntime"),
+                helperURLs: testPrivateHeaderKitHelperURLs,
+                toolCompatibilityIdentity: "test-tool-identity",
+                simulatorResolution: testPrivateHeaderKitSimulatorResolution,
+                releaseMetadataResolver: metadataResolver
+            )
+        }
+
+        let request = try makePrivateHeaderGenerationRequest(
+            from: iosGenerateCommand(build: "24A123", systemRoot: "/OverrideSeedRuntime"),
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution,
+            releaseMetadataResolver: metadataResolver
+        )
+        #expect(request.source.releaseChannel == .beta)
+        #expect(request.source.artifactDirectoryName == "27.0_beta_24A123")
+    }
+
+    @Test func explicitPublicRootKeepsLowercaseBuildSuffixOutOfBetaNamespace() throws {
+        let command = PrivateHeaderKitGenerateCommand(
+            platform: .iOS,
+            version: "16.4.1",
+            build: "20E772520a",
+            systemRoot: "/OverridePublicRuntime",
+            outputBaseDirectory: "/tmp/PrivateHeaderKit",
+            targetQuery: "all",
+            continuationMode: .fresh,
+            device: nil,
+            simulatorHelperPath: nil
+        )
+        let request = try makePrivateHeaderGenerationRequest(
+            from: command,
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            toolCompatibilityIdentity: "test-tool-identity",
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution,
+            releaseMetadataResolver: { _, _ in false }
+        )
+
+        #expect(request.source.releaseChannel == .release)
+        #expect(request.source.artifactDirectoryName == "16.4.1_20E772520a")
     }
 
     @Test func explicitIOSBuildOverridesResolvedRuntimeBuild() throws {
@@ -301,6 +402,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             runtimeBuild: "24A123",
             runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
             resolvedRuntimeRoot: runtimeRoot.path,
+            metadataIsSeed: false,
             deviceName: "iPhone 17 Pro",
             deviceUDID: "SIM-001"
         )
@@ -346,7 +448,8 @@ struct PrivateHeaderKitCLIExecutionTests {
             from: macOSGenerateCommand(systemRoot: "/"),
             helperURLs: testPrivateHeaderKitHelperURLs,
             toolCompatibilityIdentity: "test-tool-identity",
-            simulatorResolution: nil
+            simulatorResolution: nil,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
         #expect(currentRootRequest.options.systemRoot?.path == "/")
         #expect(currentRootRequest.options.rawDumpingOptions.useSharedCache)
@@ -359,13 +462,44 @@ struct PrivateHeaderKitCLIExecutionTests {
             from: macOSGenerateCommand(systemRoot: customRoot.path),
             helperURLs: testPrivateHeaderKitHelperURLs,
             toolCompatibilityIdentity: "test-tool-identity",
-            simulatorResolution: nil
+            simulatorResolution: nil,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
         #expect(
             customRootRequest.options.systemRoot
                 == customRoot.resolvingSymlinksInPath().standardizedFileURL
         )
         #expect(!customRootRequest.options.rawDumpingOptions.useSharedCache)
+    }
+
+    @Test func invalidSourceMetadataFailsBeforeHelperResolution() async {
+        let helperResolutionCount = ThreadSafeCounter()
+
+        await #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
+            _ = try await preparePrivateHeaderKitGenerationRequest(
+                macOSGenerateCommand(systemRoot: "/SeedSystemRoot"),
+                invokedProgramName: "privateheaderkit",
+                currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+                simulatorResolver: { _ in
+                    Issue.record("macOS generation must not resolve a simulator")
+                    return testPrivateHeaderKitSimulatorResolution
+                },
+                helperResolver: { _, _, _ in
+                    helperResolutionCount.increment()
+                    return PrivateHeaderKitHelperPlan(
+                        helperURLs: testPrivateHeaderKitHelperURLs,
+                        toolCompatibilityIdentity: "test-tool-identity"
+                    )
+                },
+                releaseMetadataResolver: { _, layout in
+                    #expect(layout == .macOS)
+                    return true
+                },
+                outputLogger: { _ in }
+            )
+        }
+
+        #expect(helperResolutionCount.value == 0)
     }
 
     @Test func directRunMapsFreshModeAndRendersTypedResultAndWarnings() async throws {
@@ -414,6 +548,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 }
             ),
             helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             outputLogger: output.append,
             errorLogger: output.append
         )
@@ -434,6 +569,8 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(output.text.contains("Skipped    1"))
         #expect(output.text.contains("opaque-path"))
         #expect(output.text.contains("generation.sqlite"))
+        let headersPath = "/tmp/PrivateHeaderKit/generated-headers/macOS/16.0"
+        #expect(output.text.components(separatedBy: headersPath).count == 3)
         #expect(!output.text.contains("manifest.json"))
         #expect(!output.text.contains("run.json"))
     }
@@ -466,6 +603,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 return testPrivateHeaderKitSimulatorResolution
             },
             helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             outputLogger: { _ in },
             errorLogger: { _ in }
         )
@@ -509,6 +647,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 }
             ),
             helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             outputLogger: output.append,
             errorLogger: output.append
         )
@@ -560,6 +699,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     }
                 ),
                 helperResolver: testPrivateHeaderKitHelperResolver,
+                releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
                 outputLogger: output.append,
                 errorLogger: output.append
             )
@@ -605,6 +745,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     )
                 },
                 helperResolver: testPrivateHeaderKitHelperResolver,
+                releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
                 outputLogger: output.append,
                 errorLogger: output.append
             )
@@ -633,7 +774,15 @@ struct PrivateHeaderKitCLIExecutionTests {
             }
         }
         let sources = try await discoverPrivateHeaderKitInteractiveSources(
-            runner: availableRunner
+            runner: availableRunner,
+            releaseMetadataResolver: { root, layout in
+                switch layout {
+                case .simulator:
+                    return root.path == "/runtimes/watch"
+                case .macOS:
+                    return false
+                }
+            }
         )
         #expect(sources == [
             PrivateHeaderKitInteractiveSource(
@@ -646,6 +795,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 platform: .watchOS,
                 version: "27.0",
                 build: "24R5325f",
+                metadataIsSeed: true,
                 systemRoot: nil
             ),
             PrivateHeaderKitInteractiveSource(
@@ -668,14 +818,19 @@ struct PrivateHeaderKitCLIExecutionTests {
                 throw ToolingError.message("unexpected command: \(command)")
             }
         }
-        #expect(try await discoverPrivateHeaderKitInteractiveSources(runner: unavailableRunner) == [
-            PrivateHeaderKitInteractiveSource(
-                platform: .macOS,
-                version: "16.0",
-                build: "24A1",
-                systemRoot: "/"
-            ),
-        ])
+        #expect(
+            try await discoverPrivateHeaderKitInteractiveSources(
+                runner: unavailableRunner,
+                releaseMetadataResolver: { _, _ in false }
+            ) == [
+                PrivateHeaderKitInteractiveSource(
+                    platform: .macOS,
+                    version: "16.0",
+                    build: "24A1",
+                    systemRoot: "/"
+                )
+            ]
+        )
 
         let failingRunner = CaptureOnlyCommandRunner { command, _, _ in
             if command == ["xcrun", "--find", "simctl"] {
@@ -751,7 +906,11 @@ struct PrivateHeaderKitCLIExecutionTests {
             simulator: root.appendingPathComponent("privateheaderkit-sim-helper")
         )
         let request = PrivateHeaderKitGenerationRequest(
-            source: try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0"),
+            source: try PrivateHeaderGeneration.Source(
+                platform: .macOS,
+                version: "16.0",
+                metadataIsSeed: false
+            ),
             output: PrivateHeaderGeneration.Output(
                 baseDirectory: root.appendingPathComponent("Output", isDirectory: true)
             ),
@@ -968,20 +1127,22 @@ struct PrivateHeaderKitCLIExecutionTests {
                 [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
-                        version: "18.0",
-                        build: "22A3351",
+                        version: "16.4.1",
+                        build: "20E772520a",
                         systemRoot: nil
                     ),
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: "24A5390f",
+                        metadataIsSeed: true,
                         systemRoot: nil
                     ),
                     PrivateHeaderKitInteractiveSource(
                         platform: .watchOS,
                         version: "27.0",
                         build: "24R5325f",
+                        metadataIsSeed: true,
                         systemRoot: nil
                     ),
                     PrivateHeaderKitInteractiveSource(
@@ -1006,11 +1167,11 @@ struct PrivateHeaderKitCLIExecutionTests {
             Step 1 of 3: Source
 
             iOS
-              [1] 18.0 (22A3351)
-              [2] 27.0 (24A5390f)
+              [1] 16.4.1 (20E772520a)
+              [2] 27.0 beta (24A5390f)
 
             watchOS
-              [3] 27.0 (24R5325f)
+              [3] 27.0 beta (24R5325f)
 
             macOS
               [4] 26.6.1 (25G76)
@@ -1062,6 +1223,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     toolCompatibilityIdentity: "test-tool-identity"
                 )
             },
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
                 [
                     PrivateHeaderKitInteractiveSource(
@@ -1156,6 +1318,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     runtimeBuild: "24A123",
                     runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                     resolvedRuntimeRoot: runtimeRoot.path,
+                    metadataIsSeed: false,
                     deviceName: "iPhone 17 Pro",
                     deviceUDID: "SIM-001"
                 )
@@ -1249,6 +1412,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     runtimeBuild: "24A123",
                     runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                     resolvedRuntimeRoot: runtimeRoot.path,
+                    metadataIsSeed: false,
                     deviceName: "iPhone 17 Pro",
                     deviceUDID: "SIM-001"
                 )
@@ -1326,6 +1490,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     runtimeBuild: "24A123",
                     runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                     resolvedRuntimeRoot: root.appendingPathComponent("RuntimeRoot").path,
+                    metadataIsSeed: false,
                     deviceName: "iPhone 17 Pro",
                     deviceUDID: "SIM-001"
                 )
@@ -1400,6 +1565,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     runtimeBuild: "24A123",
                     runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                     resolvedRuntimeRoot: root.appendingPathComponent("RuntimeRoot").path,
+                    metadataIsSeed: false,
                     deviceName: "iPhone 17 Pro",
                     deviceUDID: "SIM-001"
                 )
@@ -1463,6 +1629,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 }
             ),
             helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
                 [
                     PrivateHeaderKitInteractiveSource(
@@ -1487,6 +1654,9 @@ struct PrivateHeaderKitCLIExecutionTests {
 
 }
 
+private let testPrivateHeaderKitReleaseMetadataResolver:
+    PrivateHeaderKitReleaseMetadataResolver = { _, _ in false }
+
 private let testPrivateHeaderKitHelperURLs = PrivateHeaderGeneration.RawDumping.HelperURLs(
     host: URL(fileURLWithPath: "/cohort/privateheaderkit-raw-helper"),
     simulator: URL(fileURLWithPath: "/cohort/privateheaderkit-sim-helper")
@@ -1497,6 +1667,7 @@ private let testPrivateHeaderKitSimulatorResolution = PrivateHeaderKitSimulatorR
     runtimeBuild: "24A123",
     runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
     resolvedRuntimeRoot: "/ResolvedRuntime",
+    metadataIsSeed: false,
     deviceName: "iPhone 17 Pro",
     deviceUDID: "SIM-001"
 )
@@ -1506,6 +1677,7 @@ private let testPrivateHeaderKitWatchSimulatorResolution = PrivateHeaderKitSimul
     runtimeBuild: "24R5325f",
     runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.watchOS-27-0",
     resolvedRuntimeRoot: "/ResolvedWatchRuntime",
+    metadataIsSeed: true,
     deviceName: "Apple Watch Series 11 (46mm)",
     deviceUDID: "WATCH-001"
 )
@@ -2908,6 +3080,7 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
             }
         ),
         helperResolver: testPrivateHeaderKitHelperResolver,
+        releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
         interactiveSourceProvider: {
             [
                 PrivateHeaderKitInteractiveSource(
@@ -2993,7 +3166,8 @@ private func unfinishedResumeSummaryFixture() async throws
     try Data().write(to: frameworkURL.appendingPathComponent("Foo", isDirectory: false))
     let source = try PrivateHeaderGeneration.Source(
         platform: .macOS,
-        version: "16.0"
+        version: "16.0",
+        metadataIsSeed: false
     )
     let plan = PrivateHeaderGeneration.makePlan(
         source: source,

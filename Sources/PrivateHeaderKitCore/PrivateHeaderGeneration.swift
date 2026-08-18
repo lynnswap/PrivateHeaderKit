@@ -21,8 +21,103 @@ extension PrivateHeaderGeneration {
     package let platform: Platform
     package let version: String
     package let build: String?
+    package let releaseChannel: ReleaseChannel
 
-    package init(platform: Platform, version: String, build: String? = nil) throws {
+    private struct NormalizedIdentity {
+      let version: String
+      let build: String?
+    }
+
+    package init(
+      platform: Platform,
+      version: String,
+      build: String? = nil,
+      metadataIsSeed: Bool
+    ) throws {
+      let identity = try Self.normalizedIdentity(
+        platform: platform,
+        version: version,
+        build: build
+      )
+      let releaseChannel: ReleaseChannel = metadataIsSeed ? .beta : .release
+      guard releaseChannel != .beta || identity.build != nil else {
+        throw ValidationError.seedBuildMissing
+      }
+      let artifactDirectoryName = Self.makeArtifactDirectoryName(
+        version: identity.version,
+        build: identity.build,
+        releaseChannel: releaseChannel
+      )
+      guard artifactDirectoryName.utf8.count <= Int(NAME_MAX) else {
+        throw ValidationError.artifactDirectoryNameTooLong(
+          actualUTF8Count: artifactDirectoryName.utf8.count,
+          maximumUTF8Count: Int(NAME_MAX)
+        )
+      }
+      self.platform = platform
+      self.version = identity.version
+      self.build = identity.build
+      self.releaseChannel = releaseChannel
+    }
+
+    package static func validateIdentity(
+      platform: Platform,
+      version: String,
+      build: String?
+    ) throws {
+      _ = try normalizedIdentity(
+        platform: platform,
+        version: version,
+        build: build
+      )
+    }
+
+    package static func versionAndBuildDisplayName(
+      version: String,
+      build: String?,
+      releaseChannel: ReleaseChannel
+    ) -> String {
+      let normalizedVersion = version.precomposedStringWithCanonicalMapping
+      let normalizedBuild =
+        build
+        .map(\.precomposedStringWithCanonicalMapping)
+        .flatMap { $0.isEmpty ? nil : $0 }
+      var name = normalizedVersion
+      if releaseChannel == .beta {
+        name += " beta"
+      }
+      if let normalizedBuild {
+        name += " (\(normalizedBuild))"
+      }
+      return name
+    }
+
+    package var label: Label {
+      Label(
+        platform: platform,
+        version: version,
+        build: build,
+        releaseChannel: releaseChannel
+      )
+    }
+
+    package var storageIdentifier: String {
+      Self.makeStorageIdentifier(platform: platform, version: version, build: build)
+    }
+
+    package var artifactDirectoryName: String {
+      Self.makeArtifactDirectoryName(
+        version: version,
+        build: build,
+        releaseChannel: releaseChannel
+      )
+    }
+
+    private static func normalizedIdentity(
+      platform: Platform,
+      version: String,
+      build: String?
+    ) throws -> NormalizedIdentity {
       let version = version.precomposedStringWithCanonicalMapping
       guard !version.isEmpty else {
         throw ValidationError.emptyComponent(field: "version")
@@ -31,7 +126,7 @@ extension PrivateHeaderGeneration {
         build
         .map(\.precomposedStringWithCanonicalMapping)
         .flatMap { $0.isEmpty ? nil : $0 }
-      let storageIdentifier = Self.makeStorageIdentifier(
+      let storageIdentifier = makeStorageIdentifier(
         platform: platform,
         version: version,
         build: build
@@ -42,17 +137,7 @@ extension PrivateHeaderGeneration {
           maximumUTF8Count: Int(NAME_MAX)
         )
       }
-      self.platform = platform
-      self.version = version
-      self.build = build
-    }
-
-    package var label: Label {
-      Label(platform: platform, version: version, build: build)
-    }
-
-    package var storageIdentifier: String {
-      Self.makeStorageIdentifier(platform: platform, version: version, build: build)
+      return NormalizedIdentity(version: version, build: build)
     }
 
     private static func makeStorageIdentifier(
@@ -77,6 +162,69 @@ extension PrivateHeaderGeneration {
       return "\(platformName)-v1-\(version)-b1-\(encodeStorageField(build))"
     }
 
+    private static func makeArtifactDirectoryName(
+      version: String,
+      build: String?,
+      releaseChannel: ReleaseChannel
+    ) -> String {
+      var components = [
+        isHumanReadableVersion(version) ? version : encodeArtifactField(version)
+      ]
+      if releaseChannel == .beta {
+        components.append("beta")
+      }
+      if let build {
+        components.append(
+          isHumanReadableBuild(build) ? build : encodeArtifactField(build)
+        )
+      }
+      return components.joined(separator: "_")
+    }
+
+    private static func isHumanReadableVersion(_ value: String) -> Bool {
+      guard value != ".", value != ".." else { return false }
+      return value.utf8.allSatisfy { byte in
+        byte == 0x2e || (0x30...0x39).contains(byte)
+      }
+    }
+
+    private static func isHumanReadableBuild(_ value: String) -> Bool {
+      let bytes = Array(value.utf8)
+      var index = bytes.startIndex
+      while index < bytes.endIndex, (0x30...0x39).contains(bytes[index]) {
+        index += 1
+      }
+      guard index > bytes.startIndex,
+        index < bytes.endIndex,
+        (0x41...0x5a).contains(bytes[index])
+      else {
+        return false
+      }
+      index += 1
+      let digitStart = index
+      while index < bytes.endIndex, (0x30...0x39).contains(bytes[index]) {
+        index += 1
+      }
+      guard index > digitStart else { return false }
+      return bytes[index...].allSatisfy { (0x61...0x7a).contains($0) }
+    }
+
+    private static func encodeArtifactField(_ value: String) -> String {
+      let hexDigits = Array("0123456789abcdef")
+      var result = ""
+      result.reserveCapacity(value.utf8.count * 3)
+      for byte in value.utf8 {
+        if (0x30...0x39).contains(byte) {
+          result.append(hexDigits[Int(byte) - 0x30])
+        } else {
+          result.append("~")
+          result.append(hexDigits[Int(byte >> 4)])
+          result.append(hexDigits[Int(byte & 0x0f)])
+        }
+      }
+      return result
+    }
+
     private static func encodeStorageField(_ value: String) -> String {
       let hexDigits = Array("0123456789abcdef")
       var result = ""
@@ -99,6 +247,8 @@ extension PrivateHeaderGeneration {
     package enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
       case emptyComponent(field: String)
       case storageIdentifierTooLong(actualUTF8Count: Int, maximumUTF8Count: Int)
+      case artifactDirectoryNameTooLong(actualUTF8Count: Int, maximumUTF8Count: Int)
+      case seedBuildMissing
 
       package var description: String {
         switch self {
@@ -107,8 +257,18 @@ extension PrivateHeaderGeneration {
         case .storageIdentifierTooLong(let actualUTF8Count, let maximumUTF8Count):
           "source storage identifier is \(actualUTF8Count) UTF-8 bytes; "
             + "the maximum is \(maximumUTF8Count)"
+        case .artifactDirectoryNameTooLong(let actualUTF8Count, let maximumUTF8Count):
+          "source artifact directory name is \(actualUTF8Count) UTF-8 bytes; "
+            + "the maximum is \(maximumUTF8Count)"
+        case .seedBuildMissing:
+          "source build is required for a seed runtime"
         }
       }
+    }
+
+    package enum ReleaseChannel: String, Hashable, Sendable {
+      case release
+      case beta
     }
 
     package enum Platform: String, Codable, CaseIterable, Hashable, Sendable {
@@ -117,18 +277,25 @@ extension PrivateHeaderGeneration {
       case watchOS = "watchOS"
 
       package var displayName: String { rawValue }
+
+      package var directoryName: String { rawValue }
     }
 
     package struct Label: CustomStringConvertible, Hashable, Sendable {
       package let displayName: String
 
-      fileprivate init(platform: Platform, version: String, build: String?) {
-        let baseName = "\(platform.displayName) \(version)"
-        if let build {
-          displayName = "\(baseName) (\(build))"
-        } else {
-          displayName = baseName
-        }
+      fileprivate init(
+        platform: Platform,
+        version: String,
+        build: String?,
+        releaseChannel: ReleaseChannel
+      ) {
+        displayName = "\(platform.displayName) "
+          + Source.versionAndBuildDisplayName(
+            version: version,
+            build: build,
+            releaseChannel: releaseChannel
+          )
       }
 
       package var description: String { displayName }
@@ -312,6 +479,23 @@ extension PrivateHeaderGeneration {
     package var stateBaseDirectory: URL {
       baseDirectory.appendingPathComponent(".state", isDirectory: true)
     }
+
+    package func artifactDirectory(for source: Source) -> URL {
+      artifactBaseDirectory
+        .appendingPathComponent(source.platform.directoryName, isDirectory: true)
+        .appendingPathComponent(source.artifactDirectoryName, isDirectory: true)
+    }
+
+    package func legacyStorageArtifactDirectory(for source: Source) -> URL {
+      artifactBaseDirectory.appendingPathComponent(
+        source.storageIdentifier,
+        isDirectory: true
+      )
+    }
+
+    package func stateDirectory(for source: Source) -> URL {
+      stateBaseDirectory.appendingPathComponent(source.storageIdentifier, isDirectory: true)
+    }
   }
 
   package struct Plan: Hashable, Sendable {
@@ -325,14 +509,8 @@ extension PrivateHeaderGeneration {
     package init(source: Source, output: Output, options: Options) {
       self.source = source
       self.output = output
-      artifactDirectory = output.artifactBaseDirectory.appendingPathComponent(
-        source.storageIdentifier,
-        isDirectory: true
-      )
-      stateDirectory = output.stateBaseDirectory.appendingPathComponent(
-        source.storageIdentifier,
-        isDirectory: true
-      )
+      artifactDirectory = output.artifactDirectory(for: source)
+      stateDirectory = output.stateDirectory(for: source)
       target = .allAvailable
       self.options = options
     }
@@ -396,6 +574,7 @@ extension PrivateHeaderGeneration {
     case incompatibleResume(String)
     case resumeRequired(ResumeSummary)
     case legacyMigrationRequiresFresh(LegacyMigrationRequirement)
+    case conflictingArtifactDirectories(legacyPath: String, currentPath: String)
     case runFailed(RunFailure)
     case runInterrupted(RunInterruption)
     case infrastructureFailed(RunInfrastructureFailure)
@@ -435,6 +614,10 @@ extension PrivateHeaderGeneration {
           "legacy JSON state at \(statePath) and artifact directory at \(artifactsPath) "
             + "require an explicit fresh migration"
         }
+      case .conflictingArtifactDirectories(let legacyPath, let currentPath):
+        "both the legacy and current generated-header directories exist "
+          + "(legacy: \(legacyPath), current: \(currentPath)); "
+          + "move one directory aside before retrying"
       case .runFailed(let failure):
         "private header generation run \(failure.summary.runID.rawValue) failed for \(failure.failedTargetIDs.count) targets"
       case .runInterrupted(let interruption):

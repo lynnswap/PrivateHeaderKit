@@ -81,7 +81,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             throw ValidationError("Argument '--sim-helper <sim-helper>' must not be empty")
         }
         try validatePrivateHeaderKitTargetQuery(targetQuery)
-        _ = try PrivateHeaderGeneration.Source(
+        try PrivateHeaderGeneration.Source.validateIdentity(
             platform: platform.corePlatform,
             version: sourceVersion,
             build: build

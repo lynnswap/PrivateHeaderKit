@@ -61,6 +61,14 @@ an unmanaged output directory.
 See [Generation, Output, and Resume Behavior](generation.md#legacy-output) for
 the migration contract.
 
+## Both generated-header layouts exist
+
+PrivateHeaderKit does not merge
+`generated-headers/<source-storage-id>` with the corresponding
+`generated-headers/<platform>/<release-directory>`. Move one complete directory
+aside after deciding which tree to keep, then rerun the command. Both paths are
+left unchanged when this conflict is detected.
+
 ## An install or update failed
 
 Read the first reported validation or filesystem error. Download, build,

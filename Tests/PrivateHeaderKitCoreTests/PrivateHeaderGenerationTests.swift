@@ -9,9 +9,11 @@ struct PrivateHeaderGenerationTests {
     let source = try PrivateHeaderGeneration.Source(
       platform: .iOS,
       version: "27.0",
-      build: "24A5355q"
+      build: "24A5355q",
+      metadataIsSeed: true
     )
-    #expect(source.label.displayName == "iOS 27.0 (24A5355q)")
+    #expect(source.label.displayName == "iOS 27.0 beta (24A5355q)")
+    #expect(source.artifactDirectoryName == "27.0_beta_24A5355q")
     #expect(source.storageIdentifier == "ios-v1-27.0-b1-24~415355~71")
   }
 
@@ -19,42 +21,52 @@ struct PrivateHeaderGenerationTests {
     let source = try PrivateHeaderGeneration.Source(
       platform: .watchOS,
       version: "27.0",
-      build: "24R5325f"
+      build: "24R5325f",
+      metadataIsSeed: true
     )
 
-    #expect(source.label.displayName == "watchOS 27.0 (24R5325f)")
+    #expect(source.label.displayName == "watchOS 27.0 beta (24R5325f)")
     #expect(source.storageIdentifier == "watchos-v1-27.0-b1-24~525325~66")
   }
 
   @Test func storageIdentityDistinguishesAmbiguousLabelsAndFilesystemAliases() throws {
     let versionContainsBuild = try PrivateHeaderGeneration.Source(
       platform: .iOS,
-      version: "17.0(A)"
+      version: "17.0(A)",
+      metadataIsSeed: false
     )
     let separateBuild = try PrivateHeaderGeneration.Source(
       platform: .iOS,
       version: "17.0",
-      build: "A"
+      build: "A",
+      metadataIsSeed: false
     )
     let lowercaseBuild = try PrivateHeaderGeneration.Source(
       platform: .iOS,
       version: "17.0",
-      build: "a"
+      build: "a",
+      metadataIsSeed: false
     )
     let literalEscape = try PrivateHeaderGeneration.Source(
       platform: .iOS,
       version: "17.0",
-      build: "~41"
+      build: "~41",
+      metadataIsSeed: false
     )
 
     #expect(versionContainsBuild.storageIdentifier != separateBuild.storageIdentifier)
     #expect(separateBuild.storageIdentifier != lowercaseBuild.storageIdentifier)
     #expect(separateBuild.storageIdentifier != literalEscape.storageIdentifier)
+    #expect(versionContainsBuild.artifactDirectoryName != separateBuild.artifactDirectoryName)
+    #expect(separateBuild.artifactDirectoryName != lowercaseBuild.artifactDirectoryName)
+    #expect(separateBuild.artifactDirectoryName != literalEscape.artifactDirectoryName)
   }
 
   @Test func sourceCanonicalizesUnicodeBeforeDerivingStorageIdentity() throws {
-    let precomposed = try PrivateHeaderGeneration.Source(platform: .iOS, version: "é")
-    let decomposed = try PrivateHeaderGeneration.Source(platform: .iOS, version: "e\u{301}")
+    let precomposed = try PrivateHeaderGeneration.Source(
+      platform: .iOS, version: "é", metadataIsSeed: false)
+    let decomposed = try PrivateHeaderGeneration.Source(
+      platform: .iOS, version: "e\u{301}", metadataIsSeed: false)
 
     #expect(precomposed == decomposed)
     #expect(decomposed.version == "é")
@@ -65,14 +77,70 @@ struct PrivateHeaderGenerationTests {
     #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
       _ = try PrivateHeaderGeneration.Source(
         platform: .iOS,
-        version: String(repeating: "A", count: 82)
+        version: String(repeating: "A", count: 82),
+        metadataIsSeed: false
+      )
+    }
+  }
+
+  @Test func sourceEscapesPathSeparatorsAndInvalidBetaShapedBuilds() throws {
+    let source = try PrivateHeaderGeneration.Source(
+      platform: .iOS,
+      version: "../27/0\0",
+      build: "not-a-build",
+      metadataIsSeed: false
+    )
+
+    #expect(!source.artifactDirectoryName.contains("/"))
+    #expect(!source.artifactDirectoryName.contains("\0"))
+    #expect(!source.artifactDirectoryName.contains("_beta_"))
+  }
+
+  @Test func sourceRejectsArtifactDirectoryNameLongerThanAPathComponent() {
+    #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
+      _ = try PrivateHeaderGeneration.Source(
+        platform: .iOS,
+        version: String(repeating: ".", count: 85) + "A",
+        metadataIsSeed: false
+      )
+    }
+  }
+
+  @Test func releaseMetadataOwnsBetaClassificationInsteadOfBuildSuffix() throws {
+    let rapidSecurityResponse = try PrivateHeaderGeneration.Source(
+      platform: .iOS,
+      version: "16.4.1",
+      build: "20E772520a",
+      metadataIsSeed: false
+    )
+    let betaWithoutSuffix = try PrivateHeaderGeneration.Source(
+      platform: .iOS,
+      version: "27.0",
+      build: "24A123",
+      metadataIsSeed: true
+    )
+
+    #expect(rapidSecurityResponse.releaseChannel == .release)
+    #expect(rapidSecurityResponse.label.displayName == "iOS 16.4.1 (20E772520a)")
+    #expect(rapidSecurityResponse.artifactDirectoryName == "16.4.1_20E772520a")
+    #expect(betaWithoutSuffix.releaseChannel == .beta)
+    #expect(betaWithoutSuffix.label.displayName == "iOS 27.0 beta (24A123)")
+    #expect(betaWithoutSuffix.artifactDirectoryName == "27.0_beta_24A123")
+  }
+
+  @Test func seedSourceRequiresAnExactBuild() {
+    #expect(throws: PrivateHeaderGeneration.Source.ValidationError.self) {
+      _ = try PrivateHeaderGeneration.Source(
+        platform: .iOS,
+        version: "27.0",
+        metadataIsSeed: true
       )
     }
   }
 
   @Test func oneOutputRootDerivesArtifactAndStateIdentity() throws {
     let source = try PrivateHeaderGeneration.Source(
-      platform: .macOS, version: "16.0", build: "25A000")
+      platform: .macOS, version: "16.0", build: "25A000", metadataIsSeed: false)
     let output = PrivateHeaderGeneration.Output(
       baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
     )
@@ -84,7 +152,7 @@ struct PrivateHeaderGenerationTests {
 
     #expect(
       plan.artifactDirectory.path
-        == "/tmp/PrivateHeaderKit/generated-headers/macos-v1-16.0-b1-25~41000")
+        == "/tmp/PrivateHeaderKit/generated-headers/macOS/16.0_25A000")
     #expect(
       plan.stateDirectory.path == "/tmp/PrivateHeaderKit/.state/macos-v1-16.0-b1-25~41000")
     #expect(
@@ -93,7 +161,8 @@ struct PrivateHeaderGenerationTests {
   }
 
   @Test func distinctPlansWithEmbeddedNewlinesHaveDistinctFingerprints() throws {
-    let source = try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0")
+    let source = try PrivateHeaderGeneration.Source(
+      platform: .macOS, version: "16.0", metadataIsSeed: false)
     let output = PrivateHeaderGeneration.Output(
       baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
     )
