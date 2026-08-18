@@ -449,7 +449,7 @@ private func dumpImage(
     }
 
     let objcStart = profileNowNanoseconds(enabled: options.profile)
-    try dumpObjC(
+    try await dumpObjC(
         machO: machO,
         imagePath: originalPath,
         outputDir: outputDir,
@@ -1012,7 +1012,7 @@ private func dumpObjC(
     outputDir: URL,
     options: DumpOptions,
     fileManager: FileManager
-) throws {
+) async throws {
     var metadata = switch machO {
     case .file(let file):
         collectObjCMetadata(from: file.objc, in: machO, options: options)
@@ -1022,7 +1022,11 @@ private func dumpObjC(
 
 #if canImport(ObjectiveC)
     if options.useRuntimeFallback {
-        let runtimeInfos = runtimeClassInfos(for: imagePath, options: options)
+        let runtimeInfos = await runtimeClassInfos(
+            for: imagePath,
+            onlyOneClass: options.onlyOneClass,
+            verbose: options.verbose
+        )
         if options.verbose, !runtimeInfos.isEmpty {
             fputs(
                 "privateheaderkit __raw-dump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
@@ -1262,15 +1266,16 @@ private func runtimeProtocolInfo(
     )
 }
 
+@MainActor
 private func runtimeClassInfo(
     for cls: AnyClass,
     runtimeOriginName: String,
     imagePath: String,
-    options: DumpOptions
+    verbose: Bool
 ) -> ObjCClassInfo? {
     var failedStage: NSString?
     guard let snapshot = PHRuntimeObjCInspector.snapshot(for: cls, failedStage: &failedStage) else {
-        if options.verbose {
+        if verbose {
             let stage = (failedStage as String?) ?? "unknown"
             fputs(
                 "privateheaderkit __raw-dump: runtime fallback skip class \(runtimeOriginName) image=\(imagePath) stage=\(stage)\n",
@@ -1298,68 +1303,108 @@ private func runtimeClassInfo(
     )
 }
 
-private func runtimeClassInfos(for imagePath: String, options: DumpOptions) -> [ObjCClassInfo] {
-    guard options.useRuntimeFallback else { return [] }
+@MainActor
+func withLoadedRuntimeImage<Result: Sendable>(
+    at path: String,
+    open: @MainActor @Sendable (String) -> UnsafeMutableRawPointer? = {
+        dlopen($0, RTLD_LAZY)
+    },
+    close: @MainActor @Sendable (UnsafeMutableRawPointer) -> Void = {
+        _ = dlclose($0)
+    },
+    inspect: @MainActor @Sendable (UnsafeMutableRawPointer) throws -> Result
+) rethrows -> Result? {
+    guard let handle = open(path) else { return nil }
+    defer { close(handle) }
+    return try inspect(handle)
+}
+
+@MainActor
+private func runtimeClassInfos(
+    for imagePath: String,
+    onlyOneClass: String?,
+    verbose: Bool
+) -> [ObjCClassInfo] {
     let targetPaths = runtimeFallbackTargetImagePaths(for: imagePath)
     let resolvedPath = resolveRuntimeURL(URL(fileURLWithPath: imagePath)).path
-    guard let handle = dlopen(resolvedPath, RTLD_LAZY) else {
-        if options.verbose {
+    guard let infos = withLoadedRuntimeImage(
+        at: resolvedPath,
+        inspect: { _ in
+            var count: UInt32 = 0
+            guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
+                if verbose {
+                    fputs(
+                        "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
+                        stderr
+                    )
+                }
+                return runtimeClassInfosByImageName(
+                    targetPaths: targetPaths,
+                    imagePath: imagePath,
+                    onlyOneClass: onlyOneClass,
+                    verbose: verbose
+                )
+            }
+            defer { free(namesPtr) }
+
+            if count == 0 {
+                if verbose {
+                    fputs(
+                        "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
+                        stderr
+                    )
+                }
+                return runtimeClassInfosByImageName(
+                    targetPaths: targetPaths,
+                    imagePath: imagePath,
+                    onlyOneClass: onlyOneClass,
+                    verbose: verbose
+                )
+            }
+
+            let names = UnsafeBufferPointer(start: namesPtr, count: Int(count))
+            var infos: [ObjCClassInfo] = []
+            infos.reserveCapacity(Int(count))
+
+            for namePtr in names {
+                let name = String(cString: namePtr)
+                if let onlyOneClass, onlyOneClass != name { continue }
+                if let cls = NSClassFromString(name) ?? (objc_getClass(name) as? AnyClass) {
+                    if let info = runtimeClassInfo(
+                        for: cls,
+                        runtimeOriginName: name,
+                        imagePath: imagePath,
+                        verbose: verbose
+                    ) {
+                        infos.append(info)
+                    }
+                }
+            }
+            if infos.isEmpty {
+                return runtimeClassInfosByImageName(
+                    targetPaths: targetPaths,
+                    imagePath: imagePath,
+                    onlyOneClass: onlyOneClass,
+                    verbose: verbose
+                )
+            }
+            return infos
+        }
+    ) else {
+        if verbose {
             fputs("privateheaderkit __raw-dump: runtime dlopen failed for \(resolvedPath)\n", stderr)
         }
         return []
     }
-    defer { dlclose(handle) }
-
-    var count: UInt32 = 0
-    guard let namesPtr = objc_copyClassNamesForImage(resolvedPath, &count) else {
-        if options.verbose {
-            fputs(
-                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned nil for \(resolvedPath)\n",
-                stderr
-            )
-        }
-        return runtimeClassInfosByImageName(targetPaths: targetPaths, imagePath: imagePath, options: options)
-    }
-    defer { free(namesPtr) }
-
-    if count == 0 {
-        if options.verbose {
-            fputs(
-                "privateheaderkit __raw-dump: runtime fallback objc_copyClassNamesForImage returned 0 classes for \(resolvedPath)\n",
-                stderr
-            )
-        }
-        return runtimeClassInfosByImageName(targetPaths: targetPaths, imagePath: imagePath, options: options)
-    }
-
-    let names = UnsafeBufferPointer(start: namesPtr, count: Int(count))
-    var infos: [ObjCClassInfo] = []
-    infos.reserveCapacity(Int(count))
-
-    for namePtr in names {
-        let name = String(cString: namePtr)
-        if let only = options.onlyOneClass, only != name { continue }
-        if let cls = NSClassFromString(name) ?? (objc_getClass(name) as? AnyClass) {
-            if let info = runtimeClassInfo(
-                for: cls,
-                runtimeOriginName: name,
-                imagePath: imagePath,
-                options: options
-            ) {
-                infos.append(info)
-            }
-        }
-    }
-    if infos.isEmpty {
-        return runtimeClassInfosByImageName(targetPaths: targetPaths, imagePath: imagePath, options: options)
-    }
     return infos
 }
 
+@MainActor
 private func runtimeClassInfosByImageName(
     targetPaths: Set<String>,
     imagePath: String,
-    options: DumpOptions
+    onlyOneClass: String?,
+    verbose: Bool
 ) -> [ObjCClassInfo] {
     let initialCount = objc_getClassList(nil, 0)
     if initialCount <= 0 { return [] }
@@ -1382,18 +1427,18 @@ private func runtimeClassInfosByImageName(
         if !targetPaths.contains(normalizedImage) { continue }
 
         let name = String(cString: class_getName(cls))
-        if let only = options.onlyOneClass, only != name { continue }
+        if let onlyOneClass, onlyOneClass != name { continue }
         if let info = runtimeClassInfo(
             for: cls,
             runtimeOriginName: name,
             imagePath: imagePath,
-            options: options
+            verbose: verbose
         ) {
             infos.append(info)
         }
     }
 
-    if options.verbose, !infos.isEmpty {
+    if verbose, !infos.isEmpty {
         fputs(
             "privateheaderkit __raw-dump: runtime fallback class_getImageName matched \(infos.count) classes for \(imagePath)\n",
             stderr

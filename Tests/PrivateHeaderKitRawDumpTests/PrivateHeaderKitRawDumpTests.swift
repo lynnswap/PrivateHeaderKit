@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import MachOKit
 @_spi(Core) @_spi(Diagnostics) @testable import MachOObjCSection
 import PrivateHeaderKitHelperProtocol
@@ -952,5 +953,105 @@ struct PrivateHeaderKitRawDumpRuntimeInspectorTests {
         #expect(snapshot?.objcRuntimeName == "NSObject")
         #expect(snapshot?.superclassObjCRuntimeName == nil)
     }
+
+    @Test func loadedRuntimeImageLifecycleHopsToMainActorInOrder() async {
+        let probe = await RuntimeImageLifecycleProbe()
+
+        let result = await Task.detached {
+            await withLoadedRuntimeImage(
+                at: "/fixture/Runtime.framework/Runtime",
+                open: { path in probe.open(path) },
+                close: { handle in probe.close(handle) },
+                inspect: { handle in probe.inspect(handle) }
+            )
+        }.value
+
+        #expect(result == "inspected")
+        let observations = await probe.finish()
+        #expect(observations.map(\.stage) == ["open", "inspect", "close"])
+        #expect(observations.allSatisfy { $0.isMainThread })
+        #expect(observations.allSatisfy { $0.isMainQueue })
+    }
+
+    @Test @MainActor
+    func loadedRuntimeImageLifecycleClosesWhenInspectionThrows() {
+        let probe = RuntimeImageLifecycleProbe()
+
+        #expect(throws: RuntimeImageLifecycleError.self) {
+            try withLoadedRuntimeImage(
+                at: "/fixture/Runtime.framework/Runtime",
+                open: { path in probe.open(path) },
+                close: { handle in probe.close(handle) },
+                inspect: { handle in try probe.inspectThrowing(handle) }
+            )
+        }
+
+        let observations = probe.finish()
+        #expect(observations.map(\.stage) == ["open", "inspect", "close"])
+        #expect(observations.allSatisfy { $0.isMainThread })
+        #expect(observations.allSatisfy { $0.isMainQueue })
+    }
     #endif
 }
+
+#if canImport(ObjectiveC) && canImport(PrivateHeaderKitRawDumpRuntimeObjC)
+private struct RuntimeImageLifecycleObservation: Equatable, Sendable {
+    let stage: String
+    let isMainThread: Bool
+    let isMainQueue: Bool
+}
+
+private enum RuntimeImageLifecycleError: Error {
+    case expected
+}
+
+@MainActor
+private final class RuntimeImageLifecycleProbe {
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private let handle = UnsafeMutableRawPointer(bitPattern: 0x1)!
+    private var observations: [RuntimeImageLifecycleObservation] = []
+
+    init() {
+        DispatchQueue.main.setSpecific(key: queueKey, value: 1)
+    }
+
+    func open(_ path: String) -> UnsafeMutableRawPointer? {
+        #expect(path == "/fixture/Runtime.framework/Runtime")
+        record("open")
+        return handle
+    }
+
+    func inspect(_ handle: UnsafeMutableRawPointer) -> String {
+        #expect(handle == self.handle)
+        record("inspect")
+        return "inspected"
+    }
+
+    func inspectThrowing(_ handle: UnsafeMutableRawPointer) throws -> String {
+        #expect(handle == self.handle)
+        record("inspect")
+        throw RuntimeImageLifecycleError.expected
+    }
+
+    func close(_ handle: UnsafeMutableRawPointer) {
+        #expect(handle == self.handle)
+        record("close")
+    }
+
+    func finish() -> [RuntimeImageLifecycleObservation] {
+        DispatchQueue.main.setSpecific(key: queueKey, value: nil)
+        return observations
+    }
+
+    private func record(_ stage: String) {
+        MainActor.preconditionIsolated()
+        observations.append(
+            RuntimeImageLifecycleObservation(
+                stage: stage,
+                isMainThread: Thread.isMainThread,
+                isMainQueue: DispatchQueue.getSpecific(key: queueKey) == 1
+            )
+        )
+    }
+}
+#endif
