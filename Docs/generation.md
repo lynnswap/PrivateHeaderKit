@@ -121,13 +121,19 @@ recovery snapshot, not a visibility gate for generated headers.
 Objective-C header generation reads only the directly adopted protocol names
 needed by class, category, and protocol declarations. Protocol metadata reads
 are range-checked and traversal is bounded; an unreadable reference, cycle, or
-safety-limit cutoff preserves the metadata that was decoded successfully. Once
-that target is published, PrivateHeaderKit reports the precise owner and
-degradation as an `objc-metadata-warning` and persists the warning in
-`generation.sqlite`. A bounded diagnostics report records when additional
-warnings were omitted, so malformed metadata cannot grow process output without
-limit. Live warning presentation is also capped across the run; one aggregate
-warning points to the retained per-target details in the database.
+safety-limit cutoff preserves the metadata that was decoded successfully.
+Loaded-image reads of relative method/property list-of-lists consult each
+entry's runtime loaded state, while file-backed reads inspect every structurally
+valid entry. Both preserve outer-table order and validate the outer table and
+each nonempty inner member table before decoding; an empty inner list does not
+require an otherwise unused entry size. One malformed loaded list preserves its
+valid siblings and produces a typed member-list degradation; unloaded lists are
+skipped without warning. Once that target is published, PrivateHeaderKit reports
+the precise owner and degradation as an `objc-metadata-warning` and persists the
+warning in `generation.sqlite`. A bounded diagnostics report records when
+additional warnings were omitted, so malformed metadata cannot grow process
+output without limit. Live warning presentation is also capped across the run;
+one aggregate warning points to the retained per-target details in the database.
 
 State, attempts, publication intent, and run diagnostics are stored in
 `generation.sqlite`, outside the published header tree. The top-level source

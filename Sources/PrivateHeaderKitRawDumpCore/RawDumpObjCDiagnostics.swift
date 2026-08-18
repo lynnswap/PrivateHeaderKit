@@ -48,16 +48,25 @@ final class RawDumpObjCDiagnosticsAccumulator {
 
     func append(contentsOf diagnostics: [ObjCProtocolDiagnostic]) {
         for diagnostic in diagnostics {
-            let record = privateHeaderKitDiagnostic(from: diagnostic)
-            guard !retained.contains(record) else { continue }
-            guard retained.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount else {
-                omittedDiagnosticCount = omittedDiagnosticCount == UInt.max
-                    ? UInt.max
-                    : omittedDiagnosticCount + 1
-                continue
-            }
-            retained.insert(record)
+            append(privateHeaderKitDiagnostic(from: diagnostic))
         }
+    }
+
+    func append(contentsOf diagnostics: [ObjCMemberListDiagnostic]) {
+        for diagnostic in diagnostics {
+            append(privateHeaderKitDiagnostic(from: diagnostic))
+        }
+    }
+
+    private func append(_ record: PrivateHeaderKitRawDumpDiagnostic) {
+        guard !retained.contains(record) else { return }
+        guard retained.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount else {
+            omittedDiagnosticCount = omittedDiagnosticCount == UInt.max
+                ? UInt.max
+                : omittedDiagnosticCount + 1
+            return
+        }
+        retained.insert(record)
     }
 
     var report: PrivateHeaderKitRawDumpDiagnosticsReport {
@@ -114,6 +123,54 @@ private func privateHeaderKitDiagnostic(
                 "adopted protocols were not traversed because protocol offset"
                 + " \(invalid.protocolOffset) has no stable identity"
         )
+    }
+}
+
+private func privateHeaderKitDiagnostic(
+    from diagnostic: ObjCMemberListDiagnostic
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    rawDumpMemberListDiagnostic(
+        className: diagnostic.className,
+        kind: diagnostic.kind,
+        outerListOffset: diagnostic.outerListOffset,
+        location: diagnostic.location,
+        failure: diagnostic.failure
+    )
+}
+
+func rawDumpMemberListDiagnostic(
+    className: String,
+    kind: ObjCMemberListDiagnostic.Kind,
+    outerListOffset: Int,
+    location: ObjCMemberListDiagnostic.Location,
+    failure: ObjCMemberListDiagnostic.Failure
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    PrivateHeaderKitRawDumpDiagnostic(
+        owner: "Objective-C class \(boundedMetadataString(className))",
+        degradation:
+            "\(memberKindDescription(kind)) metadata at relative list offset \(outerListOffset)"
+            + memberLocationDescription(location)
+            + " could not be fully read: \(failureDescription(failure))"
+    )
+}
+
+private func memberKindDescription(_ kind: ObjCMemberListDiagnostic.Kind) -> String {
+    switch kind {
+    case .instanceMethod: "instance-method"
+    case .classMethod: "class-method"
+    case .instanceProperty: "instance-property"
+    case .classProperty: "class-property"
+    }
+}
+
+private func memberLocationDescription(
+    _ location: ObjCMemberListDiagnostic.Location
+) -> String {
+    switch location {
+    case .table:
+        return ""
+    case let .entry(index, imageIndex, offset):
+        return " entry \(index) (cache image index \(imageIndex), offset \(offset))"
     }
 }
 
@@ -201,5 +258,52 @@ private func failureDescription(
         "entry \(entryIndex) layout at file offset \(offset) is not readable for \(byteCount) bytes"
     case .unreadableImageLayout(let entryIndex, let address, let byteCount):
         "entry \(entryIndex) layout at image address \(address) is not readable for \(byteCount) bytes"
+    }
+}
+
+private func failureDescription(
+    _ failure: ObjCMemberListDiagnostic.Failure
+) -> String {
+    switch failure {
+    case .unsupportedListEncoding:
+        "list encoding is unsupported by this reader"
+    case .invalidListOffset(let offset):
+        "list offset \(offset) is not a readable nonnegative address"
+    case .invalidElementCount(let count):
+        "element count \(count) cannot be represented"
+    case .invalidSignedElementCount(let count):
+        "signed element count \(count) is negative"
+    case .excessiveElementCount(let actual, let maximum):
+        "element count \(actual) exceeds the safety limit \(maximum)"
+    case .excessiveByteCount(let actual, let maximum):
+        "table size \(actual) bytes exceeds the safety limit \(maximum)"
+    case .invalidRelativeEntrySize(let advertised, let minimum):
+        "relative entry size \(advertised) is smaller than \(minimum)"
+    case .invalidListEntrySize(let advertised, let expected):
+        "member entry size \(advertised) does not match expected size \(expected)"
+    case .misalignedListOffset(let offset, let alignment):
+        "member list offset \(offset) is not aligned to \(alignment) bytes"
+    case .misalignedListAddress(let address, let alignment):
+        "member list address \(address) is not aligned to \(alignment) bytes"
+    case .unresolvedListPointer:
+        "list pointer could not be rebased or canonicalized"
+    case .missingListBackingData:
+        "list pointer has no readable backing data"
+    case .unreadableFileHeader(let offset, let byteCount):
+        "file header at offset \(offset) is not readable for \(byteCount) bytes"
+    case .unreadableImageHeader(let address, let byteCount):
+        "image header at address \(address) is not readable for \(byteCount) bytes"
+    case .invalidRelativeListLocation:
+        "relative list location could not be mapped"
+    case .relativeImageUnavailable(let imageIndex):
+        "cache image index \(imageIndex) is unavailable"
+    case .byteCountOverflow(let elementCount, let elementSize):
+        "byte count overflowed for \(elementCount) elements of size \(elementSize)"
+    case .rangeOverflow(let startOffset, let byteCount):
+        "range overflowed from offset \(startOffset) for \(byteCount) bytes"
+    case .unreadableFileRange(let offset, let byteCount):
+        "file range at offset \(offset) is not readable for \(byteCount) bytes"
+    case .unreadableImageRange(let address, let byteCount):
+        "image range at address \(address) is not readable for \(byteCount) bytes"
     }
 }
