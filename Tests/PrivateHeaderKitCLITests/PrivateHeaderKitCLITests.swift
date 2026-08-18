@@ -957,6 +957,70 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(status == 130)
     }
 
+    @Test func interactiveSourceScreenGroupsSourcesByPlatform() async {
+        let input = ScriptedInput(["\u{001B}"])
+        let output = ThreadSafeStrings()
+
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "18.0",
+                        build: "22A3351",
+                        systemRoot: nil
+                    ),
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A5390f",
+                        systemRoot: nil
+                    ),
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .watchOS,
+                        version: "27.0",
+                        build: "24R5325f",
+                        systemRoot: nil
+                    ),
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .macOS,
+                        version: "26.6.1",
+                        build: "25G76",
+                        systemRoot: "/"
+                    ),
+                ]
+            },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 1)
+        #expect(output.text == """
+            PrivateHeaderKit
+            Generate private headers from an installed runtime or this Mac.
+
+            Step 1 of 3: Source
+
+            iOS
+              [1] 18.0 (22A3351)
+              [2] 27.0 (24A5390f)
+
+            watchOS
+              [3] 27.0 (24R5325f)
+
+            macOS
+              [4] 26.6.1 (25G76)
+
+            Press Escape to cancel.
+            Select source:
+            Cancelled.
+            """)
+    }
+
     @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
