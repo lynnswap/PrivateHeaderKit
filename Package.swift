@@ -43,8 +43,8 @@ let package = Package(
             from: "0.8.100"
         ),
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection.git",
-            "0.15.1" ..< "0.16.0"
+            url: "https://github.com/lynnswap/MachOSwiftSection.git",
+            revision: "c1e9e6eade17dc2a617326719d61f6cf9025e43f"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
