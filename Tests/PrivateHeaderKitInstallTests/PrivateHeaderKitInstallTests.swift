@@ -37,6 +37,11 @@ struct InstallOptionTests {
         #expect(custom.publicCommandURL.path == "/custom/bin/privateheaderkit")
         #expect(custom.installRoot.path == "/custom/libexec/privateheaderkit")
         #expect(
+            dryRunInstallMessages(layout: custom).contains(
+                "Would stage all four artifacts under: /custom/libexec/privateheaderkit/versions"
+            )
+        )
+        #expect(
             dryRunInstallMessages(layout: custom).suffix(3) == [
                 "Would remove obsolete command if present: /custom/bin/privateheaderkit-dump",
                 "Would remove obsolete command if present: /custom/bin/headerdump",
@@ -49,6 +54,168 @@ struct InstallOptionTests {
 
 @Suite
 struct ReleaseManifestTests {
+    @Test func historicalSchemaOneManifestDecodesWithGoldenCohort() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let manifestURL = directories.root.appendingPathComponent(ReleaseManifest.fileName)
+        let manifestJSON = """
+        {
+          "schemaVersion" : 1,
+          "version" : "v1.2.3",
+          "commit" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "cohort" : "v1.2.3+9963156fa7681012bd171479d1802f66fcbd867c91ea3a747ce2a7b9bd03779d",
+          "artifacts" : [
+            {
+              "name" : "privateheaderkit",
+              "sha256" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "architectures" : ["arm64"],
+              "platform" : "macOS",
+              "codeSignaturePolicy" : "valid"
+            },
+            {
+              "name" : "privateheaderkit-raw-helper",
+              "sha256" : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "architectures" : ["arm64"],
+              "platform" : "macOS",
+              "codeSignaturePolicy" : "valid"
+            },
+            {
+              "name" : "privateheaderkit-sim-helper",
+              "sha256" : "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "architectures" : ["arm64"],
+              "platform" : "iOSSimulator",
+              "codeSignaturePolicy" : "valid"
+            }
+          ]
+        }
+        """
+        try Data(manifestJSON.utf8).write(to: manifestURL)
+
+        let manifest = try ReleaseManifest.read(from: manifestURL)
+
+        #expect(manifest.schemaVersion == ReleaseManifestSchema.v1.rawValue)
+        #expect(try manifest.requiredArtifactNames == ReleaseManifestSchema.v1.artifactNames)
+        #expect(
+            manifest.cohort
+                == "v1.2.3+9963156fa7681012bd171479d1802f66fcbd867c91ea3a747ce2a7b9bd03779d"
+        )
+        #expect(ReleaseManifest.schemaVersion == ReleaseManifestSchema.v2.rawValue)
+    }
+
+    @Test func schemaArtifactSetsAreImmutableAndUnknownSchemasFail() throws {
+        let directories = try makeTemporaryTestDirectories()
+        let manifestURL = directories.root.appendingPathComponent(ReleaseManifest.fileName)
+        let schemaOneArtifacts = manifestFixtureArtifacts(
+            for: ReleaseManifestSchema.v1.artifactNames
+        )
+        let schemaTwoArtifacts = manifestFixtureArtifacts(
+            for: ReleaseManifestSchema.v2.artifactNames
+        )
+
+        for fixture in [
+            try releaseManifestFixtureData(
+                schemaVersion: ReleaseManifestSchema.v1.rawValue,
+                artifacts: Array(schemaOneArtifacts.dropLast())
+            ),
+            try releaseManifestFixtureData(
+                schemaVersion: ReleaseManifestSchema.v1.rawValue,
+                artifacts: schemaTwoArtifacts
+            ),
+            try releaseManifestFixtureData(
+                schemaVersion: ReleaseManifestSchema.v2.rawValue,
+                artifacts: schemaOneArtifacts
+            ),
+            try releaseManifestFixtureData(
+                schemaVersion: 3,
+                artifacts: schemaTwoArtifacts
+            ),
+        ] {
+            try fixture.write(to: manifestURL, options: [.atomic])
+            #expect(throws: InstallError.self) {
+                _ = try ReleaseManifest.read(from: manifestURL)
+            }
+        }
+    }
+
+    @Test func releaseDirectoryUsesItsManifestSchemaForExactEntries() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let schemaOne = try await makeSchemaOneTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "1", count: 40),
+            marker: "schema-one"
+        )
+        let schemaTwo = try await makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "2", count: 40),
+            marker: "schema-two"
+        )
+
+        #expect(
+            try ReleaseCohort.read(from: cohortDirectory(schemaOne)).manifest.schemaVersion
+                == ReleaseManifestSchema.v1.rawValue
+        )
+        #expect(
+            try ReleaseCohort.read(from: cohortDirectory(schemaTwo)).manifest.schemaVersion
+                == ReleaseManifestSchema.v2.rawValue
+        )
+
+        let schemaOneExtra = try cohortDirectory(schemaOne).appendingPathComponent(
+            InstallArtifactName.watchSimulatorHelper.rawValue
+        )
+        try writeExecutable("unexpected-watch-helper", to: schemaOneExtra)
+        #expect(throws: InstallError.self) {
+            _ = try ReleaseCohort.read(from: try cohortDirectory(schemaOne))
+        }
+
+        let schemaTwoWatchHelper = try #require(
+            schemaTwo.artifactURLs[.watchSimulatorHelper]
+        )
+        try FileManager.default.removeItem(at: schemaTwoWatchHelper)
+        #expect(throws: InstallError.self) {
+            _ = try ReleaseCohort.read(from: try cohortDirectory(schemaTwo))
+        }
+    }
+
+    @Test func liveInspectorAcceptsWatchSimulatorAndRejectsPlatformMismatches() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let iOSURL = directories.root.appendingPathComponent("ios-helper")
+        let watchOSURL = directories.root.appendingPathComponent("watchos-helper")
+        try writeExecutable("ios", to: iOSURL)
+        try writeExecutable("watchos", to: watchOSURL)
+        let runner = RecordingCommandRunner()
+        for url in [iOSURL, watchOSURL] {
+            await runner.setCaptureOutput(
+                "arm64\n",
+                for: ["/usr/bin/lipo", "-archs", url.path]
+            )
+        }
+        await runner.setCaptureOutput(
+            "platform IOSSIMULATOR\n",
+            for: ["/usr/bin/vtool", "-show-build", iOSURL.path]
+        )
+        await runner.setCaptureOutput(
+            "platform WATCHOSSIMULATOR\n",
+            for: ["/usr/bin/vtool", "-show-build", watchOSURL.path]
+        )
+        let inspector = LiveReleaseArtifactInspector(
+            runner: runner,
+            checkCancellation: {}
+        )
+
+        let watchInspection = try await inspector.inspect(
+            artifact: .watchSimulatorHelper,
+            at: watchOSURL
+        )
+        #expect(watchInspection.platform == .watchOSSimulator)
+        await #expect(throws: InstallError.self) {
+            _ = try await inspector.inspect(artifact: .simulatorHelper, at: watchOSURL)
+        }
+        await #expect(throws: InstallError.self) {
+            _ = try await inspector.inspect(artifact: .watchSimulatorHelper, at: iOSURL)
+        }
+    }
+
     @Test func manifestRequiresExactArtifactSetAndCanonicalCohort() async throws {
         let directories = try makeTemporaryTestDirectories()
         let cohort = try await makeTestCohort(
@@ -64,7 +231,11 @@ struct ReleaseManifestTests {
                 options: .regularExpression
             ) != nil
         )
-        #expect(cohort.manifest.artifacts.map(\.name) == InstallArtifactName.allCases.sorted())
+        #expect(cohort.manifest.schemaVersion == ReleaseManifestSchema.v2.rawValue)
+        #expect(
+            cohort.manifest.artifacts.map(\.name)
+                == ReleaseManifestSchema.current.artifactNames.sorted()
+        )
         try cohort.manifest.validate()
 
         let sameArtifactsDifferentCommit = try ReleaseManifest(
@@ -531,6 +702,96 @@ struct VersionCohortInstallerTests {
             _ = try await failingInstaller.install(second)
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
+    }
+
+    @Test func schemaOneActiveCurrentUpdatesToSchemaTwoWithoutRewritingHistory() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let schemaOne = try await makeSchemaOneTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "3", count: 40),
+            marker: "schema-one"
+        )
+        try seedActiveCohort(schemaOne, layout: layout)
+        let schemaOneManifestURL = layout.cohortDirectory(
+            for: schemaOne.manifest
+        ).appendingPathComponent(ReleaseManifest.fileName)
+        let schemaOneManifestBeforeUpdate = try Data(contentsOf: schemaOneManifestURL)
+        let schemaTwo = try await makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "4", count: 40),
+            marker: "schema-two"
+        )
+        let installer = testInstaller(layout: layout)
+
+        _ = try await installer.install(schemaTwo)
+
+        try assertActive(schemaTwo.manifest, layout: layout, marker: "schema-two")
+        try assertInstalledCohortIsExact(schemaOne.manifest, layout: layout)
+        try assertInstalledCohortIsExact(schemaTwo.manifest, layout: layout)
+        #expect(
+            try Data(contentsOf: schemaOneManifestURL)
+                == schemaOneManifestBeforeUpdate
+        )
+        let retainedSchemaOne = try ReleaseCohort.read(
+            from: layout.cohortDirectory(for: schemaOne.manifest)
+        )
+        try await installer.preflight(retainedSchemaOne)
+        #expect(retainedSchemaOne.manifest.schemaVersion == ReleaseManifestSchema.v1.rawValue)
+    }
+
+    @Test func schemaTwoActivationFailureRestoresSchemaOneCurrent() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        let schemaOne = try await makeSchemaOneTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "5", count: 40),
+            marker: "schema-one"
+        )
+        try seedActiveCohort(schemaOne, layout: layout)
+        let schemaTwo = try await makeTestCohort(
+            under: directories.root,
+            version: "v2.0.0",
+            commit: String(repeating: "6", count: 40),
+            marker: "schema-two"
+        )
+        let schemaTwoInstallDirectory = layout.cohortDirectory(
+            for: schemaTwo.manifest
+        ).path + "/"
+        let installer = VersionCohortInstaller(
+            layout: layout,
+            inspectArtifact: { artifact, url in
+                if url.path.hasPrefix(schemaTwoInstallDirectory) {
+                    throw TestInstallFailure.activation
+                }
+                return try await testArtifactInspector(artifact: artifact, url: url)
+            },
+            outputLogger: { _ in }
+        )
+
+        await #expect(throws: TestInstallFailure.self) {
+            _ = try await installer.install(schemaTwo)
+        }
+
+        try assertActive(schemaOne.manifest, layout: layout, marker: "schema-one")
+        try assertInstalledCohortIsExact(schemaOne.manifest, layout: layout)
+        let restoredSchemaOne = try ReleaseCohort.read(
+            from: layout.cohortDirectory(for: schemaOne.manifest)
+        )
+        try await testInstaller(layout: layout).preflight(restoredSchemaOne)
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: layout.publicCommandURL.path
+            ) == "../libexec/privateheaderkit/current/privateheaderkit"
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: layout.cohortDirectory(for: schemaTwo.manifest).path
+            )
+        )
     }
 
     @Test func hashMismatchNeverSwitchesCurrent() async throws {
@@ -1116,7 +1377,10 @@ struct VersionCohortInstallerTests {
                 fileManager: .default,
                 inspectArtifact: testArtifactInspector,
                 outputLogger: { _ in },
-                simulatorHelperTriple: "arm64-apple-ios-simulator"
+                simulatorHelperTriples: [
+                    .iOS: "arm64-apple-ios-simulator",
+                    .watchOS: "arm64-apple-watchos-simulator",
+                ]
             )
         }
         try assertActive(first.manifest, layout: layout, marker: "first")
@@ -1660,6 +1924,49 @@ struct VersionCohortInstallerTests {
         }
     }
 
+    @Test func interruptedLegacyIntentWithSchemaOneTargetRecovers() async throws {
+        let directories = try makeTemporaryTestDirectories()
+        let layout = try testLayout(in: directories.root)
+        try writeLegacyLayout(layout: layout)
+        let schemaOne = try await makeSchemaOneTestCohort(
+            under: directories.root,
+            version: "v1.0.0",
+            commit: String(repeating: "f", count: 40),
+            marker: "schema-one-recovery"
+        )
+        try FileManager.default.createDirectory(
+            at: layout.versionsDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(
+            at: cohortDirectory(schemaOne),
+            to: layout.cohortDirectory(for: schemaOne.manifest)
+        )
+        let installer = testInstaller(layout: layout)
+        guard case .complete(let legacyLayout) = try installer.classifyLegacyDirectLayout(
+            current: .absent
+        ) else {
+            Issue.record("expected a complete legacy direct layout")
+            return
+        }
+        _ = try installer.prepareLegacyMigration(
+            targetManifest: schemaOne.manifest,
+            legacyLayout: legacyLayout
+        )
+
+        try await installer.withInstallLock {}
+
+        try assertActive(
+            schemaOne.manifest,
+            layout: layout,
+            marker: "schema-one-recovery"
+        )
+        try assertInstalledCohortIsExact(schemaOne.manifest, layout: layout)
+        #expect(!FileManager.default.fileExists(atPath: layout.rawDumpHelperURL.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.simulatorHelperURL.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
+    }
+
     @Test func corruptLegacyMigrationIntentFailsBeforePointerMutation() async throws {
         let directories = try makeTemporaryTestDirectories()
         let layout = try testLayout(in: directories.root)
@@ -1745,32 +2052,105 @@ struct SourceBuildResolutionTests {
         }
     }
 
-    @Test func buildCommandsResolveExactHostAndSimulatorProducts() async throws {
+    @Test func sourceBuildUsesExactHostAndBothSimulatorDestinations() async throws {
         let directories = try makeTemporaryTestDirectories()
-        let runner = RecordingCommandRunner()
-        let simulatorTriple = "arm64-apple-ios-simulator"
-        let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
-            repoRoot: directories.root,
-            triple: simulatorTriple
+        let repoRoot = directories.root.appendingPathComponent("Repo", isDirectory: true)
+        try makePrivateHeaderKitRepoMarkers(in: repoRoot)
+        let hostBin = directories.root.appendingPathComponent("host-bin", isDirectory: true)
+        let iOSBin = directories.root.appendingPathComponent("ios-bin", isDirectory: true)
+        let watchOSBin = directories.root.appendingPathComponent("watchos-bin", isDirectory: true)
+        for directory in [hostBin, iOSBin, watchOSBin] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        try writeExecutable(
+            "public",
+            to: hostBin.appendingPathComponent("privateheaderkit")
         )
-        await runner.setCaptureOutput(
-            "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk\n",
-            for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
+        try writeExecutable(
+            "raw",
+            to: hostBin.appendingPathComponent("privateheaderkit-raw-helper")
+        )
+        try writeExecutable(
+            "ios",
+            to: iOSBin.appendingPathComponent("privateheaderkit-sim-helper")
+        )
+        try writeExecutable(
+            "watchos",
+            to: watchOSBin.appendingPathComponent("privateheaderkit-sim-helper")
         )
 
-        try await buildProducts(
-            ["privateheaderkit", "privateheaderkit-raw-helper"],
-            configuration: .debug,
-            in: directories.root,
-            runner: runner
+        let runner = RecordingCommandRunner()
+        let head = String(repeating: "a", count: 40) + "\n"
+        await runner.setCaptureOutputs([head, head], for: ["git", "rev-parse", "HEAD"])
+        await runner.setCaptureOutputs(["", ""], for: ["git", "tag", "--points-at", "HEAD"])
+        await runner.setCaptureOutputs(
+            ["", ""],
+            for: ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"]
         )
-        try await buildSimulatorHelper(
-            in: directories.root,
+        await runner.setCaptureOutputs(
+            ["", ""],
+            for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        )
+        await runner.setCaptureOutput(
+            hostBin.path + "\n",
+            for: ["swift", "build", "-c", "debug", "--show-bin-path"]
+        )
+
+        let iOSSDK = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        let watchOSSDK = "/Platforms/WatchSimulator.platform/Developer/SDKs/WatchSimulator.sdk"
+        let iOSTriple = "arm64-apple-ios-simulator"
+        let watchOSTriple = "arm64-apple-watchos-simulator"
+        let iOSScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
+            repoRoot: repoRoot,
+            triple: iOSTriple
+        )
+        let watchOSScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
+            repoRoot: repoRoot,
+            triple: watchOSTriple
+        )
+        await runner.setCaptureOutput(
+            iOSSDK + "\n",
+            for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
+        )
+        await runner.setCaptureOutput(
+            watchOSSDK + "\n",
+            for: ["xcrun", "--sdk", "watchsimulator", "--show-sdk-path"]
+        )
+        await runner.setCaptureOutput(
+            iOSBin.path + "\n",
+            for: [
+                "swift", "build", "-c", "debug",
+                "--scratch-path", iOSScratchPath.path,
+                "--sdk", iOSSDK,
+                "--triple", iOSTriple,
+                "--show-bin-path",
+            ]
+        )
+        await runner.setCaptureOutput(
+            watchOSBin.path + "\n",
+            for: [
+                "swift", "build", "-c", "debug",
+                "--scratch-path", watchOSScratchPath.path,
+                "--sdk", watchOSSDK,
+                "--triple", watchOSTriple,
+                "--show-bin-path",
+            ]
+        )
+
+        let cohort = try await buildSourceCohort(
+            repoRoot: repoRoot,
             configuration: .debug,
-            scratchPath: simulatorScratchPath,
-            sdkPath: try await resolveSimulatorSDKPath(runner: runner),
+            environment: [:],
             runner: runner,
-            simulatorHelperTriple: simulatorTriple
+            fileManager: .default,
+            inspectArtifact: testArtifactInspector,
+            simulatorHelperTriples: [
+                .iOS: iOSTriple,
+                .watchOS: watchOSTriple,
+            ]
         )
 
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
@@ -1778,20 +2158,44 @@ struct SourceBuildResolutionTests {
             ["swift", "build", "-c", "debug", "--product", "privateheaderkit-raw-helper"],
             [
                 "swift", "build", "-c", "debug",
-                "--scratch-path", simulatorScratchPath.path,
-                "--sdk", "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk",
-                "--triple", simulatorTriple,
+                "--scratch-path", iOSScratchPath.path,
+                "--sdk", iOSSDK,
+                "--triple", iOSTriple,
+                "--product", "privateheaderkit-sim-helper",
+            ],
+            [
+                "swift", "build", "-c", "debug",
+                "--scratch-path", watchOSScratchPath.path,
+                "--sdk", watchOSSDK,
+                "--triple", watchOSTriple,
                 "--product", "privateheaderkit-sim-helper",
             ],
         ])
-        #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.cwd == directories.root })
+        #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.cwd == repoRoot })
+        #expect(cohort.manifest.schemaVersion == ReleaseManifestSchema.v2.rawValue)
         #expect(
-            simulatorScratchPath.path
-                == directories.root.appendingPathComponent(
-                    ".build/privateheaderkit-simulator/\(simulatorTriple)",
-                    isDirectory: true
-                ).path
+            cohort.manifest.artifacts.map(\.name)
+                == ReleaseManifestSchema.v2.artifactNames.sorted()
         )
+        #expect(cohort.artifactURLs[.simulatorHelper] == iOSBin.appendingPathComponent(
+            InstallArtifactName.simulatorHelper.rawValue
+        ))
+        #expect(cohort.artifactURLs[.watchSimulatorHelper] == watchOSBin.appendingPathComponent(
+            InstallArtifactName.simulatorHelper.rawValue
+        ))
+        #expect(iOSScratchPath != watchOSScratchPath)
+
+        let layout = try testLayout(in: directories.root)
+        _ = try await testInstaller(layout: layout).install(cohort)
+        let installedWatchHelper = layout.installedArtifactURL(
+            .watchSimulatorHelper,
+            manifest: cohort.manifest
+        )
+        #expect(
+            try String(contentsOf: installedWatchHelper, encoding: .utf8)
+                == "watchos"
+        )
+        try assertInstalledCohortIsExact(cohort.manifest, layout: layout)
     }
 
     @Test func binPathResolutionHasNoSiblingFallback() async throws {
@@ -2031,9 +2435,11 @@ struct SourceBuildResolutionTests {
         try writeExecutable("before", to: untrackedURL)
 
         let hostBin = directories.root.appendingPathComponent("host-bin", isDirectory: true)
-        let simulatorBin = directories.root.appendingPathComponent("sim-bin", isDirectory: true)
+        let iOSBin = directories.root.appendingPathComponent("ios-bin", isDirectory: true)
+        let watchOSBin = directories.root.appendingPathComponent("watchos-bin", isDirectory: true)
         try FileManager.default.createDirectory(at: hostBin, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: simulatorBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: iOSBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: watchOSBin, withIntermediateDirectories: true)
         try writeExecutable(
             "public",
             to: hostBin.appendingPathComponent("privateheaderkit")
@@ -2044,7 +2450,11 @@ struct SourceBuildResolutionTests {
         )
         try writeExecutable(
             "sim",
-            to: simulatorBin.appendingPathComponent("privateheaderkit-sim-helper")
+            to: iOSBin.appendingPathComponent("privateheaderkit-sim-helper")
+        )
+        try writeExecutable(
+            "watch",
+            to: watchOSBin.appendingPathComponent("privateheaderkit-sim-helper")
         )
 
         let runner = RecordingCommandRunner()
@@ -2059,27 +2469,47 @@ struct SourceBuildResolutionTests {
             [untrackedPath + "\0", untrackedPath + "\0"],
             for: ["git", "ls-files", "--others", "--exclude-standard", "-z"]
         )
-        let sdk = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
-        let triple = "arm64-apple-ios-simulator"
-        let simulatorScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
+        let iOSSDK = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        let watchOSSDK = "/Platforms/WatchSimulator.platform/Developer/SDKs/WatchSimulator.sdk"
+        let iOSTriple = "arm64-apple-ios-simulator"
+        let watchOSTriple = "arm64-apple-watchos-simulator"
+        let iOSScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
             repoRoot: repoRoot,
-            triple: triple
+            triple: iOSTriple
+        )
+        let watchOSScratchPath = SwiftPMBuildPaths.simulatorScratchURL(
+            repoRoot: repoRoot,
+            triple: watchOSTriple
         )
         await runner.setCaptureOutput(
-            sdk + "\n",
+            iOSSDK + "\n",
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
+        )
+        await runner.setCaptureOutput(
+            watchOSSDK + "\n",
+            for: ["xcrun", "--sdk", "watchsimulator", "--show-sdk-path"]
         )
         await runner.setCaptureOutput(
             hostBin.path + "\n",
             for: ["swift", "build", "-c", "release", "--show-bin-path"]
         )
         await runner.setCaptureOutput(
-            simulatorBin.path + "\n",
+            iOSBin.path + "\n",
             for: [
                 "swift", "build", "-c", "release",
-                "--scratch-path", simulatorScratchPath.path,
-                "--sdk", sdk,
-                "--triple", triple,
+                "--scratch-path", iOSScratchPath.path,
+                "--sdk", iOSSDK,
+                "--triple", iOSTriple,
+                "--show-bin-path",
+            ]
+        )
+        await runner.setCaptureOutput(
+            watchOSBin.path + "\n",
+            for: [
+                "swift", "build", "-c", "release",
+                "--scratch-path", watchOSScratchPath.path,
+                "--sdk", watchOSSDK,
+                "--triple", watchOSTriple,
                 "--show-bin-path",
             ]
         )
@@ -2096,7 +2526,10 @@ struct SourceBuildResolutionTests {
                 runner: runner,
                 fileManager: .default,
                 inspectArtifact: testArtifactInspector,
-                simulatorHelperTriple: triple
+                simulatorHelperTriples: [
+                    .iOS: iOSTriple,
+                    .watchOS: watchOSTriple,
+                ]
             )
         }
     }
@@ -2112,7 +2545,7 @@ struct InstallCancellationTests {
         let manifest = try ReleaseManifest(
             version: "v1.0.0",
             commit: String(repeating: "a", count: 40),
-            artifacts: InstallArtifactName.allCases.map { artifact in
+            artifacts: ReleaseManifestSchema.current.artifactNames.map { artifact in
                 ReleaseArtifactRecord(
                     name: artifact,
                     sha256: String(repeating: "a", count: 64),
@@ -2310,7 +2743,7 @@ struct InstallCancellationTests {
     @Test func releaseManifestInspectionPreservesCancellation() async {
         let root = FileManager.default.temporaryDirectory
         let artifactURLs = Dictionary(
-            uniqueKeysWithValues: InstallArtifactName.allCases.map { artifact in
+            uniqueKeysWithValues: ReleaseManifestSchema.current.artifactNames.map { artifact in
                 (artifact, root.appendingPathComponent(artifact.rawValue))
             }
         )
@@ -2401,7 +2834,9 @@ struct InstallCancellationTests {
         }
         #expect(FileManager.default.fileExists(atPath: layout.legacyMigrationIntentURL.path))
 
-        let cancellationInspector = RecoveryCancellationInspector()
+        let cancellationInspector = RecoveryCancellationInspector(
+            successfulInspectionCount: try cohort.manifest.requiredArtifactNames.count
+        )
         let recovery = VersionCohortInstaller(
             layout: layout,
             inspectArtifact: cancellationInspector.inspect,
@@ -2474,7 +2909,10 @@ struct InstallCancellationTests {
                 fileManager: .default,
                 inspectArtifact: testArtifactInspector,
                 outputLogger: { _ in },
-                simulatorHelperTriple: "arm64-apple-ios-simulator"
+                simulatorHelperTriples: [
+                    .iOS: "arm64-apple-ios-simulator",
+                    .watchOS: "arm64-apple-watchos-simulator",
+                ]
             )
         }
         await buildStarted.wait()
@@ -2622,6 +3060,96 @@ private func testArtifactInspector(
     )
 }
 
+private struct EncodedReleaseManifestFixture: Encodable {
+    let schemaVersion: Int
+    let version: String
+    let commit: String
+    let cohort: String
+    let artifacts: [ReleaseArtifactRecord]
+}
+
+private func manifestFixtureArtifacts(
+    for artifactNames: [InstallArtifactName]
+) -> [ReleaseArtifactRecord] {
+    let hashComponents = ["a", "b", "c", "d"]
+    return artifactNames.enumerated().map { index, artifact in
+        ReleaseArtifactRecord(
+            name: artifact,
+            sha256: String(
+                repeating: hashComponents[index],
+                count: 64
+            ),
+            architectures: ["arm64"],
+            platform: artifact.expectedPlatform,
+            codeSignaturePolicy: .valid
+        )
+    }
+}
+
+private func releaseManifestFixtureData(
+    schemaVersion: Int,
+    version: String = "v1.0.0",
+    commit: String = String(repeating: "a", count: 40),
+    artifacts: [ReleaseArtifactRecord]
+) throws -> Data {
+    let artifacts = artifacts.sorted { $0.name < $1.name }
+    let fixture = EncodedReleaseManifestFixture(
+        schemaVersion: schemaVersion,
+        version: version,
+        commit: commit,
+        cohort: try ReleaseManifest.cohortIdentifier(
+            version: version,
+            artifacts: artifacts
+        ),
+        artifacts: artifacts
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    return try encoder.encode(fixture)
+}
+
+private func makeSchemaOneTestCohort(
+    under root: URL,
+    version: String,
+    commit: String,
+    marker: String
+) async throws -> ReleaseCohort {
+    let directory = root.appendingPathComponent(
+        "schema-one-cohort-source-\(UUID().uuidString)",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    var artifactRecords: [ReleaseArtifactRecord] = []
+    for artifact in ReleaseManifestSchema.v1.artifactNames {
+        let url = directory.appendingPathComponent(
+            artifact.rawValue,
+            isDirectory: false
+        )
+        try writeExecutable("\(marker)-\(artifact.rawValue)", to: url)
+        let inspection = try await testArtifactInspector(artifact: artifact, url: url)
+        artifactRecords.append(ReleaseArtifactRecord(
+            name: artifact,
+            sha256: inspection.sha256,
+            architectures: inspection.architectures,
+            platform: inspection.platform,
+            codeSignaturePolicy: .valid
+        ))
+    }
+    try releaseManifestFixtureData(
+        schemaVersion: ReleaseManifestSchema.v1.rawValue,
+        version: version,
+        commit: commit,
+        artifacts: artifactRecords
+    ).write(
+        to: directory.appendingPathComponent(ReleaseManifest.fileName),
+        options: [.atomic]
+    )
+    return try ReleaseCohort.read(from: directory)
+}
+
 private func makeTestCohort(
     under root: URL,
     version: String,
@@ -2637,7 +3165,7 @@ private func makeTestCohort(
         withIntermediateDirectories: true
     )
     let artifacts = Dictionary(
-        uniqueKeysWithValues: try InstallArtifactName.allCases.map { artifact in
+        uniqueKeysWithValues: try ReleaseManifestSchema.current.artifactNames.map { artifact in
             let url = directory.appendingPathComponent(
                 artifact.rawValue,
                 isDirectory: false
@@ -2675,14 +3203,19 @@ private actor SourceMutation {
 }
 
 private actor RecoveryCancellationInspector {
+    private let successfulInspectionCount: Int
     private var inspectionCount = 0
+
+    init(successfulInspectionCount: Int) {
+        self.successfulInspectionCount = successfulInspectionCount
+    }
 
     func inspect(
         artifact: InstallArtifactName,
         url: URL
     ) async throws -> ReleaseArtifactInspection {
         inspectionCount += 1
-        if inspectionCount > InstallArtifactName.allCases.count {
+        if inspectionCount > successfulInspectionCount {
             throw CancellationError()
         }
         return try await testArtifactInspector(artifact: artifact, url: url)
@@ -2752,6 +3285,32 @@ private func cohortDirectory(_ cohort: ReleaseCohort) throws -> URL {
     try #require(cohort.artifactURLs[.publicCommand]).deletingLastPathComponent()
 }
 
+private func seedActiveCohort(
+    _ cohort: ReleaseCohort,
+    layout: InstallLayout
+) throws {
+    try FileManager.default.createDirectory(
+        at: layout.versionsDirectory,
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: layout.binDir,
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.copyItem(
+        at: cohortDirectory(cohort),
+        to: layout.cohortDirectory(for: cohort.manifest)
+    )
+    try FileManager.default.createSymbolicLink(
+        atPath: layout.currentURL.path,
+        withDestinationPath: "versions/\(cohort.manifest.cohort)"
+    )
+    try FileManager.default.createSymbolicLink(
+        atPath: layout.publicCommandURL.path,
+        withDestinationPath: "../libexec/privateheaderkit/current/privateheaderkit"
+    )
+}
+
 private func writeExecutable(_ contents: String, to url: URL) throws {
     try FileManager.default.createDirectory(
         at: url.deletingLastPathComponent(),
@@ -2818,7 +3377,8 @@ private func assertInstalledCohortIsExact(
     ).sorted()
     #expect(
         entries
-            == (InstallArtifactName.allCases.map(\.rawValue) + [ReleaseManifest.fileName]).sorted()
+            == ((try manifest.requiredArtifactNames).map(\.rawValue)
+                + [ReleaseManifest.fileName]).sorted()
     )
 }
 
