@@ -1,4 +1,4 @@
-package enum SimulatorPlatform: String, CaseIterable, Codable, Equatable, Sendable {
+package enum SimulatorPlatform: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
     case iOS = "iOS"
     case watchOS = "watchOS"
 

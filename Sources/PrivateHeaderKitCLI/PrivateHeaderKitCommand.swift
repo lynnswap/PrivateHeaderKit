@@ -554,10 +554,11 @@ func resolvePrivateHeaderKitHelperPlan(
     let runningExecutableIdentity = try currentProcessExecutableBuildIdentity()
     guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
         let hostURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
-        let simulatorURL = simulatorPlatform.map { platform in
-            explicitSimulatorHelperURL(simulatorHelperPath)
-                ?? defaultSimulatorHelperURL(hostExecutableURL: hostURL, platform: platform)
-        } ?? hostURL
+        let simulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
+            ?? defaultSimulatorHelperURL(
+                hostExecutableURL: hostURL,
+                platform: simulatorPlatform ?? .iOS
+            )
         var artifacts = [
             ToolArtifactInput(role: "host-helper", url: hostURL),
         ]
@@ -615,17 +616,16 @@ func resolvePrivateHeaderKitHelperPlan(
     var preparedArtifacts = [
         ToolArtifactInput(role: "host-helper", url: hostURL),
     ]
-    let explicitSimulatorURL = simulatorPlatform.flatMap { _ in
-        explicitSimulatorHelperURL(simulatorHelperPath)
-    }
-    if let explicitSimulatorURL {
+    if let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath) {
         simulatorURL = explicitSimulatorURL
-        let artifact = ToolArtifactInput(
-            role: "simulator-helper",
-            url: explicitSimulatorURL
-        )
-        externalArtifacts.append(artifact)
-        preparedArtifacts.append(artifact)
+        if simulatorPlatform != nil {
+            let artifact = ToolArtifactInput(
+                role: "simulator-helper",
+                url: explicitSimulatorURL
+            )
+            externalArtifacts.append(artifact)
+            preparedArtifacts.append(artifact)
+        }
     } else if let simulatorPlatform {
         let simulatorTriple = simulatorPlatform.swiftPMTriple(
             architecture: simulatorArchitecture
@@ -678,7 +678,10 @@ func resolvePrivateHeaderKitHelperPlan(
             url: simulatorURL
         ))
     } else {
-        simulatorURL = hostURL
+        simulatorURL = defaultSimulatorHelperURL(
+            hostExecutableURL: hostURL,
+            platform: .iOS
+        )
     }
     let identityContext = SwiftPMToolIdentityContext(
         repoRoot: layout.repoRoot,

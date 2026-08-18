@@ -423,6 +423,11 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.targetRequest == .query("AppKit,Foundation"))
         #expect(request.options.executionMode == .host)
         #expect(request.options.helperURLs?.host.path == "/cohort/privateheaderkit-raw-helper")
+        #expect(
+            request.options.helperURLs?.simulator.path
+                == "/cohort/privateheaderkit-sim-helper"
+        )
+        #expect(request.options.toolCompatibilityIdentity == "test-tool-identity:host")
         #expect(preparationCount.value == 1)
         #expect(summaryInspectionCount.value == 0)
         #expect(output.text.contains("Generated  2"))
@@ -431,6 +436,45 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(output.text.contains("generation.sqlite"))
         #expect(!output.text.contains("manifest.json"))
         #expect(!output.text.contains("run.json"))
+    }
+
+    @Test func macOSPreservesExplicitSimulatorHelperURLWithoutResolvingSimulator() async throws {
+        let requestBox = ThreadSafeRequestBox()
+        let customSimulatorHelper = "/custom/privateheaderkit-sim-helper"
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "macOS",
+                "--version", "16.0",
+                "--system-root", "/SystemRoot",
+                "--out", "/tmp/PrivateHeaderKit",
+                "--target", "AppKit",
+                "--sim-helper", customSimulatorHelper,
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient(
+                run: { request, _, _ in
+                    requestBox.set(request)
+                    return resultFixture(
+                        for: request,
+                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
+                    )
+                }
+            ),
+            simulatorResolver: { _ in
+                Issue.record("macOS generation must not resolve a simulator")
+                return testPrivateHeaderKitSimulatorResolution
+            },
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            outputLogger: { _ in },
+            errorLogger: { _ in }
+        )
+
+        #expect(status == 0)
+        let request = try #require(requestBox.value)
+        #expect(request.options.executionMode == .host)
+        #expect(request.options.helperURLs?.simulator.path == customSimulatorHelper)
+        #expect(request.options.toolCompatibilityIdentity == "test-tool-identity:host")
     }
 
     @Test func runFailureUsesTypedSummaryWithoutReadingStateFiles() async {
@@ -1503,6 +1547,37 @@ struct PrivateHeaderKitHelperLookupTests {
             plan,
             runner: RecordingCommandRunner()
         )
+        #expect(!FileManager.default.fileExists(atPath: plan.helperURLs.simulator.path))
+    }
+
+    @Test func installedMacOSPlanDoesNotRequireDefaultOrExplicitSimulatorArtifact() async throws {
+        for usesExplicitPath in [false, true] {
+            let root = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let publicExecutable = root.appendingPathComponent("privateheaderkit")
+            let hostHelper = root.appendingPathComponent("privateheaderkit-raw-helper")
+            try writeCLIExecutable("cli", to: publicExecutable)
+            try writeCLIExecutable(
+                usesExplicitPath ? "host-explicit" : "host-default",
+                to: hostHelper
+            )
+            let simulatorHelperPath = usesExplicitPath
+                ? root.appendingPathComponent("missing-sim-helper").path
+                : nil
+
+            let plan = try await resolvePrivateHeaderKitHelperPlan(
+                publicExecutableURL: publicExecutable,
+                simulatorHelperPath: simulatorHelperPath,
+                simulatorPlatform: nil
+            )
+            let runner = RecordingCommandRunner()
+
+            try await executePrivateHeaderKitHelperBuilds(plan, runner: runner)
+
+            #expect(await runner.captureCommandSnapshot().isEmpty)
+            #expect(FileManager.default.fileExists(atPath: plan.helperURLs.host.path))
+            #expect(!FileManager.default.fileExists(atPath: plan.helperURLs.simulator.path))
+        }
     }
 
     @Test func SwiftPMHelpersUseReportedBinPathsAndDedicatedSimulatorScratch() async throws {
@@ -1708,6 +1783,52 @@ struct PrivateHeaderKitHelperLookupTests {
             $0.command.contains("--product")
         }.map(\.command) == [rawBuild])
         #expect(try Data(contentsOf: plan.helperURLs.simulator) == Data("custom".utf8))
+    }
+
+    @Test func macOSSwiftPMPlanDoesNotRequireDefaultOrExplicitSimulatorArtifact() async throws {
+        for usesExplicitPath in [false, true] {
+            let fixture = try makeCLIIdentityFixture(configuration: "debug")
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            try Data(usesExplicitPath ? "raw-explicit".utf8 : "raw-default".utf8)
+                .write(to: fixture.source)
+            let simulatorHelperPath = usesExplicitPath
+                ? fixture.root.appendingPathComponent("missing-sim-helper").path
+                : nil
+            let resolverRunner = RecordingCommandRunner()
+            await resolverRunner.setCaptureOutput(
+                "\(fixture.hostBinDirectory.path)\n",
+                for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
+            )
+            await configureCLIIdentity(resolverRunner, fixture: fixture)
+
+            let plan = try await resolvePrivateHeaderKitHelperPlan(
+                publicExecutableURL: fixture.publicExecutable,
+                simulatorHelperPath: simulatorHelperPath,
+                simulatorPlatform: nil,
+                runner: resolverRunner,
+                environment: [:]
+            )
+
+            #expect(!(await resolverRunner.captureCommandSnapshot()).contains {
+                $0.command.contains("iphonesimulator")
+                    || $0.command.contains("watchsimulator")
+                    || $0.command.contains("--product")
+            })
+
+            let buildRunner = RecordingCommandRunner()
+            let hostBuild = swiftPMHostCommand(configuration: "debug")
+                + ["--product", "privateheaderkit-raw-helper"]
+            await buildRunner.setCaptureOutput("", for: hostBuild)
+            await configureCLIIdentity(buildRunner, fixture: fixture)
+
+            try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
+
+            #expect((await buildRunner.captureCommandSnapshot()).filter {
+                $0.command.contains("--product")
+            }.map(\.command) == [hostBuild])
+            #expect(FileManager.default.fileExists(atPath: plan.helperURLs.host.path))
+            #expect(!FileManager.default.fileExists(atPath: plan.helperURLs.simulator.path))
+        }
     }
 
     @Test func sourceMutationAfterResumeInspectionFailsBeforeHelperBuild() async throws {
@@ -1986,11 +2107,12 @@ private func testPrivateHeaderKitHelperResolver(
     _ simulatorPlatform: SimulatorPlatform?
 ) async throws -> PrivateHeaderKitHelperPlan {
     let host = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
-    let simulator = simulatorPlatform.map { platform in
-        simulatorHelperPath.map {
-            URL(fileURLWithPath: $0, isDirectory: false)
-        } ?? defaultSimulatorHelperURL(hostExecutableURL: host, platform: platform)
-    } ?? host
+    let simulator = simulatorHelperPath.map {
+        URL(fileURLWithPath: $0, isDirectory: false)
+    } ?? defaultSimulatorHelperURL(
+        hostExecutableURL: host,
+        platform: simulatorPlatform ?? .iOS
+    )
     return PrivateHeaderKitHelperPlan(
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs(
             host: host,
