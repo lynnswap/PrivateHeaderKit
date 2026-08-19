@@ -356,6 +356,162 @@ struct PrivateHeaderKitRawDumpPathTests {
         #expect(targets.contains("/System/Library/Frameworks/Foo.framework/Versions/Current/Foo"))
         #expect(targets.contains("/System/Library/Frameworks/Foo.framework/Versions/A/Foo"))
     }
+
+    @Test func loadedRuntimeImageIdentityMatchesCacheOnlyRootedIdentity() {
+        let logicalPath = "/System/Library/Frameworks/Foo.framework/Foo"
+        let runtimePath = "/Runtime/System/Library/Frameworks/Foo.framework/Foo"
+
+        let matched = matchingLoadedRuntimeImageIdentity(
+            for: logicalPath,
+            loadedImageNames: [
+                "/Runtime/System/Library/Frameworks/Other.framework/Other",
+                runtimePath,
+            ],
+            environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+        )
+
+        #expect(matched?.path == runtimePath)
+    }
+
+    @Test func loadedRuntimeImageIdentityMatchesVersionedFrameworkIdentity() {
+        let runtimePath = "/Runtime/System/Library/Frameworks/Foo.framework/Versions/A/Foo"
+
+        let matched = matchingLoadedRuntimeImageIdentity(
+            for: "/System/Library/Frameworks/Foo.framework/Foo",
+            loadedImageNames: [runtimePath],
+            environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+        )
+
+        #expect(matched?.path == runtimePath)
+    }
+
+    @Test func loadedRuntimeImageIdentityDoesNotPromoteNestedChildToParent() {
+        let childPath = "/System/Library/Frameworks/Foo.framework/XPCServices/Child.xpc/Child"
+        let loadedChildPath = "/Runtime" + childPath
+
+        #expect(
+            matchingLoadedRuntimeImageIdentity(
+                for: childPath,
+                loadedImageNames: [
+                    "/Runtime/System/Library/Frameworks/Foo.framework/Foo",
+                    loadedChildPath,
+                ],
+                environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+            )?.path == loadedChildPath
+        )
+        #expect(
+            matchingLoadedRuntimeImageIdentity(
+                for: childPath,
+                loadedImageNames: [
+                    "/Runtime/System/Library/Frameworks/Foo.framework/Foo"
+                ],
+                environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+            ) == nil
+        )
+    }
+
+    @Test func loadedRuntimeImageIdentityRejectsAmbiguousRuntimeIdentities() {
+        let logicalPath = "/System/Library/Frameworks/Foo.framework/Foo"
+
+        let matched = matchingLoadedRuntimeImageIdentity(
+            for: logicalPath,
+            loadedImageNames: [
+                "/Runtime/System/Library/Frameworks/Foo.framework/Foo",
+                logicalPath,
+            ],
+            environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+        )
+
+        #expect(matched == nil)
+    }
+
+    @Test func loadedRuntimeImageIdentityRequiresTheActiveRuntimeRootBoundary() {
+        let logicalPath = "/System/Library/Frameworks/Foo.framework/Foo"
+
+        #expect(
+            matchingLoadedRuntimeImageIdentity(
+                for: logicalPath,
+                loadedImageNames: [
+                    "/Runtime2/System/Library/Frameworks/Foo.framework/Foo",
+                    "/tmp/payload/System/Library/Frameworks/Foo.framework/Foo",
+                ],
+                environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+            ) == nil
+        )
+    }
+
+    @Test func loadedRuntimeImageIdentityDeduplicatesIdenticalInventoryNames() {
+        let runtimePath = "/Runtime/System/Library/Frameworks/Foo.framework/Foo"
+
+        let matched = matchingLoadedRuntimeImageIdentity(
+            for: "/System/Library/Frameworks/Foo.framework/Foo",
+            loadedImageNames: [runtimePath, runtimePath],
+            environment: ["PH_RUNTIME_ROOT": "/Runtime"]
+        )
+
+        #expect(matched?.path == runtimePath)
+    }
+
+    @Test func loadedRuntimeImageIdentityAcceptsLexicalAndResolvedRuntimeRoots() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        defer { try? FileManager.default.removeItem(at: dirs.root) }
+        let canonicalRoot = dirs.root.appendingPathComponent("CanonicalRuntime", isDirectory: true)
+        let aliasRoot = dirs.root.appendingPathComponent("RuntimeAlias", isDirectory: true)
+        try FileManager.default.createDirectory(at: canonicalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: aliasRoot,
+            withDestinationURL: canonicalRoot
+        )
+        let logicalPath = "/System/Library/Frameworks/Foo.framework/Foo"
+
+        let lexicalMatch = matchingLoadedRuntimeImageIdentity(
+            for: logicalPath,
+            loadedImageNames: [aliasRoot.path + logicalPath],
+            environment: ["PH_RUNTIME_ROOT": aliasRoot.path]
+        )
+        let resolvedMatch = matchingLoadedRuntimeImageIdentity(
+            for: logicalPath,
+            loadedImageNames: [canonicalRoot.path + logicalPath],
+            environment: ["PH_RUNTIME_ROOT": aliasRoot.path]
+        )
+
+        #expect(lexicalMatch?.path == aliasRoot.path + logicalPath)
+        #expect(resolvedMatch?.path == canonicalRoot.path + logicalPath)
+    }
+
+    @Test func runtimeRootedImageIdentityRejectsLogicalAndForeignLoadPaths() {
+        let logicalPath = "/System/Library/Frameworks/Foo.framework/Foo"
+        let onDiskPath = "/Runtime" + logicalPath
+        let onDiskFiles = FakeFileManager(existing: [onDiskPath])
+        let onDiskIdentity = runtimeRootedImageIdentity(
+            loadPath: onDiskPath,
+            environment: ["PH_RUNTIME_ROOT": "/Runtime"],
+            fileManager: onDiskFiles
+        )
+
+        #expect(onDiskIdentity?.path == onDiskPath)
+        #expect(
+            runtimeRootedImageIdentity(
+                loadPath: logicalPath,
+                environment: ["PH_RUNTIME_ROOT": "/Runtime"],
+                fileManager: onDiskFiles
+            ) == nil
+        )
+        #expect(
+            runtimeRootedImageIdentity(
+                loadPath: logicalPath,
+                environment: ["PH_RUNTIME_ROOT": "/"],
+                fileManager: FakeFileManager(existing: [logicalPath])
+            )?.path == logicalPath
+        )
+        #expect(
+            runtimeRootedImageIdentity(
+                loadPath: "/Runtime2" + logicalPath,
+                environment: ["PH_RUNTIME_ROOT": "/Runtime"],
+                fileManager: FakeFileManager(existing: ["/Runtime2" + logicalPath])
+            ) == nil
+        )
+    }
     #endif
 
 }
