@@ -27,16 +27,41 @@ struct RuntimeReleaseMetadataTests {
         #expect(try !RuntimeReleaseMetadata.isSeed(in: root, layout: .macOS))
     }
 
-    @Test func malformedOrMissingMetadataFailsWithItsPath() throws {
+    @Test func missingSimulatorMetadataRepresentsARelease() throws {
+        let root = try temporaryRuntimeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(try !RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator))
+    }
+
+    @Test func missingMacOSMetadataFails() throws {
+        let root = try temporaryRuntimeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(throws: ToolingError.self) {
+            _ = try RuntimeReleaseMetadata.isSeed(in: root, layout: .macOS)
+        }
+    }
+
+    @Test func unreadableSimulatorMetadataFails() throws {
+        let root = try temporaryRuntimeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("RestoreVersion.plist"),
+            withIntermediateDirectories: false
+        )
+
+        #expect(throws: ToolingError.self) {
+            _ = try RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator)
+        }
+    }
+
+    @Test func malformedMetadataFails() throws {
         let root = try temporaryRuntimeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let metadataURL = root.appendingPathComponent("RestoreVersion.plist")
         try writeRestoreVersion(["IsSeed": "true"], to: metadataURL)
 
-        #expect(throws: ToolingError.self) {
-            _ = try RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator)
-        }
-        try FileManager.default.removeItem(at: metadataURL)
         #expect(throws: ToolingError.self) {
             _ = try RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator)
         }

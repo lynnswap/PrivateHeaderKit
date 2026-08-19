@@ -101,8 +101,10 @@ Release directory fields use underscores so paths do not require shell quoting.
 PrivateHeaderKit derives the `beta` field from the source runtime's seed
 metadata, not from the build suffix; this keeps lowercase-suffixed public
 releases out of the beta namespace. Installed metadata does not provide a beta
-number, so the build disambiguates beta sources. Missing or unreadable metadata
-stops generation instead of publishing under a guessed name.
+number, so the build disambiguates beta sources. Older Simulator runtimes that
+omit `RestoreVersion.plist` are treated as non-seed releases. An unreadable or
+malformed metadata file, or missing macOS metadata, stops generation instead of
+publishing under a guessed name.
 
 The complete output base is:
 

@@ -40,6 +40,8 @@ package enum RuntimeReleaseMetadata {
         let data: Data
         do {
             data = try Data(contentsOf: metadataURL)
+        } catch where missingSimulatorMetadataRepresentsRelease(error, layout: layout) {
+            return false
         } catch {
             throw ToolingError.message(
                 "failed to read runtime release metadata at \(metadataURL.path): \(error)"
@@ -52,5 +54,34 @@ package enum RuntimeReleaseMetadata {
                 "failed to decode runtime release metadata at \(metadataURL.path): \(error)"
             )
         }
+    }
+
+    private static func missingSimulatorMetadataRepresentsRelease(
+        _ error: any Error,
+        layout: RuntimeRootLayout
+    ) -> Bool {
+        guard case .simulator = layout else { return false }
+
+        // Older Simulator runtime bundles legitimately omit RestoreVersion.plist.
+        return isMissingFileError(error)
+    }
+
+    private static func isMissingFileError(_ error: any Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain,
+           (error.code == CocoaError.Code.fileNoSuchFile.rawValue
+            || error.code == CocoaError.Code.fileReadNoSuchFile.rawValue)
+        {
+            return true
+        }
+        if error.domain == NSPOSIXErrorDomain,
+           error.code == Int(POSIXError.Code.ENOENT.rawValue)
+        {
+            return true
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return isMissingFileError(underlying)
+        }
+        return false
     }
 }
