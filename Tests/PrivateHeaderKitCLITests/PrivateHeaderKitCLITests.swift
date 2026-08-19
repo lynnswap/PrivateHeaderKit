@@ -281,11 +281,48 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.source.storageIdentifier == "ios-v1-27.0-b1-24~415390~66")
     }
 
-    @Test func simulatorReleaseMetadataIsValidatedBeforeResolvingADevice() async throws {
+    @Test func simulatorWithoutReleaseMetadataResolvesAsARelease() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
         try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            """
+            {"runtimes":[{"name":"iOS 27.0","platform":"iOS","version":"27.0","buildversion":"24A5390f","identifier":"ios-27","runtimeRoot":"\(runtimeRoot.path)","isAvailable":true}]}
+            """,
+            for: ["xcrun", "simctl", "list", "runtimes", "-j"]
+        )
+        await runner.setCaptureOutput(
+            """
+            {"devices":{"ios-27":[{"name":"Dumping Device (iOS 27.0)","udid":"SIM-001","state":"Booted"}]}}
+            """,
+            for: ["xcrun", "simctl", "list", "devices", "-j"]
+        )
+
+        let resolution = try await resolvePrivateHeaderKitSimulator(
+            for: iosGenerateCommand(build: nil, systemRoot: nil),
+            runner: runner
+        )
+
+        #expect(!resolution.metadataIsSeed)
+        #expect(resolution.resolvedRuntimeRoot == runtimeRoot.path)
+        #expect(resolution.deviceUDID == "SIM-001")
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "list", "runtimes", "-j"],
+            ["xcrun", "simctl", "list", "devices", "-j"],
+        ])
+        #expect(await runner.simpleCommandSnapshot().isEmpty)
+    }
+
+    @Test func malformedSimulatorReleaseMetadataFailsBeforeResolvingADevice() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+        try Data("not a property list".utf8).write(
+            to: runtimeRoot.appendingPathComponent("RestoreVersion.plist")
+        )
         let runner = RecordingCommandRunner()
         await runner.setCaptureOutput(
             """
@@ -300,6 +337,9 @@ struct PrivateHeaderKitCLIExecutionTests {
                 runner: runner
             )
         }
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "list", "runtimes", "-j"],
+        ])
         #expect(await runner.simpleCommandSnapshot().isEmpty)
     }
 
@@ -756,6 +796,82 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(await task.value == 130)
         #expect(!output.text.contains("Generation interrupted"))
         #expect(!output.text.contains("error:"))
+    }
+
+    @Test func sourceDiscoveryIncludesSimulatorRuntimeWithoutReleaseMetadata() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let releaseRuntimeRoot = root.appendingPathComponent("iOS 17.5", isDirectory: true)
+        let seedRuntimeRoot = root.appendingPathComponent("watchOS 27.0", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: releaseRuntimeRoot,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: seedRuntimeRoot,
+            withIntermediateDirectories: true
+        )
+        let seedMetadata = try PropertyListSerialization.data(
+            fromPropertyList: ["IsSeed": true],
+            format: .binary,
+            options: 0
+        )
+        try seedMetadata.write(
+            to: seedRuntimeRoot.appendingPathComponent("RestoreVersion.plist")
+        )
+        let runner = CaptureOnlyCommandRunner { command, _, _ in
+            switch command {
+            case ["xcrun", "--find", "simctl"]:
+                return "/Applications/Xcode.app/Contents/Developer/usr/bin/simctl\n"
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]:
+                return """
+                {"runtimes":[{"name":"watchOS 27.0","platform":"watchOS","version":"27.0","buildversion":"24R5325f","identifier":"watch-27","runtimeRoot":"\(seedRuntimeRoot.path)","isAvailable":true},{"name":"iOS 17.5","platform":"iOS","version":"17.5","buildversion":"21F79","identifier":"ios-17-5","runtimeRoot":"\(releaseRuntimeRoot.path)","isAvailable":true}]}
+                """
+            case ["/usr/bin/sw_vers", "-productVersion"]:
+                return "16.0\n"
+            case ["/usr/bin/sw_vers", "-buildVersion"]:
+                return "24A1\n"
+            default:
+                throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+
+        let sources = try await discoverPrivateHeaderKitInteractiveSources(
+            runner: runner,
+            releaseMetadataResolver: { systemRoot, layout in
+                switch layout {
+                case .simulator:
+                    return try resolvePrivateHeaderKitReleaseMetadata(
+                        systemRoot: systemRoot,
+                        layout: layout
+                    )
+                case .macOS:
+                    return false
+                }
+            }
+        )
+
+        #expect(sources == [
+            PrivateHeaderKitInteractiveSource(
+                platform: .iOS,
+                version: "17.5",
+                build: "21F79",
+                systemRoot: nil
+            ),
+            PrivateHeaderKitInteractiveSource(
+                platform: .watchOS,
+                version: "27.0",
+                build: "24R5325f",
+                metadataIsSeed: true,
+                systemRoot: nil
+            ),
+            PrivateHeaderKitInteractiveSource(
+                platform: .macOS,
+                version: "16.0",
+                build: "24A1",
+                systemRoot: "/"
+            ),
+        ])
     }
 
     @Test func sourceDiscoveryModelsSimulatorAvailabilityAndPropagatesListingFailures() async throws {
