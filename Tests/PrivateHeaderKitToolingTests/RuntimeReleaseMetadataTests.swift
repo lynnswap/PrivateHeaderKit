@@ -34,6 +34,28 @@ struct RuntimeReleaseMetadataTests {
         #expect(try !RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator))
     }
 
+    @Test func danglingSimulatorMetadataSymlinkFails() throws {
+        let root = try temporaryRuntimeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("RestoreVersion.plist"),
+            withDestinationURL: root.appendingPathComponent("MissingRestoreVersion.plist")
+        )
+
+        #expect(throws: ToolingError.self) {
+            _ = try RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator)
+        }
+    }
+
+    @Test func missingSimulatorRuntimeRootFails() throws {
+        let root = try temporaryRuntimeRoot()
+        try FileManager.default.removeItem(at: root)
+
+        #expect(throws: ToolingError.self) {
+            _ = try RuntimeReleaseMetadata.isSeed(in: root, layout: .simulator)
+        }
+    }
+
     @Test func missingMacOSMetadataFails() throws {
         let root = try temporaryRuntimeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

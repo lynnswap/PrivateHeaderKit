@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 package enum RuntimeRootLayout: Sendable {
     case simulator
     case macOS
@@ -40,7 +46,12 @@ package enum RuntimeReleaseMetadata {
         let data: Data
         do {
             data = try Data(contentsOf: metadataURL)
-        } catch where missingSimulatorMetadataRepresentsRelease(error, layout: layout) {
+        } catch where missingSimulatorMetadataRepresentsRelease(
+            error,
+            systemRoot: systemRoot,
+            metadataURL: metadataURL,
+            layout: layout
+        ) {
             return false
         } catch {
             throw ToolingError.message(
@@ -58,12 +69,32 @@ package enum RuntimeReleaseMetadata {
 
     private static func missingSimulatorMetadataRepresentsRelease(
         _ error: any Error,
+        systemRoot: URL,
+        metadataURL: URL,
         layout: RuntimeRootLayout
     ) -> Bool {
-        guard case .simulator = layout else { return false }
+        guard case .simulator = layout,
+              isMissingFileError(error),
+              isExistingDirectory(at: systemRoot),
+              hasNoDirectoryEntry(at: metadataURL)
+        else {
+            return false
+        }
 
         // Older Simulator runtime bundles legitimately omit RestoreVersion.plist.
-        return isMissingFileError(error)
+        return true
+    }
+
+    private static func isExistingDirectory(at url: URL) -> Bool {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return false }
+        return info.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR)
+    }
+
+    private static func hasNoDirectoryEntry(at url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) != 0 else { return false }
+        return errno == ENOENT
     }
 
     private static func isMissingFileError(_ error: any Error) -> Bool {
