@@ -439,7 +439,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(persistedCount == 0)
   }
 
-  @Test func infrastructureFailureKeepsObjectiveCWarningPresentationBoundedAndAggregated()
+  @Test func targetFailureKeepsObjectiveCWarningPresentationBoundedAndAggregated()
     async throws
   {
     let fixture = try ExecutorFixture()
@@ -479,7 +479,7 @@ struct PrivateHeaderGenerationExecutorTests {
       )
       Issue.record("hidden raw payload unexpectedly completed")
       return
-    } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
+    } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
       summary = failure.summary
     }
 
@@ -539,35 +539,53 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(observation.errorDescription == nil)
   }
 
-  @Test func laterInfrastructureFailureKeepsCompletedTargetVisibleAndResumeSkipsIt()
+  @Test func stagingMismatchKeepsCompletedTargetsVisibleAndResumeRetriesOnlyFailure()
     async throws
   {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
     try fixture.createFramework("Bar.framework")
+    try fixture.createFramework("Baz.framework")
     let plan = try fixture.plan(
-      .identifiers(["framework:Foo.framework", "framework:Bar.framework"]),
+      .identifiers([
+        "framework:Foo.framework",
+        "framework:Bar.framework",
+        "framework:Baz.framework",
+      ]),
       resumeBehavior: .resume
+    )
+    let firstRunner = RecordingRunner(
+      contents: "first-run",
+      unexpectedHeaderFramework: "Bar.framework"
     )
 
     do {
       _ = try await fixture.executor(
-        runner: RecordingRunner(
-          contents: "first-run",
-          hiddenPayloadFramework: "Bar.framework"
-        ),
-        runID: "run-partial",
-        generationID: "generation-partial"
+        runner: firstRunner,
+        runID: "run-staging-mismatch",
+        generationID: "generation-staging-mismatch"
       ).run(plan: plan)
       Issue.record("invalid second target unexpectedly completed")
-    } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
-      #expect(failure.summary.targetCounts.completed == 1)
+    } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
+      #expect(failure.summary.targetCounts.completed == 2)
       #expect(failure.summary.targetCounts.failed == 1)
+      #expect(failure.summary.targetCounts.pending == 0)
+      #expect(failure.summary.targetCounts.running == 0)
+      #expect(failure.failedTargetIDs == ["framework:Bar.framework"])
       #expect(failure.summary.targetFailures.map(\.displayName) == ["Bar"])
+      #expect(
+        failure.summary.targetFailures.first?.message?.contains(
+          "generation inventory mismatch"
+        ) == true
+      )
     }
 
+    #expect(await firstRunner.invocationCount == 3)
     #expect(try fixture.readLiveHeader(framework: "Foo") == "first-run")
+    #expect(try fixture.readLiveHeader(framework: "Baz") == "first-run")
+    #expect(try fixture.readStableHeader(framework: "Foo") == "first-run")
+    #expect(try fixture.readStableHeader(framework: "Baz") == "first-run")
     #expect(!FileManager.default.fileExists(atPath: fixture.liveHeaderURL(framework: "Bar").path))
     let firstStore = try GenerationStore(
       databaseURL: fixture.databaseURL,
@@ -575,7 +593,7 @@ struct PrivateHeaderGenerationExecutorTests {
     )
     #expect(
       try await firstStore.targetSnapshot(targetID: "framework:Foo.framework")?
-        .lastSuccessfulRunID == .init(rawValue: "run-partial")
+        .lastSuccessfulRunID == .init(rawValue: "run-staging-mismatch")
     )
 
     let resumedRunner = RecordingRunner(contents: "resumed")
@@ -587,11 +605,13 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(await resumedRunner.invocationCount == 1)
     #expect(await resumedRunner.invocations.first?.inputPath.hasSuffix("/Bar.framework") == true)
-    #expect(result.targetCounts.skipped == 1)
+    #expect(result.targetCounts.skipped == 2)
     #expect(result.targetCounts.completed == 1)
     #expect(try fixture.readLiveHeader(framework: "Foo") == "first-run")
+    #expect(try fixture.readLiveHeader(framework: "Baz") == "first-run")
     #expect(try fixture.readLiveHeader(framework: "Bar") == "resumed")
     #expect(try fixture.readStableHeader(framework: "Foo") == "first-run")
+    #expect(try fixture.readStableHeader(framework: "Baz") == "first-run")
     #expect(try fixture.readStableHeader(framework: "Bar") == "resumed")
   }
 
@@ -2445,7 +2465,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: crashed.path))
   }
 
-  @Test func hiddenRawPayloadFailsFastWithoutPublishing() async throws {
+  @Test func hiddenRawPayloadFailsTargetWithoutPublishing() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
@@ -2458,10 +2478,13 @@ struct PrivateHeaderGenerationExecutorTests {
         generationID: "generation-hidden"
       ).run(plan: try fixture.plan(.query("Foo")))
       Issue.record("hidden raw payload unexpectedly succeeded")
-    } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
+    } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
       #expect(failure.summary.status == .failed)
       #expect(failure.summary.targetCounts.failed == 1)
-      #expect(failure.message.contains("hidden staging payload"))
+      #expect(failure.failedTargetIDs == ["framework:Foo.framework"])
+      #expect(
+        failure.summary.targetFailures.first?.message?.contains("hidden staging payload") == true
+      )
     }
 
     #expect(try fixture.publisher().inspect().currentGenerationID == nil)
@@ -2744,6 +2767,7 @@ private actor RecordingRunner {
   let thrownError: (any Error & Sendable)?
   let writesHiddenPayload: Bool
   let hiddenPayloadFramework: String?
+  let unexpectedHeaderFramework: String?
   let primaryHeaderName: String
   let additionalHeaderName: String?
   let cancelsForFramework: String?
@@ -2755,6 +2779,7 @@ private actor RecordingRunner {
     thrownError: (any Error & Sendable)? = nil,
     writesHiddenPayload: Bool = false,
     hiddenPayloadFramework: String? = nil,
+    unexpectedHeaderFramework: String? = nil,
     primaryHeaderName: String = "Generated.h",
     additionalHeaderName: String? = nil,
     cancelsForFramework: String? = nil,
@@ -2765,6 +2790,7 @@ private actor RecordingRunner {
     self.thrownError = thrownError
     self.writesHiddenPayload = writesHiddenPayload
     self.hiddenPayloadFramework = hiddenPayloadFramework
+    self.unexpectedHeaderFramework = unexpectedHeaderFramework
     self.primaryHeaderName = primaryHeaderName
     self.additionalHeaderName = additionalHeaderName
     self.cancelsForFramework = cancelsForFramework
@@ -2793,6 +2819,11 @@ private actor RecordingRunner {
       {
         try Data("hidden".utf8).write(
           to: invocation.stagingOutputDirectory.appendingPathComponent(".unexpected")
+        )
+      }
+      if unexpectedHeaderFramework.map({ invocation.inputPath.hasSuffix("/\($0)") }) == true {
+        try Data("unexpected".utf8).write(
+          to: invocation.stagingOutputDirectory.appendingPathComponent("Unexpected.h")
         )
       }
     }

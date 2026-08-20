@@ -761,14 +761,19 @@ struct PrivateHeaderKitRawDumpSharedCacheTests {
 
 @Suite
 struct PrivateHeaderKitRawDumpBundlePathTests {
-    @Test func writeDirectoryBuildsBundlePaths() {
+    @Test func writeDirectoryBuildsDeclaredBundleAndImagePaths() {
         let outputRoot = URL(fileURLWithPath: "/tmp/out")
         var options = DumpOptions(outputDir: outputRoot)
         options.buildOriginalDirs = true
         options.addHeadersFolder = true
 
         let result = writeDirectory(
-            for: "/System/Library/Frameworks/Foo.framework/Foo",
+            for: .bundle(
+                URL(
+                    fileURLWithPath: "/System/Library/Frameworks/Foo.framework",
+                    isDirectory: true
+                )
+            ),
             outputRoot: outputRoot,
             options: options
         )
@@ -776,11 +781,45 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
 
         options.addHeadersFolder = false
         let resultNoHeaders = writeDirectory(
-            for: "/usr/lib/libobjc.A.dylib",
+            for: .image(URL(fileURLWithPath: "/usr/lib/libobjc.A.dylib")),
             outputRoot: outputRoot,
             options: options
         )
         #expect(resultNoHeaders.path == "/tmp/out/usr/lib/libobjc.A.dylib")
+    }
+
+    @Test func writeDirectoryOnlyInfersAnImmediateBundleParentForDirectImages() {
+        let outputRoot = URL(fileURLWithPath: "/tmp/out")
+        var options = DumpOptions(outputDir: outputRoot)
+        options.buildOriginalDirs = true
+        options.addHeadersFolder = true
+        let cases = [
+            (
+                "/System/Library/Frameworks/Foo.framework/Foo",
+                "/tmp/out/System/Library/Frameworks/Foo.framework/Headers"
+            ),
+            (
+                "/System/Library/Frameworks/CreateML.framework/Versions/A/CreateML",
+                "/tmp/out/System/Library/Frameworks/CreateML.framework/Versions/A/CreateML"
+            ),
+            (
+                "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+                "/tmp/out/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+            ),
+            (
+                "/tmp/Version.1/Tool",
+                "/tmp/out/tmp/Version.1/Tool"
+            ),
+        ]
+
+        for (imagePath, expectedPath) in cases {
+            let result = writeDirectory(
+                for: .image(URL(fileURLWithPath: imagePath)),
+                outputRoot: outputRoot,
+                options: options
+            )
+            #expect(result.path == expectedPath)
+        }
     }
 
     @Test func writeDirectoryReturnsRootWhenDisabled() {
@@ -788,7 +827,12 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         var options = DumpOptions(outputDir: outputRoot)
         options.buildOriginalDirs = false
         let result = writeDirectory(
-            for: "/System/Library/Frameworks/Foo.framework/Foo",
+            for: .bundle(
+                URL(
+                    fileURLWithPath: "/System/Library/Frameworks/Foo.framework",
+                    isDirectory: true
+                )
+            ),
             outputRoot: outputRoot,
             options: options
         )
@@ -817,78 +861,201 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         #expect(isBundleDirectory(linkURL) == true)
     }
 
-    @Test func resolveBundleExecutableURLUsesInjectedFileManager() {
+    @Test func resolveBundleExecutableUsesLoadCandidateAndCallerBundleIdentity() {
         let bundleURL = URL(fileURLWithPath: "/tmp/Foo.framework", isDirectory: true)
         let candidate = bundleURL.appendingPathComponent("Versions/A/Foo")
         let fake = FakeFileManager(existing: [candidate.path])
 
-        let resolved = resolveBundleExecutableURL(
+        let resolved = resolveBundleExecutable(
             bundleURL,
             fileManager: fake,
             bundleExecutableURL: { _ in nil }
         )
-        #expect(resolved?.path == candidate.path)
+        #expect(resolved.loadURL == candidate)
+        guard case .bundle(let outputBundleURL) = resolved.outputIdentity else {
+            Issue.record("expected bundle output identity")
+            return
+        }
+        #expect(outputBundleURL == bundleURL)
 
-        let explicit = URL(fileURLWithPath: "/tmp/BundleExec")
-        let resolvedExplicit = resolveBundleExecutableURL(
+        let explicit = bundleURL.appendingPathComponent("Versions/A/CustomExecutable")
+        let resolvedExplicit = resolveBundleExecutable(
             bundleURL,
             fileManager: fake,
             bundleExecutableURL: { _ in explicit }
         )
-        #expect(resolvedExplicit?.path == explicit.path)
+        #expect(resolvedExplicit.loadURL == explicit)
+        guard case .bundle(let explicitOutputBundleURL) = resolvedExplicit.outputIdentity else {
+            Issue.record("expected explicit bundle output identity")
+            return
+        }
+        #expect(explicitOutputBundleURL == bundleURL)
     }
 
-    @Test func resolveBundleExecutableURLRebasesBundleExecutableWhenPossible() {
-        let bundleURL = URL(fileURLWithPath: "/System/Library/Frameworks/SafariServices.framework", isDirectory: true)
-        let resolvedExec = URL(fileURLWithPath: "/System/Cryptexes/OS/System/Library/Frameworks/SafariServices.framework/SafariServices")
-        let expectedRebased = bundleURL.appendingPathComponent("SafariServices")
-        let fake = FakeFileManager(existing: [expectedRebased.path])
+    @Test func versionedBundleExecutableLoadsRealPathAndStagesAtCallerBundleRoot() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let resolvedBundle = dirs.root.appendingPathComponent(
+            "System/Cryptexes/OS/System/Library/Frameworks/SafariServices.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: resolvedBundle, withIntermediateDirectories: true)
+        let resolvedExec = resolvedBundle.appendingPathComponent("Versions/A/SafariServices")
+        try FileManager.default.createDirectory(
+            at: resolvedExec.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: resolvedExec)
+        let bundleURL = dirs.root.appendingPathComponent(
+            "System/Library/Frameworks/SafariServices.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: bundleURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: bundleURL.path,
+            withDestinationPath: resolvedBundle.path
+        )
 
-        let result = resolveBundleExecutableURL(
+        let result = resolveBundleExecutable(
+            bundleURL,
+            bundleExecutableURL: { _ in resolvedExec }
+        )
+        #expect(result.loadURL == resolvedExec)
+        guard case .bundle(let outputBundleURL) = result.outputIdentity else {
+            Issue.record("expected caller bundle output identity")
+            return
+        }
+        #expect(outputBundleURL == bundleURL)
+        var options = DumpOptions(outputDir: dirs.outDir)
+        options.buildOriginalDirs = true
+        options.addHeadersFolder = true
+        let placement = outputPlacement(
+            for: result,
+            outputRoot: dirs.outDir,
+            options: options,
+            environment: ["PH_RUNTIME_ROOT": dirs.root.path]
+        )
+        #expect(
+            placement.directory.path == dirs.outDir.appendingPathComponent(
+                "System/Library/Frameworks/SafariServices.framework/Headers",
+                isDirectory: true
+            ).path
+        )
+    }
+
+    @Test func cacheOnlyRenamedBundleKeepsCallerIdentityWithoutDiskExecutable() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let parent = dirs.root.appendingPathComponent(
+            "System/Library/PrivateFrameworks",
+            isDirectory: true
+        )
+        let resolvedBundle = parent.appendingPathComponent(
+            "SpotlightIndex.framework",
+            isDirectory: true
+        )
+        let bundleURL = parent.appendingPathComponent(
+            "MobileSpotlightIndex.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: resolvedBundle, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: bundleURL.path,
+            withDestinationPath: resolvedBundle.lastPathComponent
+        )
+        let resolvedExec = resolvedBundle.appendingPathComponent("SpotlightIndex")
+        let fake = FakeFileManager(existing: [])
+
+        let result = resolveBundleExecutable(
             bundleURL,
             fileManager: fake,
             bundleExecutableURL: { _ in resolvedExec }
         )
-        #expect(result?.path == expectedRebased.path)
+        #expect(result.loadURL == resolvedExec)
+        #expect(fake.fileExists(atPath: resolvedExec.path) == false)
+        #expect(
+            normalizedCacheImagePaths(
+                for: result.loadURL.path,
+                environment: ["PH_RUNTIME_ROOT": dirs.root.path]
+            ).contains(
+                "/System/Library/PrivateFrameworks/SpotlightIndex.framework/SpotlightIndex"
+            )
+        )
+        guard case .bundle(let outputBundleURL) = result.outputIdentity else {
+            Issue.record("expected renamed caller bundle output identity")
+            return
+        }
+        #expect(outputBundleURL == bundleURL)
+        var options = DumpOptions(outputDir: dirs.outDir)
+        options.buildOriginalDirs = true
+        options.addHeadersFolder = true
+        let placement = outputPlacement(
+            for: result,
+            outputRoot: dirs.outDir,
+            options: options,
+            environment: ["PH_RUNTIME_ROOT": dirs.root.path]
+        )
+        #expect(
+            placement.directory.path == dirs.outDir.appendingPathComponent(
+                "System/Library/PrivateFrameworks/MobileSpotlightIndex.framework/Headers",
+                isDirectory: true
+            ).path
+        )
     }
 
-    @Test func resolveBundleExecutableURLFallsBackToCanonicalPathForCacheOnlyBundles() {
+    @Test func resolveBundleExecutableFallsBackToCanonicalLoadPathForCacheOnlyBundles() {
         let bundleURL = URL(fileURLWithPath: "/tmp/Foo.framework", isDirectory: true)
         let fake = FakeFileManager(existing: [])
 
-        let resolved = resolveBundleExecutableURL(
+        let resolved = resolveBundleExecutable(
             bundleURL,
             fileManager: fake,
             bundleExecutableURL: { _ in nil }
         )
 
-        #expect(resolved?.path == "/tmp/Foo.framework/Foo")
+        #expect(resolved.loadURL.path == "/tmp/Foo.framework/Foo")
+        guard case .bundle(let outputBundleURL) = resolved.outputIdentity else {
+            Issue.record("expected fallback bundle output identity")
+            return
+        }
+        #expect(outputBundleURL == bundleURL)
     }
 
-    @Test func resolveBundleExecutableURLResolvesXPCAndAppExtensionCandidates() throws {
+    @Test func resolveBundleExecutableResolvesXPCAndAppExtensionCandidates() throws {
         let dirs = try makeTemporaryTestDirectories()
 
         let xpcURL = dirs.root.appendingPathComponent("Foo.xpc", isDirectory: true)
         try FileManager.default.createDirectory(at: xpcURL, withIntermediateDirectories: true)
         _ = FileManager.default.createFile(atPath: xpcURL.appendingPathComponent("Foo").path, contents: Data())
 
-        let xpcResolved = resolveBundleExecutableURL(
+        let xpcResolved = resolveBundleExecutable(
             xpcURL,
             fileManager: FileManager.default,
             bundleExecutableURL: { _ in nil }
         )
-        #expect(xpcResolved?.path == xpcURL.appendingPathComponent("Foo").path)
+        #expect(xpcResolved.loadURL == xpcURL.appendingPathComponent("Foo"))
+        guard case .bundle(let xpcOutputBundleURL) = xpcResolved.outputIdentity else {
+            Issue.record("expected XPC bundle output identity")
+            return
+        }
+        #expect(xpcOutputBundleURL == xpcURL)
 
         let appexURL = dirs.root.appendingPathComponent("Bar.appex", isDirectory: true)
         try FileManager.default.createDirectory(at: appexURL, withIntermediateDirectories: true)
         _ = FileManager.default.createFile(atPath: appexURL.appendingPathComponent("Bar").path, contents: Data())
 
-        let appexResolved = resolveBundleExecutableURL(
+        let appexResolved = resolveBundleExecutable(
             appexURL,
             fileManager: FileManager.default,
             bundleExecutableURL: { _ in nil }
         )
-        #expect(appexResolved?.path == appexURL.appendingPathComponent("Bar").path)
+        #expect(appexResolved.loadURL == appexURL.appendingPathComponent("Bar"))
+        guard case .bundle(let appexOutputBundleURL) = appexResolved.outputIdentity else {
+            Issue.record("expected app extension bundle output identity")
+            return
+        }
+        #expect(appexOutputBundleURL == appexURL)
     }
 }
 

@@ -1,32 +1,19 @@
 import Foundation
 
-package enum ExecutableResolution {
-    package static func resolveBundleExecutableURL(
+package struct ExecutableResolution {
+    package enum OutputIdentity {
+        case image(URL)
+        case bundle(URL)
+    }
+
+    package let loadURL: URL
+    package let outputIdentity: OutputIdentity
+
+    package static func resolveBundle(
         _ bundleURL: URL,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
         bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
-    ) -> URL? {
-        if let executableURL = bundleExecutableURL(bundleURL) {
-            // `Bundle(url:)` may resolve symlinks, returning an executable inside the real path
-            // (e.g. `/System/Cryptexes/OS/...`). Prefer rebasing back onto the original bundle URL
-            // so output paths remain stable under `/System/Library/...` when possible.
-            let bundleName = bundleURL.lastPathComponent
-            let components = executableURL.pathComponents
-            if let bundleIndex = components.lastIndex(of: bundleName),
-               bundleIndex + 1 < components.count
-            {
-                let suffixComponents = components[(bundleIndex + 1)...]
-                var rebased = bundleURL
-                for component in suffixComponents {
-                    rebased.appendPathComponent(component)
-                }
-                if fileExists(rebased.path) {
-                    return rebased
-                }
-            }
-            return executableURL
-        }
-
+    ) -> Self {
         let baseName = bundleURL.deletingPathExtension().lastPathComponent
         let candidates = [
             bundleURL.appendingPathComponent(baseName),
@@ -35,14 +22,17 @@ package enum ExecutableResolution {
             bundleURL.appendingPathComponent("Versions/B/\(baseName)"),
             bundleURL.appendingPathComponent("Versions/C/\(baseName)"),
         ]
-        for candidate in candidates where fileExists(candidate.path) {
-            return candidate
-        }
+        let loadURL = bundleExecutableURL(bundleURL)
+            ?? candidates.first { fileExists($0.path) }
+            // Some system bundles expose only a dyld shared-cache image while their canonical
+            // on-disk executable is absent or broken. Loading may use a nonexistent URL, but
+            // output identity remains the caller's bundle and must never depend on file existence.
+            ?? bundleURL.appendingPathComponent(baseName)
+        return Self(loadURL: loadURL, outputIdentity: .bundle(bundleURL))
+    }
 
-        // Some system bundles (especially on modern macOS) only expose a dyld shared-cache image
-        // path while the on-disk executable symlink is intentionally absent/broken. Return the
-        // canonical in-bundle executable path so shared-cache lookup can still resolve the image.
-        return bundleURL.appendingPathComponent(baseName)
+    package static func direct(_ url: URL) -> Self {
+        Self(loadURL: url, outputIdentity: .image(url))
     }
 
     package static func normalizedCacheImagePaths(
