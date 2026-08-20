@@ -1044,24 +1044,34 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
     }
     let artifactRoot = try Self.artifactRoot(for: target, layout: plan.options.layout)
-    let staged = try Self.collectStagedArtifacts(
-      for: target,
-      in: stagingDirectory,
-      runtimeRoot: plan.options.systemRoot?.path ?? "",
-      artifactRoot: artifactRoot
-    )
-    try publisher.validateRawStaging(
-      root: stagingDirectory,
-      expectedSourceFiles: Set(staged.files.values)
-    )
-    guard !staged.files.isEmpty else {
+    let staged: StagedArtifacts
+    do {
+      staged = try Self.collectStagedArtifacts(
+        for: target,
+        in: stagingDirectory,
+        runtimeRoot: plan.options.systemRoot?.path ?? "",
+        artifactRoot: artifactRoot
+      )
+      guard !staged.files.isEmpty else {
+        return Self.failedExecution(
+          target: target,
+          status: .failed,
+          summary: rawResult.succeeded
+            ? "raw dump produced no header artifacts"
+            : rawResult.failureSummary
+              ?? "raw dump exited with status \(rawResult.terminationStatus)",
+          at: dateProvider()
+        )
+      }
+      try publisher.validateRawStaging(
+        root: stagingDirectory,
+        expectedSourceFiles: Set(staged.files.values)
+      )
+    } catch {
       return Self.failedExecution(
         target: target,
         status: .failed,
-        summary: rawResult.succeeded
-          ? "raw dump produced no header artifacts"
-          : rawResult.failureSummary
-            ?? "raw dump exited with status \(rawResult.terminationStatus)",
+        summary: String(describing: error),
         at: dateProvider()
       )
     }

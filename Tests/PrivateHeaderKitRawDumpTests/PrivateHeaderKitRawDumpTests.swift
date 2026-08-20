@@ -825,7 +825,7 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         let resolved = resolveBundleExecutableURL(
             bundleURL,
             fileManager: fake,
-            bundleExecutableURL: { _ in nil }
+            bundleURLs: { _ in nil }
         )
         #expect(resolved?.path == candidate.path)
 
@@ -833,23 +833,91 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         let resolvedExplicit = resolveBundleExecutableURL(
             bundleURL,
             fileManager: fake,
-            bundleExecutableURL: { _ in explicit }
+            bundleURLs: { _ in (bundleURL, explicit) }
         )
         #expect(resolvedExplicit?.path == explicit.path)
     }
 
-    @Test func resolveBundleExecutableURLRebasesBundleExecutableWhenPossible() {
-        let bundleURL = URL(fileURLWithPath: "/System/Library/Frameworks/SafariServices.framework", isDirectory: true)
-        let resolvedExec = URL(fileURLWithPath: "/System/Cryptexes/OS/System/Library/Frameworks/SafariServices.framework/SafariServices")
-        let expectedRebased = bundleURL.appendingPathComponent("SafariServices")
-        let fake = FakeFileManager(existing: [expectedRebased.path])
+    @Test func resolveBundleExecutableURLPreservesCryptexAliasWithMixedBundleURLs() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let resolvedBundle = dirs.root.appendingPathComponent(
+            "System/Cryptexes/OS/System/Library/Frameworks/SafariServices.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: resolvedBundle, withIntermediateDirectories: true)
+        let resolvedExec = resolvedBundle.appendingPathComponent("Versions/A/SafariServices")
+        try FileManager.default.createDirectory(
+            at: resolvedExec.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: resolvedExec)
+        let bundleURL = dirs.root.appendingPathComponent(
+            "System/Library/Frameworks/SafariServices.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: bundleURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: bundleURL.path,
+            withDestinationPath: resolvedBundle.path
+        )
+        let expectedRebased = bundleURL.appendingPathComponent("Versions/A/SafariServices")
+
+        let result = resolveBundleExecutableURL(
+            bundleURL,
+            bundleURLs: { _ in (bundleURL, resolvedExec) }
+        )
+        #expect(result?.path == expectedRebased.path)
+    }
+
+    @Test func resolveBundleExecutableURLPreservesRenamedSymlinkIdentity() throws {
+        let dirs = try makeTemporaryTestDirectories()
+        let resolvedBundle = dirs.root.appendingPathComponent(
+            "SpotlightIndex.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: resolvedBundle, withIntermediateDirectories: true)
+        let resolvedExec = resolvedBundle.appendingPathComponent("SpotlightIndex")
+        try Data().write(to: resolvedExec)
+        let bundleURL = dirs.root.appendingPathComponent(
+            "MobileSpotlightIndex.framework",
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: bundleURL.path,
+            withDestinationPath: resolvedBundle.lastPathComponent
+        )
+
+        let result = try #require(
+            resolveBundleExecutableURL(
+                bundleURL,
+                bundleURLs: { _ in (resolvedBundle, resolvedExec) }
+            )
+        )
+
+        #expect(result.path == bundleURL.appendingPathComponent("SpotlightIndex").path)
+        #expect(
+            result.resolvingSymlinksInPath().standardizedFileURL
+                == resolvedExec.resolvingSymlinksInPath().standardizedFileURL
+        )
+    }
+
+    @Test func resolveBundleExecutableURLDoesNotRebaseExecutableOutsideBundle() {
+        let bundleURL = URL(fileURLWithPath: "/tmp/Alias.framework", isDirectory: true)
+        let resolvedBundle = URL(fileURLWithPath: "/tmp/Real.framework", isDirectory: true)
+        let resolvedExec = URL(fileURLWithPath: "/tmp/Elsewhere/Real")
+        let aliasCandidate = bundleURL.appendingPathComponent("Real")
+        let fake = FakeFileManager(existing: [aliasCandidate.path])
 
         let result = resolveBundleExecutableURL(
             bundleURL,
             fileManager: fake,
-            bundleExecutableURL: { _ in resolvedExec }
+            bundleURLs: { _ in (resolvedBundle, resolvedExec) }
         )
-        #expect(result?.path == expectedRebased.path)
+
+        #expect(result == resolvedExec)
     }
 
     @Test func resolveBundleExecutableURLFallsBackToCanonicalPathForCacheOnlyBundles() {
@@ -859,7 +927,7 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         let resolved = resolveBundleExecutableURL(
             bundleURL,
             fileManager: fake,
-            bundleExecutableURL: { _ in nil }
+            bundleURLs: { _ in nil }
         )
 
         #expect(resolved?.path == "/tmp/Foo.framework/Foo")
@@ -875,7 +943,7 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         let xpcResolved = resolveBundleExecutableURL(
             xpcURL,
             fileManager: FileManager.default,
-            bundleExecutableURL: { _ in nil }
+            bundleURLs: { _ in nil }
         )
         #expect(xpcResolved?.path == xpcURL.appendingPathComponent("Foo").path)
 
@@ -886,7 +954,7 @@ struct PrivateHeaderKitRawDumpBundlePathTests {
         let appexResolved = resolveBundleExecutableURL(
             appexURL,
             fileManager: FileManager.default,
-            bundleExecutableURL: { _ in nil }
+            bundleURLs: { _ in nil }
         )
         #expect(appexResolved?.path == appexURL.appendingPathComponent("Bar").path)
     }

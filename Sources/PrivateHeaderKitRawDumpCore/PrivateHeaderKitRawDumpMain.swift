@@ -421,12 +421,17 @@ func isBundleDirectory(_ url: URL) -> Bool {
 func resolveBundleExecutableURL(
     _ bundleURL: URL,
     fileManager: FileExistenceChecking = FileManager.default,
-    bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
+    bundleURLs: (URL) -> (bundleURL: URL, executableURL: URL)? = {
+        guard let bundle = Bundle(url: $0), let executableURL = bundle.executableURL else {
+            return nil
+        }
+        return (bundle.bundleURL, executableURL)
+    }
 ) -> URL? {
     ExecutableResolution.resolveBundleExecutableURL(
         bundleURL,
         fileExists: fileManager.fileExists(atPath:),
-        bundleExecutableURL: bundleExecutableURL
+        bundleURLs: bundleURLs
     )
 }
 

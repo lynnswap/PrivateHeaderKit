@@ -4,18 +4,25 @@ package enum ExecutableResolution {
     package static func resolveBundleExecutableURL(
         _ bundleURL: URL,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
-        bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
+        bundleURLs: (URL) -> (bundleURL: URL, executableURL: URL)? = {
+            guard let bundle = Bundle(url: $0), let executableURL = bundle.executableURL else {
+                return nil
+            }
+            return (bundle.bundleURL, executableURL)
+        }
     ) -> URL? {
-        if let executableURL = bundleExecutableURL(bundleURL) {
-            // `Bundle(url:)` may resolve symlinks, returning an executable inside the real path
-            // (e.g. `/System/Cryptexes/OS/...`). Prefer rebasing back onto the original bundle URL
-            // so output paths remain stable under `/System/Library/...` when possible.
-            let bundleName = bundleURL.lastPathComponent
-            let components = executableURL.pathComponents
-            if let bundleIndex = components.lastIndex(of: bundleName),
-               bundleIndex + 1 < components.count
-            {
-                let suffixComponents = components[(bundleIndex + 1)...]
+        if let resolved = bundleURLs(bundleURL) {
+            // `Bundle(url:)` may resolve the caller's URL to a renamed symlink target or a
+            // Cryptex path. Derive the suffix from the URLs owned by that same Bundle lookup so
+            // output identity remains rooted at the caller-supplied bundle URL.
+            let suffixComponents = Self.relativePathComponents(
+                of: resolved.executableURL,
+                inside: resolved.bundleURL
+            ) ?? Self.relativePathComponents(
+                of: resolved.executableURL.resolvingSymlinksInPath(),
+                inside: resolved.bundleURL.resolvingSymlinksInPath()
+            )
+            if let suffixComponents {
                 var rebased = bundleURL
                 for component in suffixComponents {
                     rebased.appendPathComponent(component)
@@ -24,7 +31,7 @@ package enum ExecutableResolution {
                     return rebased
                 }
             }
-            return executableURL
+            return resolved.executableURL
         }
 
         let baseName = bundleURL.deletingPathExtension().lastPathComponent
@@ -43,6 +50,18 @@ package enum ExecutableResolution {
         // path while the on-disk executable symlink is intentionally absent/broken. Return the
         // canonical in-bundle executable path so shared-cache lookup can still resolve the image.
         return bundleURL.appendingPathComponent(baseName)
+    }
+
+    private static func relativePathComponents(of url: URL, inside directoryURL: URL) -> [String]? {
+        let directoryComponents = directoryURL.standardizedFileURL.pathComponents
+        let pathComponents = url.standardizedFileURL.pathComponents
+        guard
+            pathComponents.count > directoryComponents.count,
+            pathComponents.starts(with: directoryComponents)
+        else {
+            return nil
+        }
+        return Array(pathComponents.dropFirst(directoryComponents.count))
     }
 
     package static func normalizedCacheImagePaths(
