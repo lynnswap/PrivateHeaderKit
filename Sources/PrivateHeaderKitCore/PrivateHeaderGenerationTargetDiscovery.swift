@@ -557,13 +557,11 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
     ) throws -> DiscoveredTarget? {
-        guard
-            let executableURL = selectedBundleExecutableURL(
-                bundleURL: bundleURL,
-                fileManager: fileManager
-            ),
-            safeExecutableName(executableURL.lastPathComponent) != nil
-        else {
+        let executableURL = selectedBundleExecutableURL(
+            bundleURL: bundleURL,
+            fileManager: fileManager
+        )
+        guard safeExecutableName(executableURL.lastPathComponent) != nil else {
             return nil
         }
         let hasDiskExecutable = try isRegularFileOrSymlinkToRegularFile(
@@ -602,11 +600,11 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     static func selectedBundleExecutableURL(
         bundleURL: URL,
         fileManager: FileManager
-    ) -> URL? {
-        ExecutableResolution.resolveBundleExecutableURL(
+    ) -> URL {
+        ExecutableResolution.resolveBundle(
             bundleURL,
             fileExists: fileManager.fileExists(atPath:)
-        )
+        ).loadURL
     }
 
     static func isRegularFileOrSymlinkToRegularFile(

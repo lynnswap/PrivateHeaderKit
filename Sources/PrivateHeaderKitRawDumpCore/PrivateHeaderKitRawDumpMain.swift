@@ -342,16 +342,12 @@ private func dumpRecursive(
     while let url = enumerator.nextObject() as? URL {
         if isBundleDirectory(url) {
             enumerator.skipDescendants()
-            if let executableURL = resolveBundleExecutableURL(url, fileManager: fileManager) {
-                let originalPath = stripRuntimeRoot(from: executableURL.path)
-                try await dumpImage(
-                    executableURL,
-                    originalPath: originalPath,
-                    options: options,
-                    fileManager: fileManager,
-                    machOLoader: machOLoader
-                )
-            }
+            try await dumpImage(
+                resolveBundleExecutable(url, fileManager: fileManager),
+                options: options,
+                fileManager: fileManager,
+                machOLoader: machOLoader
+            )
             continue
         }
 
@@ -360,10 +356,8 @@ private func dumpRecursive(
               values.isRegularFile == true
         else { continue }
 
-        let originalPath = stripRuntimeRoot(from: url.path)
         try await dumpImage(
-            url,
-            originalPath: originalPath,
+            .direct(url),
             options: options,
             fileManager: fileManager,
             machOLoader: machOLoader
@@ -379,30 +373,31 @@ private func dumpSingle(
 ) async throws {
     let originalURL = URL(fileURLWithPath: inputPath)
     let resolvedURL = resolveRuntimeURL(originalURL)
-    if isBundleDirectory(resolvedURL), let executableURL = resolveBundleExecutableURL(resolvedURL, fileManager: fileManager) {
-        let originalPath = stripRuntimeRoot(from: executableURL.path)
+    if isBundleDirectory(resolvedURL) {
         try await dumpImage(
-            executableURL,
-            originalPath: originalPath,
+            resolveBundleExecutable(resolvedURL, fileManager: fileManager),
             options: options,
             fileManager: fileManager,
             machOLoader: machOLoader
         )
         return
     }
-    let originalPath = stripRuntimeRoot(from: resolvedURL.path)
     try await dumpImage(
-        resolvedURL,
-        originalPath: originalPath,
+        .direct(resolvedURL),
         options: options,
         fileManager: fileManager,
         machOLoader: machOLoader
     )
 }
 
+private let supportedBundlePathExtensions: Set<String> = [
+    "framework", "app", "bundle", "xpc", "appex",
+]
+
 func isBundleDirectory(_ url: URL) -> Bool {
-    let ext = url.pathExtension.lowercased()
-    guard ext == "framework" || ext == "app" || ext == "bundle" || ext == "xpc" || ext == "appex" else { return false }
+    guard supportedBundlePathExtensions.contains(url.pathExtension.lowercased()) else {
+        return false
+    }
 
     // `URL.hasDirectoryPath` is unreliable for symlink-to-directory bundles (e.g. Cryptex-backed
     // system frameworks inside simulator runtimes). Fall back to a filesystem check so we can
@@ -418,58 +413,57 @@ func isBundleDirectory(_ url: URL) -> Bool {
     return false
 }
 
-func resolveBundleExecutableURL(
+func resolveBundleExecutable(
     _ bundleURL: URL,
     fileManager: FileExistenceChecking = FileManager.default,
-    bundleURLs: (URL) -> (bundleURL: URL, executableURL: URL)? = {
-        guard let bundle = Bundle(url: $0), let executableURL = bundle.executableURL else {
-            return nil
-        }
-        return (bundle.bundleURL, executableURL)
-    }
-) -> URL? {
-    ExecutableResolution.resolveBundleExecutableURL(
+    bundleExecutableURL: (URL) -> URL? = { Bundle(url: $0)?.executableURL }
+) -> ExecutableResolution {
+    ExecutableResolution.resolveBundle(
         bundleURL,
         fileExists: fileManager.fileExists(atPath:),
-        bundleURLs: bundleURLs
+        bundleExecutableURL: bundleExecutableURL
     )
 }
 
 private func dumpImage(
-    _ url: URL,
-    originalPath: String,
+    _ executable: ExecutableResolution,
     options: DumpOptions,
     fileManager: FileManager,
     machOLoader: RawMachOLoader
 ) async throws {
+    let imagePath = stripRuntimeRoot(from: executable.loadURL.path)
+    let placement = outputPlacement(
+        for: executable,
+        outputRoot: options.outputDir,
+        options: options
+    )
     let loadStart = profileNowNanoseconds(enabled: options.profile)
-    guard let machO = try machOLoader.load(url: url) else {
+    guard let machO = try machOLoader.load(url: executable.loadURL) else {
         return
     }
-    profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "loadMachO", since: loadStart)
+    profileLogDuration(enabled: options.profile, imagePath: imagePath, name: "loadMachO", since: loadStart)
 
-    let outputDir = writeDirectory(for: originalPath, outputRoot: options.outputDir, options: options)
     if options.verbose {
-        print("Dumping: \(originalPath)")
+        print("Dumping: \(placement.identity.url.path)")
     }
 
     let objcStart = profileNowNanoseconds(enabled: options.profile)
     try await dumpObjC(
         machO: machO,
-        imagePath: originalPath,
-        outputDir: outputDir,
+        imagePath: imagePath,
+        outputDir: placement.directory,
         options: options,
         fileManager: fileManager
     )
-    profileLogDuration(enabled: options.profile, imagePath: originalPath, name: "dumpObjC", since: objcStart)
+    profileLogDuration(enabled: options.profile, imagePath: imagePath, name: "dumpObjC", since: objcStart)
 
     try await dumpSwift(
         machO: machO,
-        imagePath: originalPath,
-        outputDir: outputDir,
+        imagePath: imagePath,
+        outputDir: placement.directory,
         options: options,
         interfaceBuilderFactory: defaultSwiftInterfaceBuilderFactory(
-            imagePath: originalPath,
+            imagePath: imagePath,
             options: options
         ),
         fileManager: fileManager
@@ -608,15 +602,77 @@ func normalizedCacheImagePaths(
     )
 }
 
-func writeDirectory(for imagePath: String, outputRoot: URL, options: DumpOptions) -> URL {
+struct DumpOutputPlacement {
+    let identity: ExecutableResolution.OutputIdentity
+    let directory: URL
+}
+
+func outputPlacement(
+    for executable: ExecutableResolution,
+    outputRoot: URL,
+    options: DumpOptions,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> DumpOutputPlacement {
+    let identity = logicalOutputIdentity(
+        executable.outputIdentity,
+        environment: environment
+    )
+    return DumpOutputPlacement(
+        identity: identity,
+        directory: writeDirectory(for: identity, outputRoot: outputRoot, options: options)
+    )
+}
+
+private func logicalOutputIdentity(
+    _ outputIdentity: ExecutableResolution.OutputIdentity,
+    environment: [String: String]
+) -> ExecutableResolution.OutputIdentity {
+    switch outputIdentity {
+    case .image(let url):
+        .image(
+            URL(
+                fileURLWithPath: stripRuntimeRoot(from: url.path, environment: environment)
+            )
+        )
+    case .bundle(let url):
+        .bundle(
+            URL(
+                fileURLWithPath: stripRuntimeRoot(from: url.path, environment: environment),
+                isDirectory: true
+            )
+        )
+    }
+}
+
+private extension ExecutableResolution.OutputIdentity {
+    var url: URL {
+        switch self {
+        case .image(let url), .bundle(let url): url
+        }
+    }
+}
+
+func writeDirectory(
+    for outputIdentity: ExecutableResolution.OutputIdentity,
+    outputRoot: URL,
+    options: DumpOptions
+) -> URL {
     guard options.buildOriginalDirs else { return outputRoot }
 
-    let imageURL = URL(fileURLWithPath: imagePath)
-    let parentURL = imageURL.deletingLastPathComponent()
-    let isBundle = parentURL.lastPathComponent.contains(".")
-    let targetPath = isBundle ? parentURL.path : imageURL.path
-    var fullPath = outputRoot.path + targetPath
-    if isBundle && options.addHeadersFolder {
+    let target: (url: URL, isBundle: Bool)
+    switch outputIdentity {
+    case .bundle(let bundleURL):
+        target = (bundleURL, true)
+    case .image(let imageURL):
+        let parentURL = imageURL.deletingLastPathComponent()
+        if supportedBundlePathExtensions.contains(parentURL.pathExtension.lowercased()) {
+            target = (parentURL, true)
+        } else {
+            target = (imageURL, false)
+        }
+    }
+    var fullPath = outputRoot.path + target.url.path
+    if target.isBundle && options.addHeadersFolder {
         fullPath += "/Headers"
     }
     fullPath = normalizePath(fullPath)
