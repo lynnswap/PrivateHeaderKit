@@ -18,10 +18,17 @@ physical devices are not generation sources.
 ## Install a Release
 
 ```bash
-curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh
+(
+  privateheaderkit_installer="$(
+    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+  )" &&
+  printf '%s\n' "$privateheaderkit_installer" | sh
+)
 ```
 
 The default command is installed at `~/.local/bin/privateheaderkit`.
+The installer is downloaded completely before execution and is not written to
+the current directory.
 
 The installer checks whether the resolved command directory is already on
 `PATH`. If it is missing, the installer prints a `Next steps` block with:
@@ -44,13 +51,24 @@ permissions, and code signatures before activation.
 Install under another prefix. The public command is placed in `<prefix>/bin`:
 
 ```bash
-curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --prefix ~/Tools/PrivateHeaderKit
+(
+  privateheaderkit_installer="$(
+    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+  )" &&
+  printf '%s\n' "$privateheaderkit_installer" | \
+    sh -s -- --prefix ~/Tools/PrivateHeaderKit
+)
 ```
 
 Or choose the public command directory directly:
 
 ```bash
-curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
+(
+  privateheaderkit_installer="$(
+    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+  )" &&
+  printf '%s\n' "$privateheaderkit_installer" | sh -s -- --bindir ~/bin
+)
 ```
 
 Choose either `--prefix` or `--bindir`. The installer resolves `~`, relative
@@ -84,8 +102,8 @@ also available for source installation.
 
 ## Update
 
-Run the download command again, or update the source checkout and rerun
-the source installation command above. Preserve the same `--prefix` or
+Run the release installation command again, or update the source checkout and
+rerun the source installation command above. Preserve the same `--prefix` or
 `--bindir` option when updating a custom destination.
 
 Release and source installation both publish an immutable cohort and switch

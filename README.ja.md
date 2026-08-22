@@ -13,8 +13,15 @@ SDK を含む Xcode が必要です。
 ## クイックスタート
 
 ```bash
-curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh
+(
+  privateheaderkit_installer="$(
+    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+  )" &&
+  printf '%s\n' "$privateheaderkit_installer" | sh
+)
 ```
+
+installer はすべてダウンロードしてから実行し、カレントディレクトリには保存しません。
 
 installer が `Next steps` を表示した場合は、下の command の代わりにその内容を実行します。
 表示されなかった場合は:
@@ -51,7 +58,12 @@ installer は同じ checkout から `privateheaderkit` と 3 つの内部 helper
 command を `~/bin` にインストールする場合:
 
 ```bash
-curl -fsSLO https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh && sh ./install.sh --bindir ~/bin
+(
+  privateheaderkit_installer="$(
+    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
+  )" &&
+  printf '%s\n' "$privateheaderkit_installer" | sh -s -- --bindir ~/bin
+)
 ```
 
 </details>
