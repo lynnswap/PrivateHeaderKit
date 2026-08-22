@@ -109,18 +109,17 @@ struct PrivateHeaderKitBuildInfoPlugin: BuildToolPlugin {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", packageDirectory.path] + arguments
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return nil
         }
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
-        let value = String(
-            decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }
 }

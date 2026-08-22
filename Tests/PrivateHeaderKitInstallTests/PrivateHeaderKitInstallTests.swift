@@ -2309,6 +2309,14 @@ struct SourceBuildResolutionTests {
         #expect(first.dirtyInputFingerprint != second.dirtyInputFingerprint)
         #expect(first.isDirty)
         #expect(second.isDirty)
+        #expect(
+            first.producerVersion
+                == "v1.0.0-dirty.\(first.dirtyInputFingerprint)"
+        )
+        #expect(
+            second.producerVersion
+                == "v1.0.1-dirty.\(second.dirtyInputFingerprint)"
+        )
         #expect(first.releaseTags == ["v1.0.0"])
         #expect(second.releaseTags == ["v1.0.1"])
         #expect(first.effectiveVersion == "v1.0.0")

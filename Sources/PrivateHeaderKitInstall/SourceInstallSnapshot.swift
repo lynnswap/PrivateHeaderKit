@@ -16,6 +16,12 @@ struct SourceSnapshot: Equatable, Sendable {
     let isDirty: Bool
     let releaseTags: [String]
     let effectiveVersion: String
+
+    var producerVersion: String {
+        isDirty
+            ? "\(effectiveVersion)-dirty.\(dirtyInputFingerprint)"
+            : effectiveVersion
+    }
 }
 
 private struct SourceDirtyInputIdentity: Sendable {

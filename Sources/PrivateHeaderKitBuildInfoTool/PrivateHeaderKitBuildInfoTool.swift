@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 @main
 struct PrivateHeaderKitBuildInfoTool {
@@ -83,6 +84,18 @@ private struct Options {
 }
 
 package enum BuildVersionResolver {
+    package struct DirtyInputRecord: Hashable, Sendable {
+        package let path: String
+        package let kind: String
+        package let contentDigest: Data
+
+        package init(path: String, kind: String, contentDigest: Data) {
+            self.path = path
+            self.kind = kind
+            self.contentDigest = contentDigest
+        }
+    }
+
     package static func resolve(
         environmentVersion: String?,
         packageDirectory: URL,
@@ -132,13 +145,20 @@ package enum BuildVersionResolver {
     }
 
     private static func defaultGitDescribe(in packageDirectory: URL) throws -> String? {
-        guard let description = try gitOutput(
+        guard let description = try gitOutputData(
             ["describe", "--tags", "--always"],
             in: packageDirectory
         ),
-            let status = try gitOutput(
+            let trackedDiff = try gitOutputData(
                 [
-                    "status", "--porcelain=v1", "-z", "--untracked-files=all", "--",
+                    "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--",
+                    "Package.swift", "Package.resolved", "Plugins", "Sources",
+                ],
+                in: packageDirectory
+            ),
+            let untrackedPaths = try gitOutputData(
+                [
+                    "ls-files", "--others", "--exclude-standard", "-z", "--",
                     "Package.swift", "Package.resolved", "Plugins", "Sources",
                 ],
                 in: packageDirectory
@@ -146,26 +166,113 @@ package enum BuildVersionResolver {
         else {
             return nil
         }
-        let version = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let version = String(decoding: description, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !version.isEmpty else { return nil }
-        return status.isEmpty ? version : "\(version)-dirty"
+        let records = try untrackedInputRecords(
+            pathsData: untrackedPaths,
+            packageDirectory: packageDirectory
+        )
+        guard let fingerprint = dirtyFingerprint(
+            trackedDiff: trackedDiff,
+            untrackedRecords: records
+        ) else {
+            return version
+        }
+        return "\(version)-dirty.\(fingerprint)"
     }
 
-    private static func gitOutput(
+    package static func dirtyFingerprint(
+        trackedDiff: Data,
+        untrackedRecords: [DirtyInputRecord]
+    ) -> String? {
+        guard !trackedDiff.isEmpty || !untrackedRecords.isEmpty else { return nil }
+        var hasher = SHA256()
+        appendCanonical(Data("privateheaderkit-dirty-input-v1".utf8), to: &hasher)
+        appendCanonical(trackedDiff, to: &hasher)
+        for record in untrackedRecords.sorted(by: { lhs, rhs in
+            lhs.path.utf8.lexicographicallyPrecedes(rhs.path.utf8)
+        }) {
+            appendCanonical(Data(record.path.utf8), to: &hasher)
+            appendCanonical(Data(record.kind.utf8), to: &hasher)
+            appendCanonical(record.contentDigest, to: &hasher)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func untrackedInputRecords(
+        pathsData: Data,
+        packageDirectory: URL
+    ) throws -> [DirtyInputRecord] {
+        try pathsData.split(separator: 0).map { bytes in
+            let path = String(decoding: bytes, as: UTF8.self)
+            guard !path.hasPrefix("/"),
+                  !path.split(separator: "/").contains("..")
+            else {
+                throw BuildInfoToolError.message(
+                    "Git reported an unsafe untracked source path: \(path)"
+                )
+            }
+            let url = packageDirectory.appendingPathComponent(path, isDirectory: false)
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            switch attributes[.type] as? FileAttributeType {
+            case .typeRegular:
+                return DirtyInputRecord(
+                    path: path,
+                    kind: "regular",
+                    contentDigest: try fileDigest(at: url)
+                )
+            case .typeSymbolicLink:
+                let destination = try FileManager.default.destinationOfSymbolicLink(
+                    atPath: url.path
+                )
+                return DirtyInputRecord(
+                    path: path,
+                    kind: "symlink",
+                    contentDigest: Data(SHA256.hash(data: Data(destination.utf8)))
+                )
+            default:
+                throw BuildInfoToolError.message(
+                    "untracked source input is not a regular file or symbolic link: \(path)"
+                )
+            }
+        }
+    }
+
+    private static func fileDigest(at url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        return Data(hasher.finalize())
+    }
+
+    private static func appendCanonical(_ data: Data, to hasher: inout SHA256) {
+        var length = Data()
+        let count = UInt64(data.count)
+        for shift in stride(from: 56, through: 0, by: -8) {
+            length.append(UInt8(truncatingIfNeeded: count >> shift))
+        }
+        hasher.update(data: length)
+        hasher.update(data: data)
+    }
+
+    private static func gitOutputData(
         _ arguments: [String],
         in packageDirectory: URL
-    ) throws -> String? {
+    ) throws -> Data? {
         let process = Process()
         let outputPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", packageDirectory.path] + arguments
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
         let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? data : nil
     }
 
     private static func escapedStringLiteral(_ value: String) -> String {

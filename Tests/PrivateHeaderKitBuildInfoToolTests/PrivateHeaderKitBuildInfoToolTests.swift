@@ -40,4 +40,45 @@ struct PrivateHeaderKitBuildInfoToolTests {
 
         #expect(source.contains(#"package static let version = "v1.2.3-\"quoted\"\\path""#))
     }
+
+    @Test func dirtyFingerprintTracksChangedAndUntrackedSourceContents() {
+        #expect(
+            BuildVersionResolver.dirtyFingerprint(
+                trackedDiff: Data(),
+                untrackedRecords: []
+            ) == nil
+        )
+
+        let firstTracked = BuildVersionResolver.dirtyFingerprint(
+            trackedDiff: Data("first diff".utf8),
+            untrackedRecords: []
+        )
+        let secondTracked = BuildVersionResolver.dirtyFingerprint(
+            trackedDiff: Data("second diff".utf8),
+            untrackedRecords: []
+        )
+        #expect(firstTracked != secondTracked)
+
+        let firstUntracked = BuildVersionResolver.dirtyFingerprint(
+            trackedDiff: Data(),
+            untrackedRecords: [
+                .init(
+                    path: "Sources/New.swift",
+                    kind: "regular",
+                    contentDigest: Data("first contents".utf8)
+                ),
+            ]
+        )
+        let secondUntracked = BuildVersionResolver.dirtyFingerprint(
+            trackedDiff: Data(),
+            untrackedRecords: [
+                .init(
+                    path: "Sources/New.swift",
+                    kind: "regular",
+                    contentDigest: Data("second contents".utf8)
+                ),
+            ]
+        )
+        #expect(firstUntracked != secondUntracked)
+    }
 }
