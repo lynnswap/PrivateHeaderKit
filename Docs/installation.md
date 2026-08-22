@@ -18,17 +18,11 @@ physical devices are not generation sources.
 ## Install a Release
 
 ```bash
-(
-  privateheaderkit_installer="$(
-    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
-  )" &&
-  printf '%s\n' "$privateheaderkit_installer" | sh
-)
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
 ```
 
 The default command is installed at `~/.local/bin/privateheaderkit`.
-The installer is downloaded completely before execution and is not written to
-the current directory.
+The installer is not written to the current directory.
 
 The installer checks whether the resolved command directory is already on
 `PATH`. If it is missing, the installer prints a `Next steps` block with:
@@ -51,24 +45,13 @@ permissions, and code signatures before activation.
 Install under another prefix. The public command is placed in `<prefix>/bin`:
 
 ```bash
-(
-  privateheaderkit_installer="$(
-    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
-  )" &&
-  printf '%s\n' "$privateheaderkit_installer" | \
-    sh -s -- --prefix ~/Tools/PrivateHeaderKit
-)
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --prefix ~/Tools/PrivateHeaderKit
 ```
 
 Or choose the public command directory directly:
 
 ```bash
-(
-  privateheaderkit_installer="$(
-    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
-  )" &&
-  printf '%s\n' "$privateheaderkit_installer" | sh -s -- --bindir ~/bin
-)
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
 ```
 
 Choose either `--prefix` or `--bindir`. The installer resolves `~`, relative

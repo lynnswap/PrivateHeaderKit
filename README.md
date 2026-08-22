@@ -13,16 +13,10 @@ Swift 6.3 and Xcode with iOS and watchOS Simulator SDKs.
 ## Quick Start
 
 ```bash
-(
-  privateheaderkit_installer="$(
-    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
-  )" &&
-  printf '%s\n' "$privateheaderkit_installer" | sh
-)
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
 ```
 
-The installer is downloaded completely before execution and is not written to
-the current directory.
+The installer is not written to the current directory.
 
 If the installer prints a `Next steps` block, follow it instead of the command
 below. Otherwise run:
@@ -60,12 +54,7 @@ checkout. It accepts the same `--prefix` and `--bindir` options as `install.sh`.
 Install the command in `~/bin`:
 
 ```bash
-(
-  privateheaderkit_installer="$(
-    curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh
-  )" &&
-  printf '%s\n' "$privateheaderkit_installer" | sh -s -- --bindir ~/bin
-)
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
 ```
 
 </details>
