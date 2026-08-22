@@ -145,8 +145,8 @@ package enum BuildVersionResolver {
     }
 
     private static func defaultGitDescribe(in packageDirectory: URL) throws -> String? {
-        guard let description = try gitOutputData(
-            ["describe", "--tags", "--always"],
+        guard let commitData = try gitOutputData(
+            ["rev-parse", "HEAD"],
             in: packageDirectory
         ),
             let trackedDiff = try gitOutputData(
@@ -166,7 +166,7 @@ package enum BuildVersionResolver {
         else {
             return nil
         }
-        let version = String(decoding: description, as: UTF8.self)
+        let version = String(decoding: commitData, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !version.isEmpty else { return nil }
         let records = try untrackedInputRecords(
