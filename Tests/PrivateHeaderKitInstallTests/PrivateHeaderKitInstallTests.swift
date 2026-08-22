@@ -2307,6 +2307,8 @@ struct SourceBuildResolutionTests {
 
         #expect(first.head == second.head)
         #expect(first.dirtyInputFingerprint != second.dirtyInputFingerprint)
+        #expect(first.isDirty)
+        #expect(second.isDirty)
         #expect(first.releaseTags == ["v1.0.0"])
         #expect(second.releaseTags == ["v1.0.1"])
         #expect(first.effectiveVersion == "v1.0.0")
@@ -2391,6 +2393,7 @@ struct SourceBuildResolutionTests {
             .joined()
 
         #expect(snapshot.dirtyInputFingerprint == expectedFingerprint)
+        #expect(snapshot.isDirty)
         #expect(snapshot.releaseTags == ["v1.2.3"])
         #expect(snapshot.effectiveVersion == "v1.2.3")
     }

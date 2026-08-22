@@ -357,7 +357,9 @@ func buildSourceCohort(
         fileManager: fileManager
     )
     let buildEnvironment = [
-        "PRIVATEHEADERKIT_BUILD_VERSION": sourceBeforeBuild.effectiveVersion,
+        "PRIVATEHEADERKIT_BUILD_VERSION": sourceBeforeBuild.isDirty
+            ? "\(sourceBeforeBuild.effectiveVersion)-dirty"
+            : sourceBeforeBuild.effectiveVersion,
         "PRIVATEHEADERKIT_BUILD_COMMIT": sourceBeforeBuild.effectiveCommit,
     ]
     try await buildProducts(

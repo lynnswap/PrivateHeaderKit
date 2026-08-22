@@ -132,13 +132,33 @@ package enum BuildVersionResolver {
     }
 
     private static func defaultGitDescribe(in packageDirectory: URL) throws -> String? {
+        guard let description = try gitOutput(
+            ["describe", "--tags", "--always"],
+            in: packageDirectory
+        ),
+            let status = try gitOutput(
+                [
+                    "status", "--porcelain=v1", "-z", "--untracked-files=all", "--",
+                    "Package.swift", "Package.resolved", "Plugins", "Sources",
+                ],
+                in: packageDirectory
+            )
+        else {
+            return nil
+        }
+        let version = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !version.isEmpty else { return nil }
+        return status.isEmpty ? version : "\(version)-dirty"
+    }
+
+    private static func gitOutput(
+        _ arguments: [String],
+        in packageDirectory: URL
+    ) throws -> String? {
         let process = Process()
         let outputPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = [
-            "-C", packageDirectory.path,
-            "describe", "--tags", "--always", "--dirty",
-        ]
+        process.arguments = ["-C", packageDirectory.path] + arguments
         process.standardOutput = outputPipe
         process.standardError = Pipe()
         try process.run()
