@@ -190,16 +190,131 @@ struct PrivateHeaderKitCLIArgumentTests {
             #expect(errors.text.contains("must not be empty"))
             #expect(errors.text.contains(option))
         }
+
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "iOS",
+                "--version", "27.0",
+                "--out", "/tmp/headers",
+                "--target", "all",
+                "--device", "   ",
+            ],
+            currentExecutableURL: nil,
+            outputLogger: { _ in },
+            errorLogger: errors.append
+        )
+        #expect(status != 0)
+        #expect(errors.text.contains("must not be empty"))
+        #expect(errors.text.contains("--device"))
     }
 }
 
 @Suite
 struct PrivateHeaderKitCLIExecutionTests {
+    @Test func simulatorSessionCleansRunOwnedDeviceAfterCancellationButNeverBorrowedDevice() async throws {
+        let cleanupCount = ThreadSafeCounter()
+        let operationStarted = EventCounter()
+        let cleanupWasCancelled = ThreadSafeBool()
+        let owned = PrivateHeaderKitSimulatorResolution(
+            runtimeVersion: testPrivateHeaderKitSimulatorResolution.runtimeVersion,
+            runtimeBuild: testPrivateHeaderKitSimulatorResolution.runtimeBuild,
+            runtimeIdentifier: testPrivateHeaderKitSimulatorResolution.runtimeIdentifier,
+            resolvedRuntimeRoot: testPrivateHeaderKitSimulatorResolution.resolvedRuntimeRoot,
+            metadataIsSeed: false,
+            deviceName: "PrivateHeaderKit Dump (iOS 27.0)",
+            deviceUDID: "11111111-2222-3333-4444-555555555555",
+            deviceOwnership: .runOwned
+        )
+
+        let cancellationTask = Task<Int, Error> {
+            try await withPrivateHeaderKitSimulatorSession(
+                iosGenerateCommand(build: nil, systemRoot: nil),
+                resolver: { _ in owned },
+                cleaner: { _ in
+                    if Task.isCancelled {
+                        cleanupWasCancelled.setTrue()
+                    }
+                    cleanupCount.increment()
+                },
+                outputLogger: { _ in },
+                operation: { _ in
+                    operationStarted.signal()
+                    while true {
+                        try Task.checkCancellation()
+                        await Task.yield()
+                    }
+                }
+            )
+        }
+        await operationStarted.wait(until: 1)
+        cancellationTask.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await cancellationTask.value
+        }
+        #expect(cleanupCount.value == 1)
+        #expect(!cleanupWasCancelled.value)
+
+        let value: Int = try await withPrivateHeaderKitSimulatorSession(
+            iosGenerateCommand(build: nil, systemRoot: nil),
+            resolver: { _ in testPrivateHeaderKitSimulatorResolution },
+            cleaner: { _ in cleanupCount.increment() },
+            outputLogger: { _ in },
+            operation: { _ in 7 }
+        )
+        #expect(value == 7)
+        #expect(cleanupCount.value == 1)
+
+        await #expect(throws: CLIFixtureError.self) {
+            let _: Int = try await withPrivateHeaderKitSimulatorSession(
+                iosGenerateCommand(build: nil, systemRoot: nil),
+                resolver: { _ in owned },
+                cleaner: { _ in
+                    cleanupCount.increment()
+                    throw CLIFixtureError.cleanupFailed
+                },
+                outputLogger: { _ in },
+                operation: { _ in 9 }
+            )
+        }
+        #expect(cleanupCount.value == 2)
+    }
+
+    @Test func simulatorCleanupFailureOverridesInteractiveBack() async {
+        let owned = PrivateHeaderKitSimulatorResolution(
+            runtimeVersion: testPrivateHeaderKitSimulatorResolution.runtimeVersion,
+            runtimeBuild: testPrivateHeaderKitSimulatorResolution.runtimeBuild,
+            runtimeIdentifier: testPrivateHeaderKitSimulatorResolution.runtimeIdentifier,
+            resolvedRuntimeRoot: testPrivateHeaderKitSimulatorResolution.resolvedRuntimeRoot,
+            metadataIsSeed: false,
+            deviceName: "PrivateHeaderKit Dump (iOS 27.0) run-001",
+            deviceUDID: "11111111-2222-3333-4444-555555555555",
+            deviceOwnership: .runOwned
+        )
+
+        do {
+            let _: Int = try await withPrivateHeaderKitSimulatorSession(
+                iosGenerateCommand(build: nil, systemRoot: nil),
+                resolver: { _ in owned },
+                cleaner: { _ in throw CLIFixtureError.cleanupFailed },
+                outputLogger: { _ in },
+                operation: { _ in throw PrivateHeaderKitInteractiveNavigation.back }
+            )
+            Issue.record("interactive Back unexpectedly hid simulator cleanup failure")
+        } catch is PrivateHeaderKitInteractiveNavigation {
+            Issue.record("interactive Back unexpectedly won over simulator cleanup failure")
+        } catch {
+            #expect(String(describing: error).contains("simulator cleanup failed after"))
+            #expect(String(describing: error).contains("cleanupFailed"))
+        }
+    }
+
     @Test func implicitWatchOSRuntimeUsesSimulatorFlowAndWatchStorageIdentity() throws {
         let request = try makePrivateHeaderGenerationRequest(
             from: watchOSGenerateCommand(build: nil, systemRoot: nil),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitWatchSimulatorResolution
         )
 
@@ -209,7 +324,10 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.systemRoot?.path == "/ResolvedWatchRuntime")
         #expect(
             request.options.executionMode
-                == .simulator(deviceUDID: "WATCH-001", runtimeRoot: "/ResolvedWatchRuntime")
+                == testExecutionMode(
+                    resolution: testPrivateHeaderKitWatchSimulatorResolution,
+                    sourceRuntimeRoot: "/ResolvedWatchRuntime"
+                )
         )
     }
 
@@ -220,18 +338,13 @@ struct PrivateHeaderKitCLIExecutionTests {
             command,
             invokedProgramName: "privateheaderkit",
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-            simulatorResolver: { resolvedCommand in
-                #expect(resolvedCommand.platform == .watchOS)
-                return testPrivateHeaderKitWatchSimulatorResolution
-            },
+            simulatorResolution: testPrivateHeaderKitWatchSimulatorResolution,
             helperResolver: { _, _, simulatorPlatform in
                 #expect(simulatorPlatform == .watchOS)
                 return PrivateHeaderKitHelperPlan(
-                    helperURLs: testPrivateHeaderKitHelperURLs,
-                    toolCompatibilityIdentity: "test-tool-identity"
+                    helperURLs: testPrivateHeaderKitHelperURLs
                 )
-            },
-            outputLogger: { _ in }
+            }
         )
 
         #expect(request.source.platform == .watchOS)
@@ -241,7 +354,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: nil, systemRoot: nil),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitSimulatorResolution,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
@@ -252,7 +365,10 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.rawDumpingOptions.useSharedCache)
         #expect(
             request.options.executionMode
-                == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/ResolvedRuntime")
+                == testExecutionMode(
+                    resolution: testPrivateHeaderKitSimulatorResolution,
+                    sourceRuntimeRoot: "/ResolvedRuntime"
+                )
         )
     }
 
@@ -269,7 +385,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: nil, systemRoot: nil),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: resolution
         )
 
@@ -289,30 +405,35 @@ struct PrivateHeaderKitCLIExecutionTests {
         let runner = RecordingCommandRunner()
         await runner.setCaptureOutput(
             """
-            {"runtimes":[{"name":"iOS 27.0","platform":"iOS","version":"27.0","buildversion":"24A5390f","identifier":"ios-27","runtimeRoot":"\(runtimeRoot.path)","isAvailable":true}]}
+            {"runtimes":[{"name":"iOS 27.0","platform":"iOS","version":"27.0","buildversion":"24A5390f","identifier":"ios-27","runtimeRoot":"\(runtimeRoot.path)","isAvailable":true,"supportedDeviceTypes":[{"name":"iPhone 17","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17","productFamily":"iPhone"}]}]}
             """,
             for: ["xcrun", "simctl", "list", "runtimes", "-j"]
         )
-        await runner.setCaptureOutput(
-            """
-            {"devices":{"ios-27":[{"name":"Dumping Device (iOS 27.0)","udid":"SIM-001","state":"Booted"}]}}
-            """,
-            for: ["xcrun", "simctl", "list", "devices", "-j"]
-        )
+        let deviceUDID = "11111111-2222-3333-4444-555555555555"
+        let createCommand = [
+            "xcrun", "simctl", "create", "PrivateHeaderKit Dump (iOS 27.0)",
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+        ]
+        await runner.setCaptureOutput(deviceUDID + "\n", for: createCommand)
 
         let resolution = try await resolvePrivateHeaderKitSimulator(
             for: iosGenerateCommand(build: nil, systemRoot: nil),
-            runner: runner
+            runner: runner,
+            dedicatedDeviceName: "PrivateHeaderKit Dump (iOS 27.0)"
         )
 
         #expect(!resolution.metadataIsSeed)
         #expect(resolution.resolvedRuntimeRoot == runtimeRoot.path)
-        #expect(resolution.deviceUDID == "SIM-001")
+        #expect(resolution.deviceUDID == deviceUDID)
+        #expect(resolution.deviceOwnership == .runOwned)
         #expect(await runner.captureCommandSnapshot().map(\.command) == [
             ["xcrun", "simctl", "list", "runtimes", "-j"],
-            ["xcrun", "simctl", "list", "devices", "-j"],
+            createCommand,
         ])
-        #expect(await runner.simpleCommandSnapshot().isEmpty)
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "boot", deviceUDID],
+            ["xcrun", "simctl", "bootstatus", deviceUDID, "-b"],
+        ])
     }
 
     @Test func malformedSimulatorReleaseMetadataFailsBeforeResolvingADevice() async throws {
@@ -347,7 +468,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: nil, systemRoot: "/OverrideRuntime"),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitSimulatorResolution,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
@@ -358,7 +479,10 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(!request.options.rawDumpingOptions.useSharedCache)
         #expect(
             request.options.executionMode
-                == .simulator(deviceUDID: "SIM-001", runtimeRoot: "/OverrideRuntime")
+                == testExecutionMode(
+                    resolution: testPrivateHeaderKitSimulatorResolution,
+                    sourceRuntimeRoot: "/OverrideRuntime"
+                )
         )
     }
 
@@ -373,7 +497,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             _ = try makePrivateHeaderGenerationRequest(
                 from: iosGenerateCommand(build: nil, systemRoot: "/OverrideSeedRuntime"),
                 helperURLs: testPrivateHeaderKitHelperURLs,
-                toolCompatibilityIdentity: "test-tool-identity",
+
                 simulatorResolution: testPrivateHeaderKitSimulatorResolution,
                 releaseMetadataResolver: metadataResolver
             )
@@ -382,7 +506,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: "24A123", systemRoot: "/OverrideSeedRuntime"),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitSimulatorResolution,
             releaseMetadataResolver: metadataResolver
         )
@@ -405,7 +529,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: command,
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitSimulatorResolution,
             releaseMetadataResolver: { _, _ in false }
         )
@@ -418,7 +542,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: "24A999", systemRoot: nil),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitSimulatorResolution
         )
 
@@ -450,7 +574,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: nil, systemRoot: runtimeAlias.path),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: resolution
         )
         let canonicalRuntimeRoot = runtimeRoot.resolvingSymlinksInPath().standardizedFileURL
@@ -461,7 +585,10 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.rawDumpingOptions.useSharedCache)
         #expect(
             request.options.executionMode
-                == .simulator(deviceUDID: "SIM-001", runtimeRoot: canonicalRuntimeRoot.path)
+                == testExecutionMode(
+                    resolution: resolution,
+                    sourceRuntimeRoot: canonicalRuntimeRoot.path
+                )
         )
         #expect(
             request.options.rawDumpingOptions.helperEnvironment["PH_RUNTIME_ROOT"]
@@ -473,7 +600,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try makePrivateHeaderGenerationRequest(
             from: iosGenerateCommand(build: "24A999", systemRoot: "/ResolvedRuntime"),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: testPrivateHeaderKitSimulatorResolution
         )
 
@@ -487,7 +614,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let currentRootRequest = try makePrivateHeaderGenerationRequest(
             from: macOSGenerateCommand(systemRoot: "/"),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: nil,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
@@ -501,7 +628,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let customRootRequest = try makePrivateHeaderGenerationRequest(
             from: macOSGenerateCommand(systemRoot: customRoot.path),
             helperURLs: testPrivateHeaderKitHelperURLs,
-            toolCompatibilityIdentity: "test-tool-identity",
+
             simulatorResolution: nil,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver
         )
@@ -520,22 +647,17 @@ struct PrivateHeaderKitCLIExecutionTests {
                 macOSGenerateCommand(systemRoot: "/SeedSystemRoot"),
                 invokedProgramName: "privateheaderkit",
                 currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-                simulatorResolver: { _ in
-                    Issue.record("macOS generation must not resolve a simulator")
-                    return testPrivateHeaderKitSimulatorResolution
-                },
+                simulatorResolution: nil,
                 helperResolver: { _, _, _ in
                     helperResolutionCount.increment()
                     return PrivateHeaderKitHelperPlan(
-                        helperURLs: testPrivateHeaderKitHelperURLs,
-                        toolCompatibilityIdentity: "test-tool-identity"
+                        helperURLs: testPrivateHeaderKitHelperURLs
                     )
                 },
                 releaseMetadataResolver: { _, layout in
                     #expect(layout == .macOS)
                     return true
-                },
-                outputLogger: { _ in }
+                }
             )
         }
 
@@ -602,7 +724,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             request.options.helperURLs?.simulator.path
                 == "/cohort/privateheaderkit-sim-helper"
         )
-        #expect(request.options.toolCompatibilityIdentity == "test-tool-identity:host")
+        #expect(request.options.producerVersion == PrivateHeaderKitBuildInfo.version)
         #expect(preparationCount.value == 1)
         #expect(summaryInspectionCount.value == 0)
         #expect(output.text.contains("Generated  2"))
@@ -652,7 +774,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let request = try #require(requestBox.value)
         #expect(request.options.executionMode == .host)
         #expect(request.options.helperURLs?.simulator.path == customSimulatorHelper)
-        #expect(request.options.toolCompatibilityIdentity == "test-tool-identity:host")
+        #expect(request.options.producerVersion == PrivateHeaderKitBuildInfo.version)
     }
 
     @Test func runFailureUsesTypedSummaryWithoutReadingStateFiles() async {
@@ -985,8 +1107,14 @@ struct PrivateHeaderKitCLIExecutionTests {
         let helperURL = root.appendingPathComponent("privateheaderkit-raw-helper")
         let inventoryCommand = [helperURL.path, "__shared-cache-inventory"]
         let runner = RecordingCommandRunner()
+        let inventoryData = try JSONEncoder().encode(
+            PrivateHeaderKitSharedCacheInventory(
+                cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                imagePaths: ["/usr/lib/libCacheOnly.dylib"]
+            )
+        )
         await runner.setCaptureOutput(
-            #"{"schemaVersion":1,"cacheUUID":"11111111-2222-3333-4444-555555555555","imagePaths":["/usr/lib/libCacheOnly.dylib"]}"#,
+            String(decoding: inventoryData, as: UTF8.self),
             for: inventoryCommand
         )
         await runner.setStreamingHandler { command, _, _ in
@@ -1011,8 +1139,8 @@ struct PrivateHeaderKitCLIExecutionTests {
             else {
                 throw ToolingError.message("raw dump command is missing its diagnostics report")
             }
-            try Data(
-                #"{"schemaVersion":1,"diagnostics":[],"omittedDiagnosticCount":0}"#.utf8
+            try JSONEncoder().encode(
+                PrivateHeaderKitRawDumpDiagnosticsReport(diagnostics: [])
             ).write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
             return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
         }
@@ -1038,8 +1166,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
                     useSharedCache: true
                 ),
-                resumeBehavior: .fresh,
-                toolCompatibilityIdentity: "test-tool-identity"
+                resumeBehavior: .fresh
             )
         )
         let prepared = try await PrivateHeaderKitGenerationClient
@@ -1098,8 +1225,16 @@ struct PrivateHeaderKitCLIExecutionTests {
             guard let reportIndex = command.firstIndex(of: "--diagnostics-report") else {
                 throw ToolingError.message("missing diagnostics report argument")
             }
-            try Data(
-                #"{"schemaVersion":1,"diagnostics":[{"owner":"Objective-C protocol P","degradation":"list was truncated"}],"omittedDiagnosticCount":2}"#.utf8
+            try JSONEncoder().encode(
+                PrivateHeaderKitRawDumpDiagnosticsReport(
+                    diagnostics: [
+                        PrivateHeaderKitRawDumpDiagnostic(
+                            owner: "Objective-C protocol P",
+                            degradation: "list was truncated"
+                        ),
+                    ],
+                    omittedDiagnosticCount: 2
+                )
             ).write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
             return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
         }
@@ -1138,7 +1273,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 }
             }
 
-            await #expect(throws: PrivateHeaderKitRawDumpContractError.self) {
+            await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
                 _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
             }
             #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
@@ -1166,7 +1301,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
         }
 
-        await #expect(throws: PrivateHeaderKitRawDumpContractError.self) {
+        await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
             _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
         }
         #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
@@ -1335,8 +1470,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: { _, _, _ in
                 helperResolutionCount.increment()
                 return PrivateHeaderKitHelperPlan(
-                    helperURLs: helperURLs,
-                    toolCompatibilityIdentity: "test-tool-identity"
+                    helperURLs: helperURLs
                 )
             },
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
@@ -1362,7 +1496,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 == .requireExplicitResume(resumeRequested: false)
         )
         #expect(requestBox.value?.options.helperURLs == helperURLs)
-        #expect(requestBox.value?.options.toolCompatibilityIdentity == "test-tool-identity")
+        #expect(requestBox.value?.options.producerVersion == PrivateHeaderKitBuildInfo.version)
         #expect(helperResolutionCount.value == 1)
         #expect(output.text.contains("Step 1 of 3"))
         #expect(output.text.contains("Generation completed"))
@@ -1442,8 +1576,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: { _, _, _ in
                 helperResolutionCount.increment()
                 return PrivateHeaderKitHelperPlan(
-                    helperURLs: testPrivateHeaderKitHelperURLs,
-                    toolCompatibilityIdentity: "test-tool-identity"
+                    helperURLs: testPrivateHeaderKitHelperURLs
                 )
             },
             interactiveSourceProvider: {
@@ -1536,8 +1669,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: { _, _, _ in
                 helperResolutionCount.increment()
                 return PrivateHeaderKitHelperPlan(
-                    helperURLs: testPrivateHeaderKitHelperURLs,
-                    toolCompatibilityIdentity: "test-tool-identity"
+                    helperURLs: testPrivateHeaderKitHelperURLs
                 )
             },
             interactiveSourceProvider: {
@@ -1614,8 +1746,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: { _, _, _ in
                 helperResolutionCount.increment()
                 return PrivateHeaderKitHelperPlan(
-                    helperURLs: testPrivateHeaderKitHelperURLs,
-                    toolCompatibilityIdentity: "test-tool-identity"
+                    helperURLs: testPrivateHeaderKitHelperURLs
                 )
             },
             interactiveSourceProvider: {
@@ -1689,8 +1820,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: { _, _, _ in
                 helperResolutionCount.increment()
                 return PrivateHeaderKitHelperPlan(
-                    helperURLs: testPrivateHeaderKitHelperURLs,
-                    toolCompatibilityIdentity: "test-tool-identity"
+                    helperURLs: testPrivateHeaderKitHelperURLs
                 )
             },
             interactiveSourceProvider: {
@@ -1726,6 +1856,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let input = ScriptedInput(["1", "1", "2", "\u{001B}", "\u{001B}"])
         let preparationCount = ThreadSafeCounter()
         let runCount = ThreadSafeCounter()
+        let cleanupCount = ThreadSafeCounter()
         let status = await runPrivateHeaderKitCommand(
             ["privateheaderkit"],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
@@ -1744,15 +1875,28 @@ struct PrivateHeaderKitCLIExecutionTests {
                     )
                 }
             ),
+            simulatorResolver: { _ in
+                PrivateHeaderKitSimulatorResolution(
+                    runtimeVersion: "27.0",
+                    runtimeBuild: "24A123",
+                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    resolvedRuntimeRoot: "/ResolvedRuntime",
+                    metadataIsSeed: false,
+                    deviceName: "PrivateHeaderKit Dump (iOS 27.0)",
+                    deviceUDID: "11111111-2222-3333-4444-555555555555",
+                    deviceOwnership: .runOwned
+                )
+            },
+            simulatorCleaner: { _ in cleanupCount.increment() },
             helperResolver: testPrivateHeaderKitHelperResolver,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
                 [
                     PrivateHeaderKitInteractiveSource(
-                        platform: .macOS,
-                        version: "16.0",
-                        build: nil,
-                        systemRoot: "/"
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A123",
+                        systemRoot: nil
                     ),
                 ]
             },
@@ -1766,6 +1910,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(status == 1)
         #expect(preparationCount.value == 1)
         #expect(runCount.value == 0)
+        #expect(cleanupCount.value == 1)
     }
 
 }
@@ -1797,6 +1942,25 @@ private let testPrivateHeaderKitWatchSimulatorResolution = PrivateHeaderKitSimul
     deviceName: "Apple Watch Series 11 (46mm)",
     deviceUDID: "WATCH-001"
 )
+
+private func testExecutionMode(
+    resolution: PrivateHeaderKitSimulatorResolution,
+    sourceRuntimeRoot: String
+) -> PrivateHeaderGeneration.RawDumping.ExecutionMode {
+    .simulator(
+        deviceUDID: resolution.deviceUDID,
+        sourceRuntimeRoot: sourceRuntimeRoot,
+        runtime: .init(
+            version: resolution.runtimeVersion,
+            build: resolution.runtimeBuild,
+            identifier: resolution.runtimeIdentifier,
+            runtimeRoot: URL(
+                fileURLWithPath: resolution.resolvedRuntimeRoot,
+                isDirectory: true
+            ).resolvingSymlinksInPath().standardizedFileURL.path
+        )
+    )
+}
 
 private func iosGenerateCommand(
     build: String?,
@@ -1894,7 +2058,6 @@ struct PrivateHeaderKitHelperLookupTests {
             simulatorHelperPath: nil,
             simulatorPlatform: nil
         )
-        #expect(plan.toolCompatibilityIdentity.hasPrefix("phk-tool-v1:artifacts:"))
         try await executePrivateHeaderKitHelperBuilds(
             plan,
             runner: RecordingCommandRunner()
@@ -1982,7 +2145,6 @@ struct PrivateHeaderKitHelperLookupTests {
             plan.helperURLs.simulator.lastPathComponent == "privateheaderkit-sim-helper"
         )
         #expect(plan.helperURLs.host.path.contains("/prepared-tools/v1/"))
-        #expect(plan.toolCompatibilityIdentity.hasPrefix("phk-tool-v1:swiftpm:"))
         #expect(!(await runner.captureCommandSnapshot()).contains {
             $0.command.contains("--product")
         })
@@ -2469,10 +2631,7 @@ private func testPrivateHeaderKitHelperResolver(
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs(
             host: host,
             simulator: simulator
-        ),
-        toolCompatibilityIdentity: simulatorPlatform != nil
-            ? "test-tool-identity:host-and-simulator"
-            : "test-tool-identity:host"
+        )
     )
 }
 
@@ -3101,6 +3260,7 @@ private enum FailureKind {
 }
 
 private enum CLIFixtureError: Error {
+    case cleanupFailed
     case missingResumeSummary
     case unexpectedSharedCacheInventory
 }
@@ -3295,8 +3455,7 @@ private func unfinishedResumeSummaryFixture() async throws
             systemRoot: systemRoot,
             helperURLs: testPrivateHeaderKitHelperURLs,
             executionMode: .host,
-            resumeBehavior: .requireExplicitResume(resumeRequested: false),
-            toolCompatibilityIdentity: "test-tool-identity"
+            resumeBehavior: .requireExplicitResume(resumeRequested: false)
         )
     )
     let executor = PrivateHeaderGeneration.GenerationExecutor(

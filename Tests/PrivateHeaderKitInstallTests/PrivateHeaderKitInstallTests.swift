@@ -2172,6 +2172,12 @@ struct SourceBuildResolutionTests {
             ],
         ])
         #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.cwd == repoRoot })
+        #expect(await runner.simpleCommandSnapshot().allSatisfy {
+            $0.env == [
+                "PRIVATEHEADERKIT_BUILD_VERSION": "0.0.0-dev.aaaaaaaaaaaa",
+                "PRIVATEHEADERKIT_BUILD_COMMIT": String(repeating: "a", count: 40),
+            ]
+        })
         #expect(cohort.manifest.schemaVersion == ReleaseManifestSchema.v2.rawValue)
         #expect(
             cohort.manifest.artifacts.map(\.name)
@@ -2301,6 +2307,16 @@ struct SourceBuildResolutionTests {
 
         #expect(first.head == second.head)
         #expect(first.dirtyInputFingerprint != second.dirtyInputFingerprint)
+        #expect(first.isDirty)
+        #expect(second.isDirty)
+        #expect(
+            first.producerVersion
+                == "v1.0.0-dirty.\(first.dirtyInputFingerprint)"
+        )
+        #expect(
+            second.producerVersion
+                == "v1.0.1-dirty.\(second.dirtyInputFingerprint)"
+        )
         #expect(first.releaseTags == ["v1.0.0"])
         #expect(second.releaseTags == ["v1.0.1"])
         #expect(first.effectiveVersion == "v1.0.0")
@@ -2385,6 +2401,7 @@ struct SourceBuildResolutionTests {
             .joined()
 
         #expect(snapshot.dirtyInputFingerprint == expectedFingerprint)
+        #expect(snapshot.isDirty)
         #expect(snapshot.releaseTags == ["v1.2.3"])
         #expect(snapshot.effectiveVersion == "v1.2.3")
     }

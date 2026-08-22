@@ -42,7 +42,6 @@ package actor GenerationStore {
 
   package init(
     databaseURL: URL,
-    toolCompatibilityIdentity: String,
     faultInjector: @escaping FaultInjector = { _ in }
   ) throws {
     guard databaseURL.isFileURL else {
@@ -63,16 +62,6 @@ package actor GenerationStore {
       )
     }
     try Self.migrator.migrate(queue)
-    try queue.write { db in
-      try db.execute(
-        sql: """
-          INSERT INTO metadata(key, value) VALUES ('toolCompatibilityIdentity', ?)
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value
-          """,
-        arguments: [toolCompatibilityIdentity]
-      )
-    }
-
     databaseQueue = queue
     self.faultInjector = faultInjector
   }

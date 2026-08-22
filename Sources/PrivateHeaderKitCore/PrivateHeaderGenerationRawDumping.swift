@@ -37,7 +37,7 @@ extension PrivateHeaderGeneration {
       switch executionMode {
       case .host:
         commandPrefix = [helperURL.path]
-      case .simulator(let deviceUDID, _):
+      case .simulator(let deviceUDID, _, _):
         commandPrefix = [
           "xcrun",
           "simctl",
@@ -72,7 +72,7 @@ extension PrivateHeaderGeneration {
           "-o",
           request.stagingOutputDirectory.path,
         ]
-      case .simulator(let deviceUDID, _):
+      case .simulator(let deviceUDID, _, _):
         command = [
           "xcrun",
           "simctl",
@@ -115,7 +115,7 @@ extension PrivateHeaderGeneration {
       executionMode: ExecutionMode
     ) -> [String: String] {
       var environment = helperEnvironment
-      if case .simulator(_, let runtimeRoot) = executionMode {
+      if case .simulator(_, let runtimeRoot, _) = executionMode {
         environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] = runtimeRoot
         environment["SIMCTL_CHILD_DYLD_ROOT_PATH"] = runtimeRoot
       }
@@ -125,6 +125,26 @@ extension PrivateHeaderGeneration {
 }
 
 extension PrivateHeaderGeneration.RawDumping {
+  package enum ContractError: Error, Equatable, CustomStringConvertible, Sendable {
+    case missingDiagnosticsReport(String)
+    case invalidDiagnosticsReport(path: String, reason: String)
+    case diagnosticsReportTooLarge(path: String, actual: Int, maximum: Int)
+    case diagnosticsReportCleanupFailed(path: String, reason: String)
+
+    package var description: String {
+      switch self {
+      case .missingDiagnosticsReport(let path):
+        "raw helper contract failure: successful helper did not write diagnostics report at \(path)"
+      case .invalidDiagnosticsReport(let path, let reason):
+        "raw helper contract failure: invalid diagnostics report at \(path): \(reason)"
+      case .diagnosticsReportTooLarge(let path, let actual, let maximum):
+        "raw helper contract failure: diagnostics report at \(path) is \(actual) bytes; maximum is \(maximum)"
+      case .diagnosticsReportCleanupFailed(let path, let reason):
+        "raw helper contract failure: could not remove diagnostics report at \(path): \(reason)"
+      }
+    }
+  }
+
   package struct HelperURLs: Hashable, Sendable {
     package let host: URL
     package let simulator: URL
@@ -135,9 +155,27 @@ extension PrivateHeaderGeneration.RawDumping {
     }
   }
 
+  package struct SimulatorRuntimeIdentity: Hashable, Sendable {
+    package let version: String
+    package let build: String
+    package let identifier: String
+    package let runtimeRoot: String
+
+    package init(version: String, build: String, identifier: String, runtimeRoot: String) {
+      self.version = version
+      self.build = build
+      self.identifier = identifier
+      self.runtimeRoot = runtimeRoot
+    }
+  }
+
   package enum ExecutionMode: Hashable, Sendable {
     case host
-    case simulator(deviceUDID: String, runtimeRoot: String)
+    case simulator(
+      deviceUDID: String,
+      sourceRuntimeRoot: String,
+      runtime: SimulatorRuntimeIdentity
+    )
 
     fileprivate var isHost: Bool {
       if case .host = self { return true }

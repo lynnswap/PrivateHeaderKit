@@ -13,8 +13,20 @@ struct SourceSnapshot: Equatable, Sendable {
     let head: String
     let effectiveCommit: String
     let dirtyInputFingerprint: String
+    let isDirty: Bool
     let releaseTags: [String]
     let effectiveVersion: String
+
+    var producerVersion: String {
+        isDirty
+            ? "\(effectiveVersion)-dirty.\(dirtyInputFingerprint)"
+            : effectiveVersion
+    }
+}
+
+private struct SourceDirtyInputIdentity: Sendable {
+    let fingerprint: String
+    let isDirty: Bool
 }
 
 private struct UntrackedSourceRecord: Codable, Sendable {
@@ -53,7 +65,7 @@ func captureSourceSnapshot(
         commit: effectiveCommit,
         releaseTags: releaseTags
     )
-    let dirtyInputFingerprint = try await sourceDirtyInputFingerprint(
+    let dirtyInputs = try await sourceDirtyInputFingerprint(
         repoRoot: repoRoot,
         runner: runner,
         fileManager: fileManager
@@ -61,7 +73,8 @@ func captureSourceSnapshot(
     return SourceSnapshot(
         head: head,
         effectiveCommit: effectiveCommit,
-        dirtyInputFingerprint: dirtyInputFingerprint,
+        dirtyInputFingerprint: dirtyInputs.fingerprint,
+        isDirty: dirtyInputs.isDirty,
         releaseTags: releaseTags,
         effectiveVersion: effectiveVersion
     )
@@ -138,7 +151,7 @@ private func sourceDirtyInputFingerprint(
     repoRoot: URL,
     runner: CommandRunning,
     fileManager: FileManager
-) async throws -> String {
+) async throws -> SourceDirtyInputIdentity {
     let canonicalHasher = SourceFingerprintCanonicalHasher()
     try await runner.runCaptureChunks(
         ["git", "diff", "--no-ext-diff", "--binary", "HEAD", "--"],
@@ -286,9 +299,13 @@ private actor SourceFingerprintCanonicalHasher {
     private var pendingUntrackedPathBytes = Data()
     private var untrackedPaths = CancellationAwareStringMergeSorter()
     private var untrackedRecordCount = 0
+    private var hasTrackedDiff = false
 
     func consumeTrackedDiff(_ chunk: Data) throws {
         precondition(phase == .trackedDiff)
+        if !chunk.isEmpty {
+            hasTrackedDiff = true
+        }
         try updateHash(with: chunk)
     }
 
@@ -345,13 +362,16 @@ private actor SourceFingerprintCanonicalHasher {
         untrackedRecordCount += 1
     }
 
-    func finalize() throws -> String {
+    func finalize() throws -> SourceDirtyInputIdentity {
         precondition(phase == .untrackedRecords)
         try updateHash(with: Data("]".utf8))
         try Task.checkCancellation()
         phase = .finalized
 #if canImport(CryptoKit)
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return SourceDirtyInputIdentity(
+            fingerprint: hasher.finalize().map { String(format: "%02x", $0) }.joined(),
+            isDirty: hasTrackedDiff || untrackedRecordCount > 0
+        )
 #else
         throw InstallError.message(
             "source input fingerprinting is unavailable on this platform"

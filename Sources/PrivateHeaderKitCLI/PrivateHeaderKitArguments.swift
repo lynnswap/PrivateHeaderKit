@@ -74,7 +74,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
         if let systemRoot, systemRoot.isEmpty {
             throw ValidationError("Argument '--system-root <system-root>' must not be empty")
         }
-        if let device, device.isEmpty {
+        if let device, device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw ValidationError("Argument '--device <device>' must not be empty")
         }
         if let simulatorHelperPath, simulatorHelperPath.isEmpty {

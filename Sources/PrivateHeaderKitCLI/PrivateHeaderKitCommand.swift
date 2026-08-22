@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import PrivateHeaderKitCore
+import PrivateHeaderKitHelperProtocol
 import PrivateHeaderKitTooling
 
 #if canImport(Darwin)
@@ -91,6 +92,7 @@ struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
     let metadataIsSeed: Bool
     let deviceName: String
     let deviceUDID: String
+    let deviceOwnership: SimulatorDeviceOwnership
 
     init(
         runtimeVersion: String,
@@ -99,7 +101,8 @@ struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
         resolvedRuntimeRoot: String,
         metadataIsSeed: Bool,
         deviceName: String,
-        deviceUDID: String
+        deviceUDID: String,
+        deviceOwnership: SimulatorDeviceOwnership = .borrowed
     ) {
         self.runtimeVersion = runtimeVersion
         self.runtimeBuild = runtimeBuild
@@ -108,17 +111,19 @@ struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
         self.metadataIsSeed = metadataIsSeed
         self.deviceName = deviceName
         self.deviceUDID = deviceUDID
+        self.deviceOwnership = deviceOwnership
     }
 
-    init(runtime: RuntimeInfo, metadataIsSeed: Bool, device: DeviceInfo) {
+    init(runtime: RuntimeInfo, metadataIsSeed: Bool, resolvedDevice: ResolvedSimulatorDevice) {
         self.init(
             runtimeVersion: runtime.version,
             runtimeBuild: runtime.build,
             runtimeIdentifier: runtime.identifier,
             resolvedRuntimeRoot: runtime.runtimeRoot,
             metadataIsSeed: metadataIsSeed,
-            deviceName: device.name,
-            deviceUDID: device.udid
+            deviceName: resolvedDevice.device.name,
+            deviceUDID: resolvedDevice.device.udid,
+            deviceOwnership: resolvedDevice.ownership
         )
     }
 }
@@ -126,6 +131,9 @@ struct PrivateHeaderKitSimulatorResolution: Equatable, Sendable {
 typealias PrivateHeaderKitSimulatorResolver = @Sendable (
     PrivateHeaderKitGenerateCommand
 ) async throws -> PrivateHeaderKitSimulatorResolution
+typealias PrivateHeaderKitSimulatorCleaner = @Sendable (
+    PrivateHeaderKitSimulatorResolution
+) async throws -> Void
 typealias PrivateHeaderKitHelperResolver = @Sendable (
     URL,
     String?,
@@ -146,25 +154,18 @@ func resolvePrivateHeaderKitReleaseMetadata(
 
 struct PrivateHeaderKitHelperPlan: Sendable {
     let helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs
-    let toolCompatibilityIdentity: String
     fileprivate let preparation: PrivateHeaderKitHelperPreparation
 
-    init(
-        helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-        toolCompatibilityIdentity: String
-    ) {
+    init(helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs) {
         self.helperURLs = helperURLs
-        self.toolCompatibilityIdentity = toolCompatibilityIdentity
         self.preparation = .ready
     }
 
     fileprivate init(
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-        toolCompatibilityIdentity: String,
         preparation: PrivateHeaderKitHelperPreparation
     ) {
         self.helperURLs = helperURLs
-        self.toolCompatibilityIdentity = toolCompatibilityIdentity
         self.preparation = preparation
     }
 }
@@ -198,6 +199,7 @@ func runPrivateHeaderKitCommand(
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationClient: PrivateHeaderKitGenerationClient = .live,
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
+    simulatorCleaner: @escaping PrivateHeaderKitSimulatorCleaner = cleanupPrivateHeaderKitSimulator,
     helperResolver: @escaping PrivateHeaderKitHelperResolver = resolvePrivateHeaderKitHelperURLs,
     releaseMetadataResolver: @escaping PrivateHeaderKitReleaseMetadataResolver =
         resolvePrivateHeaderKitReleaseMetadata,
@@ -247,6 +249,7 @@ func runPrivateHeaderKitCommand(
                 currentExecutableURL: currentExecutableURL,
                 generationClient: generationClient,
                 simulatorResolver: simulatorResolver,
+                simulatorCleaner: simulatorCleaner,
                 helperResolver: helperResolver,
                 releaseMetadataResolver: releaseMetadataResolver,
                 sourceProvider: interactiveSourceProvider,
@@ -264,6 +267,7 @@ func runPrivateHeaderKitCommand(
                 currentExecutableURL: currentExecutableURL,
                 generationClient: generationClient,
                 simulatorResolver: simulatorResolver,
+                simulatorCleaner: simulatorCleaner,
                 helperResolver: helperResolver,
                 releaseMetadataResolver: releaseMetadataResolver,
                 outputLogger: outputLogger,
@@ -291,6 +295,7 @@ func runPrivateHeaderKitGenerateCommand(
     currentExecutableURL: URL?,
     generationClient: PrivateHeaderKitGenerationClient,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    simulatorCleaner: @escaping PrivateHeaderKitSimulatorCleaner = cleanupPrivateHeaderKitSimulator,
     helperResolver: PrivateHeaderKitHelperResolver = resolvePrivateHeaderKitHelperURLs,
     releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver =
         resolvePrivateHeaderKitReleaseMetadata,
@@ -298,45 +303,51 @@ func runPrivateHeaderKitGenerateCommand(
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
     errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> Int32 {
-    do {
-        let request = try await preparePrivateHeaderKitGenerationRequest(
-            command,
-            invokedProgramName: invokedProgramName,
-            currentExecutableURL: currentExecutableURL,
-            simulatorResolver: simulatorResolver,
-            helperResolver: helperResolver,
-            releaseMetadataResolver: releaseMetadataResolver,
-            outputLogger: outputLogger
-        )
+    try await withPrivateHeaderKitSimulatorSession(
+        command,
+        resolver: simulatorResolver,
+        cleaner: simulatorCleaner,
+        outputLogger: outputLogger
+    ) { simulatorResolution in
         do {
-            let preparedGeneration = try await generationClient.prepare(request)
-            return try await runPrivateHeaderKitPreparedGeneration(
-                preparedGeneration,
-                request: request,
-                targetQuery: command.targetQuery,
-                resumeBehavior: command.resumeBehavior,
-                resultScreenClearer: resultScreenClearer,
-                outputLogger: outputLogger,
-                errorLogger: errorLogger
+            let request = try await preparePrivateHeaderKitGenerationRequest(
+                command,
+                invokedProgramName: invokedProgramName,
+                currentExecutableURL: currentExecutableURL,
+                simulatorResolution: simulatorResolution,
+                helperResolver: helperResolver,
+                releaseMetadataResolver: releaseMetadataResolver
             )
-        } catch let error as PrivateHeaderGeneration.GenerationError {
-            if Task.isCancelled {
-                throw CancellationError()
+            do {
+                let preparedGeneration = try await generationClient.prepare(request)
+                return try await runPrivateHeaderKitPreparedGeneration(
+                    preparedGeneration,
+                    request: request,
+                    targetQuery: command.targetQuery,
+                    resumeBehavior: command.resumeBehavior,
+                    resultScreenClearer: resultScreenClearer,
+                    outputLogger: outputLogger,
+                    errorLogger: errorLogger
+                )
+            } catch let error as PrivateHeaderGeneration.GenerationError {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                renderPrivateHeaderKitGenerationError(
+                    error,
+                    sourceDisplayName: request.source.label.displayName,
+                    targetQuery: command.targetQuery,
+                    screenClearer: resultScreenClearer,
+                    outputLogger: errorLogger
+                )
+                return 2
             }
-            renderPrivateHeaderKitGenerationError(
-                error,
-                sourceDisplayName: request.source.label.displayName,
-                targetQuery: command.targetQuery,
-                screenClearer: resultScreenClearer,
-                outputLogger: errorLogger
-            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            errorLogger("error: \(error)")
             return 2
         }
-    } catch is CancellationError {
-        throw CancellationError()
-    } catch {
-        errorLogger("error: \(error)")
-        return 2
     }
 }
 
@@ -344,22 +355,11 @@ func preparePrivateHeaderKitGenerationRequest(
     _ command: PrivateHeaderKitGenerateCommand,
     invokedProgramName: String,
     currentExecutableURL: URL?,
-    simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    simulatorResolution: PrivateHeaderKitSimulatorResolution?,
     helperResolver: PrivateHeaderKitHelperResolver,
     releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver =
-        resolvePrivateHeaderKitReleaseMetadata,
-    outputLogger: @escaping PrivateHeaderKitOutputLogger
+        resolvePrivateHeaderKitReleaseMetadata
 ) async throws -> PrivateHeaderKitGenerationRequest {
-    let simulatorResolution: PrivateHeaderKitSimulatorResolution?
-    if command.platform.simulatorPlatform != nil {
-        let resolution = try await simulatorResolver(command)
-        outputLogger(
-            "selected simulator: \(resolution.deviceName) (\(resolution.deviceUDID))"
-        )
-        simulatorResolution = resolution
-    } else {
-        simulatorResolution = nil
-    }
     let effectiveSource = try effectiveSourceConfiguration(
         from: command,
         simulatorResolution: simulatorResolution,
@@ -379,7 +379,6 @@ func preparePrivateHeaderKitGenerationRequest(
         from: command,
         effectiveSource: effectiveSource,
         helperURLs: helperPlan.helperURLs,
-        toolCompatibilityIdentity: helperPlan.toolCompatibilityIdentity,
         simulatorResolution: simulatorResolution
     )
 }
@@ -434,7 +433,6 @@ func runPrivateHeaderKitPreparedGeneration(
 func makePrivateHeaderGenerationRequest(
     from command: PrivateHeaderKitGenerateCommand,
     helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-    toolCompatibilityIdentity: String,
     simulatorResolution: PrivateHeaderKitSimulatorResolution?,
     releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver =
         resolvePrivateHeaderKitReleaseMetadata
@@ -448,7 +446,6 @@ func makePrivateHeaderGenerationRequest(
         from: command,
         effectiveSource: effectiveSource,
         helperURLs: helperURLs,
-        toolCompatibilityIdentity: toolCompatibilityIdentity,
         simulatorResolution: simulatorResolution
     )
 }
@@ -457,7 +454,6 @@ private func makePrivateHeaderGenerationRequest(
     from command: PrivateHeaderKitGenerateCommand,
     effectiveSource: EffectiveSourceConfiguration,
     helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-    toolCompatibilityIdentity: String,
     simulatorResolution: PrivateHeaderKitSimulatorResolution?
 ) throws -> PrivateHeaderKitGenerationRequest {
     let source = effectiveSource.source
@@ -473,7 +469,15 @@ private func makePrivateHeaderGenerationRequest(
         }
         executionMode = .simulator(
             deviceUDID: simulatorResolution.deviceUDID,
-            runtimeRoot: effectiveSource.systemRoot.path
+            sourceRuntimeRoot: effectiveSource.systemRoot.path,
+            runtime: .init(
+                version: simulatorResolution.runtimeVersion,
+                build: simulatorResolution.runtimeBuild,
+                identifier: simulatorResolution.runtimeIdentifier,
+                runtimeRoot: canonicalDirectoryURL(
+                    path: simulatorResolution.resolvedRuntimeRoot
+                ).path
+            )
         )
     }
     let targetRequest: PrivateHeaderGeneration.TargetRequest =
@@ -489,7 +493,7 @@ private func makePrivateHeaderGenerationRequest(
             helperEnvironment: ["PH_RUNTIME_ROOT": effectiveSource.systemRoot.path]
         ),
         resumeBehavior: command.resumeBehavior,
-        toolCompatibilityIdentity: toolCompatibilityIdentity
+        producerVersion: PrivateHeaderKitBuildInfo.version
     )
     return PrivateHeaderKitGenerationRequest(source: source, output: output, options: options)
 }
@@ -651,7 +655,6 @@ func resolvePrivateHeaderKitHelperPlan(
         )
         return PrivateHeaderKitHelperPlan(
             helperURLs: preparedURLs,
-            toolCompatibilityIdentity: baseline.compatibilityIdentity,
             preparation: .installed(PrivateHeaderKitInstalledToolValidation(
                 runningExecutableIdentity: runningExecutableIdentity,
                 artifacts: artifacts,
@@ -773,7 +776,6 @@ func resolvePrivateHeaderKitHelperPlan(
     )
     return PrivateHeaderKitHelperPlan(
         helperURLs: preparedURLs,
-        toolCompatibilityIdentity: baseline.compatibilityIdentity,
         preparation: .swiftPM(PrivateHeaderKitSwiftPMToolPreparation(
             context: identityContext,
             baseline: baseline,
@@ -1072,6 +1074,78 @@ private func currentHostSupportsNativeArm64Simulator() -> Bool {
 #endif
 }
 
+func withPrivateHeaderKitSimulatorSession<Result>(
+    _ command: PrivateHeaderKitGenerateCommand,
+    resolver: PrivateHeaderKitSimulatorResolver,
+    cleaner: @escaping PrivateHeaderKitSimulatorCleaner,
+    outputLogger: @escaping PrivateHeaderKitOutputLogger,
+    operation: (PrivateHeaderKitSimulatorResolution?) async throws -> Result
+) async throws -> Result {
+    let resolution: PrivateHeaderKitSimulatorResolution?
+    if command.platform.simulatorPlatform == nil {
+        resolution = nil
+    } else {
+        let resolved = try await resolver(command)
+        outputLogger("selected simulator: \(resolved.deviceName) (\(resolved.deviceUDID))")
+        resolution = resolved
+    }
+
+    let result: Result
+    do {
+        result = try await operation(resolution)
+    } catch {
+        let operationError = error
+        if let resolution {
+            do {
+                try await finishPrivateHeaderKitSimulatorSession(resolution, cleaner: cleaner)
+            } catch {
+                throw PrivateHeaderKitSimulatorSessionCleanupError(
+                    operationError: String(describing: operationError),
+                    cleanupError: String(describing: error)
+                )
+            }
+        }
+        throw operationError
+    }
+    if let resolution {
+        try await finishPrivateHeaderKitSimulatorSession(resolution, cleaner: cleaner)
+    }
+    return result
+}
+
+private struct PrivateHeaderKitSimulatorSessionCleanupError: Error, CustomStringConvertible {
+    let operationError: String
+    let cleanupError: String
+
+    var description: String {
+        "simulator cleanup failed after \(operationError): \(cleanupError)"
+    }
+}
+
+private func finishPrivateHeaderKitSimulatorSession(
+    _ resolution: PrivateHeaderKitSimulatorResolution,
+    cleaner: @escaping PrivateHeaderKitSimulatorCleaner
+) async throws {
+    guard resolution.deviceOwnership == .runOwned else { return }
+    try await Task.detached {
+        try await cleaner(resolution)
+    }.value
+}
+
+func cleanupPrivateHeaderKitSimulator(
+    _ resolution: PrivateHeaderKitSimulatorResolution
+) async throws {
+    guard resolution.deviceOwnership == .runOwned else { return }
+    try await Simctl.deleteDevice(
+        DeviceInfo(
+            name: resolution.deviceName,
+            udid: resolution.deviceUDID,
+            state: "Booted"
+        ),
+        runner: ProcessRunner()
+    )
+}
+
 func resolvePrivateHeaderKitSimulator(
     for command: PrivateHeaderKitGenerateCommand
 ) async throws -> PrivateHeaderKitSimulatorResolution {
@@ -1080,7 +1154,8 @@ func resolvePrivateHeaderKitSimulator(
 
 func resolvePrivateHeaderKitSimulator(
     for command: PrivateHeaderKitGenerateCommand,
-    runner: CommandRunning
+    runner: CommandRunning,
+    dedicatedDeviceName: String? = nil
 ) async throws -> PrivateHeaderKitSimulatorResolution {
     guard let simulatorPlatform = command.platform.simulatorPlatform else {
         throw PrivateHeaderKitCLIError.missingSimulatorResolution
@@ -1101,15 +1176,16 @@ func resolvePrivateHeaderKitSimulator(
         build: runtime.build.isEmpty ? nil : runtime.build,
         metadataIsSeed: metadataIsSeed
     )
-    let device = try await Simctl.resolveDevice(
+    let resolvedDevice = try await Simctl.resolveDevice(
         runtime: runtime,
         query: command.device,
-        runner: runner
+        runner: runner,
+        dedicatedDeviceName: dedicatedDeviceName
     )
     return PrivateHeaderKitSimulatorResolution(
         runtime: runtime,
         metadataIsSeed: metadataIsSeed,
-        device: device
+        resolvedDevice: resolvedDevice
     )
 }
 

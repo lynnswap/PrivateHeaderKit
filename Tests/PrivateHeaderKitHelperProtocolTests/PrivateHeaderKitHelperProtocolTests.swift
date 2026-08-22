@@ -6,14 +6,18 @@ import Testing
 @Suite
 struct PrivateHeaderKitHelperProtocolTests {
     @Test func rawDumpDiagnosticsZeroReportRoundTrips() throws {
-        let report = PrivateHeaderKitRawDumpDiagnosticsReport(diagnostics: [])
+        let report = PrivateHeaderKitRawDumpDiagnosticsReport(
+            producerVersion: "v1.2.3",
+            diagnostics: []
+        )
         let data = try JSONEncoder().encode(report)
         let decoded = try JSONDecoder().decode(
             PrivateHeaderKitRawDumpDiagnosticsReport.self,
             from: data
         )
 
-        #expect(decoded.schemaVersion == 1)
+        #expect(decoded.schemaVersion == 2)
+        #expect(decoded.producerVersion == "v1.2.3")
         #expect(decoded.diagnostics.isEmpty)
         #expect(decoded.omittedDiagnosticCount == 0)
     }
@@ -76,11 +80,12 @@ struct PrivateHeaderKitHelperProtocolTests {
 
     @Test func rawDumpDiagnosticsRejectsWrongVersionMalformedAndNoncanonicalPayloads() {
         let payloads = [
-            #"{"schemaVersion":2,"diagnostics":[],"omittedDiagnosticCount":0}"#,
+            #"{"schemaVersion":3,"producerVersion":"v1.2.3","diagnostics":[],"omittedDiagnosticCount":0}"#,
             "not-json",
-            #"{"schemaVersion":1,"diagnostics":[{"owner":"b","degradation":"x"},{"owner":"a","degradation":"x"}],"omittedDiagnosticCount":0}"#,
-            #"{"schemaVersion":1,"diagnostics":[{"owner":"line\nowner","degradation":"x"}],"omittedDiagnosticCount":0}"#,
-            #"{"schemaVersion":1,"diagnostics":[],"omittedDiagnosticCount":-1}"#,
+            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[{"owner":"b","degradation":"x"},{"owner":"a","degradation":"x"}],"omittedDiagnosticCount":0}"#,
+            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[{"owner":"line\nowner","degradation":"x"}],"omittedDiagnosticCount":0}"#,
+            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[],"omittedDiagnosticCount":-1}"#,
+            #"{"schemaVersion":2,"producerVersion":"","diagnostics":[],"omittedDiagnosticCount":0}"#,
         ]
 
         for payload in payloads {
@@ -101,7 +106,7 @@ struct PrivateHeaderKitHelperProtocolTests {
             .joined(separator: ",")
         let data = Data(
             """
-            {"schemaVersion":1,"diagnostics":[\(records)],"omittedDiagnosticCount":0}
+            {"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[\(records)],"omittedDiagnosticCount":0}
             """.utf8
         )
 
@@ -115,7 +120,7 @@ struct PrivateHeaderKitHelperProtocolTests {
 
     @Test func rawDumpDiagnosticsDecoderRejectsNegativeOmittedCount() {
         let data = Data(
-            #"{"schemaVersion":1,"diagnostics":[],"omittedDiagnosticCount":-1}"#.utf8
+            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[],"omittedDiagnosticCount":-1}"#.utf8
         )
 
         #expect(throws: DecodingError.self) {
@@ -176,6 +181,7 @@ struct PrivateHeaderKitHelperProtocolTests {
     @Test func inventoryNormalizesImagePathMembershipAndRoundTrips() throws {
         let cacheUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let inventory = try PrivateHeaderKitSharedCacheInventory(
+            producerVersion: "v1.2.3",
             cacheUUID: cacheUUID,
             imagePaths: [
                 "/usr/lib/libz.dylib",
@@ -184,7 +190,8 @@ struct PrivateHeaderKitHelperProtocolTests {
             ]
         )
 
-        #expect(inventory.schemaVersion == 1)
+        #expect(inventory.schemaVersion == 2)
+        #expect(inventory.producerVersion == "v1.2.3")
         #expect(inventory.imagePaths == [
             "/usr/lib/libobjc.A.dylib",
             "/usr/lib/libz.dylib",
@@ -200,7 +207,7 @@ struct PrivateHeaderKitHelperProtocolTests {
     @Test func inventoryRejectsUnsupportedSchemaDuringDecode() {
         let data = Data(
             """
-            {"schemaVersion":2,"cacheUUID":"11111111-2222-3333-4444-555555555555","imagePaths":[]}
+            {"schemaVersion":3,"producerVersion":"v1.2.3","cacheUUID":"11111111-2222-3333-4444-555555555555","imagePaths":[]}
             """.utf8
         )
 

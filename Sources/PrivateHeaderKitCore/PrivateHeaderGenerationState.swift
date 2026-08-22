@@ -124,18 +124,15 @@ extension PrivateHeaderGeneration {
     package let sourceIdentity: String
     package let fingerprint: String
     package let targetIDs: [String]
-    package let toolCompatibilityIdentity: String
 
     package init(
       sourceIdentity: String,
       fingerprint: String,
-      targetIDs: [String],
-      toolCompatibilityIdentity: String
+      targetIDs: [String]
     ) {
       self.sourceIdentity = sourceIdentity
       self.fingerprint = fingerprint
       self.targetIDs = targetIDs
-      self.toolCompatibilityIdentity = toolCompatibilityIdentity
     }
   }
 

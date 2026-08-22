@@ -356,6 +356,10 @@ func buildSourceCohort(
         runner: runner,
         fileManager: fileManager
     )
+    let buildEnvironment = [
+        "PRIVATEHEADERKIT_BUILD_VERSION": sourceBeforeBuild.producerVersion,
+        "PRIVATEHEADERKIT_BUILD_COMMIT": sourceBeforeBuild.effectiveCommit,
+    ]
     try await buildProducts(
         [
             InstallArtifactName.publicCommand.rawValue,
@@ -363,6 +367,7 @@ func buildSourceCohort(
         ],
         configuration: configuration,
         in: repoRoot,
+        environment: buildEnvironment,
         runner: runner
     )
     let hostBinDirectory = try await resolveSwiftBinDir(
@@ -397,6 +402,7 @@ func buildSourceCohort(
             configuration: configuration,
             scratchPath: simulatorScratchPath,
             sdkPath: simulatorSDKPath,
+            environment: buildEnvironment,
             runner: runner,
             simulatorHelperTriple: simulatorTriple
         )
@@ -448,6 +454,7 @@ func buildProducts(
     _ products: [String],
     configuration: BuildConfiguration,
     in directory: URL,
+    environment: [String: String],
     runner: CommandRunning
 ) async throws {
     for product in products {
@@ -460,7 +467,7 @@ func buildProducts(
                 "--product",
                 product,
             ],
-            env: nil,
+            env: environment,
             cwd: directory
         )
         try Task.checkCancellation()
@@ -472,6 +479,7 @@ func buildSimulatorHelper(
     configuration: BuildConfiguration,
     scratchPath: URL,
     sdkPath: String,
+    environment: [String: String],
     runner: CommandRunning,
     simulatorHelperTriple: String
 ) async throws {
@@ -490,7 +498,7 @@ func buildSimulatorHelper(
             "--product",
             InstallArtifactName.simulatorHelper.rawValue,
         ],
-        env: nil,
+        env: environment,
         cwd: directory
     )
     try Task.checkCancellation()

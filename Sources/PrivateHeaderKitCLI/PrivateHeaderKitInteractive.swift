@@ -46,7 +46,7 @@ struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     }
 }
 
-private enum PrivateHeaderKitInteractiveNavigation: Error {
+enum PrivateHeaderKitInteractiveNavigation: Error {
     case back
 }
 
@@ -75,6 +75,7 @@ func runPrivateHeaderKitInteractiveGenerate(
     currentExecutableURL: URL?,
     generationClient: PrivateHeaderKitGenerationClient,
     simulatorResolver: PrivateHeaderKitSimulatorResolver,
+    simulatorCleaner: @escaping PrivateHeaderKitSimulatorCleaner,
     helperResolver: PrivateHeaderKitHelperResolver,
     releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver,
     sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
@@ -162,34 +163,40 @@ func runPrivateHeaderKitInteractiveGenerate(
                     simulatorHelperPath: nil
                 )
                 do {
-                    let request = try await preparePrivateHeaderKitGenerationRequest(
+                    return try await withPrivateHeaderKitSimulatorSession(
                         command,
-                        invokedProgramName: invokedProgramName,
-                        currentExecutableURL: currentExecutableURL,
-                        simulatorResolver: simulatorResolver,
-                        helperResolver: helperResolver,
-                        releaseMetadataResolver: releaseMetadataResolver,
+                        resolver: simulatorResolver,
+                        cleaner: simulatorCleaner,
                         outputLogger: outputLogger
-                    )
-                    let preparedGeneration = try await generationClient.prepare(request)
-                    let resumeBehavior = try await interactiveResumeDecision(
-                        preparedGeneration: preparedGeneration,
-                        request: request,
-                        outputBaseDirectory: command.outputBaseDirectory,
-                        screenClearer: screenClearer,
-                        inputReader: inputReader,
-                        outputLogger: outputLogger
-                    )
-                    try await inputFinalizer()
-                    return try await runPrivateHeaderKitPreparedGeneration(
-                        preparedGeneration,
-                        request: request,
-                        targetQuery: command.targetQuery,
-                        resumeBehavior: resumeBehavior,
-                        resultScreenClearer: screenClearer,
-                        outputLogger: outputLogger,
-                        errorLogger: errorLogger
-                    )
+                    ) { simulatorResolution in
+                        let request = try await preparePrivateHeaderKitGenerationRequest(
+                            command,
+                            invokedProgramName: invokedProgramName,
+                            currentExecutableURL: currentExecutableURL,
+                            simulatorResolution: simulatorResolution,
+                            helperResolver: helperResolver,
+                            releaseMetadataResolver: releaseMetadataResolver
+                        )
+                        let preparedGeneration = try await generationClient.prepare(request)
+                        let resumeBehavior = try await interactiveResumeDecision(
+                            preparedGeneration: preparedGeneration,
+                            request: request,
+                            outputBaseDirectory: command.outputBaseDirectory,
+                            screenClearer: screenClearer,
+                            inputReader: inputReader,
+                            outputLogger: outputLogger
+                        )
+                        try await inputFinalizer()
+                        return try await runPrivateHeaderKitPreparedGeneration(
+                            preparedGeneration,
+                            request: request,
+                            targetQuery: command.targetQuery,
+                            resumeBehavior: resumeBehavior,
+                            resultScreenClearer: screenClearer,
+                            outputLogger: outputLogger,
+                            errorLogger: errorLogger
+                        )
+                    }
                 } catch PrivateHeaderKitInteractiveNavigation.back {
                     continue targetSelection
                 }
