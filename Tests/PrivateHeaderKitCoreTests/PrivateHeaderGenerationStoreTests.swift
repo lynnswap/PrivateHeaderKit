@@ -21,7 +21,7 @@ struct PrivateHeaderGenerationStoreTests {
     }
     try migrator.migrate(queue)
 
-    let store = try GenerationStore(databaseURL: databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(databaseURL: databaseURL)
     #expect(
       try await store.appliedMigrationIdentifiers() == [
         "v1-generation-state",
@@ -43,7 +43,7 @@ struct PrivateHeaderGenerationStoreTests {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let databaseURL = root.appendingPathComponent("generation.sqlite")
-    _ = try GenerationStore(databaseURL: databaseURL, toolCompatibilityIdentity: "test")
+    _ = try GenerationStore(databaseURL: databaseURL)
     let queue = try DatabaseQueue(path: databaseURL.path)
     try await queue.write { db in
       try db.execute(
@@ -53,7 +53,7 @@ struct PrivateHeaderGenerationStoreTests {
     }
 
     do {
-      _ = try GenerationStore(databaseURL: databaseURL, toolCompatibilityIdentity: "test")
+      _ = try GenerationStore(databaseURL: databaseURL)
       Issue.record("future migration was unexpectedly accepted")
     } catch let error as PrivateHeaderGeneration.StateError {
       #expect(error == .unsupportedMigrations(["v999-future"]))
@@ -667,7 +667,7 @@ struct PrivateHeaderGenerationStoreTests {
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
 
     #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try GenerationStore(databaseURL: link, toolCompatibilityIdentity: "test")
+      _ = try GenerationStore(databaseURL: link)
     }
   }
 
@@ -675,7 +675,7 @@ struct PrivateHeaderGenerationStoreTests {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let databaseURL = root.appendingPathComponent("generation.sqlite")
-    let store = try GenerationStore(databaseURL: databaseURL, toolCompatibilityIdentity: "test")
+    let store = try GenerationStore(databaseURL: databaseURL)
     let queue = try DatabaseQueue(path: databaseURL.path)
     try await queue.write { db in
       try db.execute(
@@ -798,7 +798,7 @@ private final class StoreFixture: @unchecked Sendable {
     root = try temporaryDirectory()
     databaseURL = root.appendingPathComponent("generation.sqlite")
     store = try GenerationStore(
-      databaseURL: databaseURL, toolCompatibilityIdentity: "test", faultInjector: fault)
+      databaseURL: databaseURL, faultInjector: fault)
   }
 
   func cleanup() {
@@ -810,7 +810,6 @@ private final class StoreFixture: @unchecked Sendable {
       sourceIdentity: "iOS|27.0|24A",
       fingerprint: "fingerprint",
       targetIDs: targetIDs,
-      toolCompatibilityIdentity: "test"
     )
   }
 

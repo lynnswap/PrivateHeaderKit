@@ -8,6 +8,12 @@ public typealias TestCaptureChunksHandler = @Sendable (
     CommandStandardOutputConsumer
 ) async throws -> Void
 
+public typealias TestCaptureHandler = @Sendable (
+    [String],
+    [String: String]?,
+    URL?
+) async throws -> String
+
 public struct RecordedCommand: Equatable, Sendable {
     public let command: [String]
     public let env: [String: String]?
@@ -28,6 +34,7 @@ public actor RecordingCommandRunner: CommandRunning {
     private var captureOutputs: [String: String] = [:]
     private var captureOutputQueues: [String: [String]] = [:]
     private var captureChunks: [String: [Data]] = [:]
+    private var captureHandler: TestCaptureHandler?
     private var captureChunksHandler: TestCaptureChunksHandler?
     private var simpleHandler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
     private var streamingHandler:
@@ -49,6 +56,10 @@ public actor RecordingCommandRunner: CommandRunning {
 
     public func setCaptureChunksHandler(_ handler: TestCaptureChunksHandler?) {
         captureChunksHandler = handler
+    }
+
+    public func setCaptureHandler(_ handler: TestCaptureHandler?) {
+        captureHandler = handler
     }
 
     public func setSimpleHandler(
@@ -81,7 +92,11 @@ public actor RecordingCommandRunner: CommandRunning {
         env: [String: String]?,
         cwd: URL?
     ) async throws -> String {
-        try captureOutput(command, env: env, cwd: cwd)
+        if let captureHandler {
+            captureCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+            return try await captureHandler(command, env, cwd)
+        }
+        return try captureOutput(command, env: env, cwd: cwd)
     }
 
     public func runCaptureChunks(

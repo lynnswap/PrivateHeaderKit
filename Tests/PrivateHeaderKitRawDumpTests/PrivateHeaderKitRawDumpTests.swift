@@ -753,7 +753,8 @@ struct PrivateHeaderKitRawDumpSharedCacheTests {
         )
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["schemaVersion"] as? Int == 2)
+        #expect(object["producerVersion"] as? String == PrivateHeaderKitBuildInfo.version)
         #expect(object["cacheUUID"] as? String == uuid.uuidString)
         #expect(object["imagePaths"] as? [String] == ["/usr/lib/libobjc.A.dylib"])
     }

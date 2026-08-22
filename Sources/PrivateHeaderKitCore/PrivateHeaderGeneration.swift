@@ -1,4 +1,5 @@
 import Foundation
+import PrivateHeaderKitHelperProtocol
 
 #if canImport(Darwin)
   import Darwin
@@ -441,7 +442,7 @@ extension PrivateHeaderGeneration {
     package var rawDumpingOptions: RawDumping.Options
     package var includeNestedChildren: Bool
     package var resumeBehavior: ResumeBehavior
-    package var toolCompatibilityIdentity: String
+    package var producerVersion: String
 
     package init(
       layout: Layout = .headers,
@@ -452,7 +453,7 @@ extension PrivateHeaderGeneration {
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
       includeNestedChildren: Bool = true,
       resumeBehavior: ResumeBehavior = .requireExplicitResume(resumeRequested: false),
-      toolCompatibilityIdentity: String
+      producerVersion: String = PrivateHeaderKitBuildInfo.version
     ) {
       self.layout = layout
       self.targetRequest = targetRequest
@@ -462,7 +463,7 @@ extension PrivateHeaderGeneration {
       self.rawDumpingOptions = rawDumpingOptions
       self.includeNestedChildren = includeNestedChildren
       self.resumeBehavior = resumeBehavior
-      self.toolCompatibilityIdentity = toolCompatibilityIdentity
+      self.producerVersion = producerVersion
     }
   }
 
@@ -561,6 +562,7 @@ extension PrivateHeaderGeneration {
 
   package enum GenerationError: Error, Equatable, CustomStringConvertible, Sendable {
     case missingExecutionConfiguration(String)
+    case producerVersionMismatch(expected: String, actual: String)
     case emptySharedCacheInventory(cacheUUID: UUID)
     case sharedCacheCohortChanged(
       expectedUUID: UUID,
@@ -583,6 +585,8 @@ extension PrivateHeaderGeneration {
       switch self {
       case .missingExecutionConfiguration(let field):
         "private header generation requires \(field)"
+      case .producerVersionMismatch(let expected, let actual):
+        "private header helper version mismatch (expected \(expected), actual \(actual))"
       case .emptySharedCacheInventory(let cacheUUID):
         "loaded shared cache \(cacheUUID.uuidString.lowercased()) contains no images"
       case .sharedCacheCohortChanged(

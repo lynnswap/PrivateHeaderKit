@@ -336,6 +336,34 @@ struct SimctlDeterministicTests {
         #expect(devices.map(\.state) == ["Shutdown", "Booted"])
     }
 
+    @Test func explicitDeviceIsBorrowedWithoutCreatingOrDeletingIt() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27"
+        )
+        await runner.setCaptureOutput(
+            """
+            {"devices":{"ios-27":[{"name":"User Device","udid":"USER-001","state":"Booted"}]}}
+            """,
+            for: ["xcrun", "simctl", "list", "devices", "-j"]
+        )
+
+        let resolved = try await Simctl.resolveDevice(
+            runtime: runtime,
+            query: "USER-001",
+            runner: runner,
+            environment: [:]
+        )
+
+        #expect(resolved.ownership == .borrowed)
+        #expect(resolved.device.udid == "USER-001")
+        #expect(await runner.simpleCommandSnapshot().isEmpty)
+    }
+
     @Test func ensureDeviceBootedSkipsBootedDeviceUnlessForced() async throws {
         let runner = RecordingCommandRunner()
         let booted = DeviceInfo(name: "iPhone", udid: "BOOTED", state: "Booted")
@@ -352,7 +380,7 @@ struct SimctlDeterministicTests {
         ])
     }
 
-    @Test func resolveDeviceCreatesRelistsClonesAndBootsWhenRuntimeHasNoDevices() async throws {
+    @Test func resolveDeviceCreatesOneDedicatedDeviceAndBootsIt() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             platform: .iOS,
@@ -373,44 +401,195 @@ struct SimctlDeterministicTests {
                 ),
             ]
         )
-        await runner.setCaptureOutputs(
-            [
-                """
-                {"devices":{"ios-27":[]}}
-                """,
-                """
-                {"devices":{"ios-27":[{"name":"iPhone 17 (27.0)","udid":"BASE-001","state":"Shutdown"}]}}
-                """,
-            ],
-            for: ["xcrun", "simctl", "list", "devices", "-j"]
-        )
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
         await runner.setCaptureOutput(
-            "CLONE-001\n",
-            for: ["xcrun", "simctl", "clone", "BASE-001", "Dumping Device (iOS 27.0)"]
+            "\(createdUDID)\n",
+            for: [
+                "xcrun", "simctl", "create", "PrivateHeaderKit Dump (iOS 27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+            ]
         )
 
-        let device = try await Simctl.resolveDevice(runtime: runtime, query: nil, runner: runner, environment: [:])
+        let resolved = try await Simctl.resolveDevice(
+            runtime: runtime,
+            query: nil,
+            runner: runner,
+            environment: [:],
+            dedicatedDeviceName: "PrivateHeaderKit Dump (iOS 27.0)"
+        )
 
-        #expect(device.name == "Dumping Device (iOS 27.0)")
-        #expect(device.udid == "CLONE-001")
-        #expect(device.state == "Booted")
+        #expect(resolved.ownership == .runOwned)
+        #expect(resolved.device.name == "PrivateHeaderKit Dump (iOS 27.0)")
+        #expect(resolved.device.udid == createdUDID)
+        #expect(resolved.device.state == "Booted")
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            [
-                "xcrun",
-                "simctl",
-                "create",
-                "iPhone 17 (27.0)",
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
-                "ios-27",
-            ],
-            ["xcrun", "simctl", "boot", "CLONE-001"],
-            ["xcrun", "simctl", "bootstatus", "CLONE-001", "-b"],
+            ["xcrun", "simctl", "boot", createdUDID],
+            ["xcrun", "simctl", "bootstatus", createdUDID, "-b"],
         ])
         let capturedCommands = await runner.captureCommandSnapshot().map(\.command)
+        #expect(!capturedCommands.contains(["xcrun", "simctl", "list", "devices", "-j"]))
         #expect(!capturedCommands.contains(["xcrun", "simctl", "list", "devicetypes", "-j"]))
     }
 
-    @Test func createDefaultDeviceFallsBackToRuntimeCompatibleDeviceTypes() async throws {
+    @Test func bootFailureDeletesTheNewDedicatedDeviceBeforeReturning() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+            ]
+        )
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
+        await runner.setCaptureOutput(
+            createdUDID + "\n",
+            for: [
+                "xcrun", "simctl", "create", "PrivateHeaderKit Dump (iOS 27.0)",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+            ]
+        )
+        await runner.setSimpleHandler { command, _, _ in
+            if command == ["xcrun", "simctl", "boot", createdUDID] {
+                throw SimctlTestError.bootFailed
+            }
+        }
+
+        await #expect(throws: SimctlTestError.self) {
+            _ = try await Simctl.resolveDevice(
+                runtime: runtime,
+                query: nil,
+                runner: runner,
+                environment: [:],
+                dedicatedDeviceName: "PrivateHeaderKit Dump (iOS 27.0)"
+            )
+        }
+
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "boot", createdUDID],
+            ["xcrun", "simctl", "delete", createdUDID],
+        ])
+    }
+
+    @Test func malformedCreateOutputDeletesTheExactNamedDeviceBeforeReturning() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+            ]
+        )
+        let createdName = "PrivateHeaderKit Dump (iOS 27.0) run-malformed"
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
+        let createCommand = [
+            "xcrun", "simctl", "create", createdName,
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+        ]
+        await runner.setCaptureOutput("unexpected output\n", for: createCommand)
+        await runner.setCaptureOutput(
+            """
+            {"devices":{"ios-27":[{"name":"\(createdName)","udid":"\(createdUDID)","state":"Shutdown"}]}}
+            """,
+            for: ["xcrun", "simctl", "list", "devices", "-j"]
+        )
+
+        await #expect(throws: ToolingError.self) {
+            _ = try await Simctl.createDedicatedDevice(
+                runtime: runtime,
+                name: createdName,
+                runner: runner,
+                environment: [:]
+            )
+        }
+
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [
+            createCommand,
+            ["xcrun", "simctl", "list", "devices", "-j"],
+        ])
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "delete", createdUDID],
+        ])
+    }
+
+    @Test func cancellationDuringCreateReconcilesAndDeletesTheExactNamedDevice() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+            ]
+        )
+        let createdName = "PrivateHeaderKit Dump (iOS 27.0) run-cancelled"
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
+        let createCommand = [
+            "xcrun", "simctl", "create", createdName,
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+        ]
+        let listCommand = ["xcrun", "simctl", "list", "devices", "-j"]
+        let createStarted = AsyncTestEvent()
+        await runner.setCaptureHandler { command, _, _ in
+            if command == createCommand {
+                await createStarted.signal()
+                while true {
+                    try Task.checkCancellation()
+                    await Task.yield()
+                }
+            }
+            if command == listCommand {
+                return """
+                    {"devices":{"ios-27":[{"name":"\(createdName)","udid":"\(createdUDID)","state":"Shutdown"}]}}
+                    """
+            }
+            throw ToolingError.message("unexpected command: \(command)")
+        }
+
+        let task = Task {
+            try await Simctl.resolveDevice(
+                runtime: runtime,
+                query: nil,
+                runner: runner,
+                environment: [:],
+                dedicatedDeviceName: createdName
+            )
+        }
+        await createStarted.wait()
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [
+            createCommand,
+            listCommand,
+        ])
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "delete", createdUDID],
+        ])
+    }
+
+    @Test func createDedicatedDeviceFallsBackToRuntimeCompatibleDeviceTypes() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             platform: .iOS,
@@ -449,22 +628,26 @@ struct SimctlDeterministicTests {
             """,
             for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
         )
+        let createCommand = [
+            "xcrun", "simctl", "create", "PrivateHeaderKit Dump (iOS 27.0)",
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+        ]
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
+        await runner.setCaptureOutput(createdUDID + "\n", for: createCommand)
 
-        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+        let device = try await Simctl.createDedicatedDevice(
+            runtime: runtime,
+            name: "PrivateHeaderKit Dump (iOS 27.0)",
+            runner: runner,
+            environment: [:]
+        )
 
-        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            [
-                "xcrun",
-                "simctl",
-                "create",
-                "iPhone 17 (27.0)",
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
-                "ios-27",
-            ],
-        ])
+        #expect(device.udid == createdUDID)
+        #expect(await runner.captureCommandSnapshot().map(\.command).last == createCommand)
+        #expect(await runner.simpleCommandSnapshot().isEmpty)
     }
 
-    @Test func createDefaultDeviceFallsBackToNumericRuntimeCompatibleDeviceTypes() async throws {
+    @Test func createDedicatedDeviceFallsBackToNumericRuntimeCompatibleDeviceTypes() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             platform: .iOS,
@@ -510,22 +693,26 @@ struct SimctlDeterministicTests {
             """,
             for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
         )
+        let createCommand = [
+            "xcrun", "simctl", "create", "PrivateHeaderKit Dump (iOS 27.0)",
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+        ]
+        await runner.setCaptureOutput(
+            "11111111-2222-3333-4444-555555555555\n",
+            for: createCommand
+        )
 
-        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+        _ = try await Simctl.createDedicatedDevice(
+            runtime: runtime,
+            name: "PrivateHeaderKit Dump (iOS 27.0)",
+            runner: runner,
+            environment: [:]
+        )
 
-        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            [
-                "xcrun",
-                "simctl",
-                "create",
-                "iPhone 17 (27.0)",
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
-                "ios-27",
-            ],
-        ])
+        #expect(await runner.captureCommandSnapshot().map(\.command).last == createCommand)
     }
 
-    @Test func createDefaultDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() async throws {
+    @Test func createDedicatedDeviceFallsBackToFirstIPhoneWhenCompatibilityMetadataIsAbsent() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             platform: .iOS,
@@ -553,22 +740,26 @@ struct SimctlDeterministicTests {
             """,
             for: ["xcrun", "simctl", "list", "devicetypes", "-j"]
         )
+        let createCommand = [
+            "xcrun", "simctl", "create", "PrivateHeaderKit Dump (iOS 27.0)",
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-16", "ios-27",
+        ]
+        await runner.setCaptureOutput(
+            "11111111-2222-3333-4444-555555555555\n",
+            for: createCommand
+        )
 
-        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
+        _ = try await Simctl.createDedicatedDevice(
+            runtime: runtime,
+            name: "PrivateHeaderKit Dump (iOS 27.0)",
+            runner: runner,
+            environment: [:]
+        )
 
-        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            [
-                "xcrun",
-                "simctl",
-                "create",
-                "iPhone 16 (27.0)",
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
-                "ios-27",
-            ],
-        ])
+        #expect(await runner.captureCommandSnapshot().map(\.command).last == createCommand)
     }
 
-    @Test func createDefaultWatchDevicePrefersAppleWatchFamily() async throws {
+    @Test func createDedicatedWatchDevicePrefersAppleWatchFamily() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
             platform: .watchOS,
@@ -590,22 +781,46 @@ struct SimctlDeterministicTests {
             ]
         )
 
-        try await Simctl.createDefaultDevice(runtime: runtime, runner: runner, environment: [:])
-
-        #expect(
-            Simctl.defaultCloneName(platform: .watchOS, version: "27.0")
-                == "Dumping Device (watchOS 27.0)"
+        let createCommand = [
+            "xcrun", "simctl", "create", "PrivateHeaderKit Dump (watchOS 27.0)",
+            "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11-46mm", "watch-27",
+        ]
+        await runner.setCaptureOutput(
+            "11111111-2222-3333-4444-555555555555\n",
+            for: createCommand
         )
-        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            [
-                "xcrun",
-                "simctl",
-                "create",
-                "Apple Watch Series 11 (46mm) (27.0)",
-                "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11-46mm",
-                "watch-27",
-            ],
-        ])
+
+        _ = try await Simctl.createDedicatedDevice(
+            runtime: runtime,
+            name: "PrivateHeaderKit Dump (watchOS 27.0)",
+            runner: runner,
+            environment: [:]
+        )
+
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [createCommand])
+    }
+}
+
+private enum SimctlTestError: Error {
+    case bootFailed
+}
+
+private actor AsyncTestEvent {
+    private var didSignal = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        didSignal = true
+        let continuations = waiters
+        waiters.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        if didSignal { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
     }
 }
 

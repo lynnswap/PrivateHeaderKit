@@ -5,6 +5,31 @@ package enum PrivateHeaderKitHelperCommand: String, Sendable {
     case sharedCacheInventory = "__shared-cache-inventory"
 }
 
+package enum PrivateHeaderKitProducerVersion {
+    package static let maximumUTF8Count = 256
+
+    package static func validated(_ value: String) throws -> String {
+        guard !value.isEmpty,
+              value.utf8.count <= maximumUTF8Count,
+              value.unicodeScalars.allSatisfy({ scalar in
+                  switch scalar.properties.generalCategory {
+                  case .control, .format, .lineSeparator, .paragraphSeparator:
+                      false
+                  default:
+                      true
+                  }
+              })
+        else {
+            throw ValidationError.invalid
+        }
+        return value
+    }
+
+    package enum ValidationError: Error, Equatable, Sendable {
+        case invalid
+    }
+}
+
 package struct PrivateHeaderKitRawDumpDiagnostic: Codable, Hashable, Sendable {
     package static let maximumStringUTF8Count = 2_048
 
@@ -86,20 +111,27 @@ package struct PrivateHeaderKitRawDumpDiagnostic: Codable, Hashable, Sendable {
 }
 
 package struct PrivateHeaderKitRawDumpDiagnosticsReport: Codable, Hashable, Sendable {
-    package static let currentSchemaVersion = 1
+    package static let currentSchemaVersion = 2
     package static let maximumDiagnosticCount = 256
     package static let maximumEncodedByteCount = 4 * 1_024 * 1_024
 
     package let schemaVersion: Int
+    package let producerVersion: String
     package let diagnostics: [PrivateHeaderKitRawDumpDiagnostic]
     package let omittedDiagnosticCount: UInt
 
     package init(
+        producerVersion: String = PrivateHeaderKitBuildInfo.version,
         diagnostics: [PrivateHeaderKitRawDumpDiagnostic],
         omittedDiagnosticCount: UInt = 0
     ) {
         let normalized = Array(Set(diagnostics)).sorted(by: Self.areInIncreasingOrder)
+        precondition(
+            (try? PrivateHeaderKitProducerVersion.validated(producerVersion)) != nil,
+            "producer version must satisfy the helper wire contract"
+        )
         self.schemaVersion = Self.currentSchemaVersion
+        self.producerVersion = producerVersion
         self.diagnostics = Array(normalized.prefix(Self.maximumDiagnosticCount))
         let existingOmittedCount = omittedDiagnosticCount
         let newlyOmittedCount = UInt(max(0, normalized.count - Self.maximumDiagnosticCount))
@@ -118,6 +150,9 @@ package struct PrivateHeaderKitRawDumpDiagnosticsReport: Codable, Hashable, Send
                 actual: schemaVersion
             )
         }
+        let producerVersion = try PrivateHeaderKitProducerVersion.validated(
+            container.decode(String.self, forKey: .producerVersion)
+        )
         let diagnostics = try container.decode(
             [PrivateHeaderKitRawDumpDiagnostic].self,
             forKey: .diagnostics
@@ -137,6 +172,7 @@ package struct PrivateHeaderKitRawDumpDiagnosticsReport: Codable, Hashable, Send
             throw ValidationError.nonCanonicalDiagnostics
         }
         self.schemaVersion = schemaVersion
+        self.producerVersion = producerVersion
         self.diagnostics = diagnostics
         self.omittedDiagnosticCount = omittedDiagnosticCount
     }
@@ -151,6 +187,7 @@ package struct PrivateHeaderKitRawDumpDiagnosticsReport: Codable, Hashable, Send
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
+        case producerVersion
         case diagnostics
         case omittedDiagnosticCount
     }
@@ -163,14 +200,20 @@ package struct PrivateHeaderKitRawDumpDiagnosticsReport: Codable, Hashable, Send
 }
 
 package struct PrivateHeaderKitSharedCacheInventory: Codable, Equatable, Sendable {
-    package static let currentSchemaVersion = 1
+    package static let currentSchemaVersion = 2
 
     package let schemaVersion: Int
+    package let producerVersion: String
     package let cacheUUID: UUID
     package let imagePaths: [String]
 
-    package init(cacheUUID: UUID, imagePaths: [String]) throws {
+    package init(
+        producerVersion: String = PrivateHeaderKitBuildInfo.version,
+        cacheUUID: UUID,
+        imagePaths: [String]
+    ) throws {
         self.schemaVersion = Self.currentSchemaVersion
+        self.producerVersion = try PrivateHeaderKitProducerVersion.validated(producerVersion)
         self.cacheUUID = cacheUUID
         self.imagePaths = try Self.validatedImagePaths(imagePaths)
     }
@@ -186,6 +229,9 @@ package struct PrivateHeaderKitSharedCacheInventory: Codable, Equatable, Sendabl
         }
 
         self.schemaVersion = schemaVersion
+        self.producerVersion = try PrivateHeaderKitProducerVersion.validated(
+            container.decode(String.self, forKey: .producerVersion)
+        )
         self.cacheUUID = try container.decode(UUID.self, forKey: .cacheUUID)
         self.imagePaths = try Self.validatedImagePaths(
             container.decode([String].self, forKey: .imagePaths)
@@ -195,6 +241,7 @@ package struct PrivateHeaderKitSharedCacheInventory: Codable, Equatable, Sendabl
     package func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(producerVersion, forKey: .producerVersion)
         try container.encode(cacheUUID, forKey: .cacheUUID)
         try container.encode(imagePaths, forKey: .imagePaths)
     }
@@ -221,6 +268,7 @@ package struct PrivateHeaderKitSharedCacheInventory: Codable, Equatable, Sendabl
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
+        case producerVersion
         case cacheUUID
         case imagePaths
     }

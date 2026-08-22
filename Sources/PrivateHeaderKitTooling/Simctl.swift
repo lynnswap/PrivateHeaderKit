@@ -57,6 +57,27 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
     public let name: String
     public let udid: String
     public var state: String
+
+    public init(name: String, udid: String, state: String) {
+        self.name = name
+        self.udid = udid
+        self.state = state
+    }
+}
+
+package enum SimulatorDeviceOwnership: Equatable, Sendable {
+    case borrowed
+    case runOwned
+}
+
+package struct ResolvedSimulatorDevice: Equatable, Sendable {
+    package let device: DeviceInfo
+    package let ownership: SimulatorDeviceOwnership
+
+    package init(device: DeviceInfo, ownership: SimulatorDeviceOwnership) {
+        self.device = device
+        self.ownership = ownership
+    }
 }
 
 public enum Simctl {
@@ -224,90 +245,53 @@ public enum Simctl {
         return nil
     }
 
-    public static func pickDefaultDevice(devices: [DeviceInfo]) throws -> DeviceInfo {
-        guard let first = devices.first else {
-            throw ToolingError.message("no devices available")
-        }
-        if let shutdown = devices.first(where: { stateEquals($0.state, "Shutdown") }) {
-            return shutdown
-        }
-        if let booted = devices.first(where: { stateEquals($0.state, "Booted") }) {
-            return booted
-        }
-        return first
-    }
-
-    package static func defaultCloneName(
-        platform: SimulatorPlatform,
-        version: String
-    ) -> String {
-        "Dumping Device (\(platform.userFacingSourceName) \(version))"
-    }
-
-    public static func cloneDevice(base: DeviceInfo, runtimeId: String, cloneName: String, runner: CommandRunning) async throws -> DeviceInfo {
-        print("Cloning simulator: \(base.name) -> \(cloneName)")
-        let output = try await runner.runCapture(["xcrun", "simctl", "clone", base.udid, cloneName], env: nil, cwd: nil)
-
-        let udid = output.split(separator: "\n").reversed().first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }).map(String.init) ?? ""
-        if !udid.isEmpty {
-            return DeviceInfo(name: cloneName, udid: udid, state: "Shutdown")
-        }
-
-        let refreshed = try await listDevices(runtimeId: runtimeId, runner: runner)
-        if let match = matchDevice(devices: refreshed, query: cloneName) {
-            return match
-        }
-        throw ToolingError.message("failed to determine cloned simulator udid")
-    }
-
-    package static func resolveDefaultDevice(
-        runtime: RuntimeInfo,
-        devices: [DeviceInfo],
-        runner: CommandRunning
-    ) async throws -> DeviceInfo {
-        let cloneName = defaultCloneName(
-            platform: runtime.platform,
-            version: runtime.version
-        )
-        if let clone = matchDevice(devices: devices, query: cloneName) {
-            return clone
-        }
-        let base = try pickDefaultDevice(devices: devices)
-        if base.name == cloneName {
-            return base
-        }
-        if !stateEquals(base.state, "Shutdown") {
-            return base
-        }
-        return try await cloneDevice(base: base, runtimeId: runtime.identifier, cloneName: cloneName, runner: runner)
-    }
-
     package static func resolveDevice(
         runtime: RuntimeInfo,
         query: String?,
         runner: CommandRunning,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) async throws -> DeviceInfo {
-        var devices = try await listDevices(runtimeId: runtime.identifier, runner: runner)
-        if devices.isEmpty {
-            try await createDefaultDevice(runtime: runtime, runner: runner, environment: environment)
-            devices = try await listDevices(runtimeId: runtime.identifier, runner: runner)
-        }
-
-        let selected: DeviceInfo
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        dedicatedDeviceName: String? = nil
+    ) async throws -> ResolvedSimulatorDevice {
         if let query = query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty {
+            let devices = try await listDevices(runtimeId: runtime.identifier, runner: runner)
             guard let match = matchDevice(devices: devices, query: query) else {
                 throw ToolingError.message(
                     "simulator device not found for \(runtime.platform.userFacingSourceName) "
                         + "\(runtime.version): \(query)"
                 )
             }
-            selected = match
-        } else {
-            selected = try await resolveDefaultDevice(runtime: runtime, devices: devices, runner: runner)
+            return ResolvedSimulatorDevice(
+                device: try await ensureDeviceBooted(match, runner: runner, force: false),
+                ownership: .borrowed
+            )
         }
 
-        return try await ensureDeviceBooted(selected, runner: runner, force: false)
+        let createdName = dedicatedDeviceName
+            ?? "PrivateHeaderKit Dump (\(runtime.platform.userFacingSourceName) \(runtime.version)) "
+                + UUID().uuidString.lowercased()
+        let created = try await createDedicatedDevice(
+            runtime: runtime,
+            name: createdName,
+            runner: runner,
+            environment: environment
+        )
+        do {
+            try Task.checkCancellation()
+            return ResolvedSimulatorDevice(
+                device: try await ensureDeviceBooted(created, runner: runner, force: false),
+                ownership: .runOwned
+            )
+        } catch {
+            let cleanupResult = await Task.detached {
+                try await deleteDevice(created, runner: runner)
+            }.result
+            if case .failure(let cleanupError) = cleanupResult {
+                throw ToolingError.message(
+                    "simulator acquisition failed: \(error); cleanup also failed: \(cleanupError)"
+                )
+            }
+            throw error
+        }
     }
 
     public static func ensureDeviceBooted(
@@ -324,11 +308,12 @@ public enum Simctl {
         return booted
     }
 
-    package static func createDefaultDevice(
+    package static func createDedicatedDevice(
         runtime: RuntimeInfo,
+        name: String,
         runner: CommandRunning,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) async throws {
+    ) async throws -> DeviceInfo {
         let deviceTypes = try await defaultDeviceTypeCandidates(for: runtime, runner: runner)
 
         func matchesEnv(_ entry: DeviceTypeInfo, needle: String) -> Bool {
@@ -365,9 +350,83 @@ public enum Simctl {
             throw ToolingError.message("no device types available")
         }
 
-        let createdName = "\(deviceName) (\(runtime.version))"
-        print("Creating device: \(createdName)")
-        try await runner.runSimple(["xcrun", "simctl", "create", createdName, deviceType, runtime.identifier], env: nil, cwd: nil)
+        print("Creating device: \(name)")
+        let output: String
+        do {
+            output = try await runner.runCapture(
+                ["xcrun", "simctl", "create", name, deviceType, runtime.identifier],
+                env: nil,
+                cwd: nil
+            )
+        } catch {
+            let createError = error
+            let cleanupResult = await Task.detached {
+                try await deleteDedicatedDeviceIfPresent(
+                    named: name,
+                    runtimeID: runtime.identifier,
+                    runner: runner
+                )
+            }.result
+            if case .failure(let cleanupError) = cleanupResult {
+                throw ToolingError.message(
+                    "simulator creation failed: \(createError); cleanup also failed: \(cleanupError)"
+                )
+            }
+            throw createError
+        }
+        guard let value = output
+            .split(whereSeparator: \Character.isNewline)
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .last(where: { !$0.isEmpty }),
+            UUID(uuidString: value) != nil
+        else {
+            let contractError = ToolingError.message(
+                "simctl create did not return a simulator UDID"
+            )
+            let cleanupResult = await Task.detached {
+                try await deleteDedicatedDeviceIfPresent(
+                    named: name,
+                    runtimeID: runtime.identifier,
+                    runner: runner
+                )
+            }.result
+            if case .failure(let cleanupError) = cleanupResult {
+                throw ToolingError.message(
+                    "\(contractError); cleanup also failed: \(cleanupError)"
+                )
+            }
+            throw contractError
+        }
+        return DeviceInfo(name: name, udid: value, state: "Shutdown")
+    }
+
+    package static func deleteDevice(
+        _ device: DeviceInfo,
+        runner: CommandRunning
+    ) async throws {
+        print("Deleting simulator: \(device.name) (\(device.udid))")
+        try await runner.runSimple(
+            ["xcrun", "simctl", "delete", device.udid],
+            env: nil,
+            cwd: nil
+        )
+    }
+
+    private static func deleteDedicatedDeviceIfPresent(
+        named name: String,
+        runtimeID: String,
+        runner: CommandRunning
+    ) async throws {
+        let matches = try await listDevices(runtimeId: runtimeID, runner: runner)
+            .filter { $0.name == name }
+        guard matches.count <= 1 else {
+            throw ToolingError.message(
+                "multiple simulators matched the run-owned device name: \(name)"
+            )
+        }
+        if let device = matches.first {
+            try await deleteDevice(device, runner: runner)
+        }
     }
 
     private static func defaultDeviceTypeCandidates(for runtime: RuntimeInfo, runner: CommandRunning) async throws -> [DeviceTypeInfo] {

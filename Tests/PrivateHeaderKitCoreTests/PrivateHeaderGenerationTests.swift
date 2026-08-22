@@ -147,7 +147,7 @@ struct PrivateHeaderGenerationTests {
     let plan = PrivateHeaderGeneration.makePlan(
       source: source,
       output: output,
-      options: .init(toolCompatibilityIdentity: "test")
+      options: .init()
     )
 
     #expect(
@@ -171,7 +171,6 @@ struct PrivateHeaderGenerationTests {
       output: output,
       options: .init(
         systemRoot: URL(fileURLWithPath: "/runtime", isDirectory: true),
-        toolCompatibilityIdentity: "test"
       )
     )
     let second = PrivateHeaderGeneration.makePlan(
@@ -179,7 +178,6 @@ struct PrivateHeaderGenerationTests {
       output: output,
       options: .init(
         systemRoot: URL(fileURLWithPath: "/foo\nheaders\n/runtime", isDirectory: true),
-        toolCompatibilityIdentity: "test"
       )
     )
 
@@ -200,5 +198,107 @@ struct PrivateHeaderGenerationTests {
     )
 
     #expect(firstFingerprint != secondFingerprint)
+  }
+
+  @Test func simulatorFingerprintUsesProducerAndRuntimeIdentityNotExecutionLocators() throws {
+    let source = try PrivateHeaderGeneration.Source(
+      platform: .iOS,
+      version: "27.0",
+      build: "24A5355q",
+      metadataIsSeed: true
+    )
+    let output = PrivateHeaderGeneration.Output(
+      baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
+    )
+    let runtime = PrivateHeaderGeneration.RawDumping.SimulatorRuntimeIdentity(
+      version: "27.0",
+      build: "24A5355q",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      runtimeRoot: "/Runtime"
+    )
+    let firstMode = PrivateHeaderGeneration.RawDumping.ExecutionMode.simulator(
+      deviceUDID: "11111111-2222-3333-4444-555555555555",
+      sourceRuntimeRoot: "/Runtime",
+      runtime: runtime
+    )
+    let secondMode = PrivateHeaderGeneration.RawDumping.ExecutionMode.simulator(
+      deviceUDID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      sourceRuntimeRoot: "/Runtime",
+      runtime: runtime
+    )
+    let firstPlan = PrivateHeaderGeneration.makePlan(
+      source: source,
+      output: output,
+      options: .init(
+        systemRoot: URL(fileURLWithPath: "/Runtime", isDirectory: true),
+        helperURLs: .init(
+          host: URL(fileURLWithPath: "/prepared/first/host"),
+          simulator: URL(fileURLWithPath: "/prepared/first/simulator")
+        ),
+        executionMode: firstMode,
+        producerVersion: "v1.0.0"
+      )
+    )
+    let relocatedPlan = PrivateHeaderGeneration.makePlan(
+      source: source,
+      output: output,
+      options: .init(
+        systemRoot: URL(fileURLWithPath: "/Runtime", isDirectory: true),
+        helperURLs: .init(
+          host: URL(fileURLWithPath: "/prepared/second/host"),
+          simulator: URL(fileURLWithPath: "/prepared/second/simulator")
+        ),
+        executionMode: secondMode,
+        producerVersion: "v1.0.0"
+      )
+    )
+    let changedProducerPlan = PrivateHeaderGeneration.makePlan(
+      source: source,
+      output: output,
+      options: .init(
+        systemRoot: URL(fileURLWithPath: "/Runtime", isDirectory: true),
+        helperURLs: relocatedPlan.options.helperURLs,
+        executionMode: secondMode,
+        producerVersion: "v1.1.0"
+      )
+    )
+    let outputBase = output.baseDirectory.standardizedFileURL
+    let first = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      firstPlan,
+      canonicalOutputBase: outputBase,
+      executionMode: firstMode,
+      sharedCacheCohort: nil
+    )
+    let relocated = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      relocatedPlan,
+      canonicalOutputBase: outputBase,
+      executionMode: secondMode,
+      sharedCacheCohort: nil
+    )
+    let changedProducer = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      changedProducerPlan,
+      canonicalOutputBase: outputBase,
+      executionMode: secondMode,
+      sharedCacheCohort: nil
+    )
+    let changedRuntime = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
+      relocatedPlan,
+      canonicalOutputBase: outputBase,
+      executionMode: .simulator(
+        deviceUDID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        sourceRuntimeRoot: "/Runtime",
+        runtime: .init(
+          version: "27.0",
+          build: "24A9999z",
+          identifier: runtime.identifier,
+          runtimeRoot: runtime.runtimeRoot
+        )
+      ),
+      sharedCacheCohort: nil
+    )
+
+    #expect(first == relocated)
+    #expect(first != changedProducer)
+    #expect(first != changedRuntime)
   }
 }

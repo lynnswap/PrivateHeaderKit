@@ -20,8 +20,11 @@ header directory when a run starts and again in the completion summary.
 
 macOS generation works from the host system. iOS and watchOS generation require
 Xcode, `xcrun`, `simctl`, and the selected Simulator runtime. PrivateHeaderKit
-selects and boots a compatible simulator device for the run. It does not use a
-connected iPhone or Apple Watch as a generation source.
+creates and boots one dedicated simulator device for the run, then deletes that
+exact device after generation, failure, or interruption. It does not use a
+connected iPhone or Apple Watch as a generation source. An explicit `--device`
+selects an existing borrowed simulator instead; PrivateHeaderKit never deletes
+that device.
 
 ## Automation
 
@@ -180,6 +183,13 @@ whether to continue or restart.
 
 The interactive wizard presents the same Continue or Restart choice when it
 finds compatible unfinished work.
+
+Resume compatibility is bound to the PrivateHeaderKit producer version emitted
+by the raw helper, the selected source and Simulator runtime, generation
+options, and the loaded shared-cache cohort when used. A simulator device UDID
+is only a temporary execution address and does not affect compatibility. After
+upgrading from state created before producer-version tracking, select Restart or
+use `--fresh` once; existing published headers remain available until replaced.
 
 ## Legacy Output
 

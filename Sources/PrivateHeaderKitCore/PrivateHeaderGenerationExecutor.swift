@@ -4,6 +4,14 @@ import PrivateHeaderKitHelperProtocol
 
 extension PrivateHeaderGeneration {
   package struct GenerationExecutor: Sendable {
+    private struct ProducerVersionMismatch: Error, CustomStringConvertible, Sendable {
+      let expected: String
+      let actual: String
+
+      var description: String {
+        "private header helper version mismatch (expected \(expected), actual \(actual))"
+      }
+    }
     package static let maximumPresentedObjCMetadataWarningCount = 256
 
     private struct DeliberateFault: Error, @unchecked Sendable {
@@ -156,7 +164,6 @@ extension PrivateHeaderGeneration {
         let injectedStoreFault = storeFaultInjector
         let store = try GenerationStore(
           databaseURL: databaseURL,
-          toolCompatibilityIdentity: options.toolCompatibilityIdentity,
           faultInjector: { point in
             do {
               try injectedStoreFault(point)
@@ -362,8 +369,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let runPlan = PrivateHeaderGeneration.RunPlan(
       sourceIdentity: plan.source.storageIdentifier,
       fingerprint: fingerprint,
-      targetIDs: targetIDs,
-      toolCompatibilityIdentity: plan.options.toolCompatibilityIdentity
+      targetIDs: targetIDs
     )
     _ = try await store.beginRun(id: runID, plan: runPlan, at: dateProvider())
     progressReporter?(.runStarted(runID: runID, totalTargetCount: targetIDsToRun.count))
@@ -1025,12 +1031,21 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         artifactRoot: nil,
         warnings: []
       )
+    } catch let error as PrivateHeaderGeneration.RawDumping.ContractError {
+      throw error
     } catch {
       return Self.failedExecution(
         target: target,
         status: cancellationRequested() ? .interrupted : .failed,
         summary: String(describing: error),
         at: now
+      )
+    }
+
+    guard rawResult.diagnosticsReport.producerVersion == plan.options.producerVersion else {
+      throw ProducerVersionMismatch(
+        expected: plan.options.producerVersion,
+        actual: rawResult.diagnosticsReport.producerVersion
       )
     }
 
@@ -1420,6 +1435,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let actualCohort = try await Self.loadSharedCacheCohort(
       helperURLs: helperURLs,
       executionMode: executionMode,
+      expectedProducerVersion: preparedPlan.plan.options.producerVersion,
       helperEnvironment: preparedPlan.plan.options.rawDumpingOptions.helperEnvironment,
       sharedCacheInventoryRunner: sharedCacheInventoryRunner
     )
@@ -1499,6 +1515,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       sharedCacheCohort = try await loadSharedCacheCohort(
         helperURLs: helperURLs,
         executionMode: executionMode,
+        expectedProducerVersion: plan.options.producerVersion,
         helperEnvironment: plan.options.rawDumpingOptions.helperEnvironment,
         sharedCacheInventoryRunner: sharedCacheInventoryRunner
       )
@@ -1530,6 +1547,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   fileprivate static func loadSharedCacheCohort(
     helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    expectedProducerVersion: String,
     helperEnvironment: [String: String],
     sharedCacheInventoryRunner: SharedCacheInventoryRunner
   ) async throws -> SharedCacheCohort {
@@ -1545,6 +1563,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       PrivateHeaderKitSharedCacheInventory.self,
       from: data
     )
+    guard inventory.producerVersion == expectedProducerVersion else {
+      throw PrivateHeaderGeneration.GenerationError.producerVersionMismatch(
+        expected: expectedProducerVersion,
+        actual: inventory.producerVersion
+      )
+    }
     guard !inventory.imagePaths.isEmpty else {
       throw PrivateHeaderGeneration.GenerationError.emptySharedCacheInventory(
         cacheUUID: inventory.cacheUUID
@@ -1588,8 +1612,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(requirement)
       }
       let store = try GenerationStore(
-        databaseURL: databaseURL,
-        toolCompatibilityIdentity: plan.options.toolCompatibilityIdentity
+        databaseURL: databaseURL
       )
       try await bootstrapAndRecover(
         sourceIdentity: plan.source.storageIdentifier,
@@ -1935,19 +1958,17 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     sharedCacheCohort: SharedCacheCohort?
   ) -> String {
     var components = [
-      "privateheaderkit-plan-fingerprint-v2",
+      "privateheaderkit-plan-fingerprint-v3",
       plan.source.storageIdentifier,
       canonicalOutputBase.path,
       plan.options.layout.rawValue,
       plan.options.systemRoot?.standardizedFileURL.path ?? "",
-      plan.options.toolCompatibilityIdentity,
+      plan.options.producerVersion,
       String(plan.options.includeNestedChildren),
       String(plan.options.rawDumpingOptions.skipExisting),
       String(plan.options.rawDumpingOptions.useSharedCache),
       String(plan.options.rawDumpingOptions.verbose),
       String(plan.options.rawDumpingOptions.preferRuntimeMetadata),
-      plan.options.helperURLs?.host.standardizedFileURL.path ?? "",
-      plan.options.helperURLs?.simulator.standardizedFileURL.path ?? "",
     ]
     if let sharedCacheCohort {
       components += [
@@ -1962,8 +1983,15 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     switch executionMode {
     case .host:
       components.append("host")
-    case .simulator(let deviceUDID, let runtimeRoot):
-      components += ["simulator", deviceUDID, runtimeRoot]
+    case .simulator(_, let sourceRuntimeRoot, let runtime):
+      components += [
+        "simulator",
+        sourceRuntimeRoot,
+        runtime.version,
+        runtime.build,
+        runtime.identifier,
+        runtime.runtimeRoot,
+      ]
     }
     for key in plan.options.rawDumpingOptions.helperEnvironment.keys.sorted() {
       components += [

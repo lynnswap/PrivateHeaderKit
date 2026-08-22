@@ -2172,6 +2172,12 @@ struct SourceBuildResolutionTests {
             ],
         ])
         #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.cwd == repoRoot })
+        #expect(await runner.simpleCommandSnapshot().allSatisfy {
+            $0.env == [
+                "PRIVATEHEADERKIT_BUILD_VERSION": "0.0.0-dev.aaaaaaaaaaaa",
+                "PRIVATEHEADERKIT_BUILD_COMMIT": String(repeating: "a", count: 40),
+            ]
+        })
         #expect(cohort.manifest.schemaVersion == ReleaseManifestSchema.v2.rawValue)
         #expect(
             cohort.manifest.artifacts.map(\.name)

@@ -45,7 +45,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
     let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
       try .init(
         helperURLs: helperURLs,
-        executionMode: .simulator(deviceUDID: "SIM-001", runtimeRoot: runtimeRoot),
+        executionMode: simulatorExecutionMode(runtimeRoot: runtimeRoot),
         inputPath: "/System/Library/Frameworks/UIKit.framework",
         stagingOutputDirectory: stageDirectory,
         options: .init(
@@ -91,7 +91,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
     let runtimeRoot = "/Library/Developer/CoreSimulator/RuntimeRoot"
     let invocation = PrivateHeaderGeneration.RawDumping.makeSharedCacheInventoryInvocation(
       helperURLs: helperURLs,
-      executionMode: .simulator(deviceUDID: "SIM-001", runtimeRoot: runtimeRoot),
+      executionMode: simulatorExecutionMode(runtimeRoot: runtimeRoot),
       helperEnvironment: ["SIMCTL_CHILD_PH_PROFILE": "1"]
     )
 
@@ -142,4 +142,19 @@ struct PrivateHeaderGenerationRawDumpingTests {
   )
   private let stageDirectory = URL(
     fileURLWithPath: "/tmp/PrivateHeaderKit/staging", isDirectory: true)
+}
+
+private func simulatorExecutionMode(
+  runtimeRoot: String
+) -> PrivateHeaderGeneration.RawDumping.ExecutionMode {
+  .simulator(
+    deviceUDID: "SIM-001",
+    sourceRuntimeRoot: runtimeRoot,
+    runtime: .init(
+      version: "27.0",
+      build: "24A5355q",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      runtimeRoot: runtimeRoot
+    )
+  )
 }

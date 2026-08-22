@@ -55,7 +55,10 @@ let package = Package(
     targets: [
         .target(
             name: "PrivateHeaderKitHelperProtocol",
-            dependencies: []
+            dependencies: [],
+            plugins: [
+                .plugin(name: "PrivateHeaderKitBuildInfoPlugin"),
+            ]
         ),
         .target(
             name: "PrivateHeaderKitExecutableResolution",
@@ -152,6 +155,14 @@ let package = Package(
             ]
         ),
         .executableTarget(
+            name: "PrivateHeaderKitBuildInfoTool"
+        ),
+        .plugin(
+            name: "PrivateHeaderKitBuildInfoPlugin",
+            capability: .buildTool(),
+            dependencies: ["PrivateHeaderKitBuildInfoTool"]
+        ),
+        .executableTarget(
             name: "PrivateHeaderKitToolingTestHelper",
             dependencies: [
                 "PrivateHeaderKitTooling",
@@ -164,6 +175,12 @@ let package = Package(
                 "PrivateHeaderKitTooling",
             ],
             path: "Tests/PrivateHeaderKitTestSupport"
+        ),
+        .testTarget(
+            name: "PrivateHeaderKitBuildInfoToolTests",
+            dependencies: [
+                "PrivateHeaderKitBuildInfoTool",
+            ]
         ),
         .testTarget(
             name: "PrivateHeaderKitHelperProtocolTests",
