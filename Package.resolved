@@ -1,5 +1,5 @@
 {
-  "originHash" : "960c1304bba8fbed955189c62569a0296b9685043bd012a0c38de087a55397f3",
+  "originHash" : "e67acff6d0c19bb416004d028ecd932114222de4a1ca0bc3288d44c5647267b4",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -60,7 +60,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
-        "revision" : "932bff230815e39901e825e419db588377edee5c"
+        "revision" : "afa2c40fdf870630cf41dbe97ed2e9997dd80cfd"
       }
     },
     {
@@ -68,7 +68,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "8970e899efb13f355c2b8769e67e35ba39e07004"
+        "revision" : "6cf064a9541fe993adcaf5af50575cea0192029e"
       }
     },
     {

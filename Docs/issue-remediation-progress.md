@@ -49,11 +49,15 @@ Design contract:
 
 Pending:
 
-- Implement the design contract in a MachOObjCSection worktree based on
-  `932bff230815e39901e825e419db588377edee5c`.
-- Cover distinct-address alias, raw Swift mangled-name preservation, unknown
-  name, unreadable/nonterminated name, unreadable layout, and full-read cases.
-- Add deterministic dependency tests and an iOS runtime smoke.
-- Advance the coherent dependency cohort in PrivateHeaderKit.
+- MachOObjCSection implementation is published at
+  `afa2c40fdf870630cf41dbe97ed2e9997dd80cfd`; focused and sibling tests,
+  release build, iOS/watchOS cross-compiles, and codex review passed.
+- MachOSwiftSection coherent pin is published at
+  `6cf064a9541fe993adcaf5af50575cea0192029e`; remote graph, 640 non-baseline
+  tests, fixture build, and codex review passed. Its Xcode 27 metadata-offset
+  fixture target fails identically on the previous cohort.
+- Run the iOS 27.0 `24A5390f` ARKit runtime smoke and verify `ARAnchor`
+  conformance plus zero matching warnings.
+- PrivateHeaderKit now pins the coherent published dependency cohort.
 - Run repository validation and a clean base-branch codex review.
 - Push and open a non-draft PR to `main`.
