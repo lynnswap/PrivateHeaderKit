@@ -34,6 +34,45 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         encoding: .utf8) == "new")
   }
 
+  @Test func compatibilityRecoveryDetachesOnlyTheAuthenticatedCurrentPointer() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let generationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-current")
+    try fixture.publish(
+      fixture.prepare(
+        generationID: generationID,
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    let foreign = fixture.publisher.legacyArtifactURL.appendingPathComponent("User/keep.txt")
+    try FileManager.default.createDirectory(
+      at: foreign.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("foreign".utf8).write(to: foreign)
+
+    try fixture.publisher.detachCurrentPointer(for: generationID)
+
+    let snapshot = try fixture.publisher.inspect()
+    #expect(snapshot.currentGenerationID == nil)
+    #expect(snapshot.validGenerationIDs.contains(generationID))
+    #expect(try String(contentsOf: foreign, encoding: .utf8) == "foreign")
+    let retired = try FileManager.default.contentsOfDirectory(
+      at: fixture.publisher.managedRoot.appendingPathComponent(
+        "retired-current-pointers",
+        isDirectory: true
+      ),
+      includingPropertiesForKeys: nil
+    )
+    #expect(retired.count == 1)
+    #expect(
+      try FileManager.default.destinationOfSymbolicLink(atPath: retired[0].path)
+        == "generations/\(generationID.rawValue)"
+    )
+  }
+
   @Test func obsoleteLookupLinkIsRemovedAfterCurrentAuthentication() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
@@ -418,6 +457,17 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         allowLegacyMigration: true
       )
     )
+    let descendantGenerationID = PrivateHeaderGeneration.GenerationID(
+      rawValue: "generation-descendant"
+    )
+    try fixture.publish(
+      fixture.prepare(
+        generationID: descendantGenerationID,
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "updated"
+      )
+    )
     let copiedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
       "PrivateHeaderKitPublisherCopyTests-\(UUID().uuidString)",
       isDirectory: true
@@ -432,10 +482,86 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
 
     let copiedSnapshot = try copiedPublisher.inspect()
 
-    #expect(copiedSnapshot.currentGenerationID == generationID)
-    let expectedChecksum = try #require(copiedSnapshot.currentMarker?.legacyArtifactChecksum)
-    #expect(copiedSnapshot.archivedLegacyArtifactChecksums.contains(expectedChecksum))
-    try copiedPublisher.validateCurrentPublication(generationID)
+    #expect(copiedSnapshot.currentGenerationID == descendantGenerationID)
+    let requirement = try #require(copiedSnapshot.currentMarker?.legacyBackupRequirement)
+    #expect(requirement.archiveOwnerGenerationID == generationID)
+    #expect(copiedSnapshot.archivedLegacyArtifactChecksums.contains(requirement.checksum))
+    try copiedPublisher.validateCurrentPublication(descendantGenerationID)
+  }
+
+  @Test func legacyBackupRequirementSurvivesDescendantAndCannotArchiveAgain() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let legacyFile = fixture.publisher.legacyArtifactURL.appendingPathComponent("Notes/custom.txt")
+    try FileManager.default.createDirectory(
+      at: legacyFile.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("opaque".utf8).write(to: legacyFile)
+    let migrationGenerationID = PrivateHeaderGeneration.GenerationID(
+      rawValue: "generation-migration"
+    )
+    try fixture.publish(
+      fixture.prepare(
+        generationID: migrationGenerationID,
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "first",
+        allowLegacyMigration: true
+      )
+    )
+    let descendantGenerationID = PrivateHeaderGeneration.GenerationID(
+      rawValue: "generation-descendant"
+    )
+    try fixture.publish(
+      fixture.prepare(
+        generationID: descendantGenerationID,
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "second"
+      )
+    )
+
+    let descendant = try fixture.publisher.inspect()
+    let requirement = try #require(descendant.currentMarker?.legacyBackupRequirement)
+    #expect(requirement.archiveOwnerGenerationID == migrationGenerationID)
+    try fixture.publisher.validateCurrentPublication(descendantGenerationID)
+    let backupsURL = fixture.publisher.managedRoot.appendingPathComponent(
+      "legacy-backups",
+      isDirectory: true
+    )
+    let backups = try FileManager.default.contentsOfDirectory(
+      at: backupsURL,
+      includingPropertiesForKeys: nil
+    )
+    #expect(backups.count == 1)
+    let backup = try #require(backups.first)
+    try FileManager.default.copyItem(at: backup, to: fixture.publisher.legacyArtifactURL)
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.archiveLegacyArtifacts(for: descendantGenerationID)
+    }
+    #expect(
+      try String(
+        contentsOf: fixture.publisher.legacyArtifactURL.appendingPathComponent(
+          "Notes/custom.txt"
+        ),
+        encoding: .utf8
+      ) == "opaque"
+    )
+    #expect(
+      try FileManager.default.contentsOfDirectory(
+        at: backupsURL,
+        includingPropertiesForKeys: nil
+      ).count == 1
+    )
+    try FileManager.default.removeItem(at: fixture.publisher.legacyArtifactURL)
+    try Data("changed".utf8).write(
+      to: backup.appendingPathComponent("Notes/custom.txt")
+    )
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      try fixture.publisher.validateCurrentPublication(descendantGenerationID)
+    }
   }
 
   @Test func unsuccessfulDraftNeverChangesCurrentGeneration() throws {
@@ -1282,7 +1408,7 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
         ]
       ],
       opaquePaths: [],
-      legacyArtifactChecksum: nil
+      legacyBackupRequirement: nil
     )
 
     #expect(

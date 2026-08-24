@@ -1488,6 +1488,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       case .archiveLegacyArtifacts(let generationID):
         _ = try publisher.archiveLegacyArtifacts(for: generationID)
         continue
+      case .detachCurrentPointer(let generationID):
+        try publisher.detachCurrentPointer(for: generationID)
+        continue
       case .discardGeneration(let generationID):
         try publisher.discardGeneration(generationID)
         continue

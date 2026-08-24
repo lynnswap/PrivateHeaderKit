@@ -307,6 +307,16 @@ extension PrivateHeaderGeneration {
     }
   }
 
+  package struct LegacyBackupRequirement: Codable, Equatable, Sendable {
+    package let checksum: String
+    package let archiveOwnerGenerationID: GenerationID
+
+    package init(checksum: String, archiveOwnerGenerationID: GenerationID) {
+      self.checksum = checksum
+      self.archiveOwnerGenerationID = archiveOwnerGenerationID
+    }
+  }
+
   package struct GenerationMarkerSnapshot: Equatable, Sendable {
     package let generationID: GenerationID
     package let planFingerprint: String
@@ -314,7 +324,7 @@ extension PrivateHeaderGeneration {
     package let artifactsByTarget: [String: [ArtifactPath]]
     package let opaquePaths: [ArtifactPath]
     package let contentDigests: [ArtifactPath: String]
-    package let legacyArtifactChecksum: String?
+    package let legacyBackupRequirement: LegacyBackupRequirement?
 
     package init(
       generationID: GenerationID,
@@ -323,7 +333,7 @@ extension PrivateHeaderGeneration {
       artifactsByTarget: [String: [ArtifactPath]],
       opaquePaths: [ArtifactPath],
       contentDigests: [ArtifactPath: String] = [:],
-      legacyArtifactChecksum: String? = nil
+      legacyBackupRequirement: LegacyBackupRequirement? = nil
     ) {
       self.generationID = generationID
       self.planFingerprint = planFingerprint
@@ -331,7 +341,7 @@ extension PrivateHeaderGeneration {
       self.artifactsByTarget = artifactsByTarget
       self.opaquePaths = opaquePaths
       self.contentDigests = contentDigests
-      self.legacyArtifactChecksum = legacyArtifactChecksum
+      self.legacyBackupRequirement = legacyBackupRequirement
     }
   }
 
@@ -364,6 +374,7 @@ extension PrivateHeaderGeneration {
     case recognized(GenerationID?)
     case discardGeneration(GenerationID)
     case archiveLegacyArtifacts(GenerationID)
+    case detachCurrentPointer(GenerationID)
     case rolledForward(GenerationID)
   }
 

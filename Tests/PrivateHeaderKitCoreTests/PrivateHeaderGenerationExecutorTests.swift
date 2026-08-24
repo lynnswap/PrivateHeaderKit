@@ -1023,6 +1023,68 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: fixture.legacyBackupsURL.path))
   }
 
+  @Test func preparedCurrentWithUnattributedLegacyDirectoryUnwindsBeforeFreshMigration()
+    async throws
+  {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let lateFile = fixture.legacyArtifactURL.appendingPathComponent("User/keep.txt")
+
+    await #expect(throws: InjectedFault.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "first"),
+        runID: "run-unwound",
+        generationID: "generation-unwound",
+        publicationFaultInjector: { point in
+          guard point == .afterCurrentPointerSwitch else { return }
+          try FileManager.default.createDirectory(
+            at: lateFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+          )
+          try "user-data".write(to: lateFile, atomically: true, encoding: .utf8)
+          throw InjectedFault.stop
+        }
+      ).run(plan: try fixture.plan(.query("Foo")))
+    }
+    #expect(FileManager.default.fileExists(atPath: fixture.currentURL.path))
+    #expect(try String(contentsOf: lateFile, encoding: .utf8) == "user-data")
+    let runner = RecordingRunner(contents: "recovered")
+
+    let result = try await fixture.executor(
+      runner: runner,
+      runID: "run-recovered",
+      generationID: "generation-recovered"
+    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+
+    #expect(await runner.invocationCount == 1)
+    #expect(result.targetCounts.completed == 1)
+    #expect(try fixture.readCurrentHeader() == "recovered")
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyArtifactURL.path))
+    let backups = try FileManager.default.contentsOfDirectory(
+      at: fixture.legacyBackupsURL,
+      includingPropertiesForKeys: nil
+    )
+    #expect(backups.count == 1)
+    #expect(
+      try String(
+        contentsOf: backups[0].appendingPathComponent("User/keep.txt"),
+        encoding: .utf8
+      ) == "user-data"
+    )
+    let store = try GenerationStore(databaseURL: fixture.databaseURL)
+    #expect(
+      try await store.publicationIntent(
+        generationID: .init(rawValue: "generation-unwound")
+      )?.state == .aborted
+    )
+    #expect(
+      try await store.publicationIntent(
+        generationID: .init(rawValue: "generation-recovered")
+      )?.state == .committed
+    )
+  }
+
   @Test func compatibleResumeRestoresModifiedCurrentArtifactBeforeSkipping() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
