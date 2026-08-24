@@ -654,19 +654,20 @@ package actor GenerationStore {
             "committed generation \(intent.generationID.rawValue) does not match current publication"
           )
         }
-        let action: PrivateHeaderGeneration.RecoveryAction
-        switch publication.stablePathState {
-        case .managed:
-          action = .none
-        case .absent:
-          action = .restoreStablePointer(intent.generationID)
-        case .legacyDirectory:
+        if publication.legacyArtifactState.isDirectory {
           throw PrivateHeaderGeneration.StateError.corruptPublication(
-            "committed generation \(intent.generationID.rawValue) conflicts with an unmanaged stable publication"
+            "committed generation \(intent.generationID.rawValue) conflicts with a legacy artifact directory"
+          )
+        }
+        if let requirement = publication.currentMarker?.legacyBackupRequirement,
+          !publication.archivedLegacyArtifactChecksums.contains(requirement.checksum)
+        {
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "committed generation \(intent.generationID.rawValue) has no authenticated legacy artifact backup"
           )
         }
         try Self.interruptDanglingRuns(db, at: date)
-        return action
+        return .none
       }
       if intent.state == .aborted {
         guard publication.currentGenerationID == intent.previousGenerationID else {
@@ -674,18 +675,12 @@ package actor GenerationStore {
             "aborted generation \(intent.generationID.rawValue) does not preserve its previous current generation"
           )
         }
-        let stableRecoveryAction: PrivateHeaderGeneration.RecoveryAction?
-        switch (intent.previousGenerationID, publication.stablePathState) {
-        case (nil, .absent), (nil, .legacyDirectory):
-          stableRecoveryAction = nil
-        case (.some, .managed):
-          guard publication.currentMarker != nil else {
+        if let previousGenerationID = intent.previousGenerationID {
+          guard !publication.legacyArtifactState.isDirectory else {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
-              "aborted generation \(intent.generationID.rawValue) has no marker for its previous current generation"
+              "aborted generation \(intent.generationID.rawValue) conflicts with a legacy artifact directory"
             )
           }
-          stableRecoveryAction = nil
-        case (.some(let previousGenerationID), .absent):
           guard
             let previousIntent = try Self.fetchPublicationIntentIfPresent(
               db,
@@ -697,17 +692,19 @@ package actor GenerationStore {
               "aborted generation \(intent.generationID.rawValue) has no authenticated committed previous generation"
             )
           }
-          stableRecoveryAction = .restoreStablePointer(previousGenerationID)
-        case (nil, .managed), (.some, .legacyDirectory):
-          throw PrivateHeaderGeneration.StateError.corruptPublication(
-            "aborted generation \(intent.generationID.rawValue) has inconsistent stable publication state"
-          )
+          if let requirement = publication.currentMarker?.legacyBackupRequirement,
+            !publication.archivedLegacyArtifactChecksums.contains(requirement.checksum)
+          {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "aborted generation \(intent.generationID.rawValue) has no authenticated backup for its previous generation"
+            )
+          }
         }
         try Self.interruptDanglingRuns(db, at: date)
         if publication.validGenerationIDs.contains(intent.generationID) {
           return .discardGeneration(intent.generationID)
         }
-        return stableRecoveryAction ?? .recognized(publication.currentGenerationID)
+        return .recognized(publication.currentGenerationID)
       }
 
       guard publication.validGenerationIDs.contains(intent.generationID) else {
@@ -736,8 +733,36 @@ package actor GenerationStore {
             "current generation marker does not match publication intent"
           )
         }
-        guard publication.stablePathState == .managed else {
-          return .completeStablePointer(intent.generationID)
+        switch publication.legacyArtifactState {
+        case .directory:
+          if let requirement = marker.legacyBackupRequirement,
+            requirement.archiveOwnerGenerationID == intent.generationID
+          {
+            guard !publication.archivedLegacyArtifactChecksums.contains(requirement.checksum)
+            else {
+              throw PrivateHeaderGeneration.StateError.corruptPublication(
+                "generation \(intent.generationID.rawValue) has both a legacy artifact directory and its authenticated backup"
+              )
+            }
+            return .archiveLegacyArtifacts(intent.generationID)
+          }
+          guard marker.legacyBackupRequirement == nil,
+            intent.state == .prepared,
+            intent.previousGenerationID == nil
+          else {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "generation \(intent.generationID.rawValue) does not authorize the observed legacy artifact directory"
+            )
+          }
+          return .detachCurrentPointer(intent.generationID)
+        case .absent:
+          if let requirement = marker.legacyBackupRequirement,
+            !publication.archivedLegacyArtifactChecksums.contains(requirement.checksum)
+          {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "generation \(intent.generationID.rawValue) has no authenticated legacy artifact backup"
+            )
+          }
         }
         if intent.state == .prepared {
           try db.execute(

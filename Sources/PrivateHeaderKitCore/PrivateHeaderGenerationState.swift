@@ -298,10 +298,23 @@ extension PrivateHeaderGeneration {
     package let completedAt: Date?
   }
 
-  package enum StablePathState: Equatable, Sendable {
+  package enum LegacyArtifactState: Equatable, Sendable {
     case absent
-    case managed
-    case legacyDirectory
+    case directory
+
+    package var isDirectory: Bool {
+      if case .directory = self { true } else { false }
+    }
+  }
+
+  package struct LegacyBackupRequirement: Codable, Equatable, Sendable {
+    package let checksum: String
+    package let archiveOwnerGenerationID: GenerationID
+
+    package init(checksum: String, archiveOwnerGenerationID: GenerationID) {
+      self.checksum = checksum
+      self.archiveOwnerGenerationID = archiveOwnerGenerationID
+    }
   }
 
   package struct GenerationMarkerSnapshot: Equatable, Sendable {
@@ -311,6 +324,7 @@ extension PrivateHeaderGeneration {
     package let artifactsByTarget: [String: [ArtifactPath]]
     package let opaquePaths: [ArtifactPath]
     package let contentDigests: [ArtifactPath: String]
+    package let legacyBackupRequirement: LegacyBackupRequirement?
 
     package init(
       generationID: GenerationID,
@@ -318,7 +332,8 @@ extension PrivateHeaderGeneration {
       artifactChecksum: String,
       artifactsByTarget: [String: [ArtifactPath]],
       opaquePaths: [ArtifactPath],
-      contentDigests: [ArtifactPath: String] = [:]
+      contentDigests: [ArtifactPath: String] = [:],
+      legacyBackupRequirement: LegacyBackupRequirement? = nil
     ) {
       self.generationID = generationID
       self.planFingerprint = planFingerprint
@@ -326,21 +341,25 @@ extension PrivateHeaderGeneration {
       self.artifactsByTarget = artifactsByTarget
       self.opaquePaths = opaquePaths
       self.contentDigests = contentDigests
+      self.legacyBackupRequirement = legacyBackupRequirement
     }
   }
 
   package struct PublicationSnapshot: Equatable, Sendable {
     package let currentGenerationID: GenerationID?
-    package let stablePathState: StablePathState
+    package let legacyArtifactState: LegacyArtifactState
+    package let archivedLegacyArtifactChecksums: Set<String>
     package let markers: [GenerationID: GenerationMarkerSnapshot]
 
     package init(
       currentGenerationID: GenerationID?,
-      stablePathState: StablePathState,
+      legacyArtifactState: LegacyArtifactState,
+      archivedLegacyArtifactChecksums: Set<String> = [],
       markers: [GenerationID: GenerationMarkerSnapshot]
     ) {
       self.currentGenerationID = currentGenerationID
-      self.stablePathState = stablePathState
+      self.legacyArtifactState = legacyArtifactState
+      self.archivedLegacyArtifactChecksums = archivedLegacyArtifactChecksums
       self.markers = markers
     }
 
@@ -354,8 +373,8 @@ extension PrivateHeaderGeneration {
     case none
     case recognized(GenerationID?)
     case discardGeneration(GenerationID)
-    case restoreStablePointer(GenerationID)
-    case completeStablePointer(GenerationID)
+    case archiveLegacyArtifacts(GenerationID)
+    case detachCurrentPointer(GenerationID)
     case rolledForward(GenerationID)
   }
 
@@ -376,7 +395,7 @@ extension PrivateHeaderGeneration {
     case afterPrepared
     case afterGenerationMove
     case afterCurrentPointerSwitch
-    case afterStablePointerSwitch
+    case afterLegacyArtifactArchive
     case beforeCommitted
   }
 

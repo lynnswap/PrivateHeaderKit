@@ -136,13 +136,13 @@ extension PrivateHeaderGeneration {
       try await validatePreparedCohort(preparedPlan)
 
       let publisher = try ArtifactPublisher(
-        artifactBaseDirectory: plan.output.baseDirectory,
+        outputBaseDirectory: plan.output.baseDirectory,
         sourceLabel: plan.source.storageIdentifier
       )
       try publisher.prepareForLease()
       return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
         let directories = try Self.prepareSourceDirectories(
-          outputBase: publisher.artifactBaseDirectory,
+          outputBase: publisher.outputBaseDirectory,
           source: plan.source
         )
         let artifactDirectory = directories.artifactDirectory
@@ -312,7 +312,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     try await Self.reconcileLiveArtifactDirectory(
       artifactDirectory,
       publication: publication,
-      publishedDirectory: publisher.stableURL,
+      publishedDirectory: publisher.currentURL,
       publishedArtifactsByTarget: publishedArtifactsByTarget,
       publishedTargetSources: publishedTargetSources,
       stagingDirectory: Self.hydrationStagingDirectory(in: stateDirectory),
@@ -324,18 +324,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       under: artifactDirectory
     )
 
-    if publication.stablePathState == .legacyDirectory,
+    if publication.legacyArtifactState.isDirectory,
       !plan.options.resumeBehavior.isFresh
     {
       throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
-        .artifacts(path: publisher.stableURL.path)
+        .artifacts(path: publisher.legacyArtifactURL.path)
       )
     }
 
     let targetIDs = selectedTargets.map(\.candidate.identifier)
     let fingerprint = Self.planFingerprint(
       plan,
-      canonicalOutputBase: publisher.artifactBaseDirectory,
+      canonicalOutputBase: publisher.outputBaseDirectory,
       executionMode: executionMode,
       sharedCacheCohort: sharedCacheCohort
     )
@@ -593,7 +593,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           let sourceRoot: URL
           switch publishedTargetSources[targetID] {
           case .currentGeneration:
-            sourceRoot = publisher.stableURL
+            sourceRoot = publisher.currentURL
           case .newerLiveOutput:
             guard let publishedTarget = publishedTargetsByID[targetID] else {
               throw PrivateHeaderGeneration.StateError.corruptPublication(
@@ -709,13 +709,16 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           runID: runID,
           store: store
         )
-        try publisher.ensureStablePointer()
-        try injectPublicationFault(.afterStablePointerSwitch)
+        if try publisher.archiveLegacyArtifacts(for: generationID) {
+          try injectPublicationFault(.afterLegacyArtifactArchive)
+        }
         wasCancelled = try await latchCancellation(
           wasCancelled,
           runID: runID,
           store: store
         )
+        try publisher.removeObsoleteLookupLink(authenticatedBy: publisher.inspect())
+        try publisher.validateCurrentPublication(generationID)
         try await store.markPointerPublished(generationID)
         try injectPublicationFault(.beforeCommitted)
         wasCancelled = try await latchCancellation(
@@ -723,6 +726,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           runID: runID,
           store: store
         )
+        try publisher.validateCurrentPublication(generationID)
         finalSnapshot = try await store.completePublication(
           generationID,
           at: dateProvider(),
@@ -747,7 +751,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
               progressReporter: progressReporter
             ))
         }
-        try publisher.validateCommittedCurrent(generationID)
+        try publisher.validateCurrentPublication(generationID)
       }
 
       do {
@@ -1464,6 +1468,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       at: date
     )
     try await recover(store: store, publisher: publisher, at: date)
+    try publisher.removeObsoleteLookupLink(authenticatedBy: publisher.inspect())
   }
 
   fileprivate static func recover(
@@ -1480,11 +1485,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         terminalReason: terminalReason
       )
       switch action {
-      case .restoreStablePointer(let generationID):
-        try publisher.restoreStablePointer(to: generationID)
+      case .archiveLegacyArtifacts(let generationID):
+        _ = try publisher.archiveLegacyArtifacts(for: generationID)
         continue
-      case .completeStablePointer:
-        try publisher.ensureStablePointer()
+      case .detachCurrentPointer(let generationID):
+        try publisher.detachCurrentPointer(for: generationID)
         continue
       case .discardGeneration(let generationID):
         try publisher.discardGeneration(generationID)
@@ -1586,13 +1591,13 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
     guard !plan.options.resumeBehavior.isFresh else { return nil }
     let publisher = try ArtifactPublisher(
-      artifactBaseDirectory: plan.output.baseDirectory,
+      outputBaseDirectory: plan.output.baseDirectory,
       sourceLabel: plan.source.storageIdentifier
     )
     try publisher.prepareForLease()
     return try await GenerationLease.withExclusiveLease(at: publisher.lockURL) {
       let directories = try prepareSourceDirectories(
-        outputBase: publisher.artifactBaseDirectory,
+        outputBase: publisher.outputBaseDirectory,
         source: plan.source
       )
       let artifactDirectory = directories.artifactDirectory
@@ -1629,11 +1634,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try publisher.cleanupStaging()
       try cleanupStateStaging(in: stateDirectory)
       let publication = try publisher.inspect()
-      if publication.stablePathState == .legacyDirectory,
+      if publication.legacyArtifactState.isDirectory,
         !plan.options.resumeBehavior.isFresh
       {
         throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
-          .artifacts(path: publisher.stableURL.path)
+          .artifacts(path: publisher.legacyArtifactURL.path)
         )
       }
       let publishedTargetsByID = try await store.publishedTargetsByID()
@@ -1654,7 +1659,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try await reconcileLiveArtifactDirectory(
         artifactDirectory,
         publication: publication,
-        publishedDirectory: publisher.stableURL,
+        publishedDirectory: publisher.currentURL,
         publishedArtifactsByTarget: publishedArtifactsByTarget,
         publishedTargetSources: publishedTargetSources,
         stagingDirectory: hydrationStagingDirectory(in: stateDirectory),
@@ -1668,7 +1673,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       let summary = try await store.resumeSummary(
         planFingerprint: planFingerprint(
           plan,
-          canonicalOutputBase: publisher.artifactBaseDirectory,
+          canonicalOutputBase: publisher.outputBaseDirectory,
           executionMode: executionMode,
           sharedCacheCohort: preparedPlan.sharedCacheCohort
         ),
@@ -2255,18 +2260,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     publisher: ArtifactPublisher
   ) throws -> PrivateHeaderGeneration.LegacyMigrationRequirement? {
     let hasLegacyState = try legacyStateExists(in: stateDirectory)
-    let hasLegacyArtifacts = try publisher.inspect().stablePathState == .legacyDirectory
+    let hasLegacyArtifacts = try publisher.legacyArtifactState().isDirectory
     switch (hasLegacyState, hasLegacyArtifacts) {
     case (false, false):
       return nil
     case (true, false):
       return .state(path: stateDirectory.path)
     case (false, true):
-      return .artifacts(path: publisher.stableURL.path)
+      return .artifacts(path: publisher.legacyArtifactURL.path)
     case (true, true):
       return .stateAndArtifacts(
         statePath: stateDirectory.path,
-        artifactsPath: publisher.stableURL.path
+        artifactsPath: publisher.legacyArtifactURL.path
       )
     }
   }
