@@ -214,10 +214,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       var accepted: [PrivateHeaderGeneration.GenerationWarning] = []
       for warning in warnings {
         guard !retained.contains(warning) else { continue }
-        guard
-          retained.count
-            < PrivateHeaderGeneration.GenerationExecutor
-            .maximumPresentedObjCMetadataWarningCount
+        guard retained.count
+                < PrivateHeaderGeneration.GenerationExecutor
+                    .maximumPresentedObjCMetadataWarningCount
         else {
           omittedCount = omittedCount == UInt.max ? UInt.max : omittedCount + 1
           continue
@@ -325,7 +324,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       under: artifactDirectory
     )
 
-    if publication.legacyArtifactState == .directory,
+    if publication.legacyArtifactState.isDirectory,
       !plan.options.resumeBehavior.isFresh
     {
       throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
@@ -587,7 +586,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         wasCancelled = finalSnapshot.status == .interrupted
       } else {
         let generatedTargetSet = Set(generatedTargetIDs)
-        var snapshotFilesByTarget: [String: [PrivateHeaderGeneration.ArtifactPath: URL]] = [:]
+        var snapshotFilesByTarget:
+          [String: [PrivateHeaderGeneration.ArtifactPath: URL]] = [:]
         for (targetID, artifacts) in liveArtifactsByTarget
         where !generatedTargetSet.contains(targetID) {
           let sourceRoot: URL
@@ -717,6 +717,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           runID: runID,
           store: store
         )
+        try publisher.removeObsoleteLookupLink(authenticatedBy: publisher.inspect())
+        try publisher.validateCurrentPublication(generationID)
         try await store.markPointerPublished(generationID)
         try injectPublicationFault(.beforeCommitted)
         wasCancelled = try await latchCancellation(
@@ -724,6 +726,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           runID: runID,
           store: store
         )
+        try publisher.validateCurrentPublication(generationID)
         finalSnapshot = try await store.completePublication(
           generationID,
           at: dateProvider(),
@@ -748,7 +751,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
               progressReporter: progressReporter
             ))
         }
-        try publisher.validateCommittedCurrent(generationID)
+        try publisher.validateCurrentPublication(generationID)
       }
 
       do {
@@ -1241,10 +1244,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
     let liveArtifactStore = PrivateHeaderGeneration.ArtifactStore(artifactRoot: directory)
     if validateUntrackedArtifacts {
-      let retainedArtifacts =
-        marker.map {
-          $0.artifactsByTarget.values.flatMap { $0 } + $0.opaquePaths
-        } ?? []
+      let retainedArtifacts = marker.map {
+        $0.artifactsByTarget.values.flatMap { $0 } + $0.opaquePaths
+      } ?? []
       if let marker {
         try liveArtifactStore.validateExistingArtifacts(
           retainedArtifacts,
@@ -1629,7 +1631,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try publisher.cleanupStaging()
       try cleanupStateStaging(in: stateDirectory)
       let publication = try publisher.inspect()
-      if publication.legacyArtifactState == .directory,
+      if publication.legacyArtifactState.isDirectory,
         !plan.options.resumeBehavior.isFresh
       {
         throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
@@ -1691,9 +1693,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       return deduplicated(
         catalog.groups.flatMap {
           group -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-          guard
-            group.selectionCandidate.kind == .framework
-              || group.selectionCandidate.kind == .privateFramework
+          guard group.selectionCandidate.kind == .framework
+            || group.selectionCandidate.kind == .privateFramework
           else {
             return []
           }
@@ -2137,18 +2138,16 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         && publishedTarget?.lastSuccessfulRunID == replacement.runID
         && Set(publishedTarget?.artifacts ?? []) == Set(replacement.incomingArtifacts)
         && publishedTarget?.artifactDigests == replacement.artifactDigests
-      let isPublishedByCurrentGeneration =
-        currentMarker.map { marker in
-          guard
-            Set(marker.artifactsByTarget[replacement.targetID] ?? [])
-              == Set(replacement.incomingArtifacts)
-          else {
-            return false
-          }
-          return replacement.artifactDigests.allSatisfy { artifact, digest in
-            marker.contentDigests[artifact] == digest
-          }
-        } ?? false
+      let isPublishedByCurrentGeneration = currentMarker.map { marker in
+        guard Set(marker.artifactsByTarget[replacement.targetID] ?? [])
+          == Set(replacement.incomingArtifacts)
+        else {
+          return false
+        }
+        return replacement.artifactDigests.allSatisfy { artifact, digest in
+          marker.contentDigests[artifact] == digest
+        }
+      } ?? false
       if wasCommitted || isPublishedByCurrentGeneration {
         try artifactStore.finalizeReplacement(replacement)
       } else {
@@ -2258,7 +2257,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     publisher: ArtifactPublisher
   ) throws -> PrivateHeaderGeneration.LegacyMigrationRequirement? {
     let hasLegacyState = try legacyStateExists(in: stateDirectory)
-    let hasLegacyArtifacts = try publisher.legacyArtifactState() == .directory
+    let hasLegacyArtifacts = try publisher.legacyArtifactState().isDirectory
     switch (hasLegacyState, hasLegacyArtifacts) {
     case (false, false):
       return nil

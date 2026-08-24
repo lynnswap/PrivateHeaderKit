@@ -4,6 +4,11 @@ import Testing
 
 @testable import PrivateHeaderKitCore
 
+private let testLegacyArtifactIdentity = PrivateHeaderGeneration.LegacyArtifactIdentity(
+  deviceID: 1,
+  fileID: 2
+)
+
 @Suite
 struct PrivateHeaderGenerationStoreTests {
   private enum InjectedFault: Error {
@@ -151,6 +156,44 @@ struct PrivateHeaderGenerationStoreTests {
     )
   }
 
+  @Test func committedMigratedIntentRequiresAuthenticatedLegacyBackup() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let ids = try await fixture.prepareCompletedPublication()
+    try await fixture.store.markPointerPublished(ids.generationID)
+    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
+    let legacyIdentity = PrivateHeaderGeneration.LegacyArtifactIdentity(
+      deviceID: 1,
+      fileID: 2
+    )
+    let marker = fixture.marker(
+      ids.generationID,
+      legacyArtifactIdentity: legacyIdentity
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: ids.generationID,
+          legacyArtifactState: .absent,
+          markers: [ids.generationID: marker]
+        ),
+        at: fixture.date
+      )
+    }
+    #expect(
+      try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: ids.generationID,
+          legacyArtifactState: .absent,
+          archivedLegacyArtifactIdentities: [legacyIdentity],
+          markers: [ids.generationID: marker]
+        ),
+        at: fixture.date
+      ) == .none
+    )
+  }
+
   @Test func abortedIntentRecognizesAuthenticatedCommittedPreviousGeneration()
     async throws
   {
@@ -186,6 +229,36 @@ struct PrivateHeaderGenerationStoreTests {
       try await fixture.store.publicationIntent(generationID: aborted.generationID)?.state
         == .aborted
     )
+  }
+
+  @Test func abortedIntentWithPreviousCurrentRejectsLegacyArtifactDirectory() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let previous = try await fixture.prepareCompletedPublication(
+      runID: .init(rawValue: "run-old"),
+      generationID: previousGenerationID
+    )
+    try await fixture.store.markPointerPublished(previous.generationID)
+    _ = try await fixture.store.completePublication(previous.generationID, at: fixture.date)
+    let aborted = try await fixture.prepareCompletedPublication(
+      previousGenerationID: previousGenerationID,
+      runID: .init(rawValue: "run-aborted"),
+      generationID: .init(rawValue: "generation-aborted")
+    )
+    let publication = PrivateHeaderGeneration.PublicationSnapshot(
+      currentGenerationID: previousGenerationID,
+      legacyArtifactState: .directory(testLegacyArtifactIdentity),
+      markers: [previousGenerationID: fixture.marker(previousGenerationID)]
+    )
+    #expect(
+      try await fixture.store.recover(using: publication, at: fixture.date)
+        == .discardGeneration(aborted.generationID)
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(using: publication, at: fixture.date)
+    }
   }
 
   @Test func publishedTargetAttemptBecomesImmediatelyResumable() async throws {
@@ -265,7 +338,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: ids.generationID,
-          legacyArtifactState: .directory,
+          legacyArtifactState: .directory(testLegacyArtifactIdentity),
           markers: [ids.generationID: fixture.marker(ids.generationID)]
         ),
         at: fixture.date
@@ -311,8 +384,16 @@ struct PrivateHeaderGenerationStoreTests {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
+    let previous = try await fixture.prepareCompletedPublication(
+      runID: .init(rawValue: "run-old"),
+      generationID: previousGenerationID
+    )
+    try await fixture.store.markPointerPublished(previous.generationID)
+    _ = try await fixture.store.completePublication(previous.generationID, at: fixture.date)
     let ids = try await fixture.prepareCompletedPublication(
-      previousGenerationID: previousGenerationID
+      previousGenerationID: previousGenerationID,
+      runID: .init(rawValue: "run-new"),
+      generationID: .init(rawValue: "generation-new")
     )
     let previousMarker = fixture.marker(previousGenerationID)
     let abortedMarker = fixture.marker(ids.generationID)
@@ -351,7 +432,7 @@ struct PrivateHeaderGenerationStoreTests {
     let ids = try await fixture.prepareCompletedPublication(previousGenerationID: nil)
     let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: nil,
-      legacyArtifactState: .directory,
+      legacyArtifactState: .directory(testLegacyArtifactIdentity),
       markers: [ids.generationID: fixture.marker(ids.generationID)]
     )
 
@@ -367,7 +448,7 @@ struct PrivateHeaderGenerationStoreTests {
       try await fixture.store.recover(
         using: .init(
           currentGenerationID: nil,
-          legacyArtifactState: .directory,
+          legacyArtifactState: .directory(testLegacyArtifactIdentity),
           markers: [:]
         ),
         at: fixture.date
@@ -522,10 +603,17 @@ struct PrivateHeaderGenerationStoreTests {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let ids = try await fixture.prepareCompletedPublication()
-    let marker = fixture.marker(ids.generationID)
+    let legacyIdentity = PrivateHeaderGeneration.LegacyArtifactIdentity(
+      deviceID: 1,
+      fileID: 2
+    )
+    let marker = fixture.marker(
+      ids.generationID,
+      legacyArtifactIdentity: legacyIdentity
+    )
     let incomplete = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: ids.generationID,
-      legacyArtifactState: .directory,
+      legacyArtifactState: .directory(legacyIdentity),
       markers: [ids.generationID: marker]
     )
     #expect(
@@ -535,6 +623,7 @@ struct PrivateHeaderGenerationStoreTests {
     let complete = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: ids.generationID,
       legacyArtifactState: .absent,
+      archivedLegacyArtifactIdentities: [legacyIdentity],
       markers: [ids.generationID: marker]
     )
     #expect(
@@ -542,6 +631,49 @@ struct PrivateHeaderGenerationStoreTests {
         == .rolledForward(ids.generationID))
     #expect(try await fixture.store.recover(using: complete, at: fixture.date) == .none)
     #expect(try await fixture.store.runSnapshot(ids.runID).status == .completed)
+  }
+
+  @Test func normalPublicationRejectsLateLegacyArtifactDirectory() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let ids = try await fixture.prepareCompletedPublication()
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: ids.generationID,
+          legacyArtifactState: .directory(testLegacyArtifactIdentity),
+          markers: [ids.generationID: fixture.marker(ids.generationID)]
+        ),
+        at: fixture.date
+      )
+    }
+  }
+
+  @Test func migratedPublicationRejectsMissingSourceAndBackup() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let ids = try await fixture.prepareCompletedPublication()
+    let legacyIdentity = PrivateHeaderGeneration.LegacyArtifactIdentity(
+      deviceID: 1,
+      fileID: 2
+    )
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.store.recover(
+        using: .init(
+          currentGenerationID: ids.generationID,
+          legacyArtifactState: .absent,
+          markers: [
+            ids.generationID: fixture.marker(
+              ids.generationID,
+              legacyArtifactIdentity: legacyIdentity
+            )
+          ]
+        ),
+        at: fixture.date
+      )
+    }
   }
 
   @Test func resumeAllowsTargetExpansionAndRejectsShrink() async throws {
@@ -858,7 +990,8 @@ private final class StoreFixture: @unchecked Sendable {
   }
 
   func marker(
-    _ generationID: PrivateHeaderGeneration.GenerationID
+    _ generationID: PrivateHeaderGeneration.GenerationID,
+    legacyArtifactIdentity: PrivateHeaderGeneration.LegacyArtifactIdentity? = nil
   ) -> PrivateHeaderGeneration.GenerationMarkerSnapshot {
     .init(
       generationID: generationID,
@@ -867,7 +1000,8 @@ private final class StoreFixture: @unchecked Sendable {
       artifactsByTarget: [
         "framework:Foo": [PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h")]
       ],
-      opaquePaths: []
+      opaquePaths: [],
+      legacyArtifactIdentity: legacyArtifactIdentity
     )
   }
 }

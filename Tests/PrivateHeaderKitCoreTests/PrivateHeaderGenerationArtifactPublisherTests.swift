@@ -66,6 +66,177 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     )
   }
 
+  @Test func retiredObsoleteLookupLinkRemainsInsideManagedState() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-current"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    let quarantineDirectory = fixture.publisher.managedRoot.appendingPathComponent(
+      "obsolete-source-links",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: quarantineDirectory,
+      withIntermediateDirectories: false
+    )
+    try FileManager.default.createSymbolicLink(
+      atPath: quarantineDirectory.appendingPathComponent("source-link-crashed").path,
+      withDestinationPath: ".privateheaderkit/iOS27/current"
+    )
+
+    try fixture.publisher.removeObsoleteLookupLink(
+      authenticatedBy: fixture.publisher.inspect()
+    )
+
+    let retiredLinks = try FileManager.default.contentsOfDirectory(
+      at: quarantineDirectory,
+      includingPropertiesForKeys: nil
+    )
+    #expect(retiredLinks.count == 1)
+    #expect(
+      try FileManager.default.destinationOfSymbolicLink(atPath: retiredLinks[0].path)
+        == ".privateheaderkit/iOS27/current"
+    )
+    #expect(!FileManager.default.fileExists(atPath: fixture.publisher.legacyArtifactURL.path))
+  }
+
+  @Test func foreignQuarantinedItemIsRestoredAndPreserved() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-current"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    let quarantineDirectory = fixture.publisher.managedRoot.appendingPathComponent(
+      "obsolete-source-links",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: quarantineDirectory,
+      withIntermediateDirectories: false
+    )
+    try Data("user-data".utf8).write(
+      to: quarantineDirectory.appendingPathComponent("source-link-raced")
+    )
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      try fixture.publisher.removeObsoleteLookupLink(
+        authenticatedBy: fixture.publisher.inspect()
+      )
+    }
+
+    #expect(
+      try String(contentsOf: fixture.publisher.legacyArtifactURL, encoding: .utf8)
+        == "user-data"
+    )
+    #expect(!FileManager.default.fileExists(atPath: quarantineDirectory.path))
+  }
+
+  @Test func foreignQuarantinedItemRemainsPreservedWhenRootIsReoccupied() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-current"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "current"
+      )
+    )
+    let publication = try fixture.publisher.inspect()
+    let quarantineDirectory = fixture.publisher.managedRoot.appendingPathComponent(
+      "obsolete-source-links",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: quarantineDirectory,
+      withIntermediateDirectories: false
+    )
+    let quarantinedItem = quarantineDirectory.appendingPathComponent("source-link-raced")
+    try Data("quarantined-user-data".utf8).write(to: quarantinedItem)
+    try Data("root-user-data".utf8).write(to: fixture.publisher.legacyArtifactURL)
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      try fixture.publisher.removeObsoleteLookupLink(authenticatedBy: publication)
+    }
+
+    #expect(try String(contentsOf: quarantinedItem, encoding: .utf8) == "quarantined-user-data")
+    #expect(
+      try String(contentsOf: fixture.publisher.legacyArtifactURL, encoding: .utf8)
+        == "root-user-data"
+    )
+  }
+
+  @Test func obsoleteLookupCleanupTouchesOnlyTheSelectedSource() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    try fixture.publish(
+      fixture.prepare(
+        generationID: .init(rawValue: "generation-ios"),
+        targetID: "framework:Foo",
+        relativePath: "Frameworks/Foo/Foo.h",
+        contents: "ios"
+      )
+    )
+    let watchPublisher = try ArtifactPublisher(
+      outputBaseDirectory: fixture.root,
+      sourceLabel: "watchOS27"
+    )
+    try watchPublisher.prepareForLease()
+    var watchDraft = try watchPublisher.beginDraft(
+      generationID: .init(rawValue: "generation-watch"),
+      allowLegacyMigration: false
+    )
+    watchDraft = try watchPublisher.applyCompletedTarget(
+      targetID: "framework:WatchKit",
+      files: [
+        .init(rawValue: "Frameworks/WatchKit/WatchKit.h"): try fixture.sourceFile(
+          contents: "watch"
+        )
+      ],
+      to: watchDraft
+    )
+    let watchPrepared = try watchPublisher.prepareGeneration(
+      watchDraft,
+      planFingerprint: "watch-fingerprint"
+    )
+    try watchPublisher.movePreparedGeneration(watchPrepared)
+    try watchPublisher.switchCurrent(to: watchPrepared.generationID)
+    try FileManager.default.createSymbolicLink(
+      atPath: fixture.publisher.legacyArtifactURL.path,
+      withDestinationPath: ".privateheaderkit/iOS27/current"
+    )
+    try FileManager.default.createSymbolicLink(
+      atPath: watchPublisher.legacyArtifactURL.path,
+      withDestinationPath: ".privateheaderkit/watchOS27/current"
+    )
+
+    try fixture.publisher.removeObsoleteLookupLink(
+      authenticatedBy: fixture.publisher.inspect()
+    )
+
+    #expect(!FileManager.default.fileExists(atPath: fixture.publisher.legacyArtifactURL.path))
+    #expect(FileManager.default.fileExists(atPath: watchPublisher.legacyArtifactURL.path))
+    #expect(
+      try String(
+        contentsOf: watchPublisher.currentURL.appendingPathComponent(
+          "Frameworks/WatchKit/WatchKit.h"
+        ),
+        encoding: .utf8
+      ) == "watch"
+    )
+  }
+
   @Test func foreignLookupLinkIsPreservedAndRejected() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
@@ -557,6 +728,57 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
     )
   }
 
+  @Test func legacyArchiveRejectsAReplacedDirectoryIdentity() throws {
+    let fixture = try PublisherFixture()
+    defer { fixture.cleanup() }
+    let originalFile = fixture.publisher.legacyArtifactURL.appendingPathComponent("original.txt")
+    try FileManager.default.createDirectory(
+      at: fixture.publisher.legacyArtifactURL,
+      withIntermediateDirectories: false
+    )
+    try Data("original".utf8).write(to: originalFile)
+    let generationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-legacy")
+    let prepared = try fixture.prepare(
+      generationID: generationID,
+      targetID: "framework:Foo",
+      relativePath: "Frameworks/Foo/Foo.h",
+      contents: "header",
+      allowLegacyMigration: true
+    )
+    try fixture.publisher.movePreparedGeneration(prepared)
+    let preservedOriginal = fixture.root.appendingPathComponent("preserved-original")
+    try FileManager.default.moveItem(
+      at: fixture.publisher.legacyArtifactURL,
+      to: preservedOriginal
+    )
+    try FileManager.default.createDirectory(
+      at: fixture.publisher.legacyArtifactURL,
+      withIntermediateDirectories: false
+    )
+    let replacementFile = fixture.publisher.legacyArtifactURL.appendingPathComponent(
+      "replacement.txt"
+    )
+    try Data("replacement".utf8).write(to: replacementFile)
+    try fixture.publisher.switchCurrent(to: generationID)
+
+    #expect(throws: ArtifactPublisher.PublisherError.self) {
+      _ = try fixture.publisher.archiveLegacyArtifacts(for: generationID)
+    }
+
+    #expect(try String(contentsOf: replacementFile, encoding: .utf8) == "replacement")
+    #expect(
+      try String(
+        contentsOf: preservedOriginal.appendingPathComponent("original.txt"),
+        encoding: .utf8
+      ) == "original"
+    )
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: fixture.publisher.managedRoot.appendingPathComponent("legacy-backups").path
+      )
+    )
+  }
+
   @Test func opaqueClaimsUseExactUTF8PathIdentity() throws {
     let fixture = try PublisherFixture()
     defer { fixture.cleanup() }
@@ -944,7 +1166,8 @@ struct PrivateHeaderGenerationArtifactPublisherTests {
           .init(rawValue: "Frameworks/Foo/Headers/a.h"),
         ]
       ],
-      opaquePaths: []
+      opaquePaths: [],
+      legacyArtifactIdentity: nil
     )
 
     #expect(

@@ -997,6 +997,32 @@ struct PrivateHeaderGenerationExecutorTests {
     )
   }
 
+  @Test func normalPublicationPreservesLateLegacyDirectoryAndFails() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let lateFile = fixture.legacyArtifactURL.appendingPathComponent("User/keep.txt")
+
+    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "generated"),
+        runID: "run-late-directory",
+        generationID: "generation-late-directory",
+        publicationFaultInjector: { point in
+          guard point == .beforeCommitted else { return }
+          try FileManager.default.createDirectory(
+            at: lateFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+          )
+          try "user-data".write(to: lateFile, atomically: true, encoding: .utf8)
+        }
+      ).run(plan: try fixture.plan(.query("Foo")))
+    }
+
+    #expect(try String(contentsOf: lateFile, encoding: .utf8) == "user-data")
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyBackupsURL.path))
+  }
+
   @Test func compatibleResumeRestoresModifiedCurrentArtifactBeforeSkipping() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }

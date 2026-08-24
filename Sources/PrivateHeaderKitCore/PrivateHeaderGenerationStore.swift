@@ -78,10 +78,9 @@ package actor GenerationStore {
     publication: PrivateHeaderGeneration.PublicationSnapshot,
     at date: Date
   ) throws -> Bool {
-    let reconciliation =
-      publication.currentMarker.map {
-        BootstrapReconciliation.generation($0.generationID)
-      } ?? .empty
+    let reconciliation = publication.currentMarker.map {
+      BootstrapReconciliation.generation($0.generationID)
+    } ?? .empty
     return try databaseQueue.write { db in
       let stateRowCount =
         (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM runs") ?? 0)
@@ -177,7 +176,8 @@ package actor GenerationStore {
     }
   }
 
-  package func pendingBootstrapReconciliation() throws -> BootstrapReconciliation? {
+  package func pendingBootstrapReconciliation() throws -> BootstrapReconciliation?
+  {
     try databaseQueue.read { db in
       guard
         let rawValue = try String.fetchOne(
@@ -654,9 +654,16 @@ package actor GenerationStore {
             "committed generation \(intent.generationID.rawValue) does not match current publication"
           )
         }
-        if publication.legacyArtifactState == .directory {
+        if publication.legacyArtifactState.isDirectory {
           throw PrivateHeaderGeneration.StateError.corruptPublication(
             "committed generation \(intent.generationID.rawValue) conflicts with a legacy artifact directory"
+          )
+        }
+        if let expectedIdentity = publication.currentMarker?.legacyArtifactIdentity,
+          !publication.archivedLegacyArtifactIdentities.contains(expectedIdentity)
+        {
+          throw PrivateHeaderGeneration.StateError.corruptPublication(
+            "committed generation \(intent.generationID.rawValue) has no authenticated legacy artifact backup"
           )
         }
         try Self.interruptDanglingRuns(db, at: date)
@@ -668,10 +675,28 @@ package actor GenerationStore {
             "aborted generation \(intent.generationID.rawValue) does not preserve its previous current generation"
           )
         }
-        if intent.previousGenerationID != nil {
-          guard publication.currentMarker != nil else {
+        if let previousGenerationID = intent.previousGenerationID {
+          guard !publication.legacyArtifactState.isDirectory else {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
-              "aborted generation \(intent.generationID.rawValue) has no authenticated previous generation"
+              "aborted generation \(intent.generationID.rawValue) conflicts with a legacy artifact directory"
+            )
+          }
+          guard
+            let previousIntent = try Self.fetchPublicationIntentIfPresent(
+              db,
+              generationID: previousGenerationID
+            ),
+            Self.currentPublicationMatchesCommittedIntent(publication, intent: previousIntent)
+          else {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "aborted generation \(intent.generationID.rawValue) has no authenticated committed previous generation"
+            )
+          }
+          if let expectedIdentity = publication.currentMarker?.legacyArtifactIdentity,
+            !publication.archivedLegacyArtifactIdentities.contains(expectedIdentity)
+          {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "aborted generation \(intent.generationID.rawValue) has no authenticated backup for its previous generation"
             )
           }
         }
@@ -708,8 +733,24 @@ package actor GenerationStore {
             "current generation marker does not match publication intent"
           )
         }
-        if publication.legacyArtifactState == .directory {
+        switch publication.legacyArtifactState {
+        case .directory(let observedIdentity):
+          guard let expectedIdentity = marker.legacyArtifactIdentity,
+            observedIdentity == expectedIdentity
+          else {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "generation \(intent.generationID.rawValue) does not authorize the observed legacy artifact directory"
+            )
+          }
           return .archiveLegacyArtifacts(intent.generationID)
+        case .absent:
+          if let expectedIdentity = marker.legacyArtifactIdentity,
+            !publication.archivedLegacyArtifactIdentities.contains(expectedIdentity)
+          {
+            throw PrivateHeaderGeneration.StateError.corruptPublication(
+              "generation \(intent.generationID.rawValue) has no authenticated legacy artifact backup"
+            )
+          }
         }
         if intent.state == .prepared {
           try db.execute(
@@ -1660,9 +1701,8 @@ extension GenerationStore {
   }
 
   fileprivate static func isValidSHA256(_ digest: String) -> Bool {
-    digest.utf8.count == 64
-      && digest.utf8.allSatisfy {
-        (48...57).contains($0) || (97...102).contains($0)
-      }
+    digest.utf8.count == 64 && digest.utf8.allSatisfy {
+      (48...57).contains($0) || (97...102).contains($0)
+    }
   }
 }

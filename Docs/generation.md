@@ -203,9 +203,14 @@ PrivateHeaderKit does not silently adopt either legacy form:
 
 Older PrivateHeaderKit versions created a managed
 `<output-base>/<source-storage-id>` symlink to the internal current generation.
-The next run for that source removes the exact managed symlink only after the
-current generation has been authenticated. A symlink with any other target, or
-another filesystem item at that path, is left unchanged and stops generation.
+The next run for that source relocates the exact managed symlink out of the
+output-base root only after the current generation has been authenticated. A
+symlink with any other target, or
+a regular or special file at that path, is left unchanged and stops generation.
+Real directories remain subject to the explicit fresh-migration contract above.
+If a real directory coexists with an authenticated current generation, its
+ownership is ambiguous; PrivateHeaderKit leaves it unchanged and stops even
+when `--fresh` was requested.
 
 Before the current pointer is switched, output validation or archival failures
 leave the original directory in place. If the process stops after the switch,

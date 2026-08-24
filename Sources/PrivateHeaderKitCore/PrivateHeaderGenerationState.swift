@@ -298,9 +298,23 @@ extension PrivateHeaderGeneration {
     package let completedAt: Date?
   }
 
+  package struct LegacyArtifactIdentity: Codable, Hashable, Sendable {
+    package let deviceID: UInt64
+    package let fileID: UInt64
+
+    package init(deviceID: UInt64, fileID: UInt64) {
+      self.deviceID = deviceID
+      self.fileID = fileID
+    }
+  }
+
   package enum LegacyArtifactState: Equatable, Sendable {
     case absent
-    case directory
+    case directory(LegacyArtifactIdentity)
+
+    package var isDirectory: Bool {
+      if case .directory = self { true } else { false }
+    }
   }
 
   package struct GenerationMarkerSnapshot: Equatable, Sendable {
@@ -310,6 +324,7 @@ extension PrivateHeaderGeneration {
     package let artifactsByTarget: [String: [ArtifactPath]]
     package let opaquePaths: [ArtifactPath]
     package let contentDigests: [ArtifactPath: String]
+    package let legacyArtifactIdentity: LegacyArtifactIdentity?
 
     package init(
       generationID: GenerationID,
@@ -317,7 +332,8 @@ extension PrivateHeaderGeneration {
       artifactChecksum: String,
       artifactsByTarget: [String: [ArtifactPath]],
       opaquePaths: [ArtifactPath],
-      contentDigests: [ArtifactPath: String] = [:]
+      contentDigests: [ArtifactPath: String] = [:],
+      legacyArtifactIdentity: LegacyArtifactIdentity? = nil
     ) {
       self.generationID = generationID
       self.planFingerprint = planFingerprint
@@ -325,21 +341,25 @@ extension PrivateHeaderGeneration {
       self.artifactsByTarget = artifactsByTarget
       self.opaquePaths = opaquePaths
       self.contentDigests = contentDigests
+      self.legacyArtifactIdentity = legacyArtifactIdentity
     }
   }
 
   package struct PublicationSnapshot: Equatable, Sendable {
     package let currentGenerationID: GenerationID?
     package let legacyArtifactState: LegacyArtifactState
+    package let archivedLegacyArtifactIdentities: Set<LegacyArtifactIdentity>
     package let markers: [GenerationID: GenerationMarkerSnapshot]
 
     package init(
       currentGenerationID: GenerationID?,
       legacyArtifactState: LegacyArtifactState,
+      archivedLegacyArtifactIdentities: Set<LegacyArtifactIdentity> = [],
       markers: [GenerationID: GenerationMarkerSnapshot]
     ) {
       self.currentGenerationID = currentGenerationID
       self.legacyArtifactState = legacyArtifactState
+      self.archivedLegacyArtifactIdentities = archivedLegacyArtifactIdentities
       self.markers = markers
     }
 
