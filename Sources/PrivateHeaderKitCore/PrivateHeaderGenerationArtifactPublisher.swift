@@ -13,7 +13,7 @@ package struct ArtifactPublisher: Sendable {
     package let directory: URL
     package let artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]]
     package let opaquePaths: [PrivateHeaderGeneration.ArtifactPath]
-    package let legacyArtifactIdentity: PrivateHeaderGeneration.LegacyArtifactIdentity?
+    package let legacyArtifactChecksum: String?
   }
 
   package struct PreparedGeneration: Sendable {
@@ -96,7 +96,12 @@ package struct ArtifactPublisher: Sendable {
     let artifactsByTarget: [String: [String]]
     let opaquePaths: [String]
     let contentDigests: [String: String]?
-    let legacyArtifactIdentity: PrivateHeaderGeneration.LegacyArtifactIdentity?
+    let legacyArtifactChecksum: String?
+  }
+
+  fileprivate struct DirectoryIdentity: Equatable {
+    let deviceID: UInt64
+    let fileID: UInt64
   }
 
   fileprivate struct DecodedGenerationMarker {
@@ -396,6 +401,10 @@ package struct ArtifactPublisher: Sendable {
     managedRoot.appendingPathComponent("legacy-backups", isDirectory: true)
   }
 
+  private var legacyBackupResidueQuarantineURL: URL {
+    managedRoot.appendingPathComponent("legacy-backup-link-residues", isDirectory: true)
+  }
+
   private var obsoleteLookupQuarantineURL: URL {
     managedRoot.appendingPathComponent("obsolete-source-links", isDirectory: true)
   }
@@ -406,27 +415,31 @@ package struct ArtifactPublisher: Sendable {
 
   package func inspect() throws -> PrivateHeaderGeneration.PublicationSnapshot {
     try validateBaseURL()
-    let initialLegacyArtifactState = try legacyArtifactState()
-    let initialArchivedLegacyArtifactIdentities = try archivedLegacyArtifactIdentities()
     let currentGenerationID = try readCurrentGenerationID()
     let markers = try generationMarkers(authenticatingContentsOf: currentGenerationID)
-    let finalLegacyArtifactState = try legacyArtifactState()
-    let finalArchivedLegacyArtifactIdentities = try archivedLegacyArtifactIdentities()
-    guard initialLegacyArtifactState == finalLegacyArtifactState,
-      initialArchivedLegacyArtifactIdentities == finalArchivedLegacyArtifactIdentities,
-      currentGenerationID == (try readCurrentGenerationID())
-    else {
-      throw PublisherError.markerMismatch("publication state changed during inspection")
-    }
     if let currentGenerationID, markers[currentGenerationID] == nil {
       throw PublisherError.markerMismatch(
         "current points to generation without a valid marker: \(currentGenerationID.rawValue)"
       )
     }
+    let initialLegacyArtifactState = try legacyArtifactState()
+    let initialArchivedLegacyArtifactChecksums = try archivedLegacyArtifactChecksums(
+      hasAuthenticatedCurrentGeneration: currentGenerationID != nil
+    )
+    let finalLegacyArtifactState = try legacyArtifactState()
+    let finalArchivedLegacyArtifactChecksums = try archivedLegacyArtifactChecksums(
+      hasAuthenticatedCurrentGeneration: currentGenerationID != nil
+    )
+    guard initialLegacyArtifactState == finalLegacyArtifactState,
+      initialArchivedLegacyArtifactChecksums == finalArchivedLegacyArtifactChecksums,
+      currentGenerationID == (try readCurrentGenerationID())
+    else {
+      throw PublisherError.markerMismatch("publication state changed during inspection")
+    }
     return PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: currentGenerationID,
       legacyArtifactState: initialLegacyArtifactState,
-      archivedLegacyArtifactIdentities: initialArchivedLegacyArtifactIdentities,
+      archivedLegacyArtifactChecksums: initialArchivedLegacyArtifactChecksums,
       markers: markers
     )
   }
@@ -457,20 +470,26 @@ package struct ArtifactPublisher: Sendable {
         directory: draftDirectory,
         artifactsByTarget: marker.artifactsByTarget,
         opaquePaths: marker.opaquePaths,
-        legacyArtifactIdentity: nil
+        legacyArtifactChecksum: nil
       )
     }
 
-    if case .directory(let legacyIdentity) = snapshot.legacyArtifactState {
+    if snapshot.legacyArtifactState.isDirectory {
       guard allowLegacyMigration else {
         throw PublisherError.legacyMigrationRequiresFresh(legacyArtifactURL.path)
       }
+      let legacyIdentity = try directoryIdentity(at: legacyArtifactURL)
+      let legacyChecksum = try legacyArtifactChecksum(at: legacyArtifactURL)
       let opaquePaths = try inventoryLegacyFiles(at: legacyArtifactURL)
       try FileManager.default.copyItem(at: legacyArtifactURL, to: draftDirectory)
-      guard try legacyArtifactState() == .directory(legacyIdentity) else {
+      guard try legacyArtifactState() == .directory,
+        try directoryIdentity(at: legacyArtifactURL) == legacyIdentity,
+        try legacyArtifactChecksum(at: legacyArtifactURL) == legacyChecksum,
+        try legacyArtifactChecksum(at: draftDirectory) == legacyChecksum
+      else {
         throw PublisherError.unexpectedItem(
           path: legacyArtifactURL.path,
-          description: "legacy artifact directory identity changed during migration preparation"
+          description: "legacy artifact directory changed during migration preparation"
         )
       }
       return Draft(
@@ -478,7 +497,7 @@ package struct ArtifactPublisher: Sendable {
         directory: draftDirectory,
         artifactsByTarget: [:],
         opaquePaths: opaquePaths,
-        legacyArtifactIdentity: legacyIdentity
+        legacyArtifactChecksum: legacyChecksum
       )
     }
 
@@ -488,7 +507,7 @@ package struct ArtifactPublisher: Sendable {
       directory: draftDirectory,
       artifactsByTarget: [:],
       opaquePaths: [],
-      legacyArtifactIdentity: nil
+      legacyArtifactChecksum: nil
     )
   }
 
@@ -690,7 +709,7 @@ package struct ArtifactPublisher: Sendable {
       directory: draft.directory,
       artifactsByTarget: artifactsByTarget,
       opaquePaths: opaquePaths,
-      legacyArtifactIdentity: draft.legacyArtifactIdentity
+      legacyArtifactChecksum: draft.legacyArtifactChecksum
     )
   }
 
@@ -769,7 +788,7 @@ package struct ArtifactPublisher: Sendable {
       artifactsByTarget: draft.artifactsByTarget,
       opaquePaths: draft.opaquePaths,
       contentDigests: contentDigests,
-      legacyArtifactIdentity: draft.legacyArtifactIdentity
+      legacyArtifactChecksum: draft.legacyArtifactChecksum
     )
     let marker = PrivateHeaderGeneration.GenerationMarkerSnapshot(
       generationID: draft.generationID,
@@ -780,7 +799,7 @@ package struct ArtifactPublisher: Sendable {
       },
       opaquePaths: draft.opaquePaths.sorted { $0.rawValue < $1.rawValue },
       contentDigests: contentDigests,
-      legacyArtifactIdentity: draft.legacyArtifactIdentity
+      legacyArtifactChecksum: draft.legacyArtifactChecksum
     )
     try writeMarker(marker, to: draft.directory)
     let decodedMarker = try decodeGenerationMarker(
@@ -892,7 +911,7 @@ package struct ArtifactPublisher: Sendable {
     }
     let marker = try validateGeneration(at: generationURL(generationID), expectedID: generationID)
     let state = try legacyArtifactState()
-    guard let expectedIdentity = marker.legacyArtifactIdentity else {
+    guard let expectedChecksum = marker.legacyArtifactChecksum else {
       guard !state.isDirectory else {
         throw PublisherError.markerMismatch(
           "current generation does not authorize legacy artifact archival"
@@ -900,18 +919,25 @@ package struct ArtifactPublisher: Sendable {
       }
       return false
     }
-    guard case .directory(let actualIdentity) = state else {
-      guard try archivedLegacyArtifactIdentities().contains(expectedIdentity) else {
+    guard state.isDirectory else {
+      guard
+        try archivedLegacyArtifactChecksums(hasAuthenticatedCurrentGeneration: true).contains(
+          expectedChecksum
+        )
+      else {
         throw PublisherError.markerMismatch(
           "legacy artifact source and authenticated backup are both missing"
         )
       }
       return false
     }
-    guard actualIdentity == expectedIdentity else {
+    let sourceIdentity = try directoryIdentity(at: legacyArtifactURL)
+    guard try legacyArtifactChecksum(at: legacyArtifactURL) == expectedChecksum,
+      try directoryIdentity(at: legacyArtifactURL) == sourceIdentity
+    else {
       throw PublisherError.unexpectedItem(
         path: legacyArtifactURL.path,
-        description: "legacy artifact directory identity changed before archival"
+        description: "legacy artifact directory changed before archival"
       )
     }
     try ensureDirectoryWithoutSymlinks(legacyBackupsURL)
@@ -927,9 +953,11 @@ package struct ArtifactPublisher: Sendable {
     } catch let error as ManagedFileSystem.Failure {
       throw Self.mapManagedFileSystemFailure(error)
     }
-    guard try directoryIdentity(at: backup) == expectedIdentity else {
+    guard try directoryIdentity(at: backup) == sourceIdentity,
+      try legacyArtifactChecksum(at: backup) == expectedChecksum
+    else {
       throw PublisherError.markerMismatch(
-        "legacy artifact backup identity changed after archival"
+        "legacy artifact backup changed during archival"
       )
     }
     try syncDirectory(outputBaseDirectory)
@@ -981,8 +1009,12 @@ package struct ArtifactPublisher: Sendable {
         description: "top-level source path must be absent"
       )
     }
-    if let expectedIdentity = marker.legacyArtifactIdentity {
-      guard try archivedLegacyArtifactIdentities().contains(expectedIdentity) else {
+    if let expectedChecksum = marker.legacyArtifactChecksum {
+      guard
+        try archivedLegacyArtifactChecksums(hasAuthenticatedCurrentGeneration: true).contains(
+          expectedChecksum
+        )
+      else {
         throw PublisherError.markerMismatch(
           "current generation has no authenticated legacy artifact backup"
         )
@@ -1299,12 +1331,7 @@ extension ArtifactPublisher {
     }
     switch metadata.st_mode & S_IFMT {
     case S_IFDIR:
-      return .directory(
-        PrivateHeaderGeneration.LegacyArtifactIdentity(
-          deviceID: UInt64(truncatingIfNeeded: metadata.st_dev),
-          fileID: UInt64(truncatingIfNeeded: metadata.st_ino)
-        )
-      )
+      return .directory
     case S_IFLNK:
       let destination = try FileManager.default.destinationOfSymbolicLink(
         atPath: legacyArtifactURL.path
@@ -1324,9 +1351,10 @@ extension ArtifactPublisher {
     }
   }
 
-  fileprivate func archivedLegacyArtifactIdentities() throws
-    -> Set<PrivateHeaderGeneration.LegacyArtifactIdentity>
-  {
+  fileprivate func archivedLegacyArtifactChecksums(
+    hasAuthenticatedCurrentGeneration: Bool
+  ) throws -> Set<String> {
+    try recoverLegacyBackupResidueQuarantine()
     guard let kind = try itemKind(at: legacyBackupsURL) else { return [] }
     guard kind == .directory else {
       throw PublisherError.unexpectedItem(
@@ -1338,13 +1366,32 @@ extension ArtifactPublisher {
       at: legacyBackupsURL,
       includingPropertiesForKeys: nil,
       options: []
-    )
-    return try Set(entries.map { try directoryIdentity(at: $0) })
+    ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+    var checksums: Set<String> = []
+    for entry in entries {
+      switch try itemKind(at: entry) {
+      case .directory:
+        checksums.insert(try legacyArtifactChecksum(at: entry))
+      case .symbolicLink:
+        guard hasAuthenticatedCurrentGeneration else {
+          throw PublisherError.markerMismatch(
+            "legacy backup symlink residue exists without an authenticated current generation"
+          )
+        }
+        try quarantineHistoricalLegacyBackupResidue(entry)
+      case .regular, .other:
+        throw PublisherError.unexpectedItem(
+          path: entry.path,
+          description: "expected legacy artifact backup directory"
+        )
+      case nil:
+        throw PublisherError.markerMismatch("legacy artifact backups changed during inspection")
+      }
+    }
+    return checksums
   }
 
-  fileprivate func directoryIdentity(at url: URL) throws
-    -> PrivateHeaderGeneration.LegacyArtifactIdentity
-  {
+  fileprivate func directoryIdentity(at url: URL) throws -> DirectoryIdentity {
     var metadata = stat()
     guard lstat(url.path, &metadata) == 0 else {
       throw PublisherError.posix(
@@ -1359,10 +1406,114 @@ extension ArtifactPublisher {
         description: "expected directory"
       )
     }
-    return PrivateHeaderGeneration.LegacyArtifactIdentity(
+    return DirectoryIdentity(
       deviceID: UInt64(truncatingIfNeeded: metadata.st_dev),
       fileID: UInt64(truncatingIfNeeded: metadata.st_ino)
     )
+  }
+
+  fileprivate func recoverLegacyBackupResidueQuarantine() throws {
+    guard let kind = try itemKind(at: legacyBackupResidueQuarantineURL) else { return }
+    guard kind == .directory else {
+      throw PublisherError.unexpectedItem(
+        path: legacyBackupResidueQuarantineURL.path,
+        description: "expected legacy backup residue quarantine directory"
+      )
+    }
+    let entries = try FileManager.default.contentsOfDirectory(
+      at: legacyBackupResidueQuarantineURL,
+      includingPropertiesForKeys: nil,
+      options: []
+    ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+    for entry in entries {
+      if let validationError = try historicalLegacyBackupResidueValidationError(at: entry) {
+        try restoreLegacyBackupResidue(entry, after: validationError)
+      }
+    }
+  }
+
+  fileprivate func quarantineHistoricalLegacyBackupResidue(_ entry: URL) throws {
+    if let validationError = try historicalLegacyBackupResidueValidationError(at: entry) {
+      throw validationError
+    }
+    try ensureDirectoryWithoutSymlinks(legacyBackupResidueQuarantineURL)
+    let quarantine = legacyBackupResidueQuarantineURL.appendingPathComponent(
+      entry.lastPathComponent,
+      isDirectory: false
+    )
+    do {
+      try ManagedFileSystem.atomicRenameExclusively(from: entry, to: quarantine)
+    } catch let error as ManagedFileSystem.Failure {
+      throw Self.mapManagedFileSystemFailure(error)
+    }
+    try syncDirectory(legacyBackupsURL)
+    try syncDirectory(legacyBackupResidueQuarantineURL)
+    if let validationError = try historicalLegacyBackupResidueValidationError(at: quarantine) {
+      try restoreLegacyBackupResidue(quarantine, after: validationError)
+    }
+  }
+
+  fileprivate func historicalLegacyBackupResidueValidationError(at url: URL) throws
+    -> PublisherError?
+  {
+    guard Self.isHistoricalLegacyBackupName(url.lastPathComponent) else {
+      return .unexpectedItem(
+        path: url.path,
+        description: "legacy backup symlink has an unmanaged name"
+      )
+    }
+    guard try itemKind(at: url) == .symbolicLink else {
+      return .unexpectedItem(
+        path: url.path,
+        description: "legacy backup symlink residue changed kind"
+      )
+    }
+    let destination: String
+    do {
+      destination = try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+    } catch {
+      return .unexpectedItem(
+        path: url.path,
+        description: "legacy backup symlink destination could not be read: \(error)"
+      )
+    }
+    guard destination == obsoleteLookupDestination else {
+      return .unexpectedItem(
+        path: url.path,
+        description: "legacy backup symlink points to \(destination)"
+      )
+    }
+    return nil
+  }
+
+  fileprivate func restoreLegacyBackupResidue(
+    _ quarantine: URL,
+    after validationError: PublisherError
+  ) throws -> Never {
+    let original = legacyBackupsURL.appendingPathComponent(
+      quarantine.lastPathComponent,
+      isDirectory: false
+    )
+    do {
+      try ManagedFileSystem.atomicRenameExclusively(from: quarantine, to: original)
+    } catch {
+      throw PublisherError.unexpectedItem(
+        path: quarantine.path,
+        description:
+          "legacy backup residue failed validation with \(validationError), and restoration failed with \(error); the item remains preserved in quarantine"
+      )
+    }
+    try syncDirectory(legacyBackupsURL)
+    try syncDirectory(legacyBackupResidueQuarantineURL)
+    throw validationError
+  }
+
+  fileprivate static func isHistoricalLegacyBackupName(_ name: String) -> Bool {
+    let prefix = "legacy-"
+    guard name.hasPrefix(prefix) else { return false }
+    let rawUUID = String(name.dropFirst(prefix.count))
+    guard let uuid = UUID(uuidString: rawUUID) else { return false }
+    return uuid.uuidString.lowercased() == rawUUID
   }
 
   fileprivate func recoverObsoleteLookupQuarantine(
@@ -1556,7 +1707,7 @@ extension ArtifactPublisher {
       artifactsByTarget: marker.artifactsByTarget,
       opaquePaths: marker.opaquePaths,
       contentDigests: actualContentDigests,
-      legacyArtifactIdentity: marker.legacyArtifactIdentity
+      legacyArtifactChecksum: marker.legacyArtifactChecksum
     )
   }
 
@@ -1607,12 +1758,17 @@ extension ArtifactPublisher {
         )
       }
     }
+    if let legacyArtifactChecksum = marker.legacyArtifactChecksum,
+      !Self.isValidSHA256(legacyArtifactChecksum)
+    {
+      throw PublisherError.markerMismatch("generation marker has invalid legacy artifact checksum")
+    }
     let checksum = Self.artifactChecksum(
       planFingerprint: marker.planFingerprint,
       artifactsByTarget: artifactsByTarget,
       opaquePaths: opaquePaths,
       contentDigests: markerContentDigests,
-      legacyArtifactIdentity: marker.legacyArtifactIdentity
+      legacyArtifactChecksum: marker.legacyArtifactChecksum
     )
     guard checksum == marker.artifactChecksum else {
       throw PublisherError.markerMismatch("artifact checksum does not match marker inventory")
@@ -1625,7 +1781,7 @@ extension ArtifactPublisher {
         artifactsByTarget: artifactsByTarget,
         opaquePaths: opaquePaths,
         contentDigests: markerContentDigests ?? [:],
-        legacyArtifactIdentity: marker.legacyArtifactIdentity
+        legacyArtifactChecksum: marker.legacyArtifactChecksum
       ),
       persistedContentDigests: markerContentDigests
     )
@@ -1644,7 +1800,7 @@ extension ArtifactPublisher {
       contentDigests: Dictionary(
         uniqueKeysWithValues: snapshot.contentDigests.map { ($0.key.rawValue, $0.value) }
       ),
-      legacyArtifactIdentity: snapshot.legacyArtifactIdentity
+      legacyArtifactChecksum: snapshot.legacyArtifactChecksum
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1659,7 +1815,7 @@ extension ArtifactPublisher {
     artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
     opaquePaths: [PrivateHeaderGeneration.ArtifactPath],
     contentDigests: [PrivateHeaderGeneration.ArtifactPath: String]? = nil,
-    legacyArtifactIdentity: PrivateHeaderGeneration.LegacyArtifactIdentity? = nil
+    legacyArtifactChecksum: String? = nil
   ) -> String {
     var lines = ["plan=\(planFingerprint)"]
     for targetID in artifactsByTarget.keys.sorted() {
@@ -1677,9 +1833,8 @@ extension ArtifactPublisher {
         lines.append("content=\(path.rawValue):\(digest)")
       }
     }
-    if let legacyArtifactIdentity {
-      lines.append("legacy-device=\(legacyArtifactIdentity.deviceID)")
-      lines.append("legacy-file=\(legacyArtifactIdentity.fileID)")
+    if let legacyArtifactChecksum {
+      lines.append("legacy-artifact=\(legacyArtifactChecksum)")
     }
     let digest = SHA256.hash(data: Data(lines.joined(separator: "\n").utf8))
     return digest.map { String(format: "%02x", $0) }.joined()
@@ -1705,6 +1860,42 @@ extension ArtifactPublisher {
     }) {
       try syncDirectory(directory)
     }
+  }
+
+  fileprivate func legacyArtifactChecksum(at root: URL) throws -> String {
+    let inventory = try inventoryItems(
+      at: root,
+      allowHidden: true,
+      allowedExtensions: nil
+    ).sorted { lhs, rhs in
+      Self.lexicalStringPrecedes(lhs.path.rawValue, rhs.path.rawValue)
+    }
+    var hasher = SHA256()
+    Self.updateLengthPrefixed("privateheaderkit-legacy-artifact-v1", in: &hasher)
+    for item in inventory {
+      switch item.kind {
+      case .directory:
+        Self.updateLengthPrefixed("directory", in: &hasher)
+      case .regular:
+        Self.updateLengthPrefixed("file", in: &hasher)
+      case .symbolicLink, .other:
+        preconditionFailure("legacy inventory accepted an unsupported item")
+      }
+      Self.updateLengthPrefixed(item.path.rawValue, in: &hasher)
+      if item.kind == .regular {
+        Self.updateLengthPrefixed(try Self.sha256(of: item.url), in: &hasher)
+      }
+    }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+  }
+
+  fileprivate static func updateLengthPrefixed(_ value: String, in hasher: inout SHA256) {
+    let data = Data(value.utf8)
+    var byteCount = UInt64(data.count).bigEndian
+    withUnsafeBytes(of: &byteCount) { bytes in
+      hasher.update(data: Data(bytes))
+    }
+    hasher.update(data: data)
   }
 
   fileprivate static func sha256(of url: URL) throws -> String {

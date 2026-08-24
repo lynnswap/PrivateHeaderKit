@@ -215,4 +215,9 @@ when `--fresh` was requested.
 Before the current pointer is switched, output validation or archival failures
 leave the original directory in place. If the process stops after the switch,
 startup recovery completes the exclusive move into `legacy-backups` before
-resuming generation.
+resuming generation. The move uses device and file identity only to detect a
+replacement during that operation; later startups authenticate the backup with
+a portable checksum of its paths, item kinds, and file contents so copied or
+restored output remains usable. An exact `legacy-<uuid>` symlink left in
+`legacy-backups` by an interrupted older atomic swap is moved into hidden
+managed quarantine after the current generation is authenticated.

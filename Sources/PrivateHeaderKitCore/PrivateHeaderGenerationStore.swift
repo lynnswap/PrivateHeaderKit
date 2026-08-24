@@ -659,8 +659,8 @@ package actor GenerationStore {
             "committed generation \(intent.generationID.rawValue) conflicts with a legacy artifact directory"
           )
         }
-        if let expectedIdentity = publication.currentMarker?.legacyArtifactIdentity,
-          !publication.archivedLegacyArtifactIdentities.contains(expectedIdentity)
+        if let expectedChecksum = publication.currentMarker?.legacyArtifactChecksum,
+          !publication.archivedLegacyArtifactChecksums.contains(expectedChecksum)
         {
           throw PrivateHeaderGeneration.StateError.corruptPublication(
             "committed generation \(intent.generationID.rawValue) has no authenticated legacy artifact backup"
@@ -692,8 +692,8 @@ package actor GenerationStore {
               "aborted generation \(intent.generationID.rawValue) has no authenticated committed previous generation"
             )
           }
-          if let expectedIdentity = publication.currentMarker?.legacyArtifactIdentity,
-            !publication.archivedLegacyArtifactIdentities.contains(expectedIdentity)
+          if let expectedChecksum = publication.currentMarker?.legacyArtifactChecksum,
+            !publication.archivedLegacyArtifactChecksums.contains(expectedChecksum)
           {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
               "aborted generation \(intent.generationID.rawValue) has no authenticated backup for its previous generation"
@@ -734,18 +734,16 @@ package actor GenerationStore {
           )
         }
         switch publication.legacyArtifactState {
-        case .directory(let observedIdentity):
-          guard let expectedIdentity = marker.legacyArtifactIdentity,
-            observedIdentity == expectedIdentity
-          else {
+        case .directory:
+          guard marker.legacyArtifactChecksum != nil else {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
               "generation \(intent.generationID.rawValue) does not authorize the observed legacy artifact directory"
             )
           }
           return .archiveLegacyArtifacts(intent.generationID)
         case .absent:
-          if let expectedIdentity = marker.legacyArtifactIdentity,
-            !publication.archivedLegacyArtifactIdentities.contains(expectedIdentity)
+          if let expectedChecksum = marker.legacyArtifactChecksum,
+            !publication.archivedLegacyArtifactChecksums.contains(expectedChecksum)
           {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
               "generation \(intent.generationID.rawValue) has no authenticated legacy artifact backup"
