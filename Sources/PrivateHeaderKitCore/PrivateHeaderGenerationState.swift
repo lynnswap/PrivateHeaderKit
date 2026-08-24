@@ -298,10 +298,9 @@ extension PrivateHeaderGeneration {
     package let completedAt: Date?
   }
 
-  package enum StablePathState: Equatable, Sendable {
+  package enum LegacyArtifactState: Equatable, Sendable {
     case absent
-    case managed
-    case legacyDirectory
+    case directory
   }
 
   package struct GenerationMarkerSnapshot: Equatable, Sendable {
@@ -331,16 +330,16 @@ extension PrivateHeaderGeneration {
 
   package struct PublicationSnapshot: Equatable, Sendable {
     package let currentGenerationID: GenerationID?
-    package let stablePathState: StablePathState
+    package let legacyArtifactState: LegacyArtifactState
     package let markers: [GenerationID: GenerationMarkerSnapshot]
 
     package init(
       currentGenerationID: GenerationID?,
-      stablePathState: StablePathState,
+      legacyArtifactState: LegacyArtifactState,
       markers: [GenerationID: GenerationMarkerSnapshot]
     ) {
       self.currentGenerationID = currentGenerationID
-      self.stablePathState = stablePathState
+      self.legacyArtifactState = legacyArtifactState
       self.markers = markers
     }
 
@@ -354,8 +353,7 @@ extension PrivateHeaderGeneration {
     case none
     case recognized(GenerationID?)
     case discardGeneration(GenerationID)
-    case restoreStablePointer(GenerationID)
-    case completeStablePointer(GenerationID)
+    case archiveLegacyArtifacts(GenerationID)
     case rolledForward(GenerationID)
   }
 
@@ -376,7 +374,7 @@ extension PrivateHeaderGeneration {
     case afterPrepared
     case afterGenerationMove
     case afterCurrentPointerSwitch
-    case afterStablePointerSwitch
+    case afterLegacyArtifactArchive
     case beforeCommitted
   }
 

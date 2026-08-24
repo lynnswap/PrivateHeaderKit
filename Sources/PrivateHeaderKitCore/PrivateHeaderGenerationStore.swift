@@ -78,9 +78,10 @@ package actor GenerationStore {
     publication: PrivateHeaderGeneration.PublicationSnapshot,
     at date: Date
   ) throws -> Bool {
-    let reconciliation = publication.currentMarker.map {
-      BootstrapReconciliation.generation($0.generationID)
-    } ?? .empty
+    let reconciliation =
+      publication.currentMarker.map {
+        BootstrapReconciliation.generation($0.generationID)
+      } ?? .empty
     return try databaseQueue.write { db in
       let stateRowCount =
         (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM runs") ?? 0)
@@ -176,8 +177,7 @@ package actor GenerationStore {
     }
   }
 
-  package func pendingBootstrapReconciliation() throws -> BootstrapReconciliation?
-  {
+  package func pendingBootstrapReconciliation() throws -> BootstrapReconciliation? {
     try databaseQueue.read { db in
       guard
         let rawValue = try String.fetchOne(
@@ -654,19 +654,13 @@ package actor GenerationStore {
             "committed generation \(intent.generationID.rawValue) does not match current publication"
           )
         }
-        let action: PrivateHeaderGeneration.RecoveryAction
-        switch publication.stablePathState {
-        case .managed:
-          action = .none
-        case .absent:
-          action = .restoreStablePointer(intent.generationID)
-        case .legacyDirectory:
+        if publication.legacyArtifactState == .directory {
           throw PrivateHeaderGeneration.StateError.corruptPublication(
-            "committed generation \(intent.generationID.rawValue) conflicts with an unmanaged stable publication"
+            "committed generation \(intent.generationID.rawValue) conflicts with a legacy artifact directory"
           )
         }
         try Self.interruptDanglingRuns(db, at: date)
-        return action
+        return .none
       }
       if intent.state == .aborted {
         guard publication.currentGenerationID == intent.previousGenerationID else {
@@ -674,40 +668,18 @@ package actor GenerationStore {
             "aborted generation \(intent.generationID.rawValue) does not preserve its previous current generation"
           )
         }
-        let stableRecoveryAction: PrivateHeaderGeneration.RecoveryAction?
-        switch (intent.previousGenerationID, publication.stablePathState) {
-        case (nil, .absent), (nil, .legacyDirectory):
-          stableRecoveryAction = nil
-        case (.some, .managed):
+        if intent.previousGenerationID != nil {
           guard publication.currentMarker != nil else {
             throw PrivateHeaderGeneration.StateError.corruptPublication(
-              "aborted generation \(intent.generationID.rawValue) has no marker for its previous current generation"
+              "aborted generation \(intent.generationID.rawValue) has no authenticated previous generation"
             )
           }
-          stableRecoveryAction = nil
-        case (.some(let previousGenerationID), .absent):
-          guard
-            let previousIntent = try Self.fetchPublicationIntentIfPresent(
-              db,
-              generationID: previousGenerationID
-            ),
-            Self.currentPublicationMatchesCommittedIntent(publication, intent: previousIntent)
-          else {
-            throw PrivateHeaderGeneration.StateError.corruptPublication(
-              "aborted generation \(intent.generationID.rawValue) has no authenticated committed previous generation"
-            )
-          }
-          stableRecoveryAction = .restoreStablePointer(previousGenerationID)
-        case (nil, .managed), (.some, .legacyDirectory):
-          throw PrivateHeaderGeneration.StateError.corruptPublication(
-            "aborted generation \(intent.generationID.rawValue) has inconsistent stable publication state"
-          )
         }
         try Self.interruptDanglingRuns(db, at: date)
         if publication.validGenerationIDs.contains(intent.generationID) {
           return .discardGeneration(intent.generationID)
         }
-        return stableRecoveryAction ?? .recognized(publication.currentGenerationID)
+        return .recognized(publication.currentGenerationID)
       }
 
       guard publication.validGenerationIDs.contains(intent.generationID) else {
@@ -736,8 +708,8 @@ package actor GenerationStore {
             "current generation marker does not match publication intent"
           )
         }
-        guard publication.stablePathState == .managed else {
-          return .completeStablePointer(intent.generationID)
+        if publication.legacyArtifactState == .directory {
+          return .archiveLegacyArtifacts(intent.generationID)
         }
         if intent.state == .prepared {
           try db.execute(
@@ -1688,8 +1660,9 @@ extension GenerationStore {
   }
 
   fileprivate static func isValidSHA256(_ digest: String) -> Bool {
-    digest.utf8.count == 64 && digest.utf8.allSatisfy {
-      (48...57).contains($0) || (97...102).contains($0)
-    }
+    digest.utf8.count == 64
+      && digest.utf8.allSatisfy {
+        (48...57).contains($0) || (97...102).contains($0)
+      }
   }
 }

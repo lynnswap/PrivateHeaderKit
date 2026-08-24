@@ -129,7 +129,7 @@ struct PrivateHeaderGenerationStoreTests {
     )
   }
 
-  @Test func committedIntentRepairsMissingStablePointer() async throws {
+  @Test func committedIntentAcceptsAuthenticatedCurrentWithoutTopLevelAlias() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let ids = try await fixture.prepareCompletedPublication()
@@ -139,19 +139,19 @@ struct PrivateHeaderGenerationStoreTests {
     let action = try await fixture.store.recover(
       using: .init(
         currentGenerationID: ids.generationID,
-        stablePathState: .absent,
+        legacyArtifactState: .absent,
         markers: [ids.generationID: fixture.marker(ids.generationID)]
       ),
       at: fixture.date
     )
 
-    #expect(action == .restoreStablePointer(ids.generationID))
+    #expect(action == .none)
     #expect(
       try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .committed
     )
   }
 
-  @Test func abortedIntentRepairsMissingStablePointerForCommittedPreviousGeneration()
+  @Test func abortedIntentRecognizesAuthenticatedCommittedPreviousGeneration()
     async throws
   {
     let fixture = try StoreFixture()
@@ -170,7 +170,7 @@ struct PrivateHeaderGenerationStoreTests {
     )
     let publication = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: previousGenerationID,
-      stablePathState: .absent,
+      legacyArtifactState: .absent,
       markers: [previousGenerationID: fixture.marker(previousGenerationID)]
     )
 
@@ -180,7 +180,7 @@ struct PrivateHeaderGenerationStoreTests {
     )
     #expect(
       try await fixture.store.recover(using: publication, at: fixture.date)
-        == .restoreStablePointer(previousGenerationID)
+        == .recognized(previousGenerationID)
     )
     #expect(
       try await fixture.store.publicationIntent(generationID: aborted.generationID)?.state
@@ -246,7 +246,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: ids.generationID,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [ids.generationID: mismatched]
         ),
         at: fixture.date
@@ -254,7 +254,7 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
-  @Test func committedIntentRejectsUnmanagedStableDirectory() async throws {
+  @Test func committedIntentRejectsLegacyArtifactDirectory() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let ids = try await fixture.prepareCompletedPublication()
@@ -265,7 +265,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: ids.generationID,
-          stablePathState: .legacyDirectory,
+          legacyArtifactState: .directory,
           markers: [ids.generationID: fixture.marker(ids.generationID)]
         ),
         at: fixture.date
@@ -283,7 +283,7 @@ struct PrivateHeaderGenerationStoreTests {
     let action = try await fixture.store.recover(
       using: .init(
         currentGenerationID: .init(rawValue: "generation-old"),
-        stablePathState: .managed,
+        legacyArtifactState: .absent,
         markers: [ids.generationID: marker]
       ),
       at: fixture.date
@@ -299,7 +299,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: ids.generationID,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [ids.generationID: marker]
         ),
         at: fixture.date
@@ -318,7 +318,7 @@ struct PrivateHeaderGenerationStoreTests {
     let abortedMarker = fixture.marker(ids.generationID)
     let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: previousGenerationID,
-      stablePathState: .managed,
+      legacyArtifactState: .absent,
       markers: [
         previousGenerationID: previousMarker,
         ids.generationID: abortedMarker,
@@ -337,7 +337,7 @@ struct PrivateHeaderGenerationStoreTests {
       try await fixture.store.recover(
         using: .init(
           currentGenerationID: previousGenerationID,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [previousGenerationID: previousMarker]
         ),
         at: fixture.date
@@ -351,7 +351,7 @@ struct PrivateHeaderGenerationStoreTests {
     let ids = try await fixture.prepareCompletedPublication(previousGenerationID: nil)
     let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: nil,
-      stablePathState: .legacyDirectory,
+      legacyArtifactState: .directory,
       markers: [ids.generationID: fixture.marker(ids.generationID)]
     )
 
@@ -367,7 +367,7 @@ struct PrivateHeaderGenerationStoreTests {
       try await fixture.store.recover(
         using: .init(
           currentGenerationID: nil,
-          stablePathState: .legacyDirectory,
+          legacyArtifactState: .directory,
           markers: [:]
         ),
         at: fixture.date
@@ -385,7 +385,7 @@ struct PrivateHeaderGenerationStoreTests {
     _ = try await fixture.store.recover(
       using: .init(
         currentGenerationID: previousGenerationID,
-        stablePathState: .managed,
+        legacyArtifactState: .absent,
         markers: [
           previousGenerationID: fixture.marker(previousGenerationID),
           ids.generationID: fixture.marker(ids.generationID),
@@ -398,7 +398,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: nil,
-          stablePathState: .absent,
+          legacyArtifactState: .absent,
           markers: [:]
         ),
         at: fixture.date
@@ -419,7 +419,7 @@ struct PrivateHeaderGenerationStoreTests {
     _ = try await fixture.store.recover(
       using: .init(
         currentGenerationID: previousGenerationID,
-        stablePathState: .managed,
+        legacyArtifactState: .absent,
         markers: [
           previousGenerationID: fixture.marker(previousGenerationID),
           ids.generationID: fixture.marker(ids.generationID),
@@ -432,7 +432,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: unrelatedGenerationID,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [unrelatedGenerationID: fixture.marker(unrelatedGenerationID)]
         ),
         at: fixture.date
@@ -475,7 +475,7 @@ struct PrivateHeaderGenerationStoreTests {
     let action = try await fixture.store.recover(
       using: .init(
         currentGenerationID: previousGenerationID,
-        stablePathState: .managed,
+        legacyArtifactState: .absent,
         markers: [:]
       ),
       at: fixture.date,
@@ -504,7 +504,7 @@ struct PrivateHeaderGenerationStoreTests {
       _ = try await fixture.store.recover(
         using: .init(
           currentGenerationID: oldID,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [ids.generationID: fixture.marker(ids.generationID)]
         ),
         at: fixture.date
@@ -518,23 +518,23 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
-  @Test func recoveryCompletesStablePointerThenRollsForwardIdempotently() async throws {
+  @Test func recoveryArchivesLegacyArtifactsThenRollsForwardIdempotently() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let ids = try await fixture.prepareCompletedPublication()
     let marker = fixture.marker(ids.generationID)
     let incomplete = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: ids.generationID,
-      stablePathState: .absent,
+      legacyArtifactState: .directory,
       markers: [ids.generationID: marker]
     )
     #expect(
       try await fixture.store.recover(using: incomplete, at: fixture.date)
-        == .completeStablePointer(ids.generationID))
+        == .archiveLegacyArtifacts(ids.generationID))
 
     let complete = PrivateHeaderGeneration.PublicationSnapshot(
       currentGenerationID: ids.generationID,
-      stablePathState: .managed,
+      legacyArtifactState: .absent,
       markers: [ids.generationID: marker]
     )
     #expect(
@@ -619,7 +619,7 @@ struct PrivateHeaderGenerationStoreTests {
       try await fixture.store.recover(
         using: .init(
           currentGenerationID: first.generationID,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [first.generationID: fixture.marker(first.generationID)]
         ),
         at: fixture.date
@@ -772,7 +772,7 @@ struct PrivateHeaderGenerationStoreTests {
       try await fixture.store.recover(
         using: .init(
           currentGenerationID: secondGeneration,
-          stablePathState: .managed,
+          legacyArtifactState: .absent,
           markers: [
             secondGeneration: .init(
               generationID: secondGeneration,

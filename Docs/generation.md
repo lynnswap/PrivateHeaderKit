@@ -113,7 +113,6 @@ The complete output base is:
 
 ```text
 <output-base>/
-  <source-storage-id> -> .privateheaderkit/<source-storage-id>/current
   generated-headers/
     <platform>/
       <release-directory>/
@@ -154,9 +153,9 @@ output without limit. Live warning presentation is also capped across the run;
 one aggregate warning points to the retained per-target details in the database.
 
 State, attempts, publication intent, and run diagnostics are stored in
-`generation.sqlite`, outside the published header tree. The top-level source
-link and `.privateheaderkit` tree are internal recovery artifacts; consumers
-should not use them instead of the printed `Headers` directory.
+`generation.sqlite`, outside the published header tree. The `.privateheaderkit`
+tree is an internal recovery artifact; consumers should use only the printed
+`Headers` directory.
 
 PrivateHeaderKit automatically relocates its previous managed live directory,
 `generated-headers/<source-storage-id>`, to the platform/release layout while
@@ -166,10 +165,10 @@ and new directories exist, PrivateHeaderKit leaves both unchanged and stops;
 it never guesses how to merge or overwrite them. Unrelated siblings under
 `generated-headers` are not part of this relocation.
 
-If the printed header directory or top-level source link is removed while the
-authenticated current generation remains available, the next run recreates
-the managed link and restores the missing published files before deciding
-whether to continue or restart.
+If the printed header directory is removed while the authenticated current
+generation remains available, the next run restores the missing published
+files before deciding whether to continue or restart. PrivateHeaderKit does not
+create a top-level source link.
 
 ## Continue or Restart
 
@@ -197,9 +196,18 @@ PrivateHeaderKit does not silently adopt either legacy form:
 
 - Older JSON state is not imported as resumable state. A fresh migration
   creates `generation.sqlite` and leaves the JSON paths in place.
-- An unmanaged output directory is inventoried and copied into the draft
-  generation. A fresh migration atomically publishes the managed path and
-  keeps the original directory under `legacy-backups`.
+- A pre-rewrite `<output-base>/<source-storage-id>` directory is inventoried and
+  copied into the draft generation. A fresh migration publishes the new
+  generation, then atomically moves the original directory under
+  `legacy-backups`; nothing replaces it at the output-base root.
 
-If output validation or the atomic swap cannot be completed, the original
-output path is left in place and migration fails.
+Older PrivateHeaderKit versions created a managed
+`<output-base>/<source-storage-id>` symlink to the internal current generation.
+The next run for that source removes the exact managed symlink only after the
+current generation has been authenticated. A symlink with any other target, or
+another filesystem item at that path, is left unchanged and stops generation.
+
+Before the current pointer is switched, output validation or archival failures
+leave the original directory in place. If the process stops after the switch,
+startup recovery completes the exclusive move into `legacy-backups` before
+resuming generation.
