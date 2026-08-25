@@ -1,6 +1,8 @@
 .DS_Store
 /.vscode/
-/.swiftpm/
+/.swiftpm/*
+!/.swiftpm/configuration/
+!/.swiftpm/configuration/mirrors.json
 /.swiftpm/xcode/xcuserdata/
 /.swiftpm/xcode/package.xcworkspace/xcuserdata/
 /.build

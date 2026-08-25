@@ -142,7 +142,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         #expect(report.omittedDiagnosticCount == UInt.max)
     }
 
-    @Test func resolvedGraphPinsObjectiveCReaderForkExactly() throws {
+    @Test func resolvedGraphPinsReaderForksExactly() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -176,6 +176,41 @@ struct PrivateHeaderKitHelperProtocolTests {
                 == "a7e5982ed7de5dab5dec76036682ea55825b77a8"
         )
         #expect(swiftSectionState["version"] == nil)
+
+        let machOKitPin = try #require(
+            pins.first { $0["identity"] as? String == "machokit" }
+        )
+        let machOKitState = try #require(
+            machOKitPin["state"] as? [String: Any]
+        )
+        #expect(
+            machOKitPin["location"] as? String
+                == "https://github.com/MxIris-Reverse-Engineering/MachOKit.git"
+        )
+        #expect(
+            machOKitState["revision"] as? String
+                == "e0e0b30187ae74f2088d932845c8ddac2c79f36c"
+        )
+        #expect(machOKitState["version"] == nil)
+
+        let mirrorData = try Data(
+            contentsOf: packageRoot
+                .appendingPathComponent(".swiftpm/configuration/mirrors.json")
+        )
+        let mirrorDocument = try #require(
+            JSONSerialization.jsonObject(with: mirrorData) as? [String: Any]
+        )
+        let mirrors = try #require(
+            mirrorDocument["object"] as? [[String: String]]
+        )
+        let expectedMirror = "https://github.com/lynnswap/MachOKit.git"
+        #expect(Set(mirrors.compactMap { $0["mirror"] }) == [expectedMirror])
+        #expect(
+            Set(mirrors.compactMap { $0["original"] }) == [
+                "https://github.com/MxIris-Reverse-Engineering/MachOKit",
+                "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+            ]
+        )
     }
 
     @Test func inventoryNormalizesImagePathMembershipAndRoundTrips() throws {
