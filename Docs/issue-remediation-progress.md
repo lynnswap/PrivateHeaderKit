@@ -156,3 +156,8 @@ Dependency progress:
 - A follow-up checkpoint is restoring the public `EntrySizeList.size` `Int`
   signature while retaining the internal fallible size owner; malformed legacy
   projections return zero instead of changing public source compatibility.
+- MachOObjCSection Phase A final
+  `309091379d653f4cbf7d07aab7faa1269736b61c` preserves the public `Int`
+  signatures for entry size, count, and size while keeping iterators on the
+  internal fallible size API. Malformed projections return zero; legal empty
+  lists return the header size. The focused regression set passes 92 tests.
