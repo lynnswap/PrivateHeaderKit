@@ -77,6 +77,16 @@ Dependency progress:
   top of this green checkpoint.
 - Independent review of `c7716997..7ecc235` found no actionable fixed-read
   defect; all 22 audited callers use the checked owner.
+- MachOObjCSection final SHA `0d17e3d77556991dc128aa92547ea1b1ea8f9e2e`
+  is pushed after a two-round clean codex-review; the first round found and
+  fixed realized-metaclass version fallback.
+- MachOSwiftSection coherence SHA
+  `a7e5982ed7de5dab5dec76036682ea55825b77a8` is pushed after its CI-defined
+  eight-suite filter and codex-review passed. Full-suite absolute-offset
+  fixture drift reproduces unchanged on base `122f50e` and is not included in
+  this pin-only change.
+- PrivateHeaderKit dependency cohort is pinned in `55cdd0b`; consumer-side
+  field diagnostic ingestion is in progress.
 
 Observed malformed fields for the runtime gate:
 
