@@ -2,6 +2,11 @@
 
 Base: `main` at `101748f62fa27d6851b4284df7cafc721081fa5c`
 
+Delivery order:
+
+1. #83 bounded regular Objective-C tables and loaded roots
+2. #87 bounded loaded Objective-C RW extension arrays
+
 ## Current issue: #83
 
 Branch: `codex/issue-83-bounded-objc-metadata-reads`
@@ -111,7 +116,7 @@ Explicit exclusions:
   loaded strings are fully hardened.
 - Runtime RW-extension array-of-lists has a distinct tagged array ABI and is not
   used by PrivateHeaderKit's current metadata traversal. Its unchecked public
-  queries require a separately tracked design rather than a guessed #83 patch.
+  queries are tracked by #87 rather than receiving a guessed #83 patch.
 - No current iOS 27 crash is attributed to #83; deterministic malformed fixtures
   are the correctness gate rather than a claimed crash recovery.
 
