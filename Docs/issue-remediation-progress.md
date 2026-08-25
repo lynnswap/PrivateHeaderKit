@@ -101,3 +101,33 @@ Required runtime gate:
   27.0 build `24A5390f` with zero helper signals.
 - Preserve readable metadata/artifacts, or produce a normal bounded target
   failure when a target cannot be decoded.
+
+Implemented dependency:
+
+- MachOKit revision: `e0e0b30187ae74f2088d932845c8ddac2c79f36c`
+- Dependency branch: `codex/issue-80-bounded-chained-fixups`
+- Synthetic safety suite: 28 tests pass.
+- Exact binary oracle: 108 / 57 / 34 fixup pointers for PosterBoardUI,
+  PrivateSearchProtocols, and UserManagementUI, matching Apple `dyld_info`.
+- Branch-wide codex-review against `fec9503` completed with no findings after
+  fixing graph-level header, segment, multi-start, duplicate, bind-ordinal,
+  and pointer-format invariants.
+
+PrivateHeaderKit integration:
+
+- The raw helper preflights file-backed chained fixups before Objective-C or
+  Swift metadata readers can consume resolver projections.
+- The direct revision pin and tracked two-spelling SwiftPM mirror resolve to
+  one MachOKit checkout without an identity-conflict warning.
+- HelperProtocol tests: 13 passed.
+- RawDump tests: 89 passed.
+
+Runtime gate completed:
+
+- Run: `run-d777ff0f-8964-4129-bc2c-accdd472fad6`
+- Generation: `generation-6f89aee6-9a2d-4a3c-8ed1-7d2c2004da91`
+- All three targets completed with 6 / 1 / 3 artifacts and no failure summary.
+- SQLite integrity: `ok`; run warnings: 0; new helper incident reports: 0.
+- Runtime match override restored to default and the run-owned Simulator was
+  deleted. The isolated output was moved to Trash at
+  `/Users/kn/.Trash/privateheaderkit-issue80-smoke-yyKic6`.
