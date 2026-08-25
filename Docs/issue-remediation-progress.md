@@ -57,11 +57,16 @@ Design contract:
 
 Pending:
 
-- Replace the insufficient name-registry-only dependency implementation with
-  the refined canonical-cache contract, then publish a new coherent dependency
-  cohort.
+- Final MachOObjCSection commit
+  `c7716997aa1ace417c43fcd15b5322dbbe79ec54` is published. Focused protocol
+  tests, sibling relative-member tests, release build, iOS/watchOS architecture
+  builds, and the final codex review are green.
+- Final MachOSwiftSection cohort commit
+  `122f50ee5196816a0d9d628a56a978636bc9bb03` is published. The remote graph,
+  640 non-baseline tests, and branch-wide codex review are green.
 - Re-run the iOS 27.0 `24A5390f` ARKit runtime smoke and verify `ARAnchor`
   conformance plus zero matching warnings.
-- Update PrivateHeaderKit to the final coherent dependency cohort.
+- PrivateHeaderKit now resolves the final coherent dependency cohort; run its
+  exact-pin and repository validation gates.
 - Run repository validation and a clean base-branch codex review.
 - Push and open a non-draft PR to `main`.
