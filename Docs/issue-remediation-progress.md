@@ -30,14 +30,61 @@ Verified evidence:
 - Per-target process isolation contains the crash, but all three targets have
   zero artifacts and are absent from the committed generation.
 
-Design gate pending:
+Confirmed root cause:
 
-- Map every external offset/count boundary in starts-in-image,
-  starts-in-segment, page-start, multi-start, and chain walking.
-- Define one checked table/range owner and typed failure semantics without
-  constructing an invalid pointer or indexing before validation.
-- Preserve compatibility for existing public query APIs while making raw
-  helper traversal fail normally instead of signaling.
+- All three binaries contain a valid sparse `starts_in_image` table with
+  `seg_info_offset = [0, 0x10, 0]`. Apple dyld treats a zero entry as the
+  normal absence of fixups for that segment.
+- MachOKit instead reads each zero entry as a `starts_in_segment` record at
+  the start of `starts_in_image`. That aliases the real record's page size as
+  a bogus `page_count` of `0x4000`, and `pages(of:)` walks past the 64 KiB
+  mapping before any page-size guard runs.
+- `fixupPointersCache` exposed the older parser defect by eagerly traversing
+  every returned segment. The metadata readers are downstream observers, not
+  the owner of this failure.
+
+Design gate approved:
+
+- A shared internal bounded byte reader owns all fixup-blob ranges for both
+  file-backed and loaded-image table parsing. It performs exact integer
+  conversion, checked arithmetic, unaligned scalar loads, bounded arrays, and
+  bounded NUL-terminated strings before forming a pointer or collection.
+- The starts-table parser treats a zero segment offset as normal absence,
+  preserves the original Mach-O segment index for nonzero records, and
+  validates each record's declared size, page prefix, and complete flexible
+  start-entry storage.
+- The file chain walker maps a parsed record through its Mach-O segment index;
+  segment file offset/size owns disk reads. Page starts, multi-start indices
+  and termination, pointer width, and every `next * stride` advance must stay
+  inside the current page and file-backed segment.
+- Existing public nonthrowing APIs retain their signatures and project checked
+  results as `nil` or empty collections. Internal typed failures retain the
+  distinction between absence and invalid input; an additive support SPI may
+  expose preflight validation without adding a protocol requirement.
+- A malformed segment/page/chain cannot discard validated siblings in the
+  compatibility projection. Imports remain all-or-nothing because a partial
+  table would shift ordinal identity.
+- `pointers(of:in:)` and `pointer(for:in:)` share one checked walker. The
+  unconditional file-slice/read traps in that path and optional rebase
+  resolution are removed.
+
+Deterministic validation gate:
+
+- Exact sparse-table regression `[0, 0x10, 0]`, retaining segment index 1 and
+  its valid pointer chain.
+- Truncated header/segment-offset/page tables and out-of-range declared sizes.
+- Valid and invalid multi-start tables, including bad indices and missing
+  `START_LAST`.
+- Segment slice overflow, chain starts outside a page, pointer-width crossing,
+  and `next` crossing a page.
+- File/image parity for checked table parsing and compatibility projections.
+- Existing public API clients compile without source changes.
+
+Dependency delivery gate pending:
+
+- Publish the MachOKit fix from the exact pinned base to the `lynnswap` fork.
+- Prove one coherent SwiftPM graph uses that revision for all direct and
+  transitive MachOKit requirements before updating PrivateHeaderKit pins.
 
 Required runtime gate:
 
