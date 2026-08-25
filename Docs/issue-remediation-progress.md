@@ -24,16 +24,36 @@ Verified evidence:
 - Successful helper diagnostics already use a typed report and must remain
   separate from arbitrary process output.
 
-Design gate pending:
+Design gate approved:
 
-- Identify the single owner that observes ordered helper output, process
-  identity, termination reason, and terminal time.
-- Define a strict byte/line bound that preserves an actionable prefix and the
-  termination tail without retaining unbounded output.
-- Carry one failure capsule through raw dumping, persistence, and rendering
-  without introducing mirror state or a second source of truth.
-- Prove correlation fields against real Crash Reporter metadata without
-  persisting user-private paths.
+- No one process can observe every correlation fact for Simulator execution:
+  `ProcessRunner` owns the `xcrun simctl spawn` wrapper transcript and terminal
+  observation, while the raw helper owns its actual PID and loaded image.
+- The helper writes a separate, invocation-authenticated startup handshake
+  before loading target metadata. It contains only schema/invocation identity,
+  actual PID, executable name and LC_UUID, producer version, and Unix epoch
+  start microseconds. It is atomic, at most 2 KiB, and contains no path, device
+  UDID, command, environment, or runtime root.
+- The diagnostics report remains a completed typed-diagnostics contract. It is
+  not converted into a two-phase process-state file.
+- One bounded process-output value owns combined-stream ordering, head/tail
+  retention, line and byte omission counts, terminal-safe rendering, and the
+  inclusive output ceiling. Synthetic termination text is not classified as
+  process-emitted output.
+- `runPrivateHeaderKitRawDump` is the only failure-capsule builder because it
+  knows execution mode and receives the helper handshake, bounded transcript,
+  and wrapper termination. The capsule has at most 18 lines and 24 KiB, keeps
+  the first and last eight diagnostic lines, and ends with one canonical
+  concise headline.
+- The capsule is persisted unchanged in the existing
+  `runTargets.failureSummary`; no DB column or migration is added. Existing
+  executor, resume, store, and final-summary paths remain the single transport.
+- The current-process LC_UUID primitive moves to
+  `PrivateHeaderKitExecutableResolution`, which is already shared by Tooling
+  and RawDumpCore; the Mach-O walk is not duplicated.
+- Crash Reporter correlation uses PID, executable UUID/name, helper start,
+  capture time, termination observation, and signal when available. Incident
+  ID is assigned after a crash and is therefore not guessed at run time.
 
 Required validation:
 
