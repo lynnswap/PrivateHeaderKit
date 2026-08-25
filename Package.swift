@@ -93,6 +93,7 @@ let package = Package(
         .target(
             name: "PrivateHeaderKitTooling",
             dependencies: [
+                "PrivateHeaderKitExecutableResolution",
                 .product(
                     name: "Subprocess",
                     package: "swift-subprocess",
@@ -191,6 +192,7 @@ let package = Package(
         .testTarget(
             name: "PrivateHeaderKitRawDumpTests",
             dependencies: [
+                "PrivateHeaderKitExecutableResolution",
                 "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitTestSupport",

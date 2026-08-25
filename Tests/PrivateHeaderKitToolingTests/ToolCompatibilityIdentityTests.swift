@@ -7,6 +7,19 @@ import Testing
 
 @Suite
 struct ToolCompatibilityIdentityTests {
+    @Test func runningExecutableIdentityDelegatesToSharedMachOUUIDResolver() throws {
+        let executableUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        var resolutionCount = 0
+
+        let identity = try currentProcessExecutableBuildIdentity {
+            resolutionCount += 1
+            return executableUUID
+        }
+
+        #expect(resolutionCount == 1)
+        #expect(identity == "macho-uuid:11111111-2222-3333-4444-555555555555")
+    }
+
     @Test func toolInputHashingChecksCancellationBetweenBoundedReads() throws {
         let root = try makeIdentityFixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }

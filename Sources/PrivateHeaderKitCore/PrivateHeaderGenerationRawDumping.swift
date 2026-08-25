@@ -5,6 +5,15 @@ extension PrivateHeaderGeneration {
   package enum RawDumping {
     package static func makeInvocation(_ request: Request) -> Invocation {
       let helperURL = request.executionMode.helperURL(from: request.helperURLs)
+      let processHandshakeID = UUID()
+      let processHandshakeReportURL = request.stagingOutputDirectory
+        .deletingLastPathComponent()
+        .appendingPathComponent(
+          ".privateheaderkit-raw-process-handshake-"
+            + processHandshakeID.uuidString.lowercased()
+            + ".json",
+          isDirectory: false
+        )
       let diagnosticsReportURL = request.stagingOutputDirectory
         .deletingLastPathComponent()
         .appendingPathComponent(
@@ -17,10 +26,14 @@ extension PrivateHeaderGeneration {
         helperURL: helperURL,
         inputPath: request.inputPath,
         stagingOutputDirectory: request.stagingOutputDirectory,
+        processHandshakeID: processHandshakeID,
+        processHandshakeReportURL: processHandshakeReportURL,
         diagnosticsReportURL: diagnosticsReportURL,
         command: makeCommand(
           helperURL: helperURL,
           request: request,
+          processHandshakeID: processHandshakeID,
+          processHandshakeReportURL: processHandshakeReportURL,
           diagnosticsReportURL: diagnosticsReportURL
         ),
         environment: makeEnvironment(for: request)
@@ -61,6 +74,8 @@ extension PrivateHeaderGeneration {
     private static func makeCommand(
       helperURL: URL,
       request: Request,
+      processHandshakeID: UUID,
+      processHandshakeReportURL: URL,
       diagnosticsReportURL: URL
     ) -> [String] {
       var command: [String]
@@ -98,6 +113,12 @@ extension PrivateHeaderGeneration {
       if request.executionMode.isHost, request.options.preferRuntimeMetadata {
         command.append("-R")
       }
+      command += [
+        "--process-handshake-id",
+        processHandshakeID.uuidString.lowercased(),
+        "--process-handshake-report",
+        processHandshakeReportURL.path,
+      ]
       command += ["--diagnostics-report", diagnosticsReportURL.path]
       command.append(request.inputPath)
       return command
@@ -126,6 +147,10 @@ extension PrivateHeaderGeneration {
 
 extension PrivateHeaderGeneration.RawDumping {
   package enum ContractError: Error, Equatable, CustomStringConvertible, Sendable {
+    case missingProcessHandshake(String)
+    case invalidProcessHandshake(path: String, reason: String)
+    case processHandshakeTooLarge(path: String, actual: Int, maximum: Int)
+    case processHandshakeCleanupFailed(path: String, reason: String)
     case missingDiagnosticsReport(String)
     case invalidDiagnosticsReport(path: String, reason: String)
     case diagnosticsReportTooLarge(path: String, actual: Int, maximum: Int)
@@ -133,6 +158,14 @@ extension PrivateHeaderGeneration.RawDumping {
 
     package var description: String {
       switch self {
+      case .missingProcessHandshake(let path):
+        "raw helper contract failure: successful helper did not write process handshake at \(path)"
+      case .invalidProcessHandshake(let path, let reason):
+        "raw helper contract failure: invalid process handshake at \(path): \(reason)"
+      case .processHandshakeTooLarge(let path, let actual, let maximum):
+        "raw helper contract failure: process handshake at \(path) is \(actual) bytes; maximum is \(maximum)"
+      case .processHandshakeCleanupFailed(let path, let reason):
+        "raw helper contract failure: could not remove process handshake at \(path): \(reason)"
       case .missingDiagnosticsReport(let path):
         "raw helper contract failure: successful helper did not write diagnostics report at \(path)"
       case .invalidDiagnosticsReport(let path, let reason):
@@ -278,6 +311,8 @@ extension PrivateHeaderGeneration.RawDumping {
     package let helperURL: URL
     package let inputPath: String
     package let stagingOutputDirectory: URL
+    package let processHandshakeID: UUID
+    package let processHandshakeReportURL: URL
     package let diagnosticsReportURL: URL
     package let command: [String]
     package let environment: [String: String]

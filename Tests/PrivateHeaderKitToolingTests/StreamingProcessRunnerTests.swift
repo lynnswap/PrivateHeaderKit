@@ -522,6 +522,7 @@ struct StreamingProcessRunnerTests {
         #expect(result.lastLines.contains("stdout-line"))
         #expect(result.lastLines.contains("stderr-line"))
         #expect(result.lastLines.contains("tail-line"))
+        #expect(result.terminationObservedAtUnixEpochMicroseconds != nil)
         #expect(forwarded.contains("stdout-line"))
         #expect(forwarded.contains("stderr-line"))
         #expect(forwarded.contains("tail-line"))
@@ -794,7 +795,7 @@ struct StreamingProcessRunnerTests {
         }
     }
 
-    @Test func nonzeroStreamingExitKeepsCombinedTailAndSimpleMapsItToFailure() async throws {
+    @Test func nonzeroStreamingExitKeepsBoundedOutputAndSimpleRendersTermination() async throws {
         let command = [
             "/bin/sh", "-c",
             "printf 'stream-output\\n'; printf 'stream-error\\n' >&2; exit 24",
@@ -809,7 +810,13 @@ struct StreamingProcessRunnerTests {
 
         #expect(result.status == 24)
         #expect(!result.wasKilled)
+        #expect(result.emittedOutput.lines == ["stream-output", "stream-error"])
         #expect(result.lastLines == ["stream-output", "stream-error"])
+        #expect(result.diagnosticLines == [
+            "stream-output",
+            "stream-error",
+            "Exited with status 24",
+        ])
 
         do {
             try await ProcessRunner().runSimple(command, env: nil, cwd: nil)
@@ -854,12 +861,12 @@ struct StreamingProcessRunnerTests {
         #expect(output.allSatisfy { $0 == UInt8(ascii: "x") })
     }
 
-    @Test func chunkedCaptureFailureKeepsStatusAndBoundedStandardErrorTail() async throws {
+    @Test func chunkedCaptureFailureKeepsStatusAndStrictlyBoundedStandardError() async throws {
         let helper = try testHelperExecutableURL()
         let command = [
             helper.path,
             "large-stderr-failure",
-            String(StreamingOutputCollector.maximumLineByteCount + 4_096),
+            String(BoundedProcessOutput.maximumRenderedLineByteCount + 4_096),
         ]
 
         do {
@@ -877,12 +884,16 @@ struct StreamingProcessRunnerTests {
             }
             #expect(failedCommand == command)
             #expect(status == 19)
-            #expect(standardError.hasPrefix("[truncated 4096 bytes] "))
-            #expect(standardError.hasSuffix("\nfinal-diagnostic"))
+            let lines = standardError.split(separator: "\n").map(String.init)
+            #expect(lines.first?.hasPrefix("x") == true)
+            #expect(lines.first?.contains(" … ") == true)
+            #expect(lines.first?.hasSuffix("x") == true)
+            #expect(lines.first?.utf8.count == BoundedProcessOutput.maximumRenderedLineByteCount)
+            #expect(lines.contains("final-diagnostic"))
+            #expect(lines.contains { $0.hasPrefix("[omitted 0 lines and at least ") })
             #expect(
                 standardError.utf8.count
-                    == StreamingOutputCollector.maximumLineByteCount
-                        + "[truncated 4096 bytes] \nfinal-diagnostic".utf8.count
+                    <= BoundedProcessOutput.maximumRenderedByteCount
             )
         } catch {
             Issue.record("unexpected error: \(error)")
@@ -951,53 +962,121 @@ struct StreamingProcessRunnerTests {
         #expect(!FileManager.default.fileExists(atPath: streamingMarker))
     }
 
-    @Test func collectorPreservesUTF8AcrossInjectedChunkBoundariesAndKeepsEightLines() throws {
-        let complete = Array(
-            ("ignored-1\nignored-2\n" + (1...7).map { "line-\($0)\n" }.joined()
-                + "emoji:😀\n").utf8
-        )
+    @Test func collectorPreservesUTF8AcrossChunksAndRetainsHeadAndTail() throws {
+        let complete = Array(((1...19).map { "line-\($0)\n" }.joined() + "emoji:😀\n").utf8)
         let emojiStart = try #require(complete.firstIndex(of: 0xF0))
-        var collector = StreamingOutputCollector()
+        var collector = BoundedProcessOutputCollector()
         collector.consume(Array(complete[..<(emojiStart + 2)]))
         collector.consume(Array(complete[(emojiStart + 2)...]))
-        collector.finish()
+        let output = collector.finish()
 
-        #expect(collector.lastLines == [
-            "line-1", "line-2", "line-3", "line-4",
-            "line-5", "line-6", "line-7", "emoji:😀",
+        #expect(output.lines == [
+            "line-1", "line-2", "line-3", "line-4", "line-5", "line-6", "line-7",
+            "line-8", "[omitted 4 lines and at least 27 bytes]", "line-13", "line-14",
+            "line-15",
+            "line-16", "line-17", "line-18", "line-19", "emoji:😀",
         ])
+        #expect(output.omittedLineCount == 4)
+        #expect(output.omittedSourceByteCountLowerBound == 27)
     }
 
-    @Test func collectorBoundsUnterminatedLineAndMarksDiscardedPrefix() throws {
-        let discardedByteCount = 37
-        let bytes = Array(
-            repeating: UInt8(ascii: "x"),
-            count: StreamingOutputCollector.maximumLineByteCount + discardedByteCount
-        )
-        var collector = StreamingOutputCollector()
+    @Test func collectorRetainsBothEndsOfLongLineWithinOneKiB() throws {
+        let line = "BEGIN-" + String(repeating: "x", count: 20_000) + "-END"
+        let bytes = Array(line.utf8)
+        var collector = BoundedProcessOutputCollector()
         for chunkStart in stride(from: 0, to: bytes.count, by: 997) {
             collector.consume(Array(bytes[chunkStart..<min(chunkStart + 997, bytes.count)]))
         }
-        collector.finish()
+        let output = collector.finish()
 
-        #expect(collector.lastLines.count == 1)
-        let line = try #require(collector.lastLines.first)
-        let marker = "[truncated \(discardedByteCount) bytes] "
-        #expect(line.hasPrefix(marker))
-        let retained = line.dropFirst(marker.count)
-        #expect(retained.utf8.count == StreamingOutputCollector.maximumLineByteCount)
-        #expect(retained.allSatisfy { $0 == "x" })
+        let retained = try #require(output.lines.first)
+        #expect(retained.hasPrefix("BEGIN-"))
+        #expect(retained.contains(" … "))
+        #expect(retained.hasSuffix("-END"))
+        #expect(retained.utf8.count == BoundedProcessOutput.maximumRenderedLineByteCount)
+        #expect(output.lines.last?.hasPrefix("[omitted 0 lines and at least ") == true)
+        #expect(output.omittedLineCount == 0)
+        #expect(
+            output.omittedSourceByteCountLowerBound
+                == UInt(
+                    line.utf8.count
+                        - (BoundedProcessOutput.maximumRenderedLineByteCount * 8 * 2)
+                )
+        )
+        #expect(output.text.utf8.count <= BoundedProcessOutput.maximumRenderedByteCount)
     }
 
-    @Test func collectorReplacesInvalidAndIncompleteUTF8AtEOF() {
-        var collector = StreamingOutputCollector()
-        collector.consume([UInt8(ascii: "a"), 0x80, 0xF0, 0x9F])
-        collector.finish()
+    @Test func omittedWholeLineCountsRawSourceBytesBeforeTerminalEscaping() {
+        var lines = (1...8).map { "head-\($0)" }
+        lines.append("\u{001B}")
+        lines += (1...8).map { "tail-\($0)" }
 
-        #expect(collector.lastLines == ["a��"])
+        let output = BoundedProcessOutput(lines: lines)
+
+        #expect(output.omittedLineCount == 1)
+        #expect(output.omittedSourceByteCountLowerBound == 1)
+        #expect(output.lines[8] == "[omitted 1 lines and at least 1 bytes]")
     }
 
-    @Test func helperOutputPreservesExactBytesAndTailLines() async throws {
+    @Test func hugeASCIIWhitespaceLineIsNotClassifiedAsEmittedContent() {
+        var collector = BoundedProcessOutputCollector()
+        collector.consume(Array(repeating: UInt8(ascii: " "), count: 100_000))
+
+        let output = collector.finish()
+
+        #expect(output.isEmpty)
+        #expect(output.lines.isEmpty)
+        #expect(output.omittedLineCount == 0)
+        #expect(output.omittedSourceByteCountLowerBound == 0)
+    }
+
+    @Test func collectorTerminalSafesControlsAndInvalidIncompleteUTF8() throws {
+        var collector = BoundedProcessOutputCollector()
+        collector.consume([
+            UInt8(ascii: "a"), 0x1B, UInt8(ascii: "\t"), 0x80, 0xF0, 0x9F,
+        ])
+        let output = collector.finish()
+
+        #expect(output.lines == [#"a\u{001b}\t��"#])
+        let line = try #require(output.lines.first)
+        #expect(
+            line.unicodeScalars.allSatisfy {
+                switch $0.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator:
+                    false
+                default:
+                    true
+                }
+            }
+        )
+    }
+
+    @Test func resultInitializerCannotBypassOutputBounds() {
+        let lines = (1...10_000).map { index in
+            index == 1
+                ? "head\u{001B}" + String(repeating: "x", count: 5_000)
+                : "line-\(index)"
+        }
+        let result = StreamingCommandResult(status: 19, wasKilled: false, lastLines: lines)
+        let output = result.emittedOutput
+
+        #expect(output.lines.count == BoundedProcessOutput.maximumRenderedLineCount)
+        #expect(output.lines.first?.hasPrefix(#"head\u{001b}"#) == true)
+        #expect(output.lines[8].hasPrefix("[omitted 9984 lines and at least "))
+        #expect(output.lines.last == "line-10000")
+        #expect(output.omittedLineCount == 9_984)
+        #expect(output.omittedSourceByteCountLowerBound > 0)
+        #expect(
+            output.lines.allSatisfy {
+                $0.utf8.count <= BoundedProcessOutput.maximumRenderedLineByteCount
+            }
+        )
+        #expect(output.text.utf8.count <= BoundedProcessOutput.maximumRenderedByteCount)
+        #expect(result.lastLines.last == "line-10000")
+        #expect(result.diagnosticLines.last == "Exited with status 19")
+    }
+
+    @Test func helperOutputPreservesExactBytesAndBoundedLines() async throws {
         let helper = try testHelperExecutableURL()
         let passthrough = LockedDataBox()
         let expected = (1...9).map { "line-\($0)\n" }.joined() + "emoji:😀\nline-10\n"
@@ -1009,14 +1088,19 @@ struct StreamingProcessRunnerTests {
         )
 
         #expect(passthrough.snapshot() == Data(expected.utf8))
-        #expect(result.lastLines == [
-            "line-4", "line-5", "line-6", "line-7",
+        #expect(result.emittedOutput.lines == [
+            "line-1", "line-2", "line-3", "line-4", "line-5", "line-6", "line-7",
             "line-8", "line-9", "emoji:😀", "line-10",
         ])
+        #expect(result.lastLines == result.emittedOutput.lines)
     }
 
-    @Test func signalTerminationUsesSignalStatusAndKilledFlag() async throws {
-        let result = try await ProcessRunner().runStreaming(
+    @Test func signalOnlyTerminationKeepsEmittedOutputEmptyAndRecordsObservationTime()
+        async throws
+    {
+        let observedAt: UInt64 = 1_777_000_123_456_789
+        let runner = ProcessRunner(terminationObservationClock: { observedAt })
+        let result = try await runner.runStreaming(
             ["/bin/sh", "-c", "kill -TERM $$"],
             streamOutput: false,
             passthrough: { _ in }
@@ -1024,7 +1108,53 @@ struct StreamingProcessRunnerTests {
 
         #expect(result.status == SIGTERM)
         #expect(result.wasKilled)
+        #expect(result.emittedOutput.isEmpty)
+        #expect(result.emittedOutput.lines.isEmpty)
         #expect(result.lastLines == ["Terminated by signal \(SIGTERM)"])
+        #expect(result.diagnosticLines == [
+            "No process diagnostic was emitted.",
+            "Terminated by signal \(SIGTERM)",
+        ])
+        #expect(result.terminationObservedAtUnixEpochMicroseconds == observedAt)
+    }
+
+    @Test func longExceptionRetainsNameReasonFirstApplicationFrameAndTail() async throws {
+        let helper = try testHelperExecutableURL()
+        let observedAt: UInt64 = 1_777_000_987_654_321
+        let result = try await ProcessRunner(
+            terminationObservationClock: { observedAt }
+        ).runBuffered(
+            [helper.path, "long-exception-failure"],
+            env: nil,
+            cwd: nil
+        )
+
+        #expect(result.status == 19)
+        #expect(!result.wasKilled)
+        #expect(
+            result.emittedOutput.lines.first
+                == "*** Terminating app due to uncaught exception 'FixtureException', reason: 'fixture reason'"
+        )
+        #expect(
+            result.emittedOutput.lines.contains(
+                "2   PrivateHeaderKitToolingTestHelper frame-zero"
+            )
+        )
+        #expect(result.emittedOutput.lines[8].hasPrefix("[omitted "))
+        #expect(
+            result.emittedOutput.lines.suffix(2) == [
+                "libc++abi: terminating due to uncaught exception of type NSException",
+                "final-diagnostic-tail",
+            ]
+        )
+        #expect(result.emittedOutput.lines.count == 17)
+        #expect(
+            result.emittedOutput.text.utf8.count
+                <= BoundedProcessOutput.maximumRenderedByteCount
+        )
+        #expect(result.lastLines.last == "final-diagnostic-tail")
+        #expect(result.diagnosticLines.last == "Exited with status 19")
+        #expect(result.terminationObservedAtUnixEpochMicroseconds == observedAt)
     }
 
     @Test func waitableLeaderAnchorsIdentityThroughProcessGroupCompletion() async throws {

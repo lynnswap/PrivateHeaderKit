@@ -1397,6 +1397,63 @@ struct PrivateHeaderGenerationExecutorTests {
         == .init(rawValue: "run-001"))
   }
 
+  @Test func rawHelperFailureCapsuleSurvivesPartialAndFailedPersistence() async throws {
+    let capsule = [
+      "exception prefix",
+      "final diagnostic tail",
+      "privateheaderkit raw helper error: capsule=v1 termination=child_signal(11) "
+        + "wrapper_status=11 wrapper_killed=false "
+        + "handshake=available helper=privateheaderkit-sim-helper "
+        + "lc_uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee pid=4242 "
+        + "start_us=1700000000123456 termination_observed_us=1777000111222333",
+    ].joined(separator: "\n")
+    let cases: [(
+      name: String,
+      contents: String?,
+      targetStatus: PrivateHeaderGeneration.RunTargetStatus,
+      runStatus: PrivateHeaderGeneration.RunStatus
+    )] = [
+      ("partial", "partial header", .partial, .partial),
+      ("failed", nil, .failed, .failed),
+    ]
+
+    for testCase in cases {
+      let fixture = try ExecutorFixture()
+      defer { fixture.cleanup() }
+      try fixture.createFramework("Foo.framework")
+      let runID = PrivateHeaderGeneration.RunID(
+        rawValue: "run-capsule-\(testCase.name)"
+      )
+      let executor = fixture.executor(
+        runner: RecordingRunner(
+          contents: testCase.contents,
+          result: .init(terminationStatus: 11, failureSummary: capsule)
+        ),
+        runID: runID.rawValue,
+        generationID: "generation-capsule-\(testCase.name)"
+      )
+
+      do {
+        _ = try await executor.run(
+          plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh)
+        )
+        Issue.record("raw helper failure unexpectedly returned success")
+      } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
+        #expect(failure.summary.status == testCase.runStatus)
+        #expect(failure.summary.targetFailures.count == 1)
+        #expect(failure.summary.targetFailures.first?.status == testCase.targetStatus)
+        #expect(failure.summary.targetFailures.first?.message == capsule)
+      }
+
+      let store = try GenerationStore(databaseURL: fixture.databaseURL)
+      let snapshot = try await store.runSnapshot(runID)
+      #expect(snapshot.status == testCase.runStatus)
+      #expect(snapshot.targets.count == 1)
+      #expect(snapshot.targets.first?.status == testCase.targetStatus)
+      #expect(snapshot.targets.first?.failureSummary == capsule)
+    }
+  }
+
   @Test func zeroSuccessfulTargetsNeverCreateOrSwitchPointer() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }

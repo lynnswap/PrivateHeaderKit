@@ -5,6 +5,140 @@ import Testing
 
 @Suite
 struct PrivateHeaderKitHelperProtocolTests {
+    @Test func rawDumpProcessHandshakeRoundTripsItsExactBoundedSchema() throws {
+        let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let executableUUID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+            invocationID: invocationID,
+            processIdentifier: 4_242,
+            helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
+            executableName: "privateheaderkit-sim-helper",
+            executableMachOUUID: executableUUID
+        )
+
+        let data = try handshake.encoded()
+        let decoded = try PrivateHeaderKitRawDumpProcessHandshake.decode(
+            data,
+            expectedInvocationID: invocationID
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        #expect(decoded == handshake)
+        #expect(data.count <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount)
+        #expect(
+            Set(object.keys) == [
+                "schemaVersion",
+                "invocationID",
+                "processIdentifier",
+                "helperStartedAtUnixMicroseconds",
+                "executableName",
+                "executableMachOUUID",
+            ]
+        )
+        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["processIdentifier"] as? Int == 4_242)
+        #expect(object["executableName"] as? String == "privateheaderkit-sim-helper")
+        let wire = String(decoding: data, as: UTF8.self)
+        #expect(!wire.contains("/Users/"))
+        #expect(!wire.contains("SIMCTL_CHILD"))
+        #expect(!wire.contains("RuntimeRoot"))
+    }
+
+    @Test func rawDumpProcessHandshakeRejectsMismatchedInvocationAndOversizedPayload() throws {
+        let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let unexpectedID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+            invocationID: invocationID,
+            processIdentifier: 4_242,
+            helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
+            executableName: "privateheaderkit-sim-helper",
+            executableMachOUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        )
+
+        #expect(
+            throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.invocationIDMismatch(
+                expected: unexpectedID,
+                actual: invocationID
+            )
+        ) {
+            _ = try PrivateHeaderKitRawDumpProcessHandshake.decode(
+                handshake.encoded(),
+                expectedInvocationID: unexpectedID
+            )
+        }
+        #expect(
+            throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.encodedPayloadTooLarge(
+                actual: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount + 1,
+                maximum: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
+            )
+        ) {
+            _ = try PrivateHeaderKitRawDumpProcessHandshake.decode(
+                Data(
+                    repeating: 0,
+                    count: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount + 1
+                ),
+                expectedInvocationID: invocationID
+            )
+        }
+    }
+
+    @Test func rawDumpProcessHandshakeEnforcesExecutableNameBounds() throws {
+        let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let executableUUID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let maximum = try PrivateHeaderKitRawDumpProcessHandshake(
+            invocationID: invocationID,
+            processIdentifier: 4_242,
+            helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
+            executableName: String(
+                repeating: "\\",
+                count: PrivateHeaderKitRawDumpProcessHandshake.maximumExecutableNameUTF8Count
+            ),
+            executableMachOUUID: executableUUID
+        )
+
+        #expect(
+            try maximum.encoded().count
+                <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
+        )
+        #expect(throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.self) {
+            _ = try PrivateHeaderKitRawDumpProcessHandshake(
+                invocationID: invocationID,
+                processIdentifier: 4_242,
+                helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
+                executableName: String(
+                    repeating: "e",
+                    count: PrivateHeaderKitRawDumpProcessHandshake.maximumExecutableNameUTF8Count + 1
+                ),
+                executableMachOUUID: executableUUID
+            )
+        }
+    }
+
+    @Test func rawDumpProcessHandshakeStrictlyRejectsInvalidFields() {
+        let expectedID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let validFields = #""schemaVersion":1,"invocationID":"11111111-2222-3333-4444-555555555555","processIdentifier":4242,"helperStartedAtUnixMicroseconds":1700000000123456,"executableName":"privateheaderkit-sim-helper","executableMachOUUID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee""#
+        let payloads = [
+            "{\(validFields),\"path\":\"/private/var/tmp/helper\"}",
+            "{\(validFields.replacingOccurrences(of: "\"schemaVersion\":1", with: "\"schemaVersion\":2"))}",
+            "{\(validFields.replacingOccurrences(of: "11111111-2222-3333-4444-555555555555", with: "00000000-0000-0000-0000-000000000000"))}",
+            "{\(validFields.replacingOccurrences(of: "\"processIdentifier\":4242", with: "\"processIdentifier\":0"))}",
+            "{\(validFields.replacingOccurrences(of: "\"helperStartedAtUnixMicroseconds\":1700000000123456", with: "\"helperStartedAtUnixMicroseconds\":0"))}",
+            "{\(validFields.replacingOccurrences(of: "privateheaderkit-sim-helper", with: "/private/helper"))}",
+            "{\(validFields.replacingOccurrences(of: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", with: "00000000-0000-0000-0000-000000000000"))}",
+        ]
+
+        for payload in payloads {
+            #expect(throws: (any Error).self) {
+                _ = try PrivateHeaderKitRawDumpProcessHandshake.decode(
+                    Data(payload.utf8),
+                    expectedInvocationID: expectedID
+                )
+            }
+        }
+    }
+
     @Test func rawDumpDiagnosticsZeroReportRoundTrips() throws {
         let report = PrivateHeaderKitRawDumpDiagnosticsReport(
             producerVersion: "v1.2.3",

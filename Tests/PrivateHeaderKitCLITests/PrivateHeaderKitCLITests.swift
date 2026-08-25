@@ -1118,6 +1118,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             for: inventoryCommand
         )
         await runner.setStreamingHandler { command, _, _ in
+            try writeRawDumpProcessHandshake(for: command)
             guard let outputIndex = command.firstIndex(of: "-o"), outputIndex + 1 < command.count else {
                 throw ToolingError.message("raw dump command is missing its output directory")
             }
@@ -1203,7 +1204,20 @@ struct PrivateHeaderKitCLIExecutionTests {
 
         #expect(result.terminationStatus == 19)
         #expect(!result.wasKilled)
-        #expect(result.failureSummary == "helper-warning\nfatal-tail")
+        #expect(
+            result.failureSummary
+                == "helper-warning\nfatal-tail\n"
+                    + "privateheaderkit raw helper error: capsule=v1 termination=exit(19) "
+                    + "wrapper_status=19 wrapper_killed=false "
+                    + "handshake=available helper=privateheaderkit-raw-helper "
+                    + "lc_uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee pid=4242 "
+                    + "start_us=1700000000123456 termination_observed_us=unavailable"
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: invocation.processHandshakeReportURL.path
+            )
+        )
         #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
@@ -1222,6 +1236,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
         let runner = RecordingCommandRunner()
         await runner.setStreamingHandler { command, _, _ in
+            try writeRawDumpProcessHandshake(for: command)
             guard let reportIndex = command.firstIndex(of: "--diagnostics-report") else {
                 throw ToolingError.message("missing diagnostics report argument")
             }
@@ -1236,7 +1251,11 @@ struct PrivateHeaderKitCLIExecutionTests {
                     omittedDiagnosticCount: 2
                 )
             ).write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
-            return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+            return StreamingCommandResult(
+                status: 0,
+                wasKilled: false,
+                lastLines: ["successful helper stderr is not a persisted failure"]
+            )
         }
 
         let result = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
@@ -1244,16 +1263,28 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(result.diagnostics.count == 1)
         #expect(result.diagnostics.first?.owner == "Objective-C protocol P")
         #expect(result.omittedDiagnosticCount == 2)
+        #expect(result.failureSummary == nil)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: invocation.processHandshakeReportURL.path
+            )
+        )
         #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
-    @Test func successfulRawDumpRejectsMissingOrMalformedDiagnosticsReport() async throws {
+    @Test func successfulRawDumpRejectsMissingMalformedOrNonRegularDiagnosticsReport() async throws {
+        enum FixtureKind: CaseIterable, Sendable {
+            case missing
+            case malformed
+            case directory
+        }
+
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let stage = root.appendingPathComponent("stage", isDirectory: true)
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
 
-        for malformed in [false, true] {
+        for kind in FixtureKind.allCases {
             let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
                 try .init(
                     helperURLs: .init(
@@ -1266,16 +1297,59 @@ struct PrivateHeaderKitCLIExecutionTests {
                 )
             )
             let runner = RecordingCommandRunner()
-            if malformed {
-                await runner.setStreamingHandler { _, _, _ in
+            await runner.setStreamingHandler { command, _, _ in
+                try writeRawDumpProcessHandshake(for: command)
+                switch kind {
+                case .missing:
+                    break
+                case .malformed:
                     try Data("not-json".utf8).write(to: invocation.diagnosticsReportURL)
-                    return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
+                case .directory:
+                    try FileManager.default.createDirectory(
+                        at: invocation.diagnosticsReportURL,
+                        withIntermediateDirectories: false
+                    )
                 }
+                return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
             }
 
-            await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
-                _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
+            switch kind {
+            case .missing:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .missingDiagnosticsReport(invocation.diagnosticsReportURL.path)
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        invocation,
+                        processRunner: runner
+                    )
+                }
+            case .directory:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .invalidDiagnosticsReport(
+                            path: invocation.diagnosticsReportURL.path,
+                            reason: "report is not a regular file"
+                        )
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        invocation,
+                        processRunner: runner
+                    )
+                }
+            case .malformed:
+                await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        invocation,
+                        processRunner: runner
+                    )
+                }
             }
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: invocation.processHandshakeReportURL.path
+                )
+            )
             #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
         }
     }
@@ -1294,16 +1368,29 @@ struct PrivateHeaderKitCLIExecutionTests {
             )
         )
         let runner = RecordingCommandRunner()
-        await runner.setStreamingHandler { _, _, _ in
+        await runner.setStreamingHandler { command, _, _ in
+            try writeRawDumpProcessHandshake(for: command)
             try Data(
                 count: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount + 1
             ).write(to: invocation.diagnosticsReportURL)
             return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
         }
 
-        await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
+        await #expect(
+            throws: PrivateHeaderGeneration.RawDumping.ContractError
+                .diagnosticsReportTooLarge(
+                    path: invocation.diagnosticsReportURL.path,
+                    actual: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount + 1,
+                    maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
+                )
+        ) {
             _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
         }
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: invocation.processHandshakeReportURL.path
+            )
+        )
         #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
@@ -2635,6 +2722,36 @@ private func testPrivateHeaderKitHelperResolver(
     )
 }
 
+private func writeRawDumpProcessHandshake(
+    for command: [String],
+    processIdentifier: Int32 = 4_242,
+    helperStartedAtUnixMicroseconds: Int64 = 1_700_000_000_123_456,
+    executableName: String = "privateheaderkit-raw-helper",
+    executableMachOUUID: UUID = UUID(
+        uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    )!
+) throws {
+    guard let identifierIndex = command.firstIndex(of: "--process-handshake-id"),
+          identifierIndex + 1 < command.count,
+          let invocationID = UUID(uuidString: command[identifierIndex + 1]),
+          let reportIndex = command.firstIndex(of: "--process-handshake-report"),
+          reportIndex + 1 < command.count
+    else {
+        throw ToolingError.message("raw dump command is missing its process handshake")
+    }
+    let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+        invocationID: invocationID,
+        processIdentifier: processIdentifier,
+        helperStartedAtUnixMicroseconds: helperStartedAtUnixMicroseconds,
+        executableName: executableName,
+        executableMachOUUID: executableMachOUUID
+    )
+    try handshake.encoded().write(
+        to: URL(fileURLWithPath: command[reportIndex + 1]),
+        options: .atomic
+    )
+}
+
 private struct BufferedRawDumpProbeRunner: CommandRunning {
     func runCapture(
         _ command: [String],
@@ -2674,6 +2791,7 @@ private struct BufferedRawDumpProbeRunner: CommandRunning {
         env: [String: String]?,
         cwd: URL?
     ) async throws -> StreamingCommandResult {
+        try writeRawDumpProcessHandshake(for: command)
         if let reportIndex = command.firstIndex(of: "--diagnostics-report") {
             try Data("not-json".utf8).write(
                 to: URL(fileURLWithPath: command[reportIndex + 1]),

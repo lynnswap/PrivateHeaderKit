@@ -50,6 +50,63 @@ struct PrivateHeaderKitProgressRenderingTests {
             ])
     }
 
+    @Test func rawHelperCapsuleUsesTheSameCanonicalHeadlineLiveAndFinal() {
+        let headline = "privateheaderkit raw helper error: capsule=v1 "
+            + "termination=child_signal(11) wrapper_status=11 wrapper_killed=false "
+            + "handshake=available "
+            + "helper=privateheaderkit-sim-helper "
+            + "lc_uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee pid=4242 "
+            + "start_us=1700000000123456 "
+            + "termination_observed_us=1777000111222333"
+        let capsule = "exception prefix\nfinal diagnostic tail\n" + headline
+        let liveOutput = ProgressTextRecorder()
+        let liveFailures = ProgressTextRecorder()
+        let liveRenderer = PrivateHeaderKitProgressOutputLogger(
+            outputLogger: { liveOutput.append($0) },
+            failureLogger: { liveFailures.append($0) },
+            artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
+            inlineProgressEnabled: false,
+            startsTimer: false
+        )
+        liveRenderer.report(
+            .targetFinished(
+                index: 1,
+                total: 1,
+                displayName: "Foo",
+                status: .partial,
+                failureSummary: capsule
+            )
+        )
+
+        let finalOutput = ProgressTextRecorder()
+        renderPrivateHeaderKitRunSummary(
+            .init(
+                runID: .init(rawValue: "run-capsule"),
+                status: .partial,
+                targetCounts: .init(total: 1, partial: 1),
+                artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
+                stateDatabaseURL: URL(fileURLWithPath: "/tmp/generation.sqlite"),
+                targetFailures: [
+                    .init(
+                        targetID: "framework:Foo.framework",
+                        displayName: "Foo",
+                        status: .partial,
+                        message: capsule
+                    )
+                ]
+            ),
+            sourceDisplayName: "iOS 27.0 beta (24A5390f)",
+            targetQuery: "Foo",
+            title: "Generation completed with failures",
+            outputLogger: { finalOutput.append($0) }
+        )
+
+        #expect(liveOutput.values.isEmpty)
+        #expect(liveFailures.values == ["[1/1] Foo partial", "  " + headline])
+        #expect(finalOutput.values.contains("    " + headline))
+        #expect(concisePrivateHeaderKitDiagnostic(capsule) == headline)
+    }
+
     @Test func terminalOutputCyclesDotsAndReusesTheSuccessfulTargetLine() {
         let output = ProgressTextRecorder()
         let failures = ProgressTextRecorder()
