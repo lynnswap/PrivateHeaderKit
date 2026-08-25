@@ -77,6 +77,10 @@ Implementation completed:
 - `runPrivateHeaderKitRawDump` consumes and removes both reports on every
   success/failure/throw path and builds one bounded failure capsule on a
   nonzero helper result.
+- `RawDumpReportIO` opens each report with no-follow, nonblocking, no-controlling-
+  terminal, and close-on-exec flags, then performs regular-file inspection and
+  a `maximum + 1` bounded read on that same descriptor. This removes the
+  check/reopen race for both handshake and diagnostics reports.
 - Simulator child termination is recognized only from the exact final
   `simctl` line when the wrapper's normal exit status corroborates the POSIX
   `128 + signal` convention. The wrapper line is then replaced by the typed
@@ -89,6 +93,10 @@ Validation completed:
 - `swift test --force-resolved-versions` passed after integration.
 - The focused capsule suite passed with 8 tests after the measured `simctl`
   exit-status correction.
+- The CLI suite passed 90 tests under both Swift 6.4 / Xcode 27 and Swift 6.3.2 /
+  Xcode 26.5 after the descriptor-bound report reader was added. Deterministic
+  tests cover path replacement after open, oversized files, symlinks,
+  directories, FIFOs, devices, and typed contract-error mapping.
 - A release-mode run against the exact iOS 27.0 beta `24A5390f` runtime and
   `AXSpringBoardServerInstance` reproduced its expected uncaught exception as
   run `run-d455b470-6ec7-4955-9157-7bc90c082a47`.
