@@ -37,7 +37,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",
-            revision: "c7716997aa1ace417c43fcd15b5322dbbe79ec54"
+            revision: "0d17e3d77556991dc128aa92547ea1b1ea8f9e2e"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
@@ -45,7 +45,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "122f50ee5196816a0d9d628a56a978636bc9bb03"
+            revision: "a7e5982ed7de5dab5dec76036682ea55825b77a8"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",

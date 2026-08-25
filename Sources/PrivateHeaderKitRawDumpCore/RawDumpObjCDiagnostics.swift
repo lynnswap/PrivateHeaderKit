@@ -42,39 +42,102 @@ func rawDumpObjCProtocolInfoOptions(
     }
 }
 
+private struct RawDumpObjCDiagnosticChannel {
+    private(set) var records: [PrivateHeaderKitRawDumpDiagnostic] = []
+    private var seen = Set<PrivateHeaderKitRawDumpDiagnostic>()
+    private(set) var omittedObservationCount: UInt = 0
+
+    mutating func append(_ record: PrivateHeaderKitRawDumpDiagnostic) {
+        guard !seen.contains(record) else { return }
+        // Do not retain identities beyond the wire cap: that would make malformed-target
+        // memory unbounded. Repeated cap-excluded records count as omitted observations;
+        // global uniqueness beyond the retained window is intentionally not claimed.
+        guard records.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        else {
+            omittedObservationCount = saturatingSum(omittedObservationCount, 1)
+            return
+        }
+        seen.insert(record)
+        records.append(record)
+    }
+
+    func contains(_ record: PrivateHeaderKitRawDumpDiagnostic) -> Bool {
+        seen.contains(record)
+    }
+}
+
 final class RawDumpObjCDiagnosticsAccumulator {
-    private var retained = Set<PrivateHeaderKitRawDumpDiagnostic>()
-    private var omittedDiagnosticCount: UInt = 0
+    private var fieldDiagnostics = RawDumpObjCDiagnosticChannel()
+    private var protocolDiagnostics = RawDumpObjCDiagnosticChannel()
+    private var memberDiagnostics = RawDumpObjCDiagnosticChannel()
+
+    func append<Value>(contentsOf result: ObjCMetadataReadResult<Value>) {
+        append(contentsOf: result.fieldDiagnostics)
+        append(contentsOf: result.diagnostics)
+        append(contentsOf: result.memberListDiagnostics)
+    }
+
+    func append(contentsOf diagnostics: [ObjCMetadataFieldDiagnostic]) {
+        for diagnostic in diagnostics {
+            fieldDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
+        }
+    }
 
     func append(contentsOf diagnostics: [ObjCProtocolDiagnostic]) {
         for diagnostic in diagnostics {
-            append(privateHeaderKitDiagnostic(from: diagnostic))
+            protocolDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
         }
     }
 
     func append(contentsOf diagnostics: [ObjCMemberListDiagnostic]) {
         for diagnostic in diagnostics {
-            append(privateHeaderKitDiagnostic(from: diagnostic))
+            memberDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
         }
-    }
-
-    private func append(_ record: PrivateHeaderKitRawDumpDiagnostic) {
-        guard !retained.contains(record) else { return }
-        guard retained.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount else {
-            omittedDiagnosticCount = omittedDiagnosticCount == UInt.max
-                ? UInt.max
-                : omittedDiagnosticCount + 1
-            return
-        }
-        retained.insert(record)
     }
 
     var report: PrivateHeaderKitRawDumpDiagnosticsReport {
-        PrivateHeaderKitRawDumpDiagnosticsReport(
-            diagnostics: Array(retained),
+        var selected: [PrivateHeaderKitRawDumpDiagnostic] = []
+        selected.reserveCapacity(PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount)
+        var omittedDiagnosticCount = saturatingSum(
+            fieldDiagnostics.omittedObservationCount,
+            protocolDiagnostics.omittedObservationCount
+        )
+        omittedDiagnosticCount = saturatingSum(
+            omittedDiagnosticCount,
+            memberDiagnostics.omittedObservationCount
+        )
+
+        func select(_ record: PrivateHeaderKitRawDumpDiagnostic) {
+            if selected.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount {
+                selected.append(record)
+            } else {
+                omittedDiagnosticCount = saturatingSum(omittedDiagnosticCount, 1)
+            }
+        }
+
+        for record in fieldDiagnostics.records {
+            select(record)
+        }
+        for record in protocolDiagnostics.records
+        where !fieldDiagnostics.contains(record) {
+            select(record)
+        }
+        for record in memberDiagnostics.records
+        where !fieldDiagnostics.contains(record)
+            && !protocolDiagnostics.contains(record) {
+            select(record)
+        }
+
+        return PrivateHeaderKitRawDumpDiagnosticsReport(
+            diagnostics: selected,
             omittedDiagnosticCount: omittedDiagnosticCount
         )
     }
+}
+
+private func saturatingSum(_ lhs: UInt, _ rhs: UInt) -> UInt {
+    let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+    return overflow ? UInt.max : sum
 }
 
 func writeRawDumpDiagnosticsReport(
@@ -124,6 +187,56 @@ private func privateHeaderKitDiagnostic(
                 + " \(invalid.protocolOffset) has no stable identity"
         )
     }
+}
+
+private func privateHeaderKitDiagnostic(
+    from diagnostic: ObjCMetadataFieldDiagnostic
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    switch diagnostic {
+    case .classROData(let classROData):
+        rawDumpClassRODataDiagnostic(
+            subject: classROData.subject,
+            role: classROData.role,
+            classObjectOffset: classROData.classObjectOffset,
+            failure: classROData.failure
+        )
+    case .ivarOffset(let ivarOffset):
+        rawDumpIvarOffsetDiagnostic(
+            subject: ivarOffset.subject,
+            index: ivarOffset.index,
+            name: ivarOffset.name,
+            failure: ivarOffset.failure
+        )
+    }
+}
+
+func rawDumpClassRODataDiagnostic(
+    subject: ObjCMetadataFieldDiagnostic.Subject,
+    role: ObjCMetadataFieldDiagnostic.ClassRole,
+    classObjectOffset: Int,
+    failure: ObjCMetadataFieldDiagnostic.Failure
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    PrivateHeaderKitRawDumpDiagnostic(
+        owner: subjectDescription(subject),
+        degradation:
+            "\(classRoleDescription(role)) at class object offset \(classObjectOffset)"
+            + " could not be read: \(failureDescription(failure))"
+    )
+}
+
+func rawDumpIvarOffsetDiagnostic(
+    subject: ObjCMetadataFieldDiagnostic.Subject,
+    index: Int,
+    name: String,
+    failure: ObjCMetadataFieldDiagnostic.Failure
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    PrivateHeaderKitRawDumpDiagnostic(
+        owner: subjectDescription(subject),
+        degradation:
+            "ivar-offset metadata for ivar index \(index)"
+            + " could not be read: \(failureDescription(failure))"
+            + "; name \(boundedMetadataString(name))"
+    )
 }
 
 private func privateHeaderKitDiagnostic(
@@ -182,6 +295,27 @@ private func subjectDescription(_ subject: ObjCProtocolDiagnostic.Subject) -> St
         "Objective-C protocol \(boundedMetadataString(name))"
     case .category(let className, let name):
         "Objective-C category \(boundedMetadataString(className))(\(boundedMetadataString(name)))"
+    }
+}
+
+private func subjectDescription(_ subject: ObjCMetadataFieldDiagnostic.Subject) -> String {
+    switch subject {
+    case .namedClass(let name, let objectOffset):
+        "Objective-C class object at offset \(objectOffset)"
+            + " named \(boundedMetadataString(name))"
+    case .classObject(let offset):
+        "Objective-C class object at offset \(offset)"
+    }
+}
+
+private func classRoleDescription(
+    _ role: ObjCMetadataFieldDiagnostic.ClassRole
+) -> String {
+    switch role {
+    case .instance:
+        "instance class RO data"
+    case .metaclass:
+        "metaclass RO data"
     }
 }
 
@@ -301,6 +435,21 @@ private func failureDescription(
         "byte count overflowed for \(elementCount) elements of size \(elementSize)"
     case .rangeOverflow(let startOffset, let byteCount):
         "range overflowed from offset \(startOffset) for \(byteCount) bytes"
+    case .unreadableFileRange(let offset, let byteCount):
+        "file range at offset \(offset) is not readable for \(byteCount) bytes"
+    case .unreadableImageRange(let address, let byteCount):
+        "image range at address \(address) is not readable for \(byteCount) bytes"
+    }
+}
+
+private func failureDescription(
+    _ failure: ObjCMetadataFieldDiagnostic.Failure
+) -> String {
+    switch failure {
+    case .unresolvedRebase:
+        "field pointer could not be rebased"
+    case .missingBackingData:
+        "field pointer has no readable backing data"
     case .unreadableFileRange(let offset, let byteCount):
         "file range at offset \(offset) is not readable for \(byteCount) bytes"
     case .unreadableImageRange(let address, let byteCount):

@@ -1678,11 +1678,11 @@ private func protocolInfo(
     switch machO {
     case .file(let file):
         let result = proto.readInfo(in: file, options: options)
-        diagnostics.append(contentsOf: result.diagnostics)
+        diagnostics.append(contentsOf: result)
         return result.value
     case .loaded(let image):
         let result = proto.readInfo(in: image, options: options)
-        diagnostics.append(contentsOf: result.diagnostics)
+        diagnostics.append(contentsOf: result)
         return result.value
     }
 }
@@ -1696,11 +1696,11 @@ private func categoryInfo(
     switch machO {
     case .file(let file):
         let result = category.readInfo(in: file, options: options)
-        diagnostics.append(contentsOf: result.diagnostics)
+        diagnostics.append(contentsOf: result)
         return result.value
     case .loaded(let image):
         let result = category.readInfo(in: image, options: options)
-        diagnostics.append(contentsOf: result.diagnostics)
+        diagnostics.append(contentsOf: result)
         return result.value
     }
 }
@@ -1714,8 +1714,7 @@ private func collectClassInfos<T: ObjCClassProtocol>(
     let readOptions = rawDumpObjCInfoOptions(for: .class)
     for cls in classes {
         let result = cls.readInfo(in: machO, options: readOptions)
-        options.objcDiagnostics.append(contentsOf: result.diagnostics)
-        options.objcDiagnostics.append(contentsOf: result.memberListDiagnostics)
+        options.objcDiagnostics.append(contentsOf: result)
         if let info = result.value {
             classInfos[info.name] = info
         } else if options.verbose && options.logSkippedClasses {
@@ -1733,8 +1732,7 @@ private func collectClassInfos<T: ObjCClassProtocol>(
     let readOptions = rawDumpObjCInfoOptions(for: .class)
     for cls in classes {
         let result = cls.readInfo(in: machO, options: readOptions)
-        options.objcDiagnostics.append(contentsOf: result.diagnostics)
-        options.objcDiagnostics.append(contentsOf: result.memberListDiagnostics)
+        options.objcDiagnostics.append(contentsOf: result)
         if let info = result.value {
             classInfos[info.name] = info
         } else if options.verbose && options.logSkippedClasses {

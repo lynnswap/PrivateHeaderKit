@@ -43,42 +43,45 @@ struct ObjCMemberListDiagnosticsTests {
         )
     }
 
-    @Test func memberAndProtocolDiagnosticsShareBoundedWireReport() throws {
+    @Test func fieldProtocolAndMemberDiagnosticsSharePriorityAndWireReport() throws {
         let fixture = try InvalidMemberListFixture(
             memberDiagnosticCount: PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
         )
         let accumulator = RawDumpObjCDiagnosticsAccumulator()
-        let protocolDiagnostics = fixture.objcProtocol.readInfo(
+        let result = fixture.objcClass.readInfo(
             in: fixture.machO
-        ).diagnostics
-        #expect(protocolDiagnostics.count == 1)
-        accumulator.append(contentsOf: protocolDiagnostics)
-        accumulator.append(contentsOf: protocolDiagnostics)
-
-        let memberDiagnostics = fixture.objcClass.readInfo(
-            in: fixture.machO
-        ).memberListDiagnostics
+        )
+        #expect(result.fieldDiagnostics.count == 1)
+        #expect(result.diagnostics.count == 1)
         #expect(
-            memberDiagnostics.count
+            result.memberListDiagnostics.count
                 == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
         )
-        accumulator.append(contentsOf: memberDiagnostics)
+        accumulator.append(contentsOf: result)
 
         let report = accumulator.report
         #expect(
             report.diagnostics.count
                 == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
         )
-        #expect(report.omittedDiagnosticCount == 1)
+        #expect(report.omittedDiagnosticCount == 2)
         #expect(
             report.diagnostics.count {
-                $0.owner.hasPrefix("Objective-C protocol")
+                $0.degradation.hasPrefix("ivar-offset metadata")
             } == 1
         )
         #expect(
             report.diagnostics.count {
-                $0.owner.hasPrefix("Objective-C class")
-            } == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount - 1
+                $0.degradation.hasPrefix("adopted-protocol metadata")
+            } == 1
+        )
+        #expect(
+            report.diagnostics.count {
+                $0.degradation.hasPrefix("instance-method metadata")
+            } == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount - 2
+        )
+        #expect(
+            report.diagnostics == report.diagnostics.sorted(by: diagnosticPrecedes)
         )
 
         let encoded = try JSONEncoder().encode(report)
@@ -88,24 +91,131 @@ struct ObjCMemberListDiagnosticsTests {
         )
         #expect(decoded == report)
     }
+
+    @Test func resultIngestionDeduplicatesAllChannelsBeforeTheCap() throws {
+        let fixture = try InvalidMemberListFixture(memberDiagnosticCount: 1)
+        let result = fixture.objcClass.readInfo(in: fixture.machO)
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+
+        accumulator.append(contentsOf: result)
+        accumulator.append(contentsOf: result)
+
+        let report = accumulator.report
+        #expect(report.diagnostics.count == 3)
+        #expect(report.omittedDiagnosticCount == 0)
+        #expect(
+            report.diagnostics == report.diagnostics.sorted(by: diagnosticPrecedes)
+        )
+    }
+
+    @Test func capExcludedIdentityIsCountedPerObservationWithoutGrowingRetention() throws {
+        let fixture = try InvalidMemberListFixture(
+            memberDiagnosticCount:
+                PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount + 1,
+            includesFieldDiagnostic: false,
+            includesProtocolDiagnostic: false
+        )
+        let result = fixture.objcClass.readInfo(in: fixture.machO)
+        #expect(
+            result.memberListDiagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount + 1
+        )
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+
+        accumulator.append(contentsOf: result)
+        let firstReport = accumulator.report
+        #expect(
+            firstReport.diagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        )
+        #expect(firstReport.omittedDiagnosticCount == 1)
+
+        accumulator.append(contentsOf: result)
+        let secondReport = accumulator.report
+        #expect(secondReport.diagnostics == firstReport.diagnostics)
+        #expect(secondReport.omittedDiagnosticCount == 2)
+    }
+
+    @Test func lateHigherPriorityResultsDisplaceMembersWithoutDoubleCountingOmissions() throws {
+        let memberFixture = try InvalidMemberListFixture(
+            memberDiagnosticCount: PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount,
+            includesFieldDiagnostic: false,
+            includesProtocolDiagnostic: false
+        )
+        let memberResult = memberFixture.objcClass.readInfo(in: memberFixture.machO)
+        #expect(memberResult.fieldDiagnostics.isEmpty)
+        #expect(memberResult.diagnostics.isEmpty)
+        #expect(
+            memberResult.memberListDiagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        )
+
+        let priorityFixture = try InvalidMemberListFixture(memberDiagnosticCount: 0)
+        let priorityResult = priorityFixture.objcClass.readInfo(in: priorityFixture.machO)
+        #expect(priorityResult.fieldDiagnostics.count == 1)
+        #expect(priorityResult.diagnostics.count == 1)
+        #expect(priorityResult.memberListDiagnostics.isEmpty)
+
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+        accumulator.append(contentsOf: memberResult)
+        #expect(accumulator.report.omittedDiagnosticCount == 0)
+        accumulator.append(contentsOf: priorityResult)
+
+        let prioritizedReport = accumulator.report
+        #expect(
+            prioritizedReport.diagnostics.count {
+                $0.degradation.hasPrefix("ivar-offset metadata")
+            } == 1
+        )
+        #expect(
+            prioritizedReport.diagnostics.count {
+                $0.degradation.hasPrefix("adopted-protocol metadata")
+            } == 1
+        )
+        #expect(
+            prioritizedReport.diagnostics.count {
+                $0.degradation.hasPrefix("instance-method metadata")
+            } == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount - 2
+        )
+        #expect(prioritizedReport.omittedDiagnosticCount == 2)
+
+        accumulator.append(contentsOf: memberResult)
+        accumulator.append(contentsOf: priorityResult)
+        #expect(accumulator.report == prioritizedReport)
+        #expect(accumulator.report.omittedDiagnosticCount == 2)
+    }
+
+    private func diagnosticPrecedes(
+        _ lhs: PrivateHeaderKitRawDumpDiagnostic,
+        _ rhs: PrivateHeaderKitRawDumpDiagnostic
+    ) -> Bool {
+        if lhs.owner != rhs.owner { return lhs.owner < rhs.owner }
+        return lhs.degradation < rhs.degradation
+    }
 }
 
 private final class InvalidMemberListFixture {
     let machO: MachOFile
     let objcClass: ObjCClass64
-    let objcProtocol: ObjCProtocol64
     private let url: URL
 
-    init(memberDiagnosticCount: Int) throws {
+    init(
+        memberDiagnosticCount: Int,
+        includesFieldDiagnostic: Bool = true,
+        includesProtocolDiagnostic: Bool = true
+    ) throws {
         let fileSize = 0x4000
         let vmAddress: UInt64 = 0x1_0000_0000
         let classOffset = 0x400
         let metaClassOffset = 0x480
         let classROOffset = 0x500
         let metaClassROOffset = 0x580
+        let protocolListOffset = 0x700
         let memberListOffset = 0x800
+        let ivarListOffset = 0x1400
         let classNameOffset = 0x1800
-        let protocolNameOffset = 0x1840
+        let ivarNameOffset = 0x1840
+        let ivarTypeOffset = 0x1880
         let outerStride = MemoryLayout<RelativeListListEntry.Layout>.size
         var data = Data(count: fileSize)
 
@@ -133,7 +243,10 @@ private final class InvalidMemberListFixture {
         }
 
         data.storeCString("MemberOwner", at: classNameOffset)
-        data.storeCString("ProtocolOwner", at: protocolNameOffset)
+        data.storeCString("_invalidOffset", at: ivarNameOffset)
+        data.storeCString("@", at: ivarTypeOffset)
+        data.storeValue(UInt64(1), at: protocolListOffset)
+        data.storeValue(UInt64(0xDEAD_BEEF), at: protocolListOffset + 8)
         data.storeValue(
             RawEntrySizeListHeader(
                 entsizeAndFlags: UInt32(outerStride),
@@ -150,6 +263,23 @@ private final class InvalidMemberListFixture {
             entry.listOffset = Int64(fileSize + 0x100 + index * 8 - entryOffset)
             data.storeValue(entry, at: entryOffset)
         }
+        data.storeValue(
+            RawEntrySizeListHeader(
+                entsizeAndFlags: UInt32(MemoryLayout<RawIvar64>.size),
+                count: 1
+            ),
+            at: ivarListOffset
+        )
+        data.storeValue(
+            RawIvar64(
+                offset: address(fileSize - 2),
+                name: address(ivarNameOffset),
+                type: address(ivarTypeOffset),
+                alignment: 0,
+                size: 8
+            ),
+            at: ivarListOffset + MemoryLayout<RawEntrySizeListHeader>.size
+        )
 
         data.storeValue(
             RawClassROData64(
@@ -160,8 +290,8 @@ private final class InvalidMemberListFixture {
                 ivarLayout: 0,
                 name: address(classNameOffset),
                 baseMethods: address(memberListOffset) | 1,
-                baseProtocols: 0,
-                ivars: 0,
+                baseProtocols: includesProtocolDiagnostic ? address(protocolListOffset) : 0,
+                ivars: includesFieldDiagnostic ? address(ivarListOffset) : 0,
                 weakIvarLayout: 0,
                 baseProperties: 0
             ),
@@ -211,24 +341,6 @@ private final class InvalidMemberListFixture {
             ObjCClass64.Layout.self,
             at: classOffset
         )
-        let protocolLayout = data.loadValue(
-            ObjCProtocol64.Layout.self,
-            from: RawProtocol64(
-                isa: 0,
-                mangledName: address(protocolNameOffset),
-                protocols: 0,
-                instanceMethods: 0,
-                classMethods: 0,
-                optionalInstanceMethods: 0,
-                optionalClassMethods: 0,
-                instanceProperties: 0,
-                size: UInt32(MemoryLayout<ObjCProtocol64.Layout>.size),
-                flags: 0,
-                extendedMethodTypes: 0,
-                demangledName: 0,
-                classProperties: 0
-            )
-        )
 
         url = FileManager.default.temporaryDirectory.appendingPathComponent(
             "PrivateHeaderKitInvalidMemberList-\(UUID().uuidString)"
@@ -236,7 +348,6 @@ private final class InvalidMemberListFixture {
         try data.write(to: url)
         machO = try MachOFile(url: url)
         objcClass = ObjCClass64(layout: classLayout, offset: classOffset)
-        objcProtocol = ObjCProtocol64(layout: protocolLayout, offset: -1)
     }
 
     deinit {
@@ -298,20 +409,12 @@ private struct RawClass64 {
     let swiftClassFlags: UInt32
 }
 
-private struct RawProtocol64 {
-    let isa: UInt64
-    let mangledName: UInt64
-    let protocols: UInt64
-    let instanceMethods: UInt64
-    let classMethods: UInt64
-    let optionalInstanceMethods: UInt64
-    let optionalClassMethods: UInt64
-    let instanceProperties: UInt64
+private struct RawIvar64 {
+    let offset: UInt64
+    let name: UInt64
+    let type: UInt64
+    let alignment: UInt32
     let size: UInt32
-    let flags: UInt32
-    let extendedMethodTypes: UInt64
-    let demangledName: UInt64
-    let classProperties: UInt64
 }
 
 private extension Data {
