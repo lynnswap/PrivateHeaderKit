@@ -31,8 +31,8 @@ Design gate approved:
   observation, while the raw helper owns its actual PID and loaded image.
 - The helper writes a separate, invocation-authenticated startup handshake
   before loading target metadata. It contains only schema/invocation identity,
-  actual PID, executable name and LC_UUID, producer version, and Unix epoch
-  start microseconds. It is atomic, at most 2 KiB, and contains no path, device
+  actual PID, executable name and LC_UUID, and Unix epoch start microseconds.
+  It is atomic, at most 2 KiB, and contains no path, producer text, device
   UDID, command, environment, or runtime root.
 - The diagnostics report remains a completed typed-diagnostics contract. It is
   not converted into a two-phase process-state file.
