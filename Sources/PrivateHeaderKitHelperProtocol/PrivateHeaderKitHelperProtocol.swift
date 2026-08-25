@@ -30,6 +30,207 @@ package enum PrivateHeaderKitProducerVersion {
     }
 }
 
+package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Sendable {
+    package static let currentSchemaVersion = 1
+    package static let maximumEncodedByteCount = 2 * 1_024
+    package static let maximumExecutableNameUTF8Count = 128
+
+    package let schemaVersion: Int
+    package let invocationID: UUID
+    package let processIdentifier: Int32
+    package let helperStartedAtUnixMicroseconds: Int64
+    package let executableName: String
+    package let executableMachOUUID: UUID
+    package let producerVersion: String
+
+    package init(
+        invocationID: UUID,
+        processIdentifier: Int32,
+        helperStartedAtUnixMicroseconds: Int64,
+        executableName: String,
+        executableMachOUUID: UUID,
+        producerVersion: String = PrivateHeaderKitBuildInfo.version
+    ) throws {
+        try Self.validateInvocationID(invocationID)
+        try Self.validateProcessIdentifier(processIdentifier)
+        try Self.validateStartTime(helperStartedAtUnixMicroseconds)
+        try Self.validateExecutableName(executableName)
+        try Self.validateExecutableMachOUUID(executableMachOUUID)
+        let producerVersion = try Self.validateProducerVersion(producerVersion)
+
+        self.schemaVersion = Self.currentSchemaVersion
+        self.invocationID = invocationID
+        self.processIdentifier = processIdentifier
+        self.helperStartedAtUnixMicroseconds = helperStartedAtUnixMicroseconds
+        self.executableName = executableName
+        self.executableMachOUUID = executableMachOUUID
+        self.producerVersion = producerVersion
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let fields = try decoder.container(keyedBy: FieldKey.self)
+        guard Set(fields.allKeys.map(\.stringValue))
+                == Set(CodingKeys.allCases.map(\.rawValue))
+        else {
+            throw ValidationError.invalidFieldSet
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard schemaVersion == Self.currentSchemaVersion else {
+            throw ValidationError.unsupportedSchemaVersion(
+                expected: Self.currentSchemaVersion,
+                actual: schemaVersion
+            )
+        }
+
+        let invocationID = try container.decode(UUID.self, forKey: .invocationID)
+        let processIdentifier = try container.decode(Int32.self, forKey: .processIdentifier)
+        let helperStartedAtUnixMicroseconds = try container.decode(
+            Int64.self,
+            forKey: .helperStartedAtUnixMicroseconds
+        )
+        let executableName = try container.decode(String.self, forKey: .executableName)
+        let executableMachOUUID = try container.decode(UUID.self, forKey: .executableMachOUUID)
+        let producerVersion = try container.decode(String.self, forKey: .producerVersion)
+
+        try Self.validateInvocationID(invocationID)
+        try Self.validateProcessIdentifier(processIdentifier)
+        try Self.validateStartTime(helperStartedAtUnixMicroseconds)
+        try Self.validateExecutableName(executableName)
+        try Self.validateExecutableMachOUUID(executableMachOUUID)
+
+        self.schemaVersion = schemaVersion
+        self.invocationID = invocationID
+        self.processIdentifier = processIdentifier
+        self.helperStartedAtUnixMicroseconds = helperStartedAtUnixMicroseconds
+        self.executableName = executableName
+        self.executableMachOUUID = executableMachOUUID
+        self.producerVersion = try Self.validateProducerVersion(producerVersion)
+    }
+
+    package func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(self)
+        guard data.count <= Self.maximumEncodedByteCount else {
+            throw ValidationError.encodedPayloadTooLarge(
+                actual: data.count,
+                maximum: Self.maximumEncodedByteCount
+            )
+        }
+        return data
+    }
+
+    package static func decode(
+        _ data: Data,
+        expectedInvocationID: UUID
+    ) throws -> Self {
+        guard data.count <= maximumEncodedByteCount else {
+            throw ValidationError.encodedPayloadTooLarge(
+                actual: data.count,
+                maximum: maximumEncodedByteCount
+            )
+        }
+        let handshake = try JSONDecoder().decode(Self.self, from: data)
+        guard handshake.invocationID == expectedInvocationID else {
+            throw ValidationError.invocationIDMismatch(
+                expected: expectedInvocationID,
+                actual: handshake.invocationID
+            )
+        }
+        return handshake
+    }
+
+    private static let zeroUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    private static func validateInvocationID(_ value: UUID) throws {
+        guard value != zeroUUID else {
+            throw ValidationError.invalidInvocationID
+        }
+    }
+
+    private static func validateProcessIdentifier(_ value: Int32) throws {
+        guard value > 0 else {
+            throw ValidationError.invalidProcessIdentifier(value)
+        }
+    }
+
+    private static func validateStartTime(_ value: Int64) throws {
+        guard value > 0 else {
+            throw ValidationError.invalidStartTime(value)
+        }
+    }
+
+    private static func validateExecutableName(_ value: String) throws {
+        guard !value.isEmpty,
+              value != ".",
+              value != "..",
+              value.utf8.count <= maximumExecutableNameUTF8Count,
+              !value.contains("/"),
+              value.unicodeScalars.allSatisfy({ scalar in
+                  switch scalar.properties.generalCategory {
+                  case .control, .format, .lineSeparator, .paragraphSeparator:
+                      false
+                  default:
+                      true
+                  }
+              })
+        else {
+            throw ValidationError.invalidExecutableName
+        }
+    }
+
+    private static func validateExecutableMachOUUID(_ value: UUID) throws {
+        guard value != zeroUUID else {
+            throw ValidationError.invalidExecutableMachOUUID
+        }
+    }
+
+    private static func validateProducerVersion(_ value: String) throws -> String {
+        do {
+            return try PrivateHeaderKitProducerVersion.validated(value)
+        } catch {
+            throw ValidationError.invalidProducerVersion
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion
+        case invocationID
+        case processIdentifier
+        case helperStartedAtUnixMicroseconds
+        case executableName
+        case executableMachOUUID
+        case producerVersion
+    }
+
+    private struct FieldKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue: Int) {
+            return nil
+        }
+    }
+
+    package enum ValidationError: Error, Equatable, Sendable {
+        case unsupportedSchemaVersion(expected: Int, actual: Int)
+        case encodedPayloadTooLarge(actual: Int, maximum: Int)
+        case invocationIDMismatch(expected: UUID, actual: UUID)
+        case invalidInvocationID
+        case invalidProcessIdentifier(Int32)
+        case invalidStartTime(Int64)
+        case invalidExecutableName
+        case invalidExecutableMachOUUID
+        case invalidProducerVersion
+        case invalidFieldSet
+    }
+}
+
 package struct PrivateHeaderKitRawDumpDiagnostic: Codable, Hashable, Sendable {
     package static let maximumStringUTF8Count = 2_048
 

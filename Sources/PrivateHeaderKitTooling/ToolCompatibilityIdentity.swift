@@ -1,12 +1,8 @@
 import Foundation
+import PrivateHeaderKitExecutableResolution
 
 #if canImport(CryptoKit)
 import CryptoKit
-#endif
-
-#if canImport(Darwin)
-import Darwin
-import MachO
 #endif
 
 package struct ToolArtifactInput: Equatable, Sendable {
@@ -84,45 +80,21 @@ package struct SwiftPMToolSnapshot: Equatable, Sendable {
     }
 }
 
-package func currentProcessExecutableBuildIdentity() throws -> String {
+package func currentProcessExecutableBuildIdentity(
+    resolveMachOUUID: () throws -> UUID = currentProcessMachOUUID
+) throws -> String {
+    do {
+        let uuid = try resolveMachOUUID()
+        return "macho-uuid:\(uuid.uuidString.lowercased())"
+    } catch let error as CurrentProcessExecutableIdentityError {
 #if canImport(Darwin)
-    guard let header = _dyld_get_image_header(0),
-          header.pointee.magic == MH_MAGIC_64
-    else {
-        throw ToolingError.message("failed to inspect the running executable image")
-    }
-
-    var cursor = UnsafeRawPointer(header).advanced(
-        by: MemoryLayout<mach_header_64>.size
-    )
-    var remainingBytes = Int(header.pointee.sizeofcmds)
-    for _ in 0..<header.pointee.ncmds {
-        guard remainingBytes >= MemoryLayout<load_command>.size else {
-            break
-        }
-        let command = cursor.load(as: load_command.self)
-        let commandSize = Int(command.cmdsize)
-        guard commandSize >= MemoryLayout<load_command>.size,
-              commandSize <= remainingBytes
-        else {
-            break
-        }
-        if command.cmd == LC_UUID {
-            guard commandSize >= MemoryLayout<uuid_command>.size else {
-                break
-            }
-            let uuid = cursor.load(as: uuid_command.self).uuid
-            return "macho-uuid:\(UUID(uuid: uuid).uuidString.lowercased())"
-        }
-        cursor = cursor.advanced(by: commandSize)
-        remainingBytes -= commandSize
-    }
-    throw ToolingError.message("the running executable has no Mach-O UUID")
+        throw ToolingError.message(error.description)
 #else
-    throw ToolingError.message(
-        "running executable identity is unavailable on this platform"
-    )
+        throw ToolingError.message(
+            "running executable identity is unavailable on this platform"
+        )
 #endif
+    }
 }
 
 package func captureToolArtifactSnapshot(

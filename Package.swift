@@ -93,6 +93,7 @@ let package = Package(
         .target(
             name: "PrivateHeaderKitTooling",
             dependencies: [
+                "PrivateHeaderKitExecutableResolution",
                 .product(
                     name: "Subprocess",
                     package: "swift-subprocess",

@@ -30,10 +30,23 @@ struct PrivateHeaderGenerationRawDumpingTests {
         == stageDirectory.deletingLastPathComponent()
     )
     #expect(
+      invocation.processHandshakeReportURL.deletingLastPathComponent()
+        == stageDirectory.deletingLastPathComponent()
+    )
+    #expect(
+      invocation.processHandshakeReportURL.lastPathComponent
+        == ".privateheaderkit-raw-process-handshake-"
+          + invocation.processHandshakeID.uuidString.lowercased()
+          + ".json"
+    )
+    #expect(invocation.processHandshakeReportURL != invocation.diagnosticsReportURL)
+    #expect(
       invocation.command == [
         "/opt/privateheaderkit/bin/privateheaderkit", "__raw-dump", "-o", stageDirectory.path,
         "-b", "-h", "-s", "-c", "--expected-cache-uuid",
-        cacheUUID.uuidString.lowercased(), "-D", "-R", "--diagnostics-report",
+        cacheUUID.uuidString.lowercased(), "-D", "-R", "--process-handshake-id",
+        invocation.processHandshakeID.uuidString.lowercased(), "--process-handshake-report",
+        invocation.processHandshakeReportURL.path, "--diagnostics-report",
         invocation.diagnosticsReportURL.path,
         "/System/Library/PrivateFrameworks/Foo.framework",
       ])
@@ -63,6 +76,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
       invocation.command == [
         "xcrun", "simctl", "spawn", "SIM-001", "/opt/privateheaderkit/bin/privateheaderkit-sim",
         "__raw-dump", "-o", stageDirectory.path, "-b", "-h",
+        "--process-handshake-id", invocation.processHandshakeID.uuidString.lowercased(),
+        "--process-handshake-report", invocation.processHandshakeReportURL.path,
         "--diagnostics-report", invocation.diagnosticsReportURL.path,
         "/System/Library/Frameworks/UIKit.framework",
       ])

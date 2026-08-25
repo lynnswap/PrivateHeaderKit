@@ -44,6 +44,8 @@ struct PrivateHeaderKitRawDumpArgumentTests {
             "--expected-cache-uuid", "11111111-2222-3333-4444-555555555555",
             "-D",
             "-R",
+            "--process-handshake-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "--process-handshake-report", "/tmp/handshake.json",
             "--diagnostics-report", "/tmp/report.json",
             "/tmp/input"
         ]
@@ -62,7 +64,124 @@ struct PrivateHeaderKitRawDumpArgumentTests {
         #expect(parsed?.options.expectedCacheUUID == UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         #expect(parsed?.options.verbose == true)
         #expect(parsed?.options.useRuntimeFallback == true)
+        #expect(
+            parsed?.options.processHandshakeID
+                == UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        )
+        #expect(parsed?.options.processHandshakeReportURL?.path == "/tmp/handshake.json")
         #expect(parsed?.options.diagnosticsReportURL?.path == "/tmp/report.json")
+    }
+
+    @Test func processHandshakeArgumentsMustBePairedAndValid() {
+        #expect(
+            parseArguments(
+                ["--process-handshake-id", UUID().uuidString, "/tmp/input"],
+                environment: [:]
+            ) == nil
+        )
+        #expect(
+            parseArguments(
+                ["--process-handshake-report", "/tmp/handshake.json", "/tmp/input"],
+                environment: [:]
+            ) == nil
+        )
+        #expect(
+            parseArguments(
+                [
+                    "--process-handshake-id", "not-a-uuid",
+                    "--process-handshake-report", "/tmp/handshake.json",
+                    "/tmp/input",
+                ],
+                environment: [:]
+            ) == nil
+        )
+    }
+
+    @Test func processHandshakeIsWrittenBeforeRawDumpWorkBegins() async throws {
+        let parsed = try #require(
+            parseArguments(
+                [
+                    "--process-handshake-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "--process-handshake-report", "/tmp/handshake.json",
+                    "/tmp/input",
+                ],
+                environment: [:]
+            )
+        )
+        var events: [String] = []
+
+        try await runRawDumpAfterWritingProcessHandshake(
+            parsed,
+            writeProcessHandshake: { _ in events.append("handshake") },
+            runOperation: { _ in events.append("work") }
+        )
+
+        #expect(events == ["handshake", "work"])
+    }
+
+    @Test func processHandshakeWriteFailurePreventsRawDumpWork() async throws {
+        let parsed = try #require(
+            parseArguments(
+                [
+                    "--process-handshake-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "--process-handshake-report", "/tmp/handshake.json",
+                    "/tmp/input",
+                ],
+                environment: [:]
+            )
+        )
+        var didBeginWork = false
+
+        await #expect(throws: FixtureProcessHandshakeError.self) {
+            try await runRawDumpAfterWritingProcessHandshake(
+                parsed,
+                writeProcessHandshake: { _ in throw FixtureProcessHandshakeError.writeFailed },
+                runOperation: { _ in didBeginWork = true }
+            )
+        }
+
+        #expect(didBeginWork == false)
+    }
+
+    @Test func processHandshakeWriterUsesOnlyBoundedSelfReportedIdentity() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "PrivateHeaderKitRawDumpProcessHandshakeTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reportURL = root.appendingPathComponent("handshake.json")
+        let invocationID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let executableUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        var options = DumpOptions(outputDir: root)
+        options.processHandshakeID = invocationID
+        options.processHandshakeReportURL = reportURL
+
+        try writeProcessHandshakeIfRequested(
+            options,
+            processIdentifier: { 4_242 },
+            nowUnixMicroseconds: { 1_700_000_000_123_456 },
+            executableName: { "privateheaderkit-sim-helper" },
+            executableMachOUUID: { executableUUID },
+            producerVersion: "v1.2.3"
+        )
+
+        let data = try Data(contentsOf: reportURL)
+        let handshake = try PrivateHeaderKitRawDumpProcessHandshake.decode(
+            data,
+            expectedInvocationID: invocationID
+        )
+        #expect(data.count <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount)
+        #expect(handshake.processIdentifier == 4_242)
+        #expect(handshake.helperStartedAtUnixMicroseconds == 1_700_000_000_123_456)
+        #expect(handshake.executableName == "privateheaderkit-sim-helper")
+        #expect(handshake.executableMachOUUID == executableUUID)
+        #expect(handshake.producerVersion == "v1.2.3")
+        #expect(!String(decoding: data, as: UTF8.self).contains("/private/var/tmp"))
+    }
+
+    private enum FixtureProcessHandshakeError: Error {
+        case writeFailed
     }
 
     @Test func parseArgumentsIgnoresUnknownFlags() {

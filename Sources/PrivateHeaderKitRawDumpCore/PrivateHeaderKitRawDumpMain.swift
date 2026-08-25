@@ -98,6 +98,8 @@ struct DumpOptions {
     var logSkippedClasses: Bool = false
     var profile: Bool = false
     var logSwiftEvents: Bool = false
+    var processHandshakeID: UUID?
+    var processHandshakeReportURL: URL?
     var diagnosticsReportURL: URL?
     let objcDiagnostics = RawDumpObjCDiagnosticsAccumulator()
 }
@@ -128,7 +130,7 @@ public struct PrivateHeaderKitRawDumpCLI {
         }
 
         do {
-            try await run(parsed: parsed)
+            try await runRawDumpAfterWritingProcessHandshake(parsed)
             try writeDiagnosticsReportIfRequested(parsed.options)
         } catch {
             do {
@@ -199,6 +201,18 @@ func parseArguments(
             guard nextIndex < args.count else { return nil }
             options.diagnosticsReportURL = URL(fileURLWithPath: args[nextIndex])
             index += 1
+        case "--process-handshake-id":
+            let nextIndex = index + 1
+            guard nextIndex < args.count,
+                  let invocationID = UUID(uuidString: args[nextIndex])
+            else { return nil }
+            options.processHandshakeID = invocationID
+            index += 1
+        case "--process-handshake-report":
+            let nextIndex = index + 1
+            guard nextIndex < args.count else { return nil }
+            options.processHandshakeReportURL = URL(fileURLWithPath: args[nextIndex])
+            index += 1
         default:
             if arg.hasPrefix("-") {
                 // ignore unknown flags for compatibility
@@ -211,6 +225,11 @@ func parseArguments(
 
     guard let inputPath else { return nil }
     guard options.useSharedCache == (options.expectedCacheUUID != nil) else {
+        return nil
+    }
+    guard (options.processHandshakeID == nil)
+            == (options.processHandshakeReportURL == nil)
+    else {
         return nil
     }
     if !options.useRuntimeFallback {
@@ -241,8 +260,67 @@ private func printUsage() {
         -R   Prefer Objective-C runtime metadata (auto-enabled in simulator)
         --diagnostics-report <path>
              Write the versioned Objective-C metadata diagnostics report
+        --process-handshake-id <uuid>
+             Bind the raw-dump invocation to its startup process handshake
+        --process-handshake-report <path>
+             Write the bounded startup process handshake before target work
     """
     print(text)
+}
+
+func runRawDumpAfterWritingProcessHandshake(
+    _ parsed: ParsedArguments,
+    writeProcessHandshake: (DumpOptions) throws -> Void = {
+        try writeProcessHandshakeIfRequested($0)
+    },
+    runOperation: (ParsedArguments) async throws -> Void = run
+) async throws {
+    try writeProcessHandshake(parsed.options)
+    try await runOperation(parsed)
+}
+
+func writeProcessHandshakeIfRequested(
+    _ options: DumpOptions,
+    processIdentifier: () -> Int32 = { getpid() },
+    nowUnixMicroseconds: () throws -> Int64 = currentRealtimeUnixMicroseconds,
+    executableName: () -> String = { Bundle.main.executableURL?.lastPathComponent ?? "" },
+    executableMachOUUID: () throws -> UUID = currentProcessMachOUUID,
+    producerVersion: String = PrivateHeaderKitBuildInfo.version
+) throws {
+    guard let invocationID = options.processHandshakeID,
+          let reportURL = options.processHandshakeReportURL
+    else {
+        return
+    }
+    let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+        invocationID: invocationID,
+        processIdentifier: processIdentifier(),
+        helperStartedAtUnixMicroseconds: nowUnixMicroseconds(),
+        executableName: executableName(),
+        executableMachOUUID: executableMachOUUID(),
+        producerVersion: producerVersion
+    )
+    try handshake.encoded().write(to: reportURL, options: .atomic)
+}
+
+func currentRealtimeUnixMicroseconds() throws -> Int64 {
+    var time = timespec()
+    guard clock_gettime(CLOCK_REALTIME, &time) == 0,
+          let seconds = Int64(exactly: time.tv_sec),
+          let nanoseconds = Int64(exactly: time.tv_nsec)
+    else {
+        throw POSIXError(.init(rawValue: errno) ?? .EIO)
+    }
+    let (wholeMicroseconds, multiplyOverflow) = seconds.multipliedReportingOverflow(
+        by: 1_000_000
+    )
+    let (result, addOverflow) = wholeMicroseconds.addingReportingOverflow(
+        nanoseconds / 1_000
+    )
+    guard !multiplyOverflow, !addOverflow, result > 0 else {
+        throw POSIXError(.EOVERFLOW)
+    }
+    return result
 }
 
 private func writeDiagnosticsReportIfRequested(_ options: DumpOptions) throws {
