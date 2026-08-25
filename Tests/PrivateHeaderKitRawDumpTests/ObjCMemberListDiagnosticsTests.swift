@@ -108,6 +108,34 @@ struct ObjCMemberListDiagnosticsTests {
         )
     }
 
+    @Test func capExcludedIdentityIsCountedPerObservationWithoutGrowingRetention() throws {
+        let fixture = try InvalidMemberListFixture(
+            memberDiagnosticCount:
+                PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount + 1,
+            includesFieldDiagnostic: false,
+            includesProtocolDiagnostic: false
+        )
+        let result = fixture.objcClass.readInfo(in: fixture.machO)
+        #expect(
+            result.memberListDiagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount + 1
+        )
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+
+        accumulator.append(contentsOf: result)
+        let firstReport = accumulator.report
+        #expect(
+            firstReport.diagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        )
+        #expect(firstReport.omittedDiagnosticCount == 1)
+
+        accumulator.append(contentsOf: result)
+        let secondReport = accumulator.report
+        #expect(secondReport.diagnostics == firstReport.diagnostics)
+        #expect(secondReport.omittedDiagnosticCount == 2)
+    }
+
     @Test func lateHigherPriorityResultsDisplaceMembersWithoutDoubleCountingOmissions() throws {
         let memberFixture = try InvalidMemberListFixture(
             memberDiagnosticCount: PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount,

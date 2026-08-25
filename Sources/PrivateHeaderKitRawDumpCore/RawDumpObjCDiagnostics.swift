@@ -45,9 +45,19 @@ func rawDumpObjCProtocolInfoOptions(
 private struct RawDumpObjCDiagnosticChannel {
     private(set) var records: [PrivateHeaderKitRawDumpDiagnostic] = []
     private var seen = Set<PrivateHeaderKitRawDumpDiagnostic>()
+    private(set) var omittedObservationCount: UInt = 0
 
     mutating func append(_ record: PrivateHeaderKitRawDumpDiagnostic) {
-        guard seen.insert(record).inserted else { return }
+        guard !seen.contains(record) else { return }
+        // Do not retain identities beyond the wire cap: that would make malformed-target
+        // memory unbounded. Repeated cap-excluded records count as omitted observations;
+        // global uniqueness beyond the retained window is intentionally not claimed.
+        guard records.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        else {
+            omittedObservationCount = saturatingSum(omittedObservationCount, 1)
+            return
+        }
+        seen.insert(record)
         records.append(record)
     }
 
@@ -88,13 +98,20 @@ final class RawDumpObjCDiagnosticsAccumulator {
     var report: PrivateHeaderKitRawDumpDiagnosticsReport {
         var selected: [PrivateHeaderKitRawDumpDiagnostic] = []
         selected.reserveCapacity(PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount)
-        var omittedDiagnosticCount: UInt = 0
+        var omittedDiagnosticCount = saturatingSum(
+            fieldDiagnostics.omittedObservationCount,
+            protocolDiagnostics.omittedObservationCount
+        )
+        omittedDiagnosticCount = saturatingSum(
+            omittedDiagnosticCount,
+            memberDiagnostics.omittedObservationCount
+        )
 
         func select(_ record: PrivateHeaderKitRawDumpDiagnostic) {
             if selected.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount {
                 selected.append(record)
-            } else if omittedDiagnosticCount < UInt.max {
-                omittedDiagnosticCount += 1
+            } else {
+                omittedDiagnosticCount = saturatingSum(omittedDiagnosticCount, 1)
             }
         }
 
@@ -116,6 +133,11 @@ final class RawDumpObjCDiagnosticsAccumulator {
             omittedDiagnosticCount: omittedDiagnosticCount
         )
     }
+}
+
+private func saturatingSum(_ lhs: UInt, _ rhs: UInt) -> UInt {
+    let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+    return overflow ? UInt.max : sum
 }
 
 func writeRawDumpDiagnosticsReport(
