@@ -80,11 +80,20 @@ Deterministic validation gate:
 - File/image parity for checked table parsing and compatibility projections.
 - Existing public API clients compile without source changes.
 
-Dependency delivery gate pending:
+Dependency delivery gate approved:
 
 - Publish the MachOKit fix from the exact pinned base to the `lynnswap` fork.
-- Prove one coherent SwiftPM graph uses that revision for all direct and
-  transitive MachOKit requirements before updating PrivateHeaderKit pins.
+- Keep the direct dependency's original MxIris URL but change its requirement
+  to the fork commit's exact revision. A tracked repo-local SwiftPM mirror maps
+  both MxIris URL spellings (with and without `.git`) to the `lynnswap` fork.
+- SwiftPM 6.3.3 probes confirmed that the revision requirement unifies the
+  existing MachOKitExtensions, MachOObjCSection, MachOSwiftSection, and
+  swift-demangling ranges to one checkout without an identity-conflict warning.
+- `Package.resolved` retains the original URL and an unversioned exact revision;
+  the existing #79 Objective-C/Swift reader cohort remains unchanged.
+- The mirror is intentionally a root-package build contract. PrivateHeaderKit
+  is an executable package; supporting it as a transitive library dependency
+  is outside this issue's distribution scope.
 
 Required runtime gate:
 
