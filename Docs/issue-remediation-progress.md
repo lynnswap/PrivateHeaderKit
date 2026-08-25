@@ -130,3 +130,16 @@ Required regression coverage:
   byte-budget, arithmetic-overflow, and good/bad/good fixtures.
 - Exact dependency coherence: MachOObjCSection, MachOSwiftSection, then
   PrivateHeaderKit pins and pin-contract tests.
+
+Dependency progress:
+
+- MachOObjCSection core checkpoint
+  `748070697d20cace20618ef8bc9f6b4d10949c69` centralizes the neutral file/image
+  table reader, preserves #60 failure precedence, migrates the nine file table
+  paths plus image member tables, makes method arithmetic fallible, and removes
+  the unsafe `readDataSequence` owner.
+- At that checkpoint `swift build`, 57 protocol safety tests, and 17 combined
+  relative-member/fixed-field regression tests pass.
+- Phase A continues checked direct projections, method iterators, and table/file
+  fixtures. Phase B is stacked from the core checkpoint for loaded roots,
+  relationships, regular headers, relative direct parity, and loaded fixtures.
