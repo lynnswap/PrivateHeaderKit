@@ -13,8 +13,7 @@ struct PrivateHeaderKitHelperProtocolTests {
             processIdentifier: 4_242,
             helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
             executableName: "privateheaderkit-sim-helper",
-            executableMachOUUID: executableUUID,
-            producerVersion: "v1.2.3"
+            executableMachOUUID: executableUUID
         )
 
         let data = try handshake.encoded()
@@ -36,7 +35,6 @@ struct PrivateHeaderKitHelperProtocolTests {
                 "helperStartedAtUnixMicroseconds",
                 "executableName",
                 "executableMachOUUID",
-                "producerVersion",
             ]
         )
         #expect(object["schemaVersion"] as? Int == 1)
@@ -56,8 +54,7 @@ struct PrivateHeaderKitHelperProtocolTests {
             processIdentifier: 4_242,
             helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
             executableName: "privateheaderkit-sim-helper",
-            executableMachOUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
-            producerVersion: "v1.2.3"
+            executableMachOUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
         )
 
         #expect(
@@ -87,7 +84,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         }
     }
 
-    @Test func rawDumpProcessHandshakeEnforcesStringBounds() throws {
+    @Test func rawDumpProcessHandshakeEnforcesExecutableNameBounds() throws {
         let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let executableUUID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
         let maximum = try PrivateHeaderKitRawDumpProcessHandshake(
@@ -98,11 +95,7 @@ struct PrivateHeaderKitHelperProtocolTests {
                 repeating: "\\",
                 count: PrivateHeaderKitRawDumpProcessHandshake.maximumExecutableNameUTF8Count
             ),
-            executableMachOUUID: executableUUID,
-            producerVersion: String(
-                repeating: "\\",
-                count: PrivateHeaderKitProducerVersion.maximumUTF8Count
-            )
+            executableMachOUUID: executableUUID
         )
 
         #expect(
@@ -118,28 +111,14 @@ struct PrivateHeaderKitHelperProtocolTests {
                     repeating: "e",
                     count: PrivateHeaderKitRawDumpProcessHandshake.maximumExecutableNameUTF8Count + 1
                 ),
-                executableMachOUUID: executableUUID,
-                producerVersion: "v1.2.3"
-            )
-        }
-        #expect(throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.self) {
-            _ = try PrivateHeaderKitRawDumpProcessHandshake(
-                invocationID: invocationID,
-                processIdentifier: 4_242,
-                helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
-                executableName: "privateheaderkit-sim-helper",
-                executableMachOUUID: executableUUID,
-                producerVersion: String(
-                    repeating: "v",
-                    count: PrivateHeaderKitProducerVersion.maximumUTF8Count + 1
-                )
+                executableMachOUUID: executableUUID
             )
         }
     }
 
     @Test func rawDumpProcessHandshakeStrictlyRejectsInvalidFields() {
         let expectedID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-        let validFields = #""schemaVersion":1,"invocationID":"11111111-2222-3333-4444-555555555555","processIdentifier":4242,"helperStartedAtUnixMicroseconds":1700000000123456,"executableName":"privateheaderkit-sim-helper","executableMachOUUID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","producerVersion":"v1.2.3""#
+        let validFields = #""schemaVersion":1,"invocationID":"11111111-2222-3333-4444-555555555555","processIdentifier":4242,"helperStartedAtUnixMicroseconds":1700000000123456,"executableName":"privateheaderkit-sim-helper","executableMachOUUID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee""#
         let payloads = [
             "{\(validFields),\"path\":\"/private/var/tmp/helper\"}",
             "{\(validFields.replacingOccurrences(of: "\"schemaVersion\":1", with: "\"schemaVersion\":2"))}",
@@ -148,7 +127,6 @@ struct PrivateHeaderKitHelperProtocolTests {
             "{\(validFields.replacingOccurrences(of: "\"helperStartedAtUnixMicroseconds\":1700000000123456", with: "\"helperStartedAtUnixMicroseconds\":0"))}",
             "{\(validFields.replacingOccurrences(of: "privateheaderkit-sim-helper", with: "/private/helper"))}",
             "{\(validFields.replacingOccurrences(of: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", with: "00000000-0000-0000-0000-000000000000"))}",
-            "{\(validFields.replacingOccurrences(of: "\"producerVersion\":\"v1.2.3\"", with: "\"producerVersion\":\"\""))}",
         ]
 
         for payload in payloads {

@@ -41,22 +41,19 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
     package let helperStartedAtUnixMicroseconds: Int64
     package let executableName: String
     package let executableMachOUUID: UUID
-    package let producerVersion: String
 
     package init(
         invocationID: UUID,
         processIdentifier: Int32,
         helperStartedAtUnixMicroseconds: Int64,
         executableName: String,
-        executableMachOUUID: UUID,
-        producerVersion: String = PrivateHeaderKitBuildInfo.version
+        executableMachOUUID: UUID
     ) throws {
         try Self.validateInvocationID(invocationID)
         try Self.validateProcessIdentifier(processIdentifier)
         try Self.validateStartTime(helperStartedAtUnixMicroseconds)
         try Self.validateExecutableName(executableName)
         try Self.validateExecutableMachOUUID(executableMachOUUID)
-        let producerVersion = try Self.validateProducerVersion(producerVersion)
 
         self.schemaVersion = Self.currentSchemaVersion
         self.invocationID = invocationID
@@ -64,7 +61,6 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
         self.helperStartedAtUnixMicroseconds = helperStartedAtUnixMicroseconds
         self.executableName = executableName
         self.executableMachOUUID = executableMachOUUID
-        self.producerVersion = producerVersion
     }
 
     package init(from decoder: any Decoder) throws {
@@ -91,7 +87,6 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
         )
         let executableName = try container.decode(String.self, forKey: .executableName)
         let executableMachOUUID = try container.decode(UUID.self, forKey: .executableMachOUUID)
-        let producerVersion = try container.decode(String.self, forKey: .producerVersion)
 
         try Self.validateInvocationID(invocationID)
         try Self.validateProcessIdentifier(processIdentifier)
@@ -105,7 +100,6 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
         self.helperStartedAtUnixMicroseconds = helperStartedAtUnixMicroseconds
         self.executableName = executableName
         self.executableMachOUUID = executableMachOUUID
-        self.producerVersion = try Self.validateProducerVersion(producerVersion)
     }
 
     package func encoded() throws -> Data {
@@ -186,14 +180,6 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
         }
     }
 
-    private static func validateProducerVersion(_ value: String) throws -> String {
-        do {
-            return try PrivateHeaderKitProducerVersion.validated(value)
-        } catch {
-            throw ValidationError.invalidProducerVersion
-        }
-    }
-
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion
         case invocationID
@@ -201,7 +187,6 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
         case helperStartedAtUnixMicroseconds
         case executableName
         case executableMachOUUID
-        case producerVersion
     }
 
     private struct FieldKey: CodingKey {
@@ -226,7 +211,6 @@ package struct PrivateHeaderKitRawDumpProcessHandshake: Codable, Hashable, Senda
         case invalidStartTime(Int64)
         case invalidExecutableName
         case invalidExecutableMachOUUID
-        case invalidProducerVersion
         case invalidFieldSet
     }
 }

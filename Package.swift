@@ -192,6 +192,7 @@ let package = Package(
         .testTarget(
             name: "PrivateHeaderKitRawDumpTests",
             dependencies: [
+                "PrivateHeaderKitExecutableResolution",
                 "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
                 "PrivateHeaderKitTestSupport",

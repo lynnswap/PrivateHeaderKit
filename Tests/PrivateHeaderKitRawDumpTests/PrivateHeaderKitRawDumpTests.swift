@@ -2,6 +2,7 @@ import Foundation
 import Dispatch
 import MachOKit
 @_spi(Core) @_spi(Diagnostics) @testable import MachOObjCSection
+import PrivateHeaderKitExecutableResolution
 import PrivateHeaderKitHelperProtocol
 import Testing
 #if canImport(PrivateHeaderKitRawDumpRuntimeObjC)
@@ -32,6 +33,13 @@ private enum FakeRawMachOLoadError: Error, CustomStringConvertible {
 
 @Suite
 struct PrivateHeaderKitRawDumpArgumentTests {
+    @Test func currentProcessExecutableNameContainsNoPathComponents() throws {
+        let executableName = try currentProcessExecutableName()
+
+        #expect(!executableName.isEmpty)
+        #expect(!executableName.contains("/"))
+    }
+
     @Test func parseArgumentsPopulatesOptions() {
         let args = [
             "-o", "/tmp/out",
@@ -162,8 +170,7 @@ struct PrivateHeaderKitRawDumpArgumentTests {
             processIdentifier: { 4_242 },
             nowUnixMicroseconds: { 1_700_000_000_123_456 },
             executableName: { "privateheaderkit-sim-helper" },
-            executableMachOUUID: { executableUUID },
-            producerVersion: "v1.2.3"
+            executableMachOUUID: { executableUUID }
         )
 
         let data = try Data(contentsOf: reportURL)
@@ -176,7 +183,6 @@ struct PrivateHeaderKitRawDumpArgumentTests {
         #expect(handshake.helperStartedAtUnixMicroseconds == 1_700_000_000_123_456)
         #expect(handshake.executableName == "privateheaderkit-sim-helper")
         #expect(handshake.executableMachOUUID == executableUUID)
-        #expect(handshake.producerVersion == "v1.2.3")
         #expect(!String(decoding: data, as: UTF8.self).contains("/private/var/tmp"))
     }
 

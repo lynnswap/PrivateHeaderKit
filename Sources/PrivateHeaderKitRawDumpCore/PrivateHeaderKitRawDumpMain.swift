@@ -283,9 +283,8 @@ func writeProcessHandshakeIfRequested(
     _ options: DumpOptions,
     processIdentifier: () -> Int32 = { getpid() },
     nowUnixMicroseconds: () throws -> Int64 = currentRealtimeUnixMicroseconds,
-    executableName: () -> String = { Bundle.main.executableURL?.lastPathComponent ?? "" },
-    executableMachOUUID: () throws -> UUID = currentProcessMachOUUID,
-    producerVersion: String = PrivateHeaderKitBuildInfo.version
+    executableName: () throws -> String = currentProcessExecutableName,
+    executableMachOUUID: () throws -> UUID = currentProcessMachOUUID
 ) throws {
     guard let invocationID = options.processHandshakeID,
           let reportURL = options.processHandshakeReportURL
@@ -297,8 +296,7 @@ func writeProcessHandshakeIfRequested(
         processIdentifier: processIdentifier(),
         helperStartedAtUnixMicroseconds: nowUnixMicroseconds(),
         executableName: executableName(),
-        executableMachOUUID: executableMachOUUID(),
-        producerVersion: producerVersion
+        executableMachOUUID: executableMachOUUID()
     )
     try handshake.encoded().write(to: reportURL, options: .atomic)
 }
