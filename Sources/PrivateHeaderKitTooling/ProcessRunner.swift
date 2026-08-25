@@ -306,7 +306,9 @@ public struct BoundedProcessOutput: Equatable, Sendable {
 
     public let lines: [String]
     public let omittedLineCount: UInt
-    public let omittedByteCount: UInt
+    /// A lower bound in raw source bytes. Terminal-safe rendering can expand one source byte,
+    /// so the exact omitted source count is not always recoverable from a bounded rendering.
+    public let omittedSourceByteCountLowerBound: UInt
 
     public init(lines: [String]) {
         var collector = BoundedProcessOutputCollector()
@@ -325,27 +327,27 @@ public struct BoundedProcessOutput: Equatable, Sendable {
     fileprivate init(
         lines: [String],
         omittedLineCount: UInt,
-        omittedByteCount: UInt
+        omittedSourceByteCountLowerBound: UInt
     ) {
         precondition(
             lines.count <= Self.maximumRenderedLineCount,
-            "bounded process output exceeded its line count"
+            "BoundedProcessOutputCollector must enforce the rendered line-count bound"
         )
         precondition(
             lines.allSatisfy { $0.utf8.count <= Self.maximumRenderedLineByteCount },
-            "bounded process output exceeded its per-line byte count"
+            "BoundedProcessOutputCollector must enforce the per-line rendered byte bound"
         )
         precondition(
             lines.joined(separator: "\n").utf8.count <= Self.maximumRenderedByteCount,
-            "bounded process output exceeded its rendered byte count"
+            "BoundedProcessOutputCollector must enforce the total rendered byte bound"
         )
         precondition(
             lines.allSatisfy { terminalSafeProcessOutput($0) == $0 },
-            "bounded process output contains terminal-unsafe text"
+            "BoundedProcessOutputCollector must emit terminal-safe text"
         )
         self.lines = lines
         self.omittedLineCount = omittedLineCount
-        self.omittedByteCount = omittedByteCount
+        self.omittedSourceByteCountLowerBound = omittedSourceByteCountLowerBound
     }
 }
 
@@ -1101,11 +1103,15 @@ struct BoundedProcessOutputCollector {
     private var headLines: [BoundedProcessLine] = []
     private var tailLines: [BoundedProcessLine] = []
     private var omittedLineCount: UInt = 0
-    private var omittedByteCount: UInt = 0
+    private var omittedSourceByteCountLowerBound: UInt = 0
+    private var didOmitContent = false
     private var isFinished = false
 
     mutating func consume(_ bytes: [UInt8]) {
-        precondition(!isFinished, "cannot consume process output after finishing")
+        precondition(
+            !isFinished,
+            "BoundedProcessOutputCollector owns a single consume-before-finish lifecycle"
+        )
         var segmentStart = bytes.startIndex
         for index in bytes.indices where bytes[index] == UInt8(ascii: "\n") {
             pendingLine.append(bytes[segmentStart..<index])
@@ -1123,21 +1129,27 @@ struct BoundedProcessOutputCollector {
     }
 
     mutating func finish() -> BoundedProcessOutput {
-        precondition(!isFinished, "process output collector finished more than once")
+        precondition(
+            !isFinished,
+            "BoundedProcessOutputCollector owns a single finish transition"
+        )
         if !pendingLine.isEmpty {
             consumePendingLine()
         }
         isFinished = true
 
         var lines = headLines.map(\.text)
-        if omittedLineCount > 0 || omittedByteCount > 0 {
-            lines.append("[omitted \(omittedLineCount) lines and \(omittedByteCount) bytes]")
+        if omittedLineCount > 0 || didOmitContent {
+            lines.append(
+                "[omitted \(omittedLineCount) lines and at least "
+                    + "\(omittedSourceByteCountLowerBound) bytes]"
+            )
         }
         lines += tailLines.map(\.text)
         return BoundedProcessOutput(
             lines: lines,
             omittedLineCount: omittedLineCount,
-            omittedByteCount: omittedByteCount
+            omittedSourceByteCountLowerBound: omittedSourceByteCountLowerBound
         )
     }
 
@@ -1149,7 +1161,11 @@ struct BoundedProcessOutputCollector {
     }
 
     private mutating func append(_ line: BoundedProcessLine) {
-        omittedByteCount = saturatingSum(omittedByteCount, line.omittedByteCount)
+        didOmitContent = didOmitContent || line.didOmitContent
+        omittedSourceByteCountLowerBound = saturatingSum(
+            omittedSourceByteCountLowerBound,
+            line.omittedSourceByteCountLowerBound
+        )
         if headLines.count < BoundedProcessOutput.maximumHeadLineCount {
             headLines.append(line)
             return
@@ -1158,10 +1174,11 @@ struct BoundedProcessOutputCollector {
         tailLines.append(line)
         guard tailLines.count > BoundedProcessOutput.maximumTailLineCount else { return }
         let omittedLine = tailLines.removeFirst()
+        didOmitContent = true
         omittedLineCount = saturatingSum(omittedLineCount, 1)
-        omittedByteCount = saturatingSum(
-            omittedByteCount,
-            omittedLine.retainedSourceByteCount
+        omittedSourceByteCountLowerBound = saturatingSum(
+            omittedSourceByteCountLowerBound,
+            omittedLine.rawSourceByteCountRemainingAfterLowerBound
         )
     }
 }
@@ -1175,12 +1192,18 @@ private struct BoundedProcessLineBytes {
     private var head: [UInt8] = []
     private var tail: [UInt8] = []
     private var totalByteCount: UInt = 0
+    private var hasPotentialNonWhitespaceContent = false
 
     var isEmpty: Bool { totalByteCount == 0 }
 
     mutating func append(_ bytes: ArraySlice<UInt8>) {
         guard !bytes.isEmpty else { return }
         totalByteCount = saturatingSum(totalByteCount, UInt(bytes.count))
+        if !hasPotentialNonWhitespaceContent,
+           bytes.contains(where: { !Self.isASCIIWhitespace($0) })
+        {
+            hasPotentialNonWhitespaceContent = true
+        }
 
         let headCapacity = max(0, Self.edgeByteCount - head.count)
         let headBytes = bytes.prefix(headCapacity)
@@ -1211,46 +1234,57 @@ private struct BoundedProcessLineBytes {
             headText = normalizedProcessOutputLine(head)
             tailText = normalizedProcessOutputLine(tail)
         }
+        guard hasPotentialNonWhitespaceContent else { return nil }
         guard !headText.isEmpty || !tailText.isEmpty || discardedRawByteCount > 0 else {
             return nil
         }
         return boundedProcessLine(
             head: headText,
             tail: tailText,
-            discardedRawByteCount: discardedRawByteCount
+            rawSourceByteCount: totalByteCount,
+            omittedSourceByteCountLowerBound: discardedRawByteCount
         )
+    }
+
+    private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 0x09...0x0d, 0x20:
+            true
+        default:
+            false
+        }
     }
 }
 
 private struct BoundedProcessLine {
     let text: String
-    let sourceByteCount: UInt
-    let omittedByteCount: UInt
+    let rawSourceByteCount: UInt
+    let omittedSourceByteCountLowerBound: UInt
+    let didOmitContent: Bool
 
-    var retainedSourceByteCount: UInt {
-        saturatingSubtract(sourceByteCount, omittedByteCount)
+    var rawSourceByteCountRemainingAfterLowerBound: UInt {
+        saturatingSubtract(rawSourceByteCount, omittedSourceByteCountLowerBound)
     }
 }
 
 private func boundedProcessLine(
     head: String,
     tail: String,
-    discardedRawByteCount: UInt
+    rawSourceByteCount: UInt,
+    omittedSourceByteCountLowerBound: UInt
 ) -> BoundedProcessLine {
     let maximumByteCount = BoundedProcessOutput.maximumRenderedLineByteCount
     let separator = " … "
-    let headByteCount = UInt(head.utf8.count)
-    let tailByteCount = UInt(tail.utf8.count)
-    let sourceByteCount = saturatingSum(
-        saturatingSum(headByteCount, tailByteCount),
-        discardedRawByteCount
-    )
 
-    if discardedRawByteCount == 0, tail.isEmpty, head.utf8.count <= maximumByteCount {
+    if omittedSourceByteCountLowerBound == 0,
+       tail.isEmpty,
+       head.utf8.count <= maximumByteCount
+    {
         return BoundedProcessLine(
             text: head,
-            sourceByteCount: sourceByteCount,
-            omittedByteCount: 0
+            rawSourceByteCount: rawSourceByteCount,
+            omittedSourceByteCountLowerBound: 0,
+            didOmitContent: false
         )
     }
 
@@ -1260,12 +1294,14 @@ private func boundedProcessLine(
     let tailBudget = contentBudget - headBudget
     let retainedHead = prefixFittingUTF8(head, maximumByteCount: headBudget)
     let retainedTail = suffixFittingUTF8(sourceTail, maximumByteCount: tailBudget)
-    let retainedSourceByteCount = UInt(retainedHead.utf8.count + retainedTail.utf8.count)
-    let omittedByteCount = saturatingSubtract(sourceByteCount, retainedSourceByteCount)
+    // Do not infer raw byte counts from terminal-safe UTF-8. Escaping and replacement decoding
+    // can expand source bytes, so only raw bytes discarded before normalization contribute to
+    // this lower bound.
     return BoundedProcessLine(
         text: retainedHead + separator + retainedTail,
-        sourceByteCount: sourceByteCount,
-        omittedByteCount: omittedByteCount
+        rawSourceByteCount: rawSourceByteCount,
+        omittedSourceByteCountLowerBound: omittedSourceByteCountLowerBound,
+        didOmitContent: true
     )
 }
 

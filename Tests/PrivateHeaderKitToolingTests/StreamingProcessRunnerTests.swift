@@ -890,7 +890,7 @@ struct StreamingProcessRunnerTests {
             #expect(lines.first?.hasSuffix("x") == true)
             #expect(lines.first?.utf8.count == BoundedProcessOutput.maximumRenderedLineByteCount)
             #expect(lines.contains("final-diagnostic"))
-            #expect(lines.contains { $0.hasPrefix("[omitted 0 lines and ") })
+            #expect(lines.contains { $0.hasPrefix("[omitted 0 lines and at least ") })
             #expect(
                 standardError.utf8.count
                     <= BoundedProcessOutput.maximumRenderedByteCount
@@ -972,15 +972,16 @@ struct StreamingProcessRunnerTests {
 
         #expect(output.lines == [
             "line-1", "line-2", "line-3", "line-4", "line-5", "line-6", "line-7",
-            "line-8", "[omitted 4 lines and 27 bytes]", "line-13", "line-14", "line-15",
+            "line-8", "[omitted 4 lines and at least 27 bytes]", "line-13", "line-14",
+            "line-15",
             "line-16", "line-17", "line-18", "line-19", "emoji:😀",
         ])
         #expect(output.omittedLineCount == 4)
-        #expect(output.omittedByteCount == 27)
+        #expect(output.omittedSourceByteCountLowerBound == 27)
     }
 
     @Test func collectorRetainsBothEndsOfLongLineWithinOneKiB() throws {
-        let line = "BEGIN-" + String(repeating: "x", count: 5_000) + "-END"
+        let line = "BEGIN-" + String(repeating: "x", count: 20_000) + "-END"
         let bytes = Array(line.utf8)
         var collector = BoundedProcessOutputCollector()
         for chunkStart in stride(from: 0, to: bytes.count, by: 997) {
@@ -993,10 +994,40 @@ struct StreamingProcessRunnerTests {
         #expect(retained.contains(" … "))
         #expect(retained.hasSuffix("-END"))
         #expect(retained.utf8.count == BoundedProcessOutput.maximumRenderedLineByteCount)
-        #expect(output.lines.last?.hasPrefix("[omitted 0 lines and ") == true)
+        #expect(output.lines.last?.hasPrefix("[omitted 0 lines and at least ") == true)
         #expect(output.omittedLineCount == 0)
-        #expect(output.omittedByteCount > 0)
+        #expect(
+            output.omittedSourceByteCountLowerBound
+                == UInt(
+                    line.utf8.count
+                        - (BoundedProcessOutput.maximumRenderedLineByteCount * 8 * 2)
+                )
+        )
         #expect(output.text.utf8.count <= BoundedProcessOutput.maximumRenderedByteCount)
+    }
+
+    @Test func omittedWholeLineCountsRawSourceBytesBeforeTerminalEscaping() {
+        var lines = (1...8).map { "head-\($0)" }
+        lines.append("\u{001B}")
+        lines += (1...8).map { "tail-\($0)" }
+
+        let output = BoundedProcessOutput(lines: lines)
+
+        #expect(output.omittedLineCount == 1)
+        #expect(output.omittedSourceByteCountLowerBound == 1)
+        #expect(output.lines[8] == "[omitted 1 lines and at least 1 bytes]")
+    }
+
+    @Test func hugeASCIIWhitespaceLineIsNotClassifiedAsEmittedContent() {
+        var collector = BoundedProcessOutputCollector()
+        collector.consume(Array(repeating: UInt8(ascii: " "), count: 100_000))
+
+        let output = collector.finish()
+
+        #expect(output.isEmpty)
+        #expect(output.lines.isEmpty)
+        #expect(output.omittedLineCount == 0)
+        #expect(output.omittedSourceByteCountLowerBound == 0)
     }
 
     @Test func collectorTerminalSafesControlsAndInvalidIncompleteUTF8() throws {
@@ -1031,10 +1062,10 @@ struct StreamingProcessRunnerTests {
 
         #expect(output.lines.count == BoundedProcessOutput.maximumRenderedLineCount)
         #expect(output.lines.first?.hasPrefix(#"head\u{001b}"#) == true)
-        #expect(output.lines[8].hasPrefix("[omitted 9984 lines and "))
+        #expect(output.lines[8].hasPrefix("[omitted 9984 lines and at least "))
         #expect(output.lines.last == "line-10000")
         #expect(output.omittedLineCount == 9_984)
-        #expect(output.omittedByteCount > 0)
+        #expect(output.omittedSourceByteCountLowerBound > 0)
         #expect(
             output.lines.allSatisfy {
                 $0.utf8.count <= BoundedProcessOutput.maximumRenderedLineByteCount
