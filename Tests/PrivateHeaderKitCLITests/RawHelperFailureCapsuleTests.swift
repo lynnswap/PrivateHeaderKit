@@ -100,6 +100,36 @@ struct RawHelperFailureCapsuleTests {
         #expect(hostCapsule.text.contains("termination=exit(19)"))
     }
 
+    @Test func onlyCorroboratedFinalSimulatorSignalLineIsAuthoritative() {
+        let exactSignalLine = "Child process terminated with signal 11: Segmentation fault"
+        let nonfinalCapsule = RawHelperFailureCapsule(
+            processResult: .init(
+                status: 11,
+                wasKilled: false,
+                lastLines: [exactSignalLine, "later helper diagnostic"]
+            ),
+            handshake: .missing,
+            recognizesSimulatorChildTermination: true
+        )
+        let mismatchedStatusCapsule = RawHelperFailureCapsule(
+            processResult: .init(status: 19, wasKilled: false, lastLines: [exactSignalLine]),
+            handshake: .missing,
+            recognizesSimulatorChildTermination: true
+        )
+        let killedWrapperCapsule = RawHelperFailureCapsule(
+            processResult: .init(status: 11, wasKilled: true, lastLines: [exactSignalLine]),
+            handshake: .missing,
+            recognizesSimulatorChildTermination: true
+        )
+
+        #expect(nonfinalCapsule.text.hasPrefix(exactSignalLine + "\n"))
+        #expect(nonfinalCapsule.text.contains("termination=exit(11)"))
+        #expect(mismatchedStatusCapsule.text.hasPrefix(exactSignalLine + "\n"))
+        #expect(mismatchedStatusCapsule.text.contains("termination=exit(19)"))
+        #expect(killedWrapperCapsule.text.hasPrefix(exactSignalLine + "\n"))
+        #expect(killedWrapperCapsule.text.contains("termination=wrapper_signal(11)"))
+    }
+
     @Test func normalExitWithMissingIdentityIsExplicit() {
         let capsule = RawHelperFailureCapsule(
             processResult: .init(status: 19, wasKilled: false, lastLines: []),

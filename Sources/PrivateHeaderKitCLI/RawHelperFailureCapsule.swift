@@ -19,15 +19,18 @@ struct RawHelperFailureCapsule: Equatable, Sendable {
         handshake: HandshakeObservation,
         recognizesSimulatorChildTermination: Bool
     ) {
-        var reportedChildSignal: Int32?
-        var diagnosticLines = processResult.emittedOutput.lines.filter { line in
-            guard recognizesSimulatorChildTermination,
-                  let signal = Self.simulatorChildTerminationSignal(in: line)
-            else {
-                return true
-            }
+        var diagnosticLines = processResult.emittedOutput.lines
+        let reportedChildSignal: Int32?
+        if recognizesSimulatorChildTermination,
+           !processResult.wasKilled,
+           let finalLine = diagnosticLines.last,
+           let signal = Self.simulatorChildTerminationSignal(in: finalLine),
+           signal == processResult.status
+        {
             reportedChildSignal = signal
-            return false
+            diagnosticLines.removeLast()
+        } else {
+            reportedChildSignal = nil
         }
         if diagnosticLines.isEmpty {
             diagnosticLines = ["helper diagnostic output: none emitted"]
@@ -74,11 +77,11 @@ struct RawHelperFailureCapsule: Equatable, Sendable {
         let text = (diagnosticLines + [headline]).joined(separator: "\n")
         precondition(
             diagnosticLines.count + 1 <= Self.maximumLineCount,
-            "raw helper failure capsule exceeded its line count"
+            "RawHelperFailureCapsule must enforce its rendered line-count bound"
         )
         precondition(
             text.utf8.count <= Self.maximumRenderedByteCount,
-            "raw helper failure capsule exceeded its rendered byte count"
+            "RawHelperFailureCapsule must enforce its rendered byte-count bound"
         )
         self.text = text
     }
