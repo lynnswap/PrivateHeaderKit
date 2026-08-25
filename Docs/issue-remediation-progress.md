@@ -65,3 +65,13 @@ Required runtime gate:
 - Preserve readable siblings and record bounded typed degradation for malformed
   fields.
 - Reconfirm #60 protocol recovery and #65 relative-member behavior.
+
+Dependency progress:
+
+- `e75be5d`: all audited fixed-size file metadata callers use the neutral
+  checked layout reader; file/image ivar offsets no longer dereference an
+  unproved range.
+- `7ecc235`: deterministic exact-boundary, unaligned, truncated, 32/64-bit
+  class-RO, and file/image ivar tests pass (59 focused tests, zero failures).
+- Field diagnostics and single-pass sibling preservation are in progress on
+  top of this green checkpoint.
