@@ -7,6 +7,7 @@ Base: `main` at `05d7fe7a6bf1589c54918b5312654bbfa36090d3`
 1. #79 bounded Objective-C metadata reads
 2. #80 bounded MachOKit chained-fixup reads
 3. #81 actionable bounded raw-helper crash diagnostics
+4. #83 bounded Objective-C table and loaded-image reads
 
 Each issue is delivered as an independent Ready PR targeting `main`. A later
 issue starts only after the earlier PR is review-clean and merged.
