@@ -19,7 +19,7 @@ struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertible {
 
 private enum CapturedCommandStreamResult: Sendable {
     case standardOutputComplete
-    case standardErrorComplete([String])
+    case standardErrorComplete(BoundedProcessOutput)
 }
 
 struct WaitableProcessGroupLeader: Sendable {
@@ -293,15 +293,125 @@ private func withOwnedProcessGroup<
 }
 #endif
 
+/// A terminal-safe, strictly bounded rendering of bytes emitted by a subprocess.
+///
+/// Termination and empty-output descriptions belong to ``StreamingCommandResult`` and are not
+/// represented as subprocess output here.
+public struct BoundedProcessOutput: Equatable, Sendable {
+    public static let maximumHeadLineCount = 8
+    public static let maximumTailLineCount = 8
+    public static let maximumRenderedLineByteCount = 1_024
+    public static let maximumRenderedLineCount = 17
+    public static let maximumRenderedByteCount = 18 * 1_024
+
+    public let lines: [String]
+    public let omittedLineCount: UInt
+    public let omittedByteCount: UInt
+
+    public init(lines: [String]) {
+        var collector = BoundedProcessOutputCollector()
+        for line in lines {
+            collector.consume(logicalLine: line)
+        }
+        self = collector.finish()
+    }
+
+    public var isEmpty: Bool { lines.isEmpty }
+
+    public var text: String {
+        lines.joined(separator: "\n")
+    }
+
+    fileprivate init(
+        lines: [String],
+        omittedLineCount: UInt,
+        omittedByteCount: UInt
+    ) {
+        precondition(
+            lines.count <= Self.maximumRenderedLineCount,
+            "bounded process output exceeded its line count"
+        )
+        precondition(
+            lines.allSatisfy { $0.utf8.count <= Self.maximumRenderedLineByteCount },
+            "bounded process output exceeded its per-line byte count"
+        )
+        precondition(
+            lines.joined(separator: "\n").utf8.count <= Self.maximumRenderedByteCount,
+            "bounded process output exceeded its rendered byte count"
+        )
+        precondition(
+            lines.allSatisfy { terminalSafeProcessOutput($0) == $0 },
+            "bounded process output contains terminal-unsafe text"
+        )
+        self.lines = lines
+        self.omittedLineCount = omittedLineCount
+        self.omittedByteCount = omittedByteCount
+    }
+}
+
 public struct StreamingCommandResult: Equatable, Sendable {
     public let status: Int32
     public let wasKilled: Bool
-    public let lastLines: [String]
+    /// Output emitted by the process. Synthetic termination text is available through
+    /// ``diagnosticLines`` and ``diagnosticText`` instead.
+    public let emittedOutput: BoundedProcessOutput
+    public let terminationObservedAtUnixEpochMicroseconds: UInt64?
 
-    public init(status: Int32, wasKilled: Bool, lastLines: [String]) {
+    public init(
+        status: Int32,
+        wasKilled: Bool,
+        lastLines: [String],
+        terminationObservedAtUnixEpochMicroseconds: UInt64? = nil
+    ) {
+        self.init(
+            status: status,
+            wasKilled: wasKilled,
+            emittedOutput: BoundedProcessOutput(lines: lastLines),
+            terminationObservedAtUnixEpochMicroseconds:
+                terminationObservedAtUnixEpochMicroseconds
+        )
+    }
+
+    public init(
+        status: Int32,
+        wasKilled: Bool,
+        emittedOutput: BoundedProcessOutput,
+        terminationObservedAtUnixEpochMicroseconds: UInt64? = nil
+    ) {
         self.status = status
         self.wasKilled = wasKilled
-        self.lastLines = lastLines
+        self.emittedOutput = emittedOutput
+        self.terminationObservedAtUnixEpochMicroseconds =
+            terminationObservedAtUnixEpochMicroseconds
+    }
+
+    public var diagnosticLines: [String] {
+        guard status != 0 || wasKilled else { return emittedOutput.lines }
+        var lines = emittedOutput.lines
+        if emittedOutput.isEmpty {
+            lines.append("No process diagnostic was emitted.")
+        }
+        if wasKilled {
+            lines.append("Terminated by signal \(status)")
+        } else {
+            lines.append("Exited with status \(status)")
+        }
+        return lines
+    }
+
+    public var diagnosticText: String {
+        diagnosticLines.joined(separator: "\n")
+    }
+
+    /// Compatibility view preserving the previous synthetic termination rules.
+    public var lastLines: [String] {
+        var lines = emittedOutput.lines
+        if wasKilled {
+            lines.append("Terminated by signal \(status)")
+        } else if status != 0, emittedOutput.isEmpty {
+            lines.append("Exited with status \(status)")
+        }
+        return lines
     }
 }
 
@@ -339,7 +449,23 @@ public extension CommandRunning {
 }
 
 public struct ProcessRunner: CommandRunning, Sendable {
-    public init() {}
+    private let terminationObservationClock: @Sendable () throws -> UInt64
+
+    public init() {
+#if os(macOS)
+        self.terminationObservationClock = unixEpochMicrosecondsFromRealtimeClock
+#else
+        self.terminationObservationClock = {
+            throw ToolingError.unsupported("process execution is not available on this platform")
+        }
+#endif
+    }
+
+    init(
+        terminationObservationClock: @escaping @Sendable () throws -> UInt64
+    ) {
+        self.terminationObservationClock = terminationObservationClock
+    }
 
 #if os(macOS)
     public func runCapture(
@@ -435,39 +561,36 @@ public struct ProcessRunner: CommandRunning, Sendable {
                                 return .standardOutputComplete
                             }
                             group.addTask {
-                                var collector = StreamingOutputCollector()
+                                var collector = BoundedProcessOutputCollector()
                                 for try await buffer in execution.standardError {
                                     try Task.checkCancellation()
                                     collector.consume(buffer.withUnsafeBytes { Array($0) })
                                 }
-                                collector.finish()
-                                return .standardErrorComplete(collector.lastLines)
+                                return .standardErrorComplete(collector.finish())
                             }
 
-                            var standardErrorLines: [String] = []
+                            var standardErrorOutput = BoundedProcessOutput(lines: [])
                             while let streamResult = try await group.next() {
-                                if case .standardErrorComplete(let lines) = streamResult {
-                                    standardErrorLines = lines
+                                if case .standardErrorComplete(let output) = streamResult {
+                                    standardErrorOutput = output
                                 }
                             }
-                            return standardErrorLines
+                            return standardErrorOutput
                         }
                     }
                 }
                 try Task.checkCancellation()
                 let termination = commandTermination(result.terminationStatus)
-                var standardErrorLines = result.closureResult
-                if termination.wasKilled {
-                    appendLastLine(
-                        "Terminated by signal \(termination.status)",
-                        to: &standardErrorLines
-                    )
-                }
+                let commandResult = StreamingCommandResult(
+                    status: termination.status,
+                    wasKilled: termination.wasKilled,
+                    emittedOutput: result.closureResult
+                )
                 guard termination.status == 0, !termination.wasKilled else {
                     throw ToolingError.commandFailed(
                         command: command,
                         status: termination.status,
-                        stderr: standardErrorLines.joined(separator: "\n")
+                        stderr: commandResult.lastLines.joined(separator: "\n")
                     )
                 }
                 return
@@ -599,7 +722,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     error: .combinedWithOutput
                 ) { execution in
                     try await withOwnedProcessGroup(execution: execution) {
-                        var collector = StreamingOutputCollector()
+                        var collector = BoundedProcessOutputCollector()
                         for try await buffer in execution.standardOutput {
                             let bytes = buffer.withUnsafeBytes { Array($0) }
                             if streamOutput {
@@ -607,26 +730,18 @@ public struct ProcessRunner: CommandRunning, Sendable {
                             }
                             collector.consume(bytes)
                         }
-                        collector.finish()
-                        return collector.lastLines
+                        return collector.finish()
                     }
                 }
                 // See runCapture: cancellation is observed after group completion.
                 try Task.checkCancellation()
                 let termination = commandTermination(result.terminationStatus)
-                var lastLines = result.closureResult
-                if termination.wasKilled {
-                    appendLastLine(
-                        "Terminated by signal \(termination.status)",
-                        to: &lastLines
-                    )
-                } else if termination.status != 0, lastLines.isEmpty {
-                    appendLastLine("Exited with status \(termination.status)", to: &lastLines)
-                }
                 return StreamingCommandResult(
                     status: termination.status,
                     wasKilled: termination.wasKilled,
-                    lastLines: lastLines
+                    emittedOutput: result.closureResult,
+                    terminationObservedAtUnixEpochMicroseconds:
+                        try terminationObservationClock()
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -979,78 +1094,270 @@ final class CancellableStandardOutputWriter: @unchecked Sendable {
     }
 }
 
-struct StreamingOutputCollector {
-    static let maximumLineByteCount = 128 * 1024
+#endif
 
-    private var pendingBytes: [UInt8] = []
-    private var discardedPendingByteCount = 0
-    private(set) var lastLines: [String] = []
+struct BoundedProcessOutputCollector {
+    private var pendingLine = BoundedProcessLineBytes()
+    private var headLines: [BoundedProcessLine] = []
+    private var tailLines: [BoundedProcessLine] = []
+    private var omittedLineCount: UInt = 0
+    private var omittedByteCount: UInt = 0
+    private var isFinished = false
 
     mutating func consume(_ bytes: [UInt8]) {
+        precondition(!isFinished, "cannot consume process output after finishing")
         var segmentStart = bytes.startIndex
         for index in bytes.indices where bytes[index] == UInt8(ascii: "\n") {
-            appendPending(bytes[segmentStart..<index])
+            pendingLine.append(bytes[segmentStart..<index])
             consumePendingLine()
             segmentStart = bytes.index(after: index)
         }
         if segmentStart != bytes.endIndex {
-            appendPending(bytes[segmentStart...])
+            pendingLine.append(bytes[segmentStart...])
         }
     }
 
-    mutating func finish() {
-        if !pendingBytes.isEmpty || discardedPendingByteCount > 0 {
+    mutating func consume(logicalLine: String) {
+        consume(Array(logicalLine.utf8))
+        consume([UInt8(ascii: "\n")])
+    }
+
+    mutating func finish() -> BoundedProcessOutput {
+        precondition(!isFinished, "process output collector finished more than once")
+        if !pendingLine.isEmpty {
             consumePendingLine()
         }
-        pendingBytes.removeAll(keepingCapacity: false)
-    }
+        isFinished = true
 
-    private mutating func appendPending(_ bytes: ArraySlice<UInt8>) {
-        guard !bytes.isEmpty else { return }
-
-        let maximumCount = Self.maximumLineByteCount
-        if bytes.count >= maximumCount {
-            discardedPendingByteCount += pendingBytes.count + bytes.count - maximumCount
-            pendingBytes.removeAll(keepingCapacity: true)
-            pendingBytes.append(contentsOf: bytes.suffix(maximumCount))
-        } else {
-            let overflow = max(0, pendingBytes.count + bytes.count - maximumCount)
-            if overflow > 0 {
-                pendingBytes.removeFirst(overflow)
-                discardedPendingByteCount += overflow
-            }
-            pendingBytes.append(contentsOf: bytes)
+        var lines = headLines.map(\.text)
+        if omittedLineCount > 0 || omittedByteCount > 0 {
+            lines.append("[omitted \(omittedLineCount) lines and \(omittedByteCount) bytes]")
         }
-
-        // When the retained suffix begins in the middle of a valid scalar, discard the
-        // continuation bytes too. Invalid bytes elsewhere still follow String(decoding:)'s
-        // replacement-character contract.
-        while discardedPendingByteCount > 0,
-              let first = pendingBytes.first,
-              first & 0b1100_0000 == 0b1000_0000
-        {
-            pendingBytes.removeFirst()
-            discardedPendingByteCount += 1
-        }
+        lines += tailLines.map(\.text)
+        return BoundedProcessOutput(
+            lines: lines,
+            omittedLineCount: omittedLineCount,
+            omittedByteCount: omittedByteCount
+        )
     }
 
     private mutating func consumePendingLine() {
-        var line = String(decoding: pendingBytes, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if discardedPendingByteCount > 0 {
-            line = "[truncated \(discardedPendingByteCount) bytes] \(line)"
+        let line = pendingLine.finish()
+        pendingLine = BoundedProcessLineBytes()
+        guard let line else { return }
+        append(line)
+    }
+
+    private mutating func append(_ line: BoundedProcessLine) {
+        omittedByteCount = saturatingSum(omittedByteCount, line.omittedByteCount)
+        if headLines.count < BoundedProcessOutput.maximumHeadLineCount {
+            headLines.append(line)
+            return
         }
-        pendingBytes.removeAll(keepingCapacity: true)
-        discardedPendingByteCount = 0
-        guard !line.isEmpty else { return }
-        appendLastLine(line, to: &lastLines)
+
+        tailLines.append(line)
+        guard tailLines.count > BoundedProcessOutput.maximumTailLineCount else { return }
+        let omittedLine = tailLines.removeFirst()
+        omittedLineCount = saturatingSum(omittedLineCount, 1)
+        omittedByteCount = saturatingSum(
+            omittedByteCount,
+            omittedLine.retainedSourceByteCount
+        )
     }
 }
 
-private func appendLastLine(_ line: String, to lines: inout [String]) {
-    lines.append(line)
-    if lines.count > 8 {
-        lines.removeFirst(lines.count - 8)
+private struct BoundedProcessLineBytes {
+    // Terminal escaping can expand one source scalar substantially. Retaining larger raw edges
+    // keeps enough source material to fill both rendered halves without retaining the whole line.
+    private static let edgeByteCount =
+        BoundedProcessOutput.maximumRenderedLineByteCount * 8
+
+    private var head: [UInt8] = []
+    private var tail: [UInt8] = []
+    private var totalByteCount: UInt = 0
+
+    var isEmpty: Bool { totalByteCount == 0 }
+
+    mutating func append(_ bytes: ArraySlice<UInt8>) {
+        guard !bytes.isEmpty else { return }
+        totalByteCount = saturatingSum(totalByteCount, UInt(bytes.count))
+
+        let headCapacity = max(0, Self.edgeByteCount - head.count)
+        let headBytes = bytes.prefix(headCapacity)
+        head.append(contentsOf: headBytes)
+        let remaining = bytes.dropFirst(headBytes.count)
+        guard !remaining.isEmpty else { return }
+
+        if remaining.count >= Self.edgeByteCount {
+            tail = Array(remaining.suffix(Self.edgeByteCount))
+        } else {
+            let overflow = max(0, tail.count + remaining.count - Self.edgeByteCount)
+            if overflow > 0 {
+                tail.removeFirst(overflow)
+            }
+            tail.append(contentsOf: remaining)
+        }
+    }
+
+    mutating func finish() -> BoundedProcessLine? {
+        let retainedByteCount = UInt(head.count + tail.count)
+        let discardedRawByteCount = saturatingSubtract(totalByteCount, retainedByteCount)
+        let headText: String
+        let tailText: String
+        if discardedRawByteCount == 0 {
+            headText = normalizedProcessOutputLine(head + tail)
+            tailText = ""
+        } else {
+            headText = normalizedProcessOutputLine(head)
+            tailText = normalizedProcessOutputLine(tail)
+        }
+        guard !headText.isEmpty || !tailText.isEmpty || discardedRawByteCount > 0 else {
+            return nil
+        }
+        return boundedProcessLine(
+            head: headText,
+            tail: tailText,
+            discardedRawByteCount: discardedRawByteCount
+        )
     }
 }
+
+private struct BoundedProcessLine {
+    let text: String
+    let sourceByteCount: UInt
+    let omittedByteCount: UInt
+
+    var retainedSourceByteCount: UInt {
+        saturatingSubtract(sourceByteCount, omittedByteCount)
+    }
+}
+
+private func boundedProcessLine(
+    head: String,
+    tail: String,
+    discardedRawByteCount: UInt
+) -> BoundedProcessLine {
+    let maximumByteCount = BoundedProcessOutput.maximumRenderedLineByteCount
+    let separator = " … "
+    let headByteCount = UInt(head.utf8.count)
+    let tailByteCount = UInt(tail.utf8.count)
+    let sourceByteCount = saturatingSum(
+        saturatingSum(headByteCount, tailByteCount),
+        discardedRawByteCount
+    )
+
+    if discardedRawByteCount == 0, tail.isEmpty, head.utf8.count <= maximumByteCount {
+        return BoundedProcessLine(
+            text: head,
+            sourceByteCount: sourceByteCount,
+            omittedByteCount: 0
+        )
+    }
+
+    let sourceTail = tail.isEmpty ? head : tail
+    let contentBudget = maximumByteCount - separator.utf8.count
+    let headBudget = contentBudget / 2
+    let tailBudget = contentBudget - headBudget
+    let retainedHead = prefixFittingUTF8(head, maximumByteCount: headBudget)
+    let retainedTail = suffixFittingUTF8(sourceTail, maximumByteCount: tailBudget)
+    let retainedSourceByteCount = UInt(retainedHead.utf8.count + retainedTail.utf8.count)
+    let omittedByteCount = saturatingSubtract(sourceByteCount, retainedSourceByteCount)
+    return BoundedProcessLine(
+        text: retainedHead + separator + retainedTail,
+        sourceByteCount: sourceByteCount,
+        omittedByteCount: omittedByteCount
+    )
+}
+
+private func normalizedProcessOutputLine(_ bytes: [UInt8]) -> String {
+    terminalSafeProcessOutput(
+        String(decoding: bytes, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+}
+
+private func terminalSafeProcessOutput(_ value: String) -> String {
+    value.unicodeScalars.reduce(into: "") { result, scalar in
+        switch scalar.value {
+        case 0x09:
+            result += #"\t"#
+        case 0x0a:
+            result += #"\n"#
+        case 0x0d:
+            result += #"\r"#
+        default:
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                result += String(format: #"\u{%04x}"#, scalar.value)
+            default:
+                result.unicodeScalars.append(scalar)
+            }
+        }
+    }
+}
+
+private func prefixFittingUTF8(_ value: String, maximumByteCount: Int) -> String {
+    var result = ""
+    var byteCount = 0
+    for scalar in value.unicodeScalars {
+        let scalarByteCount = scalar.utf8.count
+        guard byteCount <= maximumByteCount - scalarByteCount else { break }
+        result.unicodeScalars.append(scalar)
+        byteCount += scalarByteCount
+    }
+    return result
+}
+
+private func suffixFittingUTF8(_ value: String, maximumByteCount: Int) -> String {
+    var scalars: [Unicode.Scalar] = []
+    var byteCount = 0
+    for scalar in value.unicodeScalars.reversed() {
+        let scalarByteCount = scalar.utf8.count
+        guard byteCount <= maximumByteCount - scalarByteCount else { break }
+        scalars.append(scalar)
+        byteCount += scalarByteCount
+    }
+    var result = ""
+    for scalar in scalars.reversed() {
+        result.unicodeScalars.append(scalar)
+    }
+    return result
+}
+
+private func saturatingSum(_ lhs: UInt, _ rhs: UInt) -> UInt {
+    let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+    return overflow ? UInt.max : sum
+}
+
+private func saturatingSubtract(_ lhs: UInt, _ rhs: UInt) -> UInt {
+    lhs >= rhs ? lhs - rhs : 0
+}
+
+private func unixEpochMicrosecondsFromRealtimeClock() throws -> UInt64 {
+#if os(macOS)
+    var time = timespec()
+    guard clock_gettime(CLOCK_REALTIME, &time) == 0 else {
+        throw ToolingError.message(
+            "failed to observe process termination time (errno \(errno))"
+        )
+    }
+    guard time.tv_sec >= 0, time.tv_nsec >= 0 else {
+        throw ToolingError.message("process termination clock returned a negative value")
+    }
+    let seconds = UInt64(time.tv_sec)
+    let (secondMicroseconds, overflow) = seconds.multipliedReportingOverflow(by: 1_000_000)
+    guard !overflow else {
+        throw ToolingError.message("process termination clock exceeded UInt64")
+    }
+    let nanosecondMicroseconds = UInt64(time.tv_nsec) / 1_000
+    let (result, additionOverflow) = secondMicroseconds.addingReportingOverflow(
+        nanosecondMicroseconds
+    )
+    guard !additionOverflow else {
+        throw ToolingError.message("process termination clock exceeded UInt64")
+    }
+    return result
+#else
+    throw ToolingError.unsupported("process execution is not available on this platform")
 #endif
+}

@@ -39,6 +39,8 @@ private struct PrivateHeaderKitToolingTestHelper {
                     throw HelperError.invalidCommand(command)
                 }
                 try writeLargeStandardErrorFailure(byteCount: byteCount)
+            case "long-exception-failure":
+                try writeLongExceptionFailure()
             case "chunked-output":
                 try writeChunkedOutput()
             case "buffered-output":
@@ -121,6 +123,27 @@ private struct PrivateHeaderKitToolingTestHelper {
         exit(19)
     }
 
+    private static func writeLongExceptionFailure() throws -> Never {
+        var lines = [
+            "*** Terminating app due to uncaught exception 'FixtureException', reason: 'fixture reason'",
+            "*** First throw call stack:",
+            "(",
+            "0   CoreFoundation fixture",
+            "1   libobjc fixture",
+            "2   PrivateHeaderKitToolingTestHelper frame-zero",
+            "3   PrivateHeaderKitToolingTestHelper frame-one",
+            "4   PrivateHeaderKitToolingTestHelper frame-two",
+        ]
+        lines += (5...24).map { "\($0)   filler frame \($0)" }
+        lines += [
+            ")",
+            "libc++abi: terminating due to uncaught exception of type NSException",
+            "final-diagnostic-tail",
+        ]
+        try writeAll(Array((lines.joined(separator: "\n") + "\n").utf8), to: STDERR_FILENO)
+        exit(19)
+    }
+
     private static func writeAll(_ bytes: [UInt8], to descriptor: Int32) throws {
         var writtenCount = 0
         while writtenCount < bytes.count {
@@ -153,6 +176,7 @@ private struct PrivateHeaderKitToolingTestHelper {
         )
         guard result.status == 19,
               !result.wasKilled,
+              result.emittedOutput.lines == ["buffered-stdout", "buffered-stderr"],
               result.lastLines == ["buffered-stdout", "buffered-stderr"]
         else {
             throw ToolingError.message(
