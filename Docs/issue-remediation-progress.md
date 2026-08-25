@@ -33,15 +33,29 @@ Verified evidence:
 - Per-target process isolation contains the crash but cannot preserve the four
   affected targets or their artifacts.
 
-Design gate pending:
+Design gate approved:
 
-- Replace unconditional reads with one checked scalar/layout primitive that
-  owns exact conversion, full-range validation, and `loadUnaligned`.
-- Define field-level typed diagnostics and sibling-preservation semantics for
-  class RO and ivar-offset failures without adding sentinel values or fallback
-  metadata.
-- Audit every caller of the deleted nonoptional wrapper and the loaded-image
-  twin paths before implementation.
+- One neutral checked fixed-layout reader owns exact `UInt64` to `Int`
+  conversion, overflow-safe full-range validation, fallible I/O, and
+  `loadUnaligned`. The nonoptional generic wrappers are deleted so all 22
+  fixed-size callers migrate under compiler enforcement.
+- `ObjCMetadataReadResult` gains an additive Diagnostics SPI field-diagnostic
+  channel. It does not overload the protocol-list or relative-member-list
+  diagnostic contracts and does not add requirements to public protocols.
+- Internal field reads distinguish `.absent`, `.value`, and `.failure`.
+  Legitimate zero/RW representations stay silent; malformed external ranges
+  produce typed failures without sentinel names or synthetic metadata.
+- An unreadable instance RO field drops only that root class. An unreadable
+  metaclass RO field keeps protocols, ivars, and instance members while
+  omitting class members. An unreadable ivar offset drops only that ivar and
+  preserves readable siblings in discovery order.
+- File and loaded-image class-RO/ivar-offset paths use the same failure
+  semantics. The PrivateHeaderKit accumulator remains the sole deduplication,
+  256-entry cap, omission-count, and canonical-order owner.
+- Variable-length `readDataSequence` tables are not folded into the fixed-size
+  reader. They require count/byte budgets and a malformed-versus-empty outcome,
+  so the remaining sequence and unchecked loaded-image table surfaces will be
+  tracked as a separate hardening issue rather than hidden inside #79.
 
 Required runtime gate:
 
