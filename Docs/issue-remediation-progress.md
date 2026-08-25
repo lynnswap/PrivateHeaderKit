@@ -143,3 +143,16 @@ Dependency progress:
 - Phase A continues checked direct projections, method iterators, and table/file
   fixtures. Phase B is stacked from the core checkpoint for loaded roots,
   relationships, regular headers, relative direct parity, and loaded fixtures.
+- MachOObjCSection Phase A checkpoint
+  `c1a78f8ed6f6aaa592317bdd553129b10abb29af` adds no-trap file/image method
+  iterators, checked `EntrySizeList` projections, empty-before-stride semantics,
+  indexed property-coordinate failures, section read cleanup, and 18 direct
+  reader/member/iterator tests.
+- Phase A validation: debug/release builds and 90 focused new + #60/#65/#79
+  tests pass; unsafe-pattern and diff checks are clean. The full suite reaches
+  an unchanged absolute `/Users/JH/Downloads/iOS18.5-SwiftUI` fixture dependency
+  and then traps in the identical base test force unwrap, so that environment
+  fixture is not changed by #83.
+- A follow-up checkpoint is restoring the public `EntrySizeList.size` `Int`
+  signature while retaining the internal fallible size owner; malformed legacy
+  projections return zero instead of changing public source compatibility.
