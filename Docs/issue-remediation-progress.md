@@ -65,3 +65,42 @@ Required validation:
   output volume.
 - The capsule survives through `runTargets.failureSummary` and both terminal
   and nonterminal failed-target rendering.
+
+Implementation completed:
+
+- `BoundedProcessOutput` now owns terminal-safe combined-stream head/tail
+  retention and raw-source omission lower bounds. `StreamingCommandResult`
+  carries that value plus the wrapper termination-observation timestamp.
+- Every raw helper invocation has a distinct process-handshake report. The
+  helper writes its validated PID, executable name, LC_UUID, invocation ID,
+  and start timestamp before loading the requested target.
+- `runPrivateHeaderKitRawDump` consumes and removes both reports on every
+  success/failure/throw path and builds one bounded failure capsule on a
+  nonzero helper result.
+- Simulator child termination is recognized only from the exact final
+  `simctl` line when the wrapper's normal exit status corroborates the POSIX
+  `128 + signal` convention. The wrapper line is then replaced by the typed
+  child-signal field instead of being duplicated as arbitrary output.
+- Executor/store/rendering tests confirm that the exact capsule is the existing
+  `runTargets.failureSummary`; no persistence schema changed.
+
+Validation completed:
+
+- `swift test --force-resolved-versions` passed after integration.
+- The focused capsule suite passed with 8 tests after the measured `simctl`
+  exit-status correction.
+- A release-mode run against the exact iOS 27.0 beta `24A5390f` runtime and
+  `AXSpringBoardServerInstance` reproduced its expected uncaught exception as
+  run `run-d455b470-6ec7-4955-9157-7bc90c082a47`.
+- SQLite retained the exception name/reason, first frames, omission marker,
+  terminal frames, and canonical headline in 17 lines / 1,725 bytes. Database
+  integrity was `ok` with no foreign-key violations.
+- The headline reported `child_signal(6)`, wrapper status `134`, helper PID
+  `28709`, LC_UUID `31c43965-06ab-3d01-b413-8db66023c8d9`, start microseconds,
+  and termination-observation microseconds.
+- Crash Reporter independently recorded the same PID, LC_UUID, helper name,
+  and `SIGABRT`/code 6, with capture time between helper start and observed
+  termination.
+- The run-owned Simulator was deleted and the SDK-runtime override was restored
+  to its default. The isolated output was moved recoverably to
+  `/Users/kn/.Trash/privateheaderkit-issue81-runtime-MTbctA`.
