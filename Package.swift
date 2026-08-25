@@ -33,7 +33,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            from: "0.51.101"
+            revision: "e0e0b30187ae74f2088d932845c8ddac2c79f36c"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",

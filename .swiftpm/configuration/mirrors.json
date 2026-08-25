@@ -1,0 +1,13 @@
+{
+  "object" : [
+    {
+      "mirror" : "https://github.com/lynnswap/MachOKit.git",
+      "original" : "https://github.com/MxIris-Reverse-Engineering/MachOKit"
+    },
+    {
+      "mirror" : "https://github.com/lynnswap/MachOKit.git",
+      "original" : "https://github.com/MxIris-Reverse-Engineering/MachOKit.git"
+    }
+  ],
+  "version" : 1
+}

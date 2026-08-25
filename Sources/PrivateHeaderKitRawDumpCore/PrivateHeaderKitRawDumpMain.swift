@@ -1,6 +1,6 @@
 import Foundation
 import Dispatch
-import MachOKit
+@_spi(Support) import MachOKit
 @_spi(Diagnostics) import MachOObjCSection
 import MachOSwiftSection
 import ObjCDump
@@ -442,6 +442,7 @@ private func dumpImage(
         return
     }
     profileLogDuration(enabled: options.profile, imagePath: imagePath, name: "loadMachO", since: loadStart)
+    try machO.validateFileBackedChainedFixups()
 
     if options.verbose {
         print("Dumping: \(placement.identity.url.path)")
@@ -486,6 +487,11 @@ private func defaultSwiftInterfaceBuilderFactory(
 enum RawMachO {
     case file(MachOFile)
     case loaded(MachOImage)
+
+    func validateFileBackedChainedFixups() throws {
+        guard case .file(let file) = self else { return }
+        try file.validateChainedFixups()
+    }
 }
 
 enum RawMachOLoadError: Error, Equatable, CustomStringConvertible, Sendable {
