@@ -75,3 +75,13 @@ Dependency progress:
   class-RO, and file/image ivar tests pass (59 focused tests, zero failures).
 - Field diagnostics and single-pass sibling preservation are in progress on
   top of this green checkpoint.
+- Independent review of `c7716997..7ecc235` found no actionable fixed-read
+  defect; all 22 audited callers use the checked owner.
+
+Observed malformed fields for the runtime gate:
+
+- KoaMapper class RO: `0x4F800` in a `0x4DAA0` file.
+- SAML class RO: `0x3B800` in a `0x3B620` file.
+- TextInput_zh class RO: `0x45800` in a `0x44520` file.
+- NTKEsterbrook ivar offsets: indices 8 and 9 read `0x96448` and `0x96450`
+  in a `0x93540` file.
