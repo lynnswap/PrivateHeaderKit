@@ -167,8 +167,7 @@ private func consumeSuccessfulRawDumpProcessHandshake(
     do {
         handshake = try readRawDumpProcessHandshake(
             at: reportURL,
-            expectedInvocationID: expectedInvocationID,
-            fileManager: fileManager
+            expectedInvocationID: expectedInvocationID
         )
     } catch {
         try? fileManager.removeItem(at: reportURL)
@@ -197,8 +196,7 @@ private func consumeFailedRawDumpProcessHandshake(
         return .available(
             try readRawDumpProcessHandshake(
                 at: reportURL,
-                expectedInvocationID: expectedInvocationID,
-                fileManager: fileManager
+                expectedInvocationID: expectedInvocationID
             )
         )
     } catch PrivateHeaderGeneration.RawDumping.ContractError.missingProcessHandshake {
@@ -210,47 +208,35 @@ private func consumeFailedRawDumpProcessHandshake(
 
 private func readRawDumpProcessHandshake(
     at reportURL: URL,
-    expectedInvocationID: UUID,
-    fileManager: FileManager
+    expectedInvocationID: UUID
 ) throws -> PrivateHeaderKitRawDumpProcessHandshake {
     let path = reportURL.path
-    guard fileManager.fileExists(atPath: path) else {
-        throw PrivateHeaderGeneration.RawDumping.ContractError.missingProcessHandshake(path)
-    }
-
     let data: Data
     do {
-        let values = try reportURL.resourceValues(forKeys: [
-            .isRegularFileKey,
-            .fileSizeKey,
-        ])
-        guard values.isRegularFile == true else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.invalidProcessHandshake(
-                path: path,
-                reason: "report is not a regular file"
-            )
-        }
-        guard let fileSize = values.fileSize else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.invalidProcessHandshake(
-                path: path,
-                reason: "report size is unavailable"
-            )
-        }
-        guard fileSize <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount else {
+        data = try RawDumpReportIO.read(
+            at: reportURL,
+            maximumByteCount: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
+        )
+    } catch let error as RawDumpReportIO.Failure {
+        switch error {
+        case .missing:
+            throw PrivateHeaderGeneration.RawDumping.ContractError
+                .missingProcessHandshake(path)
+        case .tooLarge(let actual):
             throw PrivateHeaderGeneration.RawDumping.ContractError.processHandshakeTooLarge(
                 path: path,
-                actual: fileSize,
+                actual: actual,
                 maximum: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
             )
-        }
-        data = try Data(contentsOf: reportURL)
-        guard data.count <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.processHandshakeTooLarge(
+        default:
+            throw PrivateHeaderGeneration.RawDumping.ContractError.invalidProcessHandshake(
                 path: path,
-                actual: data.count,
-                maximum: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
+                reason: error.description
             )
         }
+    }
+
+    do {
         return try PrivateHeaderKitRawDumpProcessHandshake.decode(
             data,
             expectedInvocationID: expectedInvocationID
@@ -270,47 +256,30 @@ private func consumeRawDumpDiagnosticsReport(
     fileManager: FileManager = .default
 ) throws -> PrivateHeaderKitRawDumpDiagnosticsReport {
     let path = reportURL.path
-    guard fileManager.fileExists(atPath: path) else {
-        try? fileManager.removeItem(at: reportURL)
-        throw PrivateHeaderGeneration.RawDumping.ContractError.missingDiagnosticsReport(path)
-    }
-
     let data: Data
     do {
-        let values = try reportURL.resourceValues(forKeys: [
-            .isRegularFileKey,
-            .fileSizeKey,
-        ])
-        guard values.isRegularFile == true else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.invalidDiagnosticsReport(
-                path: path,
-                reason: "report is not a regular file"
-            )
-        }
-        guard let fileSize = values.fileSize else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.invalidDiagnosticsReport(
-                path: path,
-                reason: "report size is unavailable"
-            )
-        }
-        guard fileSize <= PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.diagnosticsReportTooLarge(
-                path: path,
-                actual: fileSize,
-                maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
-            )
-        }
-        data = try Data(contentsOf: reportURL)
-        guard data.count <= PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount else {
-            throw PrivateHeaderGeneration.RawDumping.ContractError.diagnosticsReportTooLarge(
-                path: path,
-                actual: data.count,
-                maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
-            )
-        }
-    } catch let error as PrivateHeaderGeneration.RawDumping.ContractError {
+        data = try RawDumpReportIO.read(
+            at: reportURL,
+            maximumByteCount: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
+        )
+    } catch let error as RawDumpReportIO.Failure {
         try? fileManager.removeItem(at: reportURL)
-        throw error
+        switch error {
+        case .missing:
+            throw PrivateHeaderGeneration.RawDumping.ContractError
+                .missingDiagnosticsReport(path)
+        case .tooLarge(let actual):
+            throw PrivateHeaderGeneration.RawDumping.ContractError.diagnosticsReportTooLarge(
+                path: path,
+                actual: actual,
+                maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
+            )
+        default:
+            throw PrivateHeaderGeneration.RawDumping.ContractError.invalidDiagnosticsReport(
+                path: path,
+                reason: error.description
+            )
+        }
     } catch {
         try? fileManager.removeItem(at: reportURL)
         throw PrivateHeaderGeneration.RawDumping.ContractError.invalidDiagnosticsReport(

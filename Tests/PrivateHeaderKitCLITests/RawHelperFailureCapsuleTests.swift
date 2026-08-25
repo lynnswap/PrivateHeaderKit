@@ -258,11 +258,55 @@ struct RawHelperFailureCapsuleTests {
                 return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
             }
 
-            await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
-                _ = try await runPrivateHeaderKitRawDump(
-                    fixture.invocation,
-                    processRunner: runner
-                )
+            switch kind {
+            case .missing:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .missingProcessHandshake(
+                            fixture.invocation.processHandshakeReportURL.path
+                        )
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        fixture.invocation,
+                        processRunner: runner
+                    )
+                }
+            case .oversized:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .processHandshakeTooLarge(
+                            path: fixture.invocation.processHandshakeReportURL.path,
+                            actual: PrivateHeaderKitRawDumpProcessHandshake
+                                .maximumEncodedByteCount + 1,
+                            maximum: PrivateHeaderKitRawDumpProcessHandshake
+                                .maximumEncodedByteCount
+                        )
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        fixture.invocation,
+                        processRunner: runner
+                    )
+                }
+            case .directory:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .invalidProcessHandshake(
+                            path: fixture.invocation.processHandshakeReportURL.path,
+                            reason: "report is not a regular file"
+                        )
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        fixture.invocation,
+                        processRunner: runner
+                    )
+                }
+            case .malformed, .wrongInvocation:
+                await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        fixture.invocation,
+                        processRunner: runner
+                    )
+                }
             }
             #expect(
                 !FileManager.default.fileExists(

@@ -1272,13 +1272,19 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
-    @Test func successfulRawDumpRejectsMissingOrMalformedDiagnosticsReport() async throws {
+    @Test func successfulRawDumpRejectsMissingMalformedOrNonRegularDiagnosticsReport() async throws {
+        enum FixtureKind: CaseIterable, Sendable {
+            case missing
+            case malformed
+            case directory
+        }
+
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let stage = root.appendingPathComponent("stage", isDirectory: true)
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
 
-        for malformed in [false, true] {
+        for kind in FixtureKind.allCases {
             let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
                 try .init(
                     helperURLs: .init(
@@ -1293,14 +1299,51 @@ struct PrivateHeaderKitCLIExecutionTests {
             let runner = RecordingCommandRunner()
             await runner.setStreamingHandler { command, _, _ in
                 try writeRawDumpProcessHandshake(for: command)
-                if malformed {
+                switch kind {
+                case .missing:
+                    break
+                case .malformed:
                     try Data("not-json".utf8).write(to: invocation.diagnosticsReportURL)
+                case .directory:
+                    try FileManager.default.createDirectory(
+                        at: invocation.diagnosticsReportURL,
+                        withIntermediateDirectories: false
+                    )
                 }
                 return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
             }
 
-            await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
-                _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
+            switch kind {
+            case .missing:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .missingDiagnosticsReport(invocation.diagnosticsReportURL.path)
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        invocation,
+                        processRunner: runner
+                    )
+                }
+            case .directory:
+                await #expect(
+                    throws: PrivateHeaderGeneration.RawDumping.ContractError
+                        .invalidDiagnosticsReport(
+                            path: invocation.diagnosticsReportURL.path,
+                            reason: "report is not a regular file"
+                        )
+                ) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        invocation,
+                        processRunner: runner
+                    )
+                }
+            case .malformed:
+                await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
+                    _ = try await runPrivateHeaderKitRawDump(
+                        invocation,
+                        processRunner: runner
+                    )
+                }
             }
             #expect(
                 !FileManager.default.fileExists(
@@ -1333,7 +1376,14 @@ struct PrivateHeaderKitCLIExecutionTests {
             return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
         }
 
-        await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
+        await #expect(
+            throws: PrivateHeaderGeneration.RawDumping.ContractError
+                .diagnosticsReportTooLarge(
+                    path: invocation.diagnosticsReportURL.path,
+                    actual: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount + 1,
+                    maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
+                )
+        ) {
             _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
         }
         #expect(
