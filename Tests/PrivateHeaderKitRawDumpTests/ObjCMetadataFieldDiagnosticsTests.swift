@@ -65,10 +65,32 @@ struct ObjCMetadataFieldDiagnosticsTests {
             )
             #expect(
                 record.degradation
-                    == #"ivar-offset metadata for ivar index 2 named _value\tfield"#
+                    == "ivar-offset metadata for ivar index 2"
                         + " could not be read: \(failureDescription)"
+                        + #"; name _value\tfield"#
             )
         }
+    }
+
+    @Test func longIvarNameCannotDisplaceIndexOrFailureReason() {
+        let record = rawDumpIvarOffsetDiagnostic(
+            subject: .classObject(offset: 4_096),
+            index: 2,
+            name: String(repeating: "x", count: 3_000),
+            failure: .missingBackingData
+        )
+
+        #expect(
+            record.degradation.hasPrefix(
+                "ivar-offset metadata for ivar index 2"
+                    + " could not be read: field pointer has no readable backing data"
+                    + "; name "
+            )
+        )
+        #expect(
+            record.degradation.utf8.count
+                == PrivateHeaderKitRawDumpDiagnostic.maximumStringUTF8Count
+        )
     }
 
     @Test func longNamedSubjectCannotDisplaceStableObjectOffset() {

@@ -42,9 +42,24 @@ func rawDumpObjCProtocolInfoOptions(
     }
 }
 
+private struct RawDumpObjCDiagnosticChannel {
+    private(set) var records: [PrivateHeaderKitRawDumpDiagnostic] = []
+    private var seen = Set<PrivateHeaderKitRawDumpDiagnostic>()
+
+    mutating func append(_ record: PrivateHeaderKitRawDumpDiagnostic) {
+        guard seen.insert(record).inserted else { return }
+        records.append(record)
+    }
+
+    func contains(_ record: PrivateHeaderKitRawDumpDiagnostic) -> Bool {
+        seen.contains(record)
+    }
+}
+
 final class RawDumpObjCDiagnosticsAccumulator {
-    private var retained = Set<PrivateHeaderKitRawDumpDiagnostic>()
-    private var omittedDiagnosticCount: UInt = 0
+    private var fieldDiagnostics = RawDumpObjCDiagnosticChannel()
+    private var protocolDiagnostics = RawDumpObjCDiagnosticChannel()
+    private var memberDiagnostics = RawDumpObjCDiagnosticChannel()
 
     func append<Value>(contentsOf result: ObjCMetadataReadResult<Value>) {
         append(contentsOf: result.fieldDiagnostics)
@@ -54,36 +69,50 @@ final class RawDumpObjCDiagnosticsAccumulator {
 
     func append(contentsOf diagnostics: [ObjCMetadataFieldDiagnostic]) {
         for diagnostic in diagnostics {
-            append(privateHeaderKitDiagnostic(from: diagnostic))
+            fieldDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
         }
     }
 
     func append(contentsOf diagnostics: [ObjCProtocolDiagnostic]) {
         for diagnostic in diagnostics {
-            append(privateHeaderKitDiagnostic(from: diagnostic))
+            protocolDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
         }
     }
 
     func append(contentsOf diagnostics: [ObjCMemberListDiagnostic]) {
         for diagnostic in diagnostics {
-            append(privateHeaderKitDiagnostic(from: diagnostic))
+            memberDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
         }
-    }
-
-    private func append(_ record: PrivateHeaderKitRawDumpDiagnostic) {
-        guard !retained.contains(record) else { return }
-        guard retained.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount else {
-            omittedDiagnosticCount = omittedDiagnosticCount == UInt.max
-                ? UInt.max
-                : omittedDiagnosticCount + 1
-            return
-        }
-        retained.insert(record)
     }
 
     var report: PrivateHeaderKitRawDumpDiagnosticsReport {
-        PrivateHeaderKitRawDumpDiagnosticsReport(
-            diagnostics: Array(retained),
+        var selected: [PrivateHeaderKitRawDumpDiagnostic] = []
+        selected.reserveCapacity(PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount)
+        var omittedDiagnosticCount: UInt = 0
+
+        func select(_ record: PrivateHeaderKitRawDumpDiagnostic) {
+            if selected.count < PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount {
+                selected.append(record)
+            } else if omittedDiagnosticCount < UInt.max {
+                omittedDiagnosticCount += 1
+            }
+        }
+
+        for record in fieldDiagnostics.records {
+            select(record)
+        }
+        for record in protocolDiagnostics.records
+        where !fieldDiagnostics.contains(record) {
+            select(record)
+        }
+        for record in memberDiagnostics.records
+        where !fieldDiagnostics.contains(record)
+            && !protocolDiagnostics.contains(record) {
+            select(record)
+        }
+
+        return PrivateHeaderKitRawDumpDiagnosticsReport(
+            diagnostics: selected,
             omittedDiagnosticCount: omittedDiagnosticCount
         )
     }
@@ -183,8 +212,8 @@ func rawDumpIvarOffsetDiagnostic(
         owner: subjectDescription(subject),
         degradation:
             "ivar-offset metadata for ivar index \(index)"
-            + " named \(boundedMetadataString(name))"
             + " could not be read: \(failureDescription(failure))"
+            + "; name \(boundedMetadataString(name))"
     )
 }
 

@@ -108,6 +108,55 @@ struct ObjCMemberListDiagnosticsTests {
         )
     }
 
+    @Test func lateHigherPriorityResultsDisplaceMembersWithoutDoubleCountingOmissions() throws {
+        let memberFixture = try InvalidMemberListFixture(
+            memberDiagnosticCount: PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount,
+            includesFieldDiagnostic: false,
+            includesProtocolDiagnostic: false
+        )
+        let memberResult = memberFixture.objcClass.readInfo(in: memberFixture.machO)
+        #expect(memberResult.fieldDiagnostics.isEmpty)
+        #expect(memberResult.diagnostics.isEmpty)
+        #expect(
+            memberResult.memberListDiagnostics.count
+                == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount
+        )
+
+        let priorityFixture = try InvalidMemberListFixture(memberDiagnosticCount: 0)
+        let priorityResult = priorityFixture.objcClass.readInfo(in: priorityFixture.machO)
+        #expect(priorityResult.fieldDiagnostics.count == 1)
+        #expect(priorityResult.diagnostics.count == 1)
+        #expect(priorityResult.memberListDiagnostics.isEmpty)
+
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+        accumulator.append(contentsOf: memberResult)
+        #expect(accumulator.report.omittedDiagnosticCount == 0)
+        accumulator.append(contentsOf: priorityResult)
+
+        let prioritizedReport = accumulator.report
+        #expect(
+            prioritizedReport.diagnostics.count {
+                $0.degradation.hasPrefix("ivar-offset metadata")
+            } == 1
+        )
+        #expect(
+            prioritizedReport.diagnostics.count {
+                $0.degradation.hasPrefix("adopted-protocol metadata")
+            } == 1
+        )
+        #expect(
+            prioritizedReport.diagnostics.count {
+                $0.degradation.hasPrefix("instance-method metadata")
+            } == PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount - 2
+        )
+        #expect(prioritizedReport.omittedDiagnosticCount == 2)
+
+        accumulator.append(contentsOf: memberResult)
+        accumulator.append(contentsOf: priorityResult)
+        #expect(accumulator.report == prioritizedReport)
+        #expect(accumulator.report.omittedDiagnosticCount == 2)
+    }
+
     private func diagnosticPrecedes(
         _ lhs: PrivateHeaderKitRawDumpDiagnostic,
         _ rhs: PrivateHeaderKitRawDumpDiagnostic
@@ -122,7 +171,11 @@ private final class InvalidMemberListFixture {
     let objcClass: ObjCClass64
     private let url: URL
 
-    init(memberDiagnosticCount: Int) throws {
+    init(
+        memberDiagnosticCount: Int,
+        includesFieldDiagnostic: Bool = true,
+        includesProtocolDiagnostic: Bool = true
+    ) throws {
         let fileSize = 0x4000
         let vmAddress: UInt64 = 0x1_0000_0000
         let classOffset = 0x400
@@ -209,8 +262,8 @@ private final class InvalidMemberListFixture {
                 ivarLayout: 0,
                 name: address(classNameOffset),
                 baseMethods: address(memberListOffset) | 1,
-                baseProtocols: address(protocolListOffset),
-                ivars: address(ivarListOffset),
+                baseProtocols: includesProtocolDiagnostic ? address(protocolListOffset) : 0,
+                ivars: includesFieldDiagnostic ? address(ivarListOffset) : 0,
                 weakIvarLayout: 0,
                 baseProperties: 0
             ),
