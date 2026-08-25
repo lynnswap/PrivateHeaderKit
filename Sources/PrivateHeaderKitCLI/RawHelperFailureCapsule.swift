@@ -25,7 +25,7 @@ struct RawHelperFailureCapsule: Equatable, Sendable {
            !processResult.wasKilled,
            let finalLine = diagnosticLines.last,
            let signal = Self.simulatorChildTerminationSignal(in: finalLine),
-           signal == processResult.status
+           Self.simulatorWrapperStatus(for: signal) == processResult.status
         {
             reportedChildSignal = signal
             diagnosticLines.removeLast()
@@ -95,7 +95,8 @@ struct RawHelperFailureCapsule: Equatable, Sendable {
         guard !signalText.isEmpty,
               signalText.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }),
               let signal = Int32(String(signalText)),
-              signal > 0
+              signal > 0,
+              signal < 128
         else {
             return nil
         }
@@ -115,5 +116,9 @@ struct RawHelperFailureCapsule: Equatable, Sendable {
             return nil
         }
         return signal
+    }
+
+    private static func simulatorWrapperStatus(for childSignal: Int32) -> Int32 {
+        128 + childSignal
     }
 }

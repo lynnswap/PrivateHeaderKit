@@ -57,7 +57,7 @@ struct RawHelperFailureCapsuleTests {
     @Test func exactSimulatorSignalLineBecomesTerminationWithoutDiagnosticOutput() throws {
         let capsule = RawHelperFailureCapsule(
             processResult: .init(
-                status: 11,
+                status: 139,
                 wasKilled: false,
                 lastLines: ["Child process terminated with signal 11: Segmentation fault"],
                 terminationObservedAtUnixEpochMicroseconds: 1_777_000_111_222_333
@@ -68,7 +68,7 @@ struct RawHelperFailureCapsuleTests {
 
         let expected = "helper diagnostic output: none emitted\n"
             + "privateheaderkit raw helper error: capsule=v1 "
-            + "termination=child_signal(11) wrapper_status=11 wrapper_killed=false "
+            + "termination=child_signal(11) wrapper_status=139 wrapper_killed=false "
             + "handshake=available "
             + "helper=privateheaderkit-sim-helper "
             + "lc_uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee pid=4242 "
@@ -104,7 +104,7 @@ struct RawHelperFailureCapsuleTests {
         let exactSignalLine = "Child process terminated with signal 11: Segmentation fault"
         let nonfinalCapsule = RawHelperFailureCapsule(
             processResult: .init(
-                status: 11,
+                status: 139,
                 wasKilled: false,
                 lastLines: [exactSignalLine, "later helper diagnostic"]
             ),
@@ -112,7 +112,7 @@ struct RawHelperFailureCapsuleTests {
             recognizesSimulatorChildTermination: true
         )
         let mismatchedStatusCapsule = RawHelperFailureCapsule(
-            processResult: .init(status: 19, wasKilled: false, lastLines: [exactSignalLine]),
+            processResult: .init(status: 11, wasKilled: false, lastLines: [exactSignalLine]),
             handshake: .missing,
             recognizesSimulatorChildTermination: true
         )
@@ -123,9 +123,9 @@ struct RawHelperFailureCapsuleTests {
         )
 
         #expect(nonfinalCapsule.text.hasPrefix(exactSignalLine + "\n"))
-        #expect(nonfinalCapsule.text.contains("termination=exit(11)"))
+        #expect(nonfinalCapsule.text.contains("termination=exit(139)"))
         #expect(mismatchedStatusCapsule.text.hasPrefix(exactSignalLine + "\n"))
-        #expect(mismatchedStatusCapsule.text.contains("termination=exit(19)"))
+        #expect(mismatchedStatusCapsule.text.contains("termination=exit(11)"))
         #expect(killedWrapperCapsule.text.hasPrefix(exactSignalLine + "\n"))
         #expect(killedWrapperCapsule.text.contains("termination=wrapper_signal(11)"))
     }
