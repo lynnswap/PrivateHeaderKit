@@ -5,7 +5,8 @@ Base: `main` at `101748f62fa27d6851b4284df7cafc721081fa5c`
 Delivery order:
 
 1. #83 bounded regular Objective-C tables and loaded roots
-2. #87 bounded loaded Objective-C RW extension arrays
+2. #88 bounded file-backed Objective-C root sections
+3. #87 bounded loaded Objective-C RW extension arrays
 
 ## Current issue: #83
 
@@ -117,6 +118,9 @@ Explicit exclusions:
 - Runtime RW-extension array-of-lists has a distinct tagged array ABI and is not
   used by PrivateHeaderKit's current metadata traversal. Its unchecked public
   queries are tracked by #87 rather than receiving a guessed #83 patch.
+- File-backed class/category/protocol root sections retain a separate unchecked
+  coordinate/`try!` owner and are tracked by #88. #83 keeps its stated loaded-root
+  scope; the shared owners introduced here are prerequisites for that follow-up.
 - No current iOS 27 crash is attributed to #83; deterministic malformed fixtures
   are the correctness gate rather than a claimed crash recovery.
 
