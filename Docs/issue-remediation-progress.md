@@ -211,5 +211,16 @@ Dependency progress:
   table diagnostics through the existing bounded member channel, and pins both
   dependency SHAs. Full tests, release build, iOS/watchOS Core and test compile,
   both simulator-helper release builds, release-script tests, and pin-contract
-  tests pass. Exact iOS 27 build `24A5390f` runtime validation remains before
-  the final review and Ready PR.
+  tests pass.
+- Exact iOS 27 beta build `24A5390f` runtime validation is complete. The three
+  installed iOS 27 builds share one CoreSimulator runtime identifier, so the
+  documented runtime-match override temporarily selected `24A5390f`; the
+  previous `24A5423a` choice was restored afterward and no test device remains.
+  `Foundation` completed with 859 generated files, no metadata warnings, and an
+  `ok` database integrity check.
+- `AXSpringBoardServerInstance` traversed the new loaded root/member readers,
+  then reproduced its known unrelated runtime-fallback abort while loading
+  `SpringBoardUI.framework`. The failure capsule and Crash Reporter agree on PID
+  43633, helper LC_UUID `b511c0cf-6944-3e14-958d-b320a3e13a71`, and SIGABRT;
+  the backtrace reaches `dumpObjC`'s post-collection runtime fallback before
+  `+[SpringBoardUI load]` throws its intentional process-use exception.
