@@ -78,3 +78,17 @@ Status:
   shared cache found zero nonempty file/VM offset mismatches. General Mach-O and
   dyld-cache address conversion owners remain unchanged; #88 is isolated to the
   file-root boundary.
+- MachOObjCSection checkpoint
+  `6a63b4fd7950ab5a61502047070d3ff075011108` adds the file-root aggregate,
+  twelve compatibility projections, typed section/segment discovery, bounded
+  root and referenced-layout reads, Diagnostics SPI cases, and 32/64-bit
+  deterministic fixtures. Checkpoint
+  `15f727003bf031b300dff1f92fb57a6cdf01d282` moves file/loaded roots onto one
+  neutral root table/pointer owner and pins zero-size and mapping-failure
+  precedence.
+- A temporary probe against the iOS 27 beta `24A5390f` shared cache found
+  TrialProto's nonempty `__objc_classlist` in subcache `.01`: canonical logical
+  offset `0x845e39e8` resolved through `fileHandleAndOffset(forOffset:)` to
+  physical-local `0x6f279e8`, matching `cacheAndFileOffset`. `readRoots()`
+  returned 226 classes and zero diagnostics. The probe was removed completely;
+  deterministic tests retain the logical-domain and backing-boundary contracts.
