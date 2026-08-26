@@ -107,3 +107,6 @@ Status:
   release-script contracts, Swift 6.3.2 iOS/watchOS Core and test cross-builds,
   and both simulator-helper Release cross-builds passed. An independent
   consumer audit found no P1/P2 issue.
+- Final branch-wide codex-review against `main` found no issue (job
+  `0628D06C-89D9-4A26-9079-DA2252DDEEAA`). Issue #88 is ready for delivery;
+  remove this temporary ledger before opening the PR.
