@@ -161,6 +161,12 @@ Dependency progress:
   signatures for entry size, count, and size while keeping iterators on the
   internal fallible size API. Malformed projections return zero; legal empty
   lists return the header size. The focused regression set passes 92 tests.
+- MachOObjCSection Phase A completed at
+  `98c4605fc18054c53f49cabf89929c5012073191`. Later checkpoints separate
+  legacy size arithmetic from parser budgets and route 32/64-bit raw method
+  sections through exact section/segment coordinates without using unsafe
+  existential getters or `MachOImage.vmaddrSlide`. Focused coverage is 97 tests;
+  debug/release builds pass.
 - MachOObjCSection Phase B final
   `4382ab91edce1027bb5498f6c5cd7f5388de0a98` adds the loaded root aggregate
   Diagnostics SPI, exact 32/64-bit section decoding, per-entry layout probing,
@@ -171,3 +177,7 @@ Dependency progress:
   full-suite failure is the same base absolute-fixture force unwrap. Phase A/B
   have two semantic merge conflicts to resolve in the shared relative-list
   owners before consumer integration.
+- Integration branch `codex/issue-83-integrated-objc-metadata` starts from the
+  Phase A final SHA and is applying both Phase B commits. Loaded roots must use
+  the Phase A section/segment coordinates owner; no duplicate slide calculation
+  is permitted.
