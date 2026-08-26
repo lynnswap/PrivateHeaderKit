@@ -54,4 +54,26 @@ Validation gate:
 
 Status:
 
-- Implementation owner and cache/subfile semantics are under parallel audit.
+- Design gate approved:
+  - add Diagnostics SPI `ObjCFileRootReadResult` and
+    `MachOFile.ObjectiveC.readRoots()` with the twelve existing root values and
+    ordered table diagnostics;
+  - use neutral `ObjCMetadataTableDiagnostic.RootSection` as the vocabulary,
+    preserving `LoadedImageRootSection` and `FileRootSection` as source aliases;
+  - add `.fileRoot(section:pointerWidth:)` without changing the loaded owner;
+  - find raw `Section64`/`SegmentCommand64` or 32-bit equivalents together and
+    validate coordinates without existential getters;
+  - derive one canonical logical field offset: ordinary section file offset, or
+    cache section address minus main-cache shared-region start;
+  - resolve physical backing only through `fileHandleAndOffset(forOffset:)`,
+    which adds an ordinary fat-slice header offset or maps to the correct cache
+    subfile-local offset;
+  - for a nonempty ordinary section, require raw section file offset to equal
+    the segment-mapped offset; allow a legal zero-size coalesced section to
+    succeed before that equality or any backing lookup;
+  - retain the shared count/byte budgets and per-entry checked resolver, and
+    make all legacy root properties projections of their targeted checked read.
+- A read-only survey of 6,288 Objective-C root sections in the current macOS
+  shared cache found zero nonempty file/VM offset mismatches. General Mach-O and
+  dyld-cache address conversion owners remain unchanged; #88 is isolated to the
+  file-root boundary.
