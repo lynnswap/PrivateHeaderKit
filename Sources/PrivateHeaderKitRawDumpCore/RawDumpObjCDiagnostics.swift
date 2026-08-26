@@ -75,6 +75,7 @@ final class RawDumpObjCDiagnosticsAccumulator {
         append(contentsOf: result.fieldDiagnostics)
         append(contentsOf: result.diagnostics)
         append(contentsOf: result.memberListDiagnostics)
+        append(contentsOf: result.tableDiagnostics)
     }
 
     func append(contentsOf diagnostics: [ObjCMetadataFieldDiagnostic]) {
@@ -90,6 +91,12 @@ final class RawDumpObjCDiagnosticsAccumulator {
     }
 
     func append(contentsOf diagnostics: [ObjCMemberListDiagnostic]) {
+        for diagnostic in diagnostics {
+            memberDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
+        }
+    }
+
+    func append(contentsOf diagnostics: [ObjCMetadataTableDiagnostic]) {
         for diagnostic in diagnostics {
             memberDiagnostics.append(privateHeaderKitDiagnostic(from: diagnostic))
         }
@@ -251,6 +258,45 @@ private func privateHeaderKitDiagnostic(
     )
 }
 
+private func privateHeaderKitDiagnostic(
+    from diagnostic: ObjCMetadataTableDiagnostic
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    rawDumpMetadataTableDiagnostic(
+        owner: diagnostic.owner,
+        site: diagnostic.site,
+        failure: diagnostic.failure
+    )
+}
+
+private func rawDumpMetadataTableDiagnostic(
+    owner: ObjCMetadataTableDiagnostic.Owner,
+    site: ObjCMetadataTableDiagnostic.Site,
+    failure: ObjCMetadataTableDiagnostic.Failure
+) -> PrivateHeaderKitRawDumpDiagnostic {
+    let ownerDescription: String
+    let metadataDescription: String
+    switch owner {
+    case let .member(subject, kind):
+        ownerDescription = subjectDescription(subject)
+        metadataDescription = "\(metadataTableMemberKindDescription(kind)) metadata table"
+    case let .loadedImageRoot(section, pointerWidth):
+        ownerDescription = "Objective-C loaded-image roots"
+        metadataDescription =
+            "\(pointerWidthDescription(pointerWidth))"
+            + " \(rootSectionDescription(section)) root table"
+    case let .loadedRelationship(subject, role):
+        ownerDescription = subjectDescription(subject)
+        metadataDescription = "\(loadedRelationshipDescription(role)) relationship"
+    }
+
+    return PrivateHeaderKitRawDumpDiagnostic(
+        owner: ownerDescription,
+        degradation:
+            "\(metadataDescription)\(metadataTableSiteDescription(site))"
+            + " could not be fully read: \(failureDescription(failure))"
+    )
+}
+
 func rawDumpMemberListDiagnostic(
     className: String,
     kind: ObjCMemberListDiagnostic.Kind,
@@ -274,6 +320,81 @@ private func memberKindDescription(_ kind: ObjCMemberListDiagnostic.Kind) -> Str
     case .instanceProperty: "instance-property"
     case .classProperty: "class-property"
     }
+}
+
+private func metadataTableMemberKindDescription(
+    _ kind: ObjCMetadataTableDiagnostic.MemberKind
+) -> String {
+    switch kind {
+    case .ivar: "ivar"
+    case .instanceMethod: "instance-method"
+    case .classMethod: "class-method"
+    case .optionalInstanceMethod: "optional-instance-method"
+    case .optionalClassMethod: "optional-class-method"
+    case .instanceProperty: "instance-property"
+    case .classProperty: "class-property"
+    }
+}
+
+private func rootSectionDescription(
+    _ section: ObjCMetadataTableDiagnostic.LoadedImageRootSection
+) -> String {
+    switch section {
+    case .classList: "class-list"
+    case .nonLazyClassList: "non-lazy-class-list"
+    case .protocolList: "protocol-list"
+    case .categoryList: "category-list"
+    case .nonLazyCategoryList: "non-lazy-category-list"
+    case .categoryList2: "category-list-2"
+    }
+}
+
+private func pointerWidthDescription(
+    _ pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth
+) -> String {
+    switch pointerWidth {
+    case .bits32: "32-bit"
+    case .bits64: "64-bit"
+    }
+}
+
+private func loadedRelationshipDescription(
+    _ role: ObjCMetadataTableDiagnostic.LoadedRelationshipRole
+) -> String {
+    switch role {
+    case .metaclass: "metaclass"
+    case .superclass: "superclass"
+    case .categoryClass: "category-class"
+    case .categoryStubClass: "category-stub-class"
+    }
+}
+
+private func metadataTableSiteDescription(
+    _ site: ObjCMetadataTableDiagnostic.Site
+) -> String {
+    switch site {
+    case .table(let provenance), .relationship(let provenance):
+        provenanceDescription(provenance)
+    case let .entry(index, provenance):
+        " entry \(index)\(provenanceDescription(provenance))"
+    }
+}
+
+private func provenanceDescription(
+    _ provenance: ObjCMetadataTableDiagnostic.Provenance
+) -> String {
+    var coordinates: [String] = []
+    if let logicalOffset = provenance.logicalOffset {
+        coordinates.append("logical offset \(logicalOffset)")
+    }
+    if let fileOffset = provenance.fileOffset {
+        coordinates.append("file offset \(fileOffset)")
+    }
+    if let imageAddress = provenance.imageAddress {
+        coordinates.append("image address \(imageAddress)")
+    }
+    guard !coordinates.isEmpty else { return "" }
+    return " (\(coordinates.joined(separator: ", ")))"
 }
 
 private func memberLocationDescription(
@@ -305,6 +426,20 @@ private func subjectDescription(_ subject: ObjCMetadataFieldDiagnostic.Subject) 
             + " named \(boundedMetadataString(name))"
     case .classObject(let offset):
         "Objective-C class object at offset \(offset)"
+    }
+}
+
+private func subjectDescription(
+    _ subject: ObjCMetadataTableDiagnostic.MetadataSubject
+) -> String {
+    switch subject {
+    case .class(let name):
+        "Objective-C class \(boundedMetadataString(name))"
+    case .protocol(let name):
+        "Objective-C protocol \(boundedMetadataString(name))"
+    case let .category(className, name):
+        "Objective-C category \(boundedMetadataString(className))"
+            + "(\(boundedMetadataString(name)))"
     }
 }
 
@@ -454,5 +589,90 @@ private func failureDescription(
         "file range at offset \(offset) is not readable for \(byteCount) bytes"
     case .unreadableImageRange(let address, let byteCount):
         "image range at address \(address) is not readable for \(byteCount) bytes"
+    }
+}
+
+private func failureDescription(
+    _ failure: ObjCMetadataTableDiagnostic.Failure
+) -> String {
+    switch failure {
+    case .unsupportedListEncoding:
+        "list encoding is unsupported by this reader"
+    case .invalidListOffset(let offset):
+        "list offset \(offset) is not a readable address"
+    case .invalidElementCount(let count):
+        "element count \(count) cannot be represented"
+    case .invalidSignedElementCount(let count):
+        "signed element count \(count) is negative"
+    case .invalidElementStride(let stride):
+        "element stride \(stride) cannot be represented"
+    case let .elementStrideTooSmall(advertised, minimum):
+        "element stride \(advertised) is smaller than \(minimum)"
+    case let .unexpectedElementStride(advertised, expected):
+        "element stride \(advertised) does not match expected size \(expected)"
+    case let .misalignedTableOffset(offset, requiredAlignment):
+        "table offset \(offset) is not aligned to \(requiredAlignment) bytes"
+    case let .misalignedTableAddress(address, requiredAlignment):
+        "table address \(address) is not aligned to \(requiredAlignment) bytes"
+    case let .excessiveElementCount(actual, maximum):
+        "element count \(actual) exceeds the safety limit \(maximum)"
+    case let .excessiveByteCount(actual, maximum):
+        "table size \(actual) bytes exceeds the safety limit \(maximum)"
+    case let .byteCountOverflow(elementCount, elementSize):
+        "byte count overflowed for \(elementCount) elements of size \(elementSize)"
+    case let .rangeOverflow(startOffset, byteCount):
+        "range overflowed from offset \(startOffset) for \(byteCount) bytes"
+    case let .unreadableFileRange(offset, byteCount):
+        "file range at offset \(offset) is not readable for \(byteCount) bytes"
+    case let .unreadableImageRange(address, byteCount):
+        "image range at address \(address) is not readable for \(byteCount) bytes"
+    case .invalidFileListOffset(let offset):
+        "file list offset \(offset) cannot be represented"
+    case .unresolvedListPointer:
+        "list pointer could not be rebased"
+    case .missingListBackingData:
+        "list pointer has no readable backing data"
+    case let .unreadableFileHeader(offset, byteCount):
+        "file header at offset \(offset) is not readable for \(byteCount) bytes"
+    case .invalidEntryLogicalOffset:
+        "entry logical offset overflowed"
+    case .invalidMethodImplementationOffset:
+        "method implementation offset overflowed"
+    case .invalidRelativeDisplacement:
+        "relative field displacement overflowed"
+    case let .invalidSectionByteCount(byteCount, pointerSize):
+        "section size \(byteCount) is not a multiple of pointer size \(pointerSize)"
+    case let .invalidSectionCoordinates(
+        sectionAddress,
+        sectionSize,
+        sectionFileOffset,
+        segmentAddress,
+        segmentSize,
+        segmentFileOffset,
+        segmentFileSize
+    ):
+        "section coordinates (address \(sectionAddress), size \(sectionSize),"
+            + " file offset \(sectionFileOffset)) are outside segment coordinates"
+            + " (address \(segmentAddress), size \(segmentSize),"
+            + " file offset \(segmentFileOffset), file size \(segmentFileSize))"
+    case .missingImageBaseSegment:
+        "the loaded image has no __TEXT base segment"
+    case let .invalidLoadedSectionAddress(
+        imageBase,
+        imageVirtualMemoryAddress,
+        sectionAddress
+    ):
+        "section address \(sectionAddress) cannot be mapped from image base"
+            + " \(imageBase) and image virtual address \(imageVirtualMemoryAddress)"
+    case .invalidPointer(let rawValue):
+        "pointer value \(rawValue) is not a readable address"
+    case .missingReferencedImage(let address):
+        "address \(address) does not belong to an available loaded image"
+    case let .unreadableReferencedLayout(address, byteCount):
+        "referenced layout at image address \(address)"
+            + " is not readable for \(byteCount) bytes"
+    case let .invalidEntryArithmetic(baseAddress, targetAddress):
+        "target address \(targetAddress) cannot be represented relative"
+            + " to base address \(baseAddress)"
     }
 }

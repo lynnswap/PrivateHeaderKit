@@ -6,6 +6,35 @@ import Testing
 @testable import PrivateHeaderKitRawDumpCore
 
 struct ObjCMemberListDiagnosticsTests {
+    @Test func regularTableDiagnosticsUseTheExistingBoundedMemberChannel() throws {
+        let fixture = try InvalidMemberListFixture(
+            memberDiagnosticCount: 0,
+            includesFieldDiagnostic: false,
+            includesProtocolDiagnostic: false,
+            includesTableDiagnostic: true
+        )
+        let result = fixture.objcClass.readInfo(in: fixture.machO)
+
+        #expect(result.fieldDiagnostics.isEmpty)
+        #expect(result.diagnostics.isEmpty)
+        #expect(result.memberListDiagnostics.isEmpty)
+        #expect(result.tableDiagnostics.count == 1)
+
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+        accumulator.append(contentsOf: result)
+
+        let report = accumulator.report
+        #expect(report.diagnostics.count == 1)
+        #expect(report.omittedDiagnosticCount == 0)
+        #expect(report.diagnostics.first?.owner == "Objective-C class MemberOwner")
+        #expect(
+            report.diagnostics.first?.degradation
+                == "ivar metadata table (logical offset 5120, file offset 5120)"
+                    + " could not be fully read: element count 65537"
+                    + " exceeds the safety limit 65536"
+        )
+    }
+
     @Test func wholeTableFailureKeepsMemberKindAndOuterOffset() {
         let record = rawDumpMemberListDiagnostic(
             className: "Owner",
@@ -202,7 +231,8 @@ private final class InvalidMemberListFixture {
     init(
         memberDiagnosticCount: Int,
         includesFieldDiagnostic: Bool = true,
-        includesProtocolDiagnostic: Bool = true
+        includesProtocolDiagnostic: Bool = true,
+        includesTableDiagnostic: Bool = false
     ) throws {
         let fileSize = 0x4000
         let vmAddress: UInt64 = 0x1_0000_0000
@@ -266,7 +296,7 @@ private final class InvalidMemberListFixture {
         data.storeValue(
             RawEntrySizeListHeader(
                 entsizeAndFlags: UInt32(MemoryLayout<RawIvar64>.size),
-                count: 1
+                count: includesTableDiagnostic ? 65_537 : 1
             ),
             at: ivarListOffset
         )
@@ -291,7 +321,9 @@ private final class InvalidMemberListFixture {
                 name: address(classNameOffset),
                 baseMethods: address(memberListOffset) | 1,
                 baseProtocols: includesProtocolDiagnostic ? address(protocolListOffset) : 0,
-                ivars: includesFieldDiagnostic ? address(ivarListOffset) : 0,
+                ivars: includesFieldDiagnostic || includesTableDiagnostic
+                    ? address(ivarListOffset)
+                    : 0,
                 weakIvarLayout: 0,
                 baseProperties: 0
             ),

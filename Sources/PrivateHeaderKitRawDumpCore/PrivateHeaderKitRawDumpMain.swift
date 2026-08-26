@@ -1156,11 +1156,14 @@ private func dumpObjC(
     options: DumpOptions,
     fileManager: FileManager
 ) async throws {
-    var metadata = switch machO {
+    var metadata: CollectedObjCMetadata
+    switch machO {
     case .file(let file):
-        collectObjCMetadata(from: file.objc, in: machO, options: options)
+        metadata = collectObjCMetadata(from: file.objc, in: machO, options: options)
     case .loaded(let image):
-        collectObjCMetadata(from: image.objc, in: machO, options: options)
+        let roots = image.objc.readRoots()
+        options.objcDiagnostics.append(contentsOf: roots.tableDiagnostics)
+        metadata = collectObjCMetadata(from: roots, in: machO, options: options)
     }
 
 #if canImport(ObjectiveC)
@@ -1197,6 +1200,24 @@ private struct CollectedObjCMetadata {
     var categoryInfos: [String: ObjCCategoryInfo] = [:]
     var runtimeOriginClassNames: Set<String> = []
 }
+
+private protocol RawDumpObjCRoots {
+    var classes64: [ObjCClass64]? { get }
+    var classes32: [ObjCClass32]? { get }
+    var nonLazyClasses64: [ObjCClass64]? { get }
+    var nonLazyClasses32: [ObjCClass32]? { get }
+    var protocols64: [ObjCProtocol64]? { get }
+    var protocols32: [ObjCProtocol32]? { get }
+    var categories64: [ObjCCategory64]? { get }
+    var categories32: [ObjCCategory32]? { get }
+    var nonLazyCategories64: [ObjCCategory64]? { get }
+    var nonLazyCategories32: [ObjCCategory32]? { get }
+    var categories2_64: [ObjCCategory64]? { get }
+    var categories2_32: [ObjCCategory32]? { get }
+}
+
+extension MachOFile.ObjectiveC: RawDumpObjCRoots {}
+extension ObjCImageRootReadResult: RawDumpObjCRoots {}
 
 @discardableResult
 func supplementMissingRuntimeClassInfos(
@@ -1242,8 +1263,8 @@ private func runtimeClassSortKey(_ name: String) -> String {
     return "\(rank):\(name)"
 }
 
-private func collectObjCMetadata<Section: ObjCSectionRepresentable>(
-    from objc: Section,
+private func collectObjCMetadata<Roots: RawDumpObjCRoots>(
+    from objc: Roots,
     in machO: RawMachO,
     options: DumpOptions
 ) -> CollectedObjCMetadata {

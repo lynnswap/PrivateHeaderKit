@@ -185,3 +185,31 @@ Dependency progress:
   Phase A final SHA and is applying both Phase B commits. Loaded roots must use
   the Phase A section/segment coordinates owner; no duplicate slide calculation
   is permitted.
+- MachOObjCSection Phase A/B integration completed at
+  `e1972524f608fbbf1d0551186168a117f8ec4dd7`. The integration keeps raw
+  section/segment coordinates as the loaded-root owner, bounds loaded method
+  headers to their section, and decodes 32-bit relative selector references at
+  their actual pointer width. Its focused union, debug/release builds, iOS and
+  watchOS cross-builds, unsafe audit, and branch-wide codex-review are clean.
+- Diagnostic propagation completed at
+  `41a1652d95c34bbb2fdf32ba4b7f5cd9d3ba20ba`. All six class/protocol/category
+  file/image `readInfo` paths retain regular table failures and loaded
+  relationships in `tableDiagnostics`; existing protocol, relative-outer, and
+  fixed-field diagnostic arrays remain independent. Relative inner tables use
+  the new channel without duplicating outer-list diagnostics.
+- Final MachOObjCSection validation: 119 focused Phase A/B/C and #60/#65/#79
+  tests pass; debug/release, iOS arm64, watchOS arm64/arm64_32, Diagnostics SPI
+  compile, diff checks, independent audit, and codex-review are clean. The SHA
+  is published on `codex/issue-83-diagnostic-propagation`.
+- MachOSwiftSection cohort pin `3344bd04e6c0819b17df126bea57bae1bbed3022`
+  resolves the exact Objective-C reader SHA. Debug build, six ObjC-ancestor
+  tests after the required fixture build, the release MachOSwiftSection product,
+  diff checks, and codex-review are clean. The all-product release build still
+  reaches its pre-existing `MachOFixtureSupport` compatible-module failure; the
+  library product itself compiles successfully.
+- PrivateHeaderKit now uses the loaded root aggregate, routes root and subject
+  table diagnostics through the existing bounded member channel, and pins both
+  dependency SHAs. Full tests, release build, iOS/watchOS Core and test compile,
+  both simulator-helper release builds, release-script tests, and pin-contract
+  tests pass. Exact iOS 27 build `24A5390f` runtime validation remains before
+  the final review and Ready PR.
