@@ -143,14 +143,22 @@ Loaded-image reads of relative method/property list-of-lists consult each
 entry's runtime loaded state, while file-backed reads inspect every structurally
 valid entry. Both preserve outer-table order and validate the outer table and
 each nonempty inner member table before decoding; an empty inner list does not
-require an otherwise unused entry size. One malformed loaded list preserves its
-valid siblings and produces a typed member-list degradation; unloaded lists are
-skipped without warning. Once that target is published, PrivateHeaderKit reports
-the precise owner and degradation as an `objc-metadata-warning` and persists the
-warning in `generation.sqlite`. A bounded diagnostics report records when
-additional warnings were omitted, so malformed metadata cannot grow process
-output without limit. Live warning presentation is also capped across the run;
-one aggregate warning points to the retained per-target details in the database.
+require an otherwise unused entry size. Regular method, property, and ivar
+tables use the same finite count and byte budgets, checked arithmetic, and
+complete-range validation. Loaded class, protocol, and category root tables
+validate both the complete pointer table and each referenced layout before
+decoding. One malformed relative list, regular member-table entry, loaded-root
+entry, or loaded class/category relationship preserves its readable siblings
+and produces a typed degradation; unloaded relative lists are skipped without
+warning. These guarantees cover structural table, list, and layout ranges; they
+do not validate referenced C strings, loaded class RW-extension arrays, or
+file-backed root-section tables. Once that target is published,
+PrivateHeaderKit reports the precise owner and degradation as an
+`objc-metadata-warning` and persists the warning in `generation.sqlite`. A
+bounded diagnostics report records when additional warnings were omitted, so
+malformed metadata cannot grow process output without limit. Live warning
+presentation is also capped across the run; one aggregate warning points to the
+retained per-target details in the database.
 
 State, attempts, publication intent, and run diagnostics are stored in
 `generation.sqlite`, outside the published header tree. The `.privateheaderkit`
