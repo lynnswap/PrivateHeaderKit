@@ -1159,7 +1159,9 @@ private func dumpObjC(
     var metadata: CollectedObjCMetadata
     switch machO {
     case .file(let file):
-        metadata = collectObjCMetadata(from: file.objc, in: machO, options: options)
+        let roots = file.objc.readRoots()
+        options.objcDiagnostics.append(contentsOf: roots.tableDiagnostics)
+        metadata = collectObjCMetadata(from: roots, in: machO, options: options)
     case .loaded(let image):
         let roots = image.objc.readRoots()
         options.objcDiagnostics.append(contentsOf: roots.tableDiagnostics)
@@ -1216,7 +1218,7 @@ private protocol RawDumpObjCRoots {
     var categories2_32: [ObjCCategory32]? { get }
 }
 
-extension MachOFile.ObjectiveC: RawDumpObjCRoots {}
+extension ObjCFileRootReadResult: RawDumpObjCRoots {}
 extension ObjCImageRootReadResult: RawDumpObjCRoots {}
 
 @discardableResult

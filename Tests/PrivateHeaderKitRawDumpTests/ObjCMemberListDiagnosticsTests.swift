@@ -6,6 +6,27 @@ import Testing
 @testable import PrivateHeaderKitRawDumpCore
 
 struct ObjCMemberListDiagnosticsTests {
+    @Test func fileRootDiagnosticsUseTheExistingBoundedMemberChannel() throws {
+        let fixture = try InvalidFileRootFixture()
+        let result = fixture.machO.objc.readRoots()
+
+        #expect(result.classes64?.isEmpty == true)
+        #expect(result.tableDiagnostics.count == 1)
+
+        let accumulator = RawDumpObjCDiagnosticsAccumulator()
+        accumulator.append(contentsOf: result.tableDiagnostics)
+
+        let report = accumulator.report
+        #expect(report.diagnostics.count == 1)
+        #expect(report.omittedDiagnosticCount == 0)
+        #expect(report.diagnostics.first?.owner == "Objective-C file-backed roots")
+        #expect(
+            report.diagnostics.first?.degradation
+                == "64-bit class-list root table could not be fully read:"
+                    + " section size 9 is not a multiple of pointer size 8"
+        )
+    }
+
     @Test func regularTableDiagnosticsUseTheExistingBoundedMemberChannel() throws {
         let fixture = try InvalidMemberListFixture(
             memberDiagnosticCount: 0,
@@ -220,6 +241,64 @@ struct ObjCMemberListDiagnosticsTests {
     ) -> Bool {
         if lhs.owner != rhs.owner { return lhs.owner < rhs.owner }
         return lhs.degradation < rhs.degradation
+    }
+}
+
+private final class InvalidFileRootFixture {
+    let machO: MachOFile
+    private let url: URL
+
+    init() throws {
+        let fileSize = 0x1000
+        let rootOffset = 0x400
+        let vmAddress: UInt64 = 0x1_0000_0000
+        var data = Data(count: fileSize)
+
+        var header = mach_header_64()
+        header.magic = UInt32(MH_MAGIC_64)
+        header.cputype = CPU_TYPE_ARM64
+        header.cpusubtype = CPU_SUBTYPE_ARM64_ALL
+        header.filetype = UInt32(MH_DYLIB)
+        header.ncmds = 1
+        header.sizeofcmds = UInt32(
+            MemoryLayout<segment_command_64>.size + MemoryLayout<section_64>.size
+        )
+        data.storeValue(header, at: 0)
+
+        var segment = segment_command_64()
+        segment.cmd = UInt32(LC_SEGMENT_64)
+        segment.cmdsize = header.sizeofcmds
+        segment.vmaddr = vmAddress
+        segment.vmsize = UInt64(fileSize)
+        segment.fileoff = 0
+        segment.filesize = UInt64(fileSize)
+        segment.maxprot = VM_PROT_READ
+        segment.initprot = VM_PROT_READ
+        segment.nsects = 1
+        segment.writeName("__DATA")
+        data.storeValue(segment, at: MemoryLayout<mach_header_64>.size)
+
+        var section = section_64()
+        section.addr = vmAddress + UInt64(rootOffset)
+        section.size = 9
+        section.offset = UInt32(rootOffset)
+        section.align = 3
+        section.writeSectionName("__objc_classlist", segmentName: "__DATA")
+        data.storeValue(
+            section,
+            at: MemoryLayout<mach_header_64>.size
+                + MemoryLayout<segment_command_64>.size
+        )
+
+        url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "PrivateHeaderKitInvalidFileRoot-\(UUID().uuidString)"
+        )
+        try data.write(to: url)
+        machO = try MachOFile(url: url)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: url)
     }
 }
 
@@ -447,6 +526,25 @@ private struct RawIvar64 {
     let type: UInt64
     let alignment: UInt32
     let size: UInt32
+}
+
+private extension segment_command_64 {
+    mutating func writeName(_ value: String) {
+        Swift.withUnsafeMutableBytes(of: &segname) { destination in
+            destination.copyBytes(from: value.utf8)
+        }
+    }
+}
+
+private extension section_64 {
+    mutating func writeSectionName(_ value: String, segmentName: String) {
+        Swift.withUnsafeMutableBytes(of: &sectname) { destination in
+            destination.copyBytes(from: value.utf8)
+        }
+        Swift.withUnsafeMutableBytes(of: &segname) { destination in
+            destination.copyBytes(from: segmentName.utf8)
+        }
+    }
 }
 
 private extension Data {

@@ -279,6 +279,11 @@ private func rawDumpMetadataTableDiagnostic(
     case let .member(subject, kind):
         ownerDescription = subjectDescription(subject)
         metadataDescription = "\(metadataTableMemberKindDescription(kind)) metadata table"
+    case let .fileRoot(section, pointerWidth):
+        ownerDescription = "Objective-C file-backed roots"
+        metadataDescription =
+            "\(pointerWidthDescription(pointerWidth))"
+            + " \(rootSectionDescription(section)) root table"
     case let .loadedImageRoot(section, pointerWidth):
         ownerDescription = "Objective-C loaded-image roots"
         metadataDescription =
@@ -632,6 +637,17 @@ private func failureDescription(
         "list pointer could not be rebased"
     case .missingListBackingData:
         "list pointer has no readable backing data"
+    case let .invalidFileRootOffset(sectionAddress, sharedRegionStart):
+        "root section address \(sectionAddress) cannot be represented relative"
+            + " to shared-region start \(sharedRegionStart)"
+    case .missingFileRootBackingData(let sectionAddress):
+        "root section at address \(sectionAddress) has no readable backing data"
+    case .unresolvedFileRootPointer(let rawValue):
+        "root pointer value \(rawValue) could not be rebased"
+    case .invalidReferencedFileOffset(let offset):
+        "resolved root offset \(offset) cannot be represented"
+    case .missingReferencedFileBackingData(let logicalOffset):
+        "resolved root at logical offset \(logicalOffset) has no readable backing data"
     case let .unreadableFileHeader(offset, byteCount):
         "file header at offset \(offset) is not readable for \(byteCount) bytes"
     case .invalidEntryLogicalOffset:
