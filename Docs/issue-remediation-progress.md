@@ -170,5 +170,17 @@ Validation gate:
 - Independent owner audit found one remaining unsafe single-entry relative
   protocol projection plus representation/provenance ownership gaps and missing
   boundary fixtures. Those findings are being repaired before the final review.
-- The exact `24A5390f` runtime probe and downstream cohort pin updates remain
-  pending.
+- A disposable arm64 Simulator probe on exact runtime build `24A5390f` passed:
+  all three fields produced canonical absent, tag `0` single, and tag `1`
+  two-list arrays; shared-cache classes produced tag `2` relative method,
+  property, and protocol lists. The probe confirmed 8-byte pointers, array
+  table offset/stride 8, relative header/table offset 8 and stride 8, unloaded
+  image omission, and count parity with `class_copy*List`. It performed 1,240
+  exact-size `mach_vm_read_overwrite` snapshot reads with no raw dereferences or
+  failures. Result SHA-256:
+  `6aae3aae8c60b9f8e8c7eb54d9c74e8f82abf2c5b813d64b984993ed4dcfc821`.
+- The disposable device and executable were removed and the runtime-match JSON
+  was restored byte-for-byte to user override `24A5423a` with default
+  `24A5422a`; no `24A5390f` override remains. Simulator arm64 does not verify
+  arm64e pointer authentication.
+- Downstream cohort pin updates remain pending.
