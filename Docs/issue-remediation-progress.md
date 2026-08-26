@@ -68,9 +68,10 @@ Status:
   - resolve physical backing only through `fileHandleAndOffset(forOffset:)`,
     which adds an ordinary fat-slice header offset or maps to the correct cache
     subfile-local offset;
-  - for a nonempty ordinary section, require raw section file offset to equal
-    the segment-mapped offset; allow a legal zero-size coalesced section to
-    succeed before that equality or any backing lookup;
+  - for every nonempty file-backed section, including cache images, require raw
+    section file offset to equal the segment-mapped offset; allow a legal
+    zero-size coalesced section to succeed before that equality or any backing
+    lookup;
   - retain the shared count/byte budgets and per-entry checked resolver, and
     make all legacy root properties projections of their targeted checked read.
 - A read-only survey of 6,288 Objective-C root sections in the current macOS
