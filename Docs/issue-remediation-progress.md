@@ -161,3 +161,13 @@ Dependency progress:
   signatures for entry size, count, and size while keeping iterators on the
   internal fallible size API. Malformed projections return zero; legal empty
   lists return the header size. The focused regression set passes 92 tests.
+- MachOObjCSection Phase B final
+  `4382ab91edce1027bb5498f6c5cd7f5388de0a98` adds the loaded root aggregate
+  Diagnostics SPI, exact 32/64-bit section decoding, per-entry layout probing,
+  checked class/category/protocol member headers, checked relationship layouts,
+  and singular/plural relative-list parity.
+- Phase B validation: 87 focused tests, debug/release builds, iOS/watchOS
+  cross-builds, diff checks, and branch-wide codex-review are clean. Its only
+  full-suite failure is the same base absolute-fixture force unwrap. Phase A/B
+  have two semantic merge conflicts to resolve in the shared relative-list
+  owners before consumer integration.
