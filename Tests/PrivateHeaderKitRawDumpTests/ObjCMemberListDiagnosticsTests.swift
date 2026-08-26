@@ -56,6 +56,40 @@ struct ObjCMemberListDiagnosticsTests {
         )
     }
 
+    @Test func loadedRWExtensionDiagnosticsKeepKindWidthAndUnavailableImage() throws {
+        let fixture = try InvalidFileRootFixture()
+        let seedDiagnostic = try #require(
+            fixture.machO.objc.readRoots().tableDiagnostics.first
+        )
+        let cases: [(
+            ObjCMetadataTableDiagnostic.RWExtensionListKind,
+            ObjCMetadataTableDiagnostic.PointerWidth,
+            String
+        )] = [
+            (.method, .bits64, "64-bit method"),
+            (.property, .bits32, "32-bit property"),
+            (.protocol, .bits64, "64-bit protocol"),
+        ]
+
+        for (kind, pointerWidth, prefix) in cases {
+            let record = rawDumpMetadataTableDiagnostic(
+                owner: .loadedRWExtension(
+                    kind: kind,
+                    pointerWidth: pointerWidth
+                ),
+                site: seedDiagnostic.site,
+                failure: .relativeImageUnavailable(imageIndex: 1_194)
+            )
+
+            #expect(record.owner == "Objective-C loaded RW-extension list arrays")
+            #expect(
+                record.degradation
+                    == "\(prefix) list array could not be fully read:"
+                        + " cache image index 1194 is unavailable"
+            )
+        }
+    }
+
     @Test func wholeTableFailureKeepsMemberKindAndOuterOffset() {
         let record = rawDumpMemberListDiagnostic(
             className: "Owner",

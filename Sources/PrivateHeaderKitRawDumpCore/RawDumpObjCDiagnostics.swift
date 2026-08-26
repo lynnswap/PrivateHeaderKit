@@ -268,7 +268,7 @@ private func privateHeaderKitDiagnostic(
     )
 }
 
-private func rawDumpMetadataTableDiagnostic(
+func rawDumpMetadataTableDiagnostic(
     owner: ObjCMetadataTableDiagnostic.Owner,
     site: ObjCMetadataTableDiagnostic.Site,
     failure: ObjCMetadataTableDiagnostic.Failure
@@ -289,6 +289,11 @@ private func rawDumpMetadataTableDiagnostic(
         metadataDescription =
             "\(pointerWidthDescription(pointerWidth))"
             + " \(rootSectionDescription(section)) root table"
+    case let .loadedRWExtension(kind, pointerWidth):
+        ownerDescription = "Objective-C loaded RW-extension list arrays"
+        metadataDescription =
+            "\(pointerWidthDescription(pointerWidth))"
+            + " \(rwExtensionListKindDescription(kind)) list array"
     case let .loadedRelationship(subject, role):
         ownerDescription = subjectDescription(subject)
         metadataDescription = "\(loadedRelationshipDescription(role)) relationship"
@@ -360,6 +365,16 @@ private func pointerWidthDescription(
     switch pointerWidth {
     case .bits32: "32-bit"
     case .bits64: "64-bit"
+    }
+}
+
+private func rwExtensionListKindDescription(
+    _ kind: ObjCMetadataTableDiagnostic.RWExtensionListKind
+) -> String {
+    switch kind {
+    case .method: "method"
+    case .property: "property"
+    case .protocol: "protocol"
     }
 }
 
@@ -690,5 +705,7 @@ private func failureDescription(
     case let .invalidEntryArithmetic(baseAddress, targetAddress):
         "target address \(targetAddress) cannot be represented relative"
             + " to base address \(baseAddress)"
+    case .relativeImageUnavailable(let imageIndex):
+        "cache image index \(imageIndex) is unavailable"
     }
 }

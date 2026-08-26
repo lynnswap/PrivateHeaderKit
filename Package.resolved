@@ -59,7 +59,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOObjCSection.git",
       "state" : {
-        "revision" : "8f0ff76f02c0865422a72662177b5e687e43522d"
+        "revision" : "cc9a70f46d69683882dedce7d6d293a565e7863a"
       }
     },
     {
@@ -67,7 +67,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOSwiftSection.git",
       "state" : {
-        "revision" : "06ed57ab39fc24956f9079beeb407fffa30d50f4"
+        "revision" : "905703af9d192c778054417a1a5052a26051cc96"
       }
     },
     {
