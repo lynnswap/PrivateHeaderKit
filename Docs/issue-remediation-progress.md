@@ -153,3 +153,22 @@ Validation gate:
   explicitly unverified condition because the Simulator is arm64.
 - PrivateHeaderKit full tests, release-script tests, codex-review, Ready PR,
   GitHub review/CI, and merge to `main`.
+
+## Current progress
+
+- MachOObjCSection implementation is staged on `codex/issue87-rw-arrays`.
+  The checked reader now copies bounded loaded-memory reads before decoding and
+  routes method, property, and protocol tag `0`/`1`/`2` representations through
+  shared count and byte budgets.
+- Eight initial RW-extension fixtures and the combined #60/#65/#79/#83/#88/#87
+  regression set pass. The deterministic full suite passes when excluding the
+  pre-existing host-only `MachOObjCSectionTests` fixture class; the same hardcoded
+  missing `/Users/JH/Downloads/iOS18.5-SwiftUI` failure reproduces unchanged at
+  the dependency base commit.
+- Release builds pass for macOS, iOS 13 arm64, watchOS 6 arm64, and watchOS 6
+  arm64_32 with Xcode 26.5 / Swift 6.3.2.
+- Independent owner audit found one remaining unsafe single-entry relative
+  protocol projection plus representation/provenance ownership gaps and missing
+  boundary fixtures. Those findings are being repaired before the final review.
+- The exact `24A5390f` runtime probe and downstream cohort pin updates remain
+  pending.
