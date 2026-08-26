@@ -145,14 +145,15 @@ valid entry. Both preserve outer-table order and validate the outer table and
 each nonempty inner member table before decoding; an empty inner list does not
 require an otherwise unused entry size. Regular method, property, and ivar
 tables use the same finite count and byte budgets, checked arithmetic, and
-complete-range validation. Loaded class, protocol, and category root tables
-validate both the complete pointer table and each referenced layout before
-decoding. One malformed relative list, regular member-table entry, loaded-root
-entry, or loaded class/category relationship preserves its readable siblings
-and produces a typed degradation; unloaded relative lists are skipped without
-warning. These guarantees cover structural table, list, and layout ranges; they
-do not validate referenced C strings, loaded class RW-extension arrays, or
-file-backed root-section tables. Once that target is published,
+complete-range validation. File-backed and loaded class, protocol, and category
+root tables validate both the complete pointer table and each referenced layout
+before decoding. File-backed roots also validate raw section/segment coordinates
+and map cache offsets to their actual subcache backing. One malformed relative
+list, regular member-table entry, root entry, or loaded class/category
+relationship preserves its readable siblings and produces a typed degradation;
+unloaded relative lists are skipped without warning. These guarantees cover
+structural table, list, and layout ranges; they do not validate referenced C
+strings or loaded class RW-extension arrays. Once that target is published,
 PrivateHeaderKit reports the precise owner and degradation as an
 `objc-metadata-warning` and persists the warning in `generation.sqlite`. A
 bounded diagnostics report records when additional warnings were omitted, so

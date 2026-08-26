@@ -92,3 +92,18 @@ Status:
   physical-local `0x6f279e8`, matching `cacheAndFileOffset`. `readRoots()`
   returned 226 classes and zero diagnostics. The probe was removed completely;
   deterministic tests retain the logical-domain and backing-boundary contracts.
+- Final MachOObjCSection cohort commit
+  `8f0ff76f02c0865422a72662177b5e687e43522d` passed 124 focused regressions,
+  Debug/Release and Apple cross-builds, the real cache probe, independent audit,
+  and codex-review with no findings.
+- MachOSwiftSection cohort commit
+  `06ed57ab39fc24956f9079beeb407fffa30d50f4` pins that exact reader. Its six
+  ObjC-ancestor tests and Release product build passed; codex-review job
+  `F6B1C8EF-F779-4871-A779-93A953F9FED1` found no issue.
+- PrivateHeaderKit now consumes `readRoots()` for file-backed images, retains
+  file-root diagnostics in the existing bounded report, pins both cohort SHAs,
+  and covers the wire mapping with a malformed 64-bit class-list fixture.
+  Swift 6.3.2 ran 625 tests successfully; the macOS Release build,
+  release-script contracts, Swift 6.3.2 iOS/watchOS Core and test cross-builds,
+  and both simulator-helper Release cross-builds passed. An independent
+  consumer audit found no P1/P2 issue.
