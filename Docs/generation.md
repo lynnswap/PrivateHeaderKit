@@ -153,8 +153,10 @@ list, regular member-table entry, root entry, or loaded class/category
 relationship preserves its readable siblings and produces a typed degradation;
 unloaded relative lists are skipped without warning. These guarantees cover
 structural table, list, and layout ranges; they do not validate referenced C
-strings or loaded class RW-extension arrays. Once that target is published,
-PrivateHeaderKit reports the precise owner and degradation as an
+strings. MachOObjCSection's public loaded class RW-extension list-array queries
+now apply the same bounded structural reads, although PrivateHeaderKit's current
+raw dump does not query that dependency surface. When a queried target is
+degraded, PrivateHeaderKit reports the precise owner and degradation as an
 `objc-metadata-warning` and persists the warning in `generation.sqlite`. A
 bounded diagnostics report records when additional warnings were omitted, so
 malformed metadata cannot grow process output without limit. Live warning
