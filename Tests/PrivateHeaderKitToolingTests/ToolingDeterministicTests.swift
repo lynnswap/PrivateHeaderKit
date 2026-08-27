@@ -477,6 +477,65 @@ struct SimctlDeterministicTests {
         ])
     }
 
+    @Test func bootAndCleanupFailureReportTheExactNewDedicatedDevice() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+            ]
+        )
+        let createdName = "PrivateHeaderKit Dump (iOS 27.0) run-boot-failure"
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
+        await runner.setCaptureOutput(
+            createdUDID + "\n",
+            for: [
+                "xcrun", "simctl", "create", createdName,
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+            ]
+        )
+        await runner.setSimpleHandler { command, _, _ in
+            switch command {
+            case ["xcrun", "simctl", "boot", createdUDID]:
+                throw SimctlTestError.bootFailed
+            case ["xcrun", "simctl", "delete", createdUDID]:
+                throw SimctlTestError.deleteFailed
+            default:
+                Issue.record("unexpected command: \(command)")
+            }
+        }
+
+        do {
+            _ = try await Simctl.resolveDevice(
+                runtime: runtime,
+                query: nil,
+                runner: runner,
+                environment: [:],
+                dedicatedDeviceName: createdName
+            )
+            Issue.record("boot and cleanup failures unexpectedly returned a device")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains(createdName))
+            #expect(message.contains("UDID: \(createdUDID)"))
+            #expect(message.contains("bootFailed"))
+            #expect(message.contains("deleteFailed"))
+        }
+
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "boot", createdUDID],
+            ["xcrun", "simctl", "delete", createdUDID],
+        ])
+    }
+
     @Test func malformedCreateOutputDeletesTheExactNamedDeviceBeforeReturning() async throws {
         let runner = RecordingCommandRunner()
         let runtime = RuntimeInfo(
@@ -514,6 +573,66 @@ struct SimctlDeterministicTests {
                 runner: runner,
                 environment: [:]
             )
+        }
+
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [
+            createCommand,
+            ["xcrun", "simctl", "list", "devices", "-j"],
+        ])
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "delete", createdUDID],
+        ])
+    }
+
+    @Test func malformedCreateOutputAndCleanupFailureReportTheReconciledDevice() async throws {
+        let runner = RecordingCommandRunner()
+        let runtime = RuntimeInfo(
+            platform: .iOS,
+            version: "27.0",
+            build: "24A5355q",
+            identifier: "ios-27",
+            runtimeRoot: "/runtimes/27",
+            supportedDeviceTypes: [
+                DeviceTypeInfo(
+                    name: "iPhone 17",
+                    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    productFamily: "iPhone"
+                ),
+            ]
+        )
+        let createdName = "PrivateHeaderKit Dump (iOS 27.0) run-malformed-cleanup"
+        let createdUDID = "11111111-2222-3333-4444-555555555555"
+        let createCommand = [
+            "xcrun", "simctl", "create", createdName,
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "ios-27",
+        ]
+        await runner.setCaptureOutput("unexpected output\n", for: createCommand)
+        await runner.setCaptureOutput(
+            """
+            {"devices":{"ios-27":[{"name":"\(createdName)","udid":"\(createdUDID)","state":"Shutdown"}]}}
+            """,
+            for: ["xcrun", "simctl", "list", "devices", "-j"]
+        )
+        await runner.setSimpleHandler { command, _, _ in
+            if command == ["xcrun", "simctl", "delete", createdUDID] {
+                throw SimctlTestError.deleteFailed
+            }
+        }
+
+        do {
+            _ = try await Simctl.createDedicatedDevice(
+                runtime: runtime,
+                name: createdName,
+                runner: runner,
+                environment: [:]
+            )
+            Issue.record("malformed create output unexpectedly hid cleanup failure")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("simctl create did not return a simulator UDID"))
+            #expect(message.contains(createdName))
+            #expect(message.contains("UDID: \(createdUDID)"))
+            #expect(message.contains("deleteFailed"))
         }
 
         #expect(await runner.captureCommandSnapshot().map(\.command) == [
@@ -803,6 +922,7 @@ struct SimctlDeterministicTests {
 
 private enum SimctlTestError: Error {
     case bootFailed
+    case deleteFailed
 }
 
 private actor AsyncTestEvent {

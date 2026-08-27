@@ -1,6 +1,7 @@
 import Dispatch
 import Foundation
 import PrivateHeaderKitCore
+import PrivateHeaderKitTooling
 
 #if canImport(Darwin)
 import Darwin
@@ -72,7 +73,7 @@ final class PrivateHeaderKitProgressOutputLogger: @unchecked Sendable {
         switch event {
         case .runStarted(let runID, let totalTargetCount):
             outputLogger(
-                "Generation \(shortenedRunID(runID.rawValue)): \(totalTargetCount) targets → "
+                "Generation \(runID.rawValue): \(totalTargetCount) targets → "
                     + artifactDirectory.path
             )
         case .targetStarted(let index, let total, let displayName):
@@ -315,13 +316,14 @@ func concisePrivateHeaderKitDiagnostic(_ message: String) -> String {
     return String(sanitized.prefix(maximumLength - 1)) + "…"
 }
 
+@discardableResult
 func renderPrivateHeaderKitGenerationError(
     _ error: PrivateHeaderGeneration.GenerationError,
     sourceDisplayName: String,
     targetQuery: String,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer?,
     outputLogger: PrivateHeaderKitOutputLogger
-) {
+) -> PrivateHeaderGeneration.RunStatus? {
     switch error {
     case .runFailed(let failure):
         screenClearer?()
@@ -333,6 +335,7 @@ func renderPrivateHeaderKitGenerationError(
             failedTargetIDs: failure.failedTargetIDs,
             outputLogger: outputLogger
         )
+        return failure.summary.status
     case .runInterrupted(let interruption):
         renderPrivateHeaderKitRunSummary(
             interruption.summary,
@@ -341,6 +344,7 @@ func renderPrivateHeaderKitGenerationError(
             title: "Generation interrupted",
             outputLogger: outputLogger
         )
+        return interruption.summary.status
     case .infrastructureFailed(let failure):
         screenClearer?()
         renderPrivateHeaderKitRunSummary(
@@ -351,11 +355,14 @@ func renderPrivateHeaderKitGenerationError(
             infrastructureMessage: failure.message,
             outputLogger: outputLogger
         )
+        return failure.summary.status
     case .resumeRequired:
         outputLogger("error: \(error.description)")
         outputLogger("rerun with `--resume` to continue or `--fresh` to restart")
+        return nil
     default:
         outputLogger("error: \(error.description)")
+        return nil
     }
 }
 
@@ -430,8 +437,54 @@ func renderPrivateHeaderKitRunSummary(
     outputLogger("")
     outputLogger("Output")
     outputLogger(formatResultField("Headers", summary.artifactDirectory.path))
+
+    outputLogger("")
+    outputLogger("Diagnostics")
     outputLogger(formatResultField("State", summary.stateDatabaseURL.path))
-    outputLogger(formatResultField("Run", shortenedRunID(summary.runID.rawValue)))
+    outputLogger(formatResultField("Run", summary.runID.rawValue))
+}
+
+func renderPrivateHeaderKitSimulatorPreparation(
+    _ command: PrivateHeaderKitGenerateCommand,
+    outputLogger: PrivateHeaderKitOutputLogger
+) {
+    outputLogger("Preparing simulator for \(command.platform.rawValue) \(command.version)...")
+}
+
+func renderPrivateHeaderKitSimulatorReady(
+    _ resolution: PrivateHeaderKitSimulatorResolution,
+    command: PrivateHeaderKitGenerateCommand,
+    outputLogger: PrivateHeaderKitOutputLogger
+) {
+    let description: String
+    switch resolution.deviceOwnership {
+    case .borrowed:
+        description = "\(resolution.deviceName) (UDID: \(resolution.deviceUDID))"
+    case .runOwned:
+        description =
+            "temporary \(command.platform.rawValue) \(resolution.runtimeVersion) device "
+            + "(UDID: \(resolution.deviceUDID))"
+    }
+    outputLogger("Simulator ready: \(description)")
+}
+
+func renderPrivateHeaderKitSimulatorCleanup(
+    outputLogger: PrivateHeaderKitOutputLogger
+) {
+    outputLogger("")
+    outputLogger("Cleanup")
+    outputLogger(formatResultField("Simulator", "Temporary device deleted"))
+}
+
+func renderPrivateHeaderKitCommandOutcome(
+    _ outcome: PrivateHeaderKitCommandOutcome,
+    outputLogger: PrivateHeaderKitOutputLogger,
+    errorLogger: PrivateHeaderKitOutputLogger
+) {
+    let logger = outcome.exitCode == 0 ? outputLogger : errorLogger
+    logger("")
+    logger("Finished")
+    logger(formatResultField("Status", outcome.runStatus?.rawValue ?? "failed"))
 }
 
 private func formatResultMetric(_ label: String, _ value: Int) -> String {
@@ -455,14 +508,6 @@ private func formattedTargetQuery(_ query: String) -> String {
         .split(separator: ",")
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .joined(separator: ", ")
-}
-
-private func shortenedRunID(_ runID: String) -> String {
-    let maximumLength = 36
-    guard runID.count > maximumLength else {
-        return runID
-    }
-    return String(runID.prefix(maximumLength - 1)) + "…"
 }
 
 func logCLIError(_ message: String) {

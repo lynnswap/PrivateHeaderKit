@@ -145,6 +145,11 @@ typealias PrivateHeaderKitReleaseMetadataResolver = @Sendable (
 ) throws -> Bool
 typealias PrivateHeaderKitOutputLogger = @Sendable (String) -> Void
 
+struct PrivateHeaderKitCommandOutcome: Equatable, Sendable {
+    let exitCode: Int32
+    let runStatus: PrivateHeaderGeneration.RunStatus?
+}
+
 func resolvePrivateHeaderKitReleaseMetadata(
     systemRoot: URL,
     layout: RuntimeRootLayout
@@ -303,7 +308,7 @@ func runPrivateHeaderKitGenerateCommand(
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
     errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> Int32 {
-    try await withPrivateHeaderKitSimulatorSession(
+    let outcome = try await withPrivateHeaderKitSimulatorSession(
         command,
         resolver: simulatorResolver,
         cleaner: simulatorCleaner,
@@ -330,25 +335,37 @@ func runPrivateHeaderKitGenerateCommand(
                     errorLogger: errorLogger
                 )
             } catch let error as PrivateHeaderGeneration.GenerationError {
-                if Task.isCancelled {
-                    throw CancellationError()
+                let cancellationRequested = Task.isCancelled
+                if cancellationRequested {
+                    guard case .runInterrupted = error else {
+                        throw CancellationError()
+                    }
                 }
-                renderPrivateHeaderKitGenerationError(
+                let runStatus = renderPrivateHeaderKitGenerationError(
                     error,
                     sourceDisplayName: request.source.label.displayName,
                     targetQuery: command.targetQuery,
                     screenClearer: resultScreenClearer,
                     outputLogger: errorLogger
                 )
-                return 2
+                return PrivateHeaderKitCommandOutcome(
+                    exitCode: cancellationRequested ? 130 : 2,
+                    runStatus: runStatus
+                )
             }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             errorLogger("error: \(error)")
-            return 2
+            return PrivateHeaderKitCommandOutcome(exitCode: 2, runStatus: nil)
         }
     }
+    renderPrivateHeaderKitCommandOutcome(
+        outcome,
+        outputLogger: outputLogger,
+        errorLogger: errorLogger
+    )
+    return outcome.exitCode
 }
 
 func preparePrivateHeaderKitGenerationRequest(
@@ -391,7 +408,7 @@ func runPrivateHeaderKitPreparedGeneration(
     resultScreenClearer: PrivateHeaderKitInteractiveScreenClearer?,
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
     errorLogger: @escaping PrivateHeaderKitOutputLogger
-) async throws -> Int32 {
+) async throws -> PrivateHeaderKitCommandOutcome {
     do {
         let result = try await preparedGeneration.run(
             resumeBehavior,
@@ -409,24 +426,30 @@ func runPrivateHeaderKitPreparedGeneration(
             title: "Generation completed",
             outputLogger: outputLogger
         )
-        return 0
+        return PrivateHeaderKitCommandOutcome(exitCode: 0, runStatus: result.summary.status)
     } catch let error as PrivateHeaderGeneration.GenerationError {
-        if Task.isCancelled {
-            throw CancellationError()
+        let cancellationRequested = Task.isCancelled
+        if cancellationRequested {
+            guard case .runInterrupted = error else {
+                throw CancellationError()
+            }
         }
-        renderPrivateHeaderKitGenerationError(
+        let runStatus = renderPrivateHeaderKitGenerationError(
             error,
             sourceDisplayName: request.source.label.displayName,
             targetQuery: targetQuery,
             screenClearer: resultScreenClearer,
             outputLogger: errorLogger
         )
-        return 2
+        return PrivateHeaderKitCommandOutcome(
+            exitCode: cancellationRequested ? 130 : 2,
+            runStatus: runStatus
+        )
     } catch is CancellationError {
         throw CancellationError()
     } catch {
         errorLogger("error: \(error)")
-        return 2
+        return PrivateHeaderKitCommandOutcome(exitCode: 2, runStatus: nil)
     }
 }
 
@@ -1085,8 +1108,13 @@ func withPrivateHeaderKitSimulatorSession<Result>(
     if command.platform.simulatorPlatform == nil {
         resolution = nil
     } else {
+        renderPrivateHeaderKitSimulatorPreparation(command, outputLogger: outputLogger)
         let resolved = try await resolver(command)
-        outputLogger("selected simulator: \(resolved.deviceName) (\(resolved.deviceUDID))")
+        renderPrivateHeaderKitSimulatorReady(
+            resolved,
+            command: command,
+            outputLogger: outputLogger
+        )
         resolution = resolved
     }
 
@@ -1097,9 +1125,15 @@ func withPrivateHeaderKitSimulatorSession<Result>(
         let operationError = error
         if let resolution {
             do {
-                try await finishPrivateHeaderKitSimulatorSession(resolution, cleaner: cleaner)
+                try await finishPrivateHeaderKitSimulatorSession(
+                    resolution,
+                    cleaner: cleaner,
+                    outputLogger: outputLogger
+                )
             } catch {
                 throw PrivateHeaderKitSimulatorSessionCleanupError(
+                    deviceName: resolution.deviceName,
+                    deviceUDID: resolution.deviceUDID,
                     operationError: String(describing: operationError),
                     cleanupError: String(describing: error)
                 )
@@ -1108,28 +1142,49 @@ func withPrivateHeaderKitSimulatorSession<Result>(
         throw operationError
     }
     if let resolution {
-        try await finishPrivateHeaderKitSimulatorSession(resolution, cleaner: cleaner)
+        do {
+            try await finishPrivateHeaderKitSimulatorSession(
+                resolution,
+                cleaner: cleaner,
+                outputLogger: outputLogger
+            )
+        } catch {
+            throw PrivateHeaderKitSimulatorSessionCleanupError(
+                deviceName: resolution.deviceName,
+                deviceUDID: resolution.deviceUDID,
+                operationError: nil,
+                cleanupError: String(describing: error)
+            )
+        }
     }
     return result
 }
 
-private struct PrivateHeaderKitSimulatorSessionCleanupError: Error, CustomStringConvertible {
-    let operationError: String
+struct PrivateHeaderKitSimulatorSessionCleanupError: Error, CustomStringConvertible {
+    let deviceName: String
+    let deviceUDID: String
+    let operationError: String?
     let cleanupError: String
 
     var description: String {
-        "simulator cleanup failed after \(operationError): \(cleanupError)"
+        let device = "\(deviceName) (UDID: \(deviceUDID))"
+        guard let operationError else {
+            return "simulator cleanup failed for \(device): \(cleanupError)"
+        }
+        return "simulator cleanup failed for \(device) after \(operationError): \(cleanupError)"
     }
 }
 
 private func finishPrivateHeaderKitSimulatorSession(
     _ resolution: PrivateHeaderKitSimulatorResolution,
-    cleaner: @escaping PrivateHeaderKitSimulatorCleaner
+    cleaner: @escaping PrivateHeaderKitSimulatorCleaner,
+    outputLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws {
     guard resolution.deviceOwnership == .runOwned else { return }
     try await Task.detached {
         try await cleaner(resolution)
     }.value
+    renderPrivateHeaderKitSimulatorCleanup(outputLogger: outputLogger)
 }
 
 func cleanupPrivateHeaderKitSimulator(
