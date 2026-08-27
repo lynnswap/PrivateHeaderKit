@@ -287,7 +287,9 @@ public enum Simctl {
             }.result
             if case .failure(let cleanupError) = cleanupResult {
                 throw ToolingError.message(
-                    "simulator acquisition failed: \(error); cleanup also failed: \(cleanupError)"
+                    "simulator acquisition failed for run-owned simulator \(created.name) "
+                        + "(UDID: \(created.udid)): \(error); cleanup also failed: "
+                        + "\(cleanupError)"
                 )
             }
             throw error
@@ -300,7 +302,6 @@ public enum Simctl {
         force: Bool
     ) async throws -> DeviceInfo {
         if stateEquals(device.state, "Booted"), !force { return device }
-        print("Booting simulator: \(device.name) (\(device.udid))")
         try await runner.runSimple(["xcrun", "simctl", "boot", device.udid], env: nil, cwd: nil)
         try await runner.runSimple(["xcrun", "simctl", "bootstatus", device.udid, "-b"], env: nil, cwd: nil)
         var booted = device
@@ -350,7 +351,6 @@ public enum Simctl {
             throw ToolingError.message("no device types available")
         }
 
-        print("Creating device: \(name)")
         let output: String
         do {
             output = try await runner.runCapture(
@@ -369,7 +369,8 @@ public enum Simctl {
             }.result
             if case .failure(let cleanupError) = cleanupResult {
                 throw ToolingError.message(
-                    "simulator creation failed: \(createError); cleanup also failed: \(cleanupError)"
+                    "simulator creation failed for run-owned simulator \(name): \(createError); "
+                        + "cleanup also failed: \(cleanupError)"
                 )
             }
             throw createError
@@ -392,7 +393,8 @@ public enum Simctl {
             }.result
             if case .failure(let cleanupError) = cleanupResult {
                 throw ToolingError.message(
-                    "\(contractError); cleanup also failed: \(cleanupError)"
+                    "\(contractError) for run-owned simulator \(name); cleanup also failed: "
+                        + "\(cleanupError)"
                 )
             }
             throw contractError
@@ -404,7 +406,6 @@ public enum Simctl {
         _ device: DeviceInfo,
         runner: CommandRunning
     ) async throws {
-        print("Deleting simulator: \(device.name) (\(device.udid))")
         try await runner.runSimple(
             ["xcrun", "simctl", "delete", device.udid],
             env: nil,
@@ -425,7 +426,14 @@ public enum Simctl {
             )
         }
         if let device = matches.first {
-            try await deleteDevice(device, runner: runner)
+            do {
+                try await deleteDevice(device, runner: runner)
+            } catch {
+                throw ToolingError.message(
+                    "failed to delete run-owned simulator \(device.name) "
+                        + "(UDID: \(device.udid)): \(error)"
+                )
+            }
         }
     }
 

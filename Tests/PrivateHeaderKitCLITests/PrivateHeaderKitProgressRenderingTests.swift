@@ -273,6 +273,39 @@ struct PrivateHeaderKitProgressRenderingTests {
         #expect(line?.contains("…") == true)
         #expect(line?.contains("SyncService.xpc") == true)
     }
+
+    @Test func finalOutcomeUsesTheStreamMatchingCommandSuccess() {
+        let output = ProgressTextRecorder()
+        let errors = ProgressTextRecorder()
+
+        renderPrivateHeaderKitCommandOutcome(
+            .init(exitCode: 0, runStatus: .completed),
+            outputLogger: { output.append($0) },
+            errorLogger: { errors.append($0) }
+        )
+
+        #expect(output.values == ["", "Finished", "  Status     completed"])
+        #expect(errors.values.isEmpty)
+
+        renderPrivateHeaderKitCommandOutcome(
+            .init(exitCode: 2, runStatus: .partial),
+            outputLogger: { output.append($0) },
+            errorLogger: { errors.append($0) }
+        )
+
+        #expect(errors.values == ["", "Finished", "  Status     partial"])
+
+        let noRunOutput = ProgressTextRecorder()
+        let noRunErrors = ProgressTextRecorder()
+        renderPrivateHeaderKitCommandOutcome(
+            .init(exitCode: 2, runStatus: nil),
+            outputLogger: { noRunOutput.append($0) },
+            errorLogger: { noRunErrors.append($0) }
+        )
+
+        #expect(noRunOutput.values.isEmpty)
+        #expect(noRunErrors.values.isEmpty)
+    }
 }
 
 private final class ProgressTextRecorder: @unchecked Sendable {

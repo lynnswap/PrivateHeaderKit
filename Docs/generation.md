@@ -24,7 +24,10 @@ creates and boots one dedicated simulator device for the run, then deletes that
 exact device after generation, failure, or interruption. It does not use a
 connected iPhone or Apple Watch as a generation source. An explicit `--device`
 selects an existing borrowed simulator instead; PrivateHeaderKit never deletes
-that device.
+that device. When generation has produced a typed terminal outcome, its final
+`Finished` block is rendered after successful cleanup of a dedicated device. If
+cleanup fails, the command instead reports the exact device name and UDID and
+exits with an error.
 
 ## Automation
 
@@ -91,6 +94,11 @@ Consumers should use only the concrete directory printed as `Headers`:
 ```text
 <output-base>/generated-headers/<platform>/<release-directory>/
 ```
+
+The completion summary keeps this consumer path under `Output`. The internal
+state database and the full, unabridged run identifier are listed separately
+under `Diagnostics`; they are troubleshooting references, not generated-header
+locations.
 
 Platform directories use the displayed Apple platform name: `iOS`, `watchOS`,
 or `macOS`. Release directories include the exact build when it is available:

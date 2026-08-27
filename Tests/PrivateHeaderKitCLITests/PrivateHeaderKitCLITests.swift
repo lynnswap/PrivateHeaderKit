@@ -217,6 +217,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         let cleanupCount = ThreadSafeCounter()
         let operationStarted = EventCounter()
         let cleanupWasCancelled = ThreadSafeBool()
+        let cancellationOutput = ThreadSafeStrings()
         let owned = PrivateHeaderKitSimulatorResolution(
             runtimeVersion: testPrivateHeaderKitSimulatorResolution.runtimeVersion,
             runtimeBuild: testPrivateHeaderKitSimulatorResolution.runtimeBuild,
@@ -238,7 +239,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                     }
                     cleanupCount.increment()
                 },
-                outputLogger: { _ in },
+                outputLogger: cancellationOutput.append,
                 operation: { _ in
                     operationStarted.signal()
                     while true {
@@ -255,18 +256,30 @@ struct PrivateHeaderKitCLIExecutionTests {
         }
         #expect(cleanupCount.value == 1)
         #expect(!cleanupWasCancelled.value)
+        #expect(!cancellationOutput.text.contains(owned.deviceName))
+        #expect(cancellationOutput.text.contains("UDID: \(owned.deviceUDID)"))
+        #expect(cancellationOutput.text.contains("Temporary device deleted"))
 
+        let borrowedOutput = ThreadSafeStrings()
         let value: Int = try await withPrivateHeaderKitSimulatorSession(
             iosGenerateCommand(build: nil, systemRoot: nil),
             resolver: { _ in testPrivateHeaderKitSimulatorResolution },
             cleaner: { _ in cleanupCount.increment() },
-            outputLogger: { _ in },
+            outputLogger: borrowedOutput.append,
             operation: { _ in 7 }
         )
         #expect(value == 7)
         #expect(cleanupCount.value == 1)
+        #expect(
+            borrowedOutput.text.contains(
+                "Simulator ready: \(testPrivateHeaderKitSimulatorResolution.deviceName) "
+                    + "(UDID: \(testPrivateHeaderKitSimulatorResolution.deviceUDID))"
+            )
+        )
+        #expect(!borrowedOutput.text.contains("Cleanup"))
 
-        await #expect(throws: CLIFixtureError.self) {
+        let failedCleanupOutput = ThreadSafeStrings()
+        do {
             let _: Int = try await withPrivateHeaderKitSimulatorSession(
                 iosGenerateCommand(build: nil, systemRoot: nil),
                 resolver: { _ in owned },
@@ -274,11 +287,19 @@ struct PrivateHeaderKitCLIExecutionTests {
                     cleanupCount.increment()
                     throw CLIFixtureError.cleanupFailed
                 },
-                outputLogger: { _ in },
+                outputLogger: failedCleanupOutput.append,
                 operation: { _ in 9 }
             )
+            Issue.record("successful operation unexpectedly hid simulator cleanup failure")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("simulator cleanup failed for"))
+            #expect(message.contains(owned.deviceName))
+            #expect(message.contains("UDID: \(owned.deviceUDID)"))
+            #expect(message.contains("cleanupFailed"))
         }
         #expect(cleanupCount.value == 2)
+        #expect(!failedCleanupOutput.text.contains("Temporary device deleted"))
     }
 
     @Test func simulatorCleanupFailureOverridesInteractiveBack() async {
@@ -305,8 +326,12 @@ struct PrivateHeaderKitCLIExecutionTests {
         } catch is PrivateHeaderKitInteractiveNavigation {
             Issue.record("interactive Back unexpectedly won over simulator cleanup failure")
         } catch {
-            #expect(String(describing: error).contains("simulator cleanup failed after"))
-            #expect(String(describing: error).contains("cleanupFailed"))
+            let message = String(describing: error)
+            #expect(message.contains("simulator cleanup failed for"))
+            #expect(message.contains("after"))
+            #expect(message.contains(owned.deviceName))
+            #expect(message.contains("UDID: \(owned.deviceUDID)"))
+            #expect(message.contains("cleanupFailed"))
         }
     }
 
@@ -669,6 +694,9 @@ struct PrivateHeaderKitCLIExecutionTests {
         let preparationCount = ThreadSafeCounter()
         let summaryInspectionCount = ThreadSafeCounter()
         let output = ThreadSafeStrings()
+        let runID = PrivateHeaderGeneration.RunID(
+            rawValue: "run-ad657944-4255-4460-8571-9f5892b75637"
+        )
         let status = await runPrivateHeaderKitCommand(
             [
                 "privateheaderkit",
@@ -689,7 +717,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 run: { request, _, progress in
                     requestBox.set(request)
                     progress(.runStarted(
-                        runID: PrivateHeaderGeneration.RunID(rawValue: "run-typed"),
+                        runID: runID,
                         totalTargetCount: 3
                     ))
                     return resultFixture(
@@ -705,7 +733,8 @@ struct PrivateHeaderKitCLIExecutionTests {
                                 relativePath: "Frameworks/AppKit/Headers/Generated.h",
                                 message: "preserved unowned artifact"
                             ),
-                        ]
+                        ],
+                        runID: runID
                     )
                 }
             ),
@@ -733,6 +762,12 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(output.text.contains("generation.sqlite"))
         let headersPath = "/tmp/PrivateHeaderKit/generated-headers/macOS/16.0"
         #expect(output.text.components(separatedBy: headersPath).count == 3)
+        #expect(output.text.contains("Generation \(runID.rawValue): 3 targets"))
+        #expect(output.text.contains("Output\n  Headers"))
+        #expect(output.text.contains("Diagnostics\n  State"))
+        #expect(output.text.contains("  Run        \(runID.rawValue)"))
+        #expect(!output.text.contains("run-ad657944-4255-4460-8571-9f5892b…"))
+        #expect(output.text.hasSuffix("Finished\n  Status     completed"))
         #expect(!output.text.contains("manifest.json"))
         #expect(!output.text.contains("run.json"))
     }
@@ -777,14 +812,53 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(request.options.producerVersion == PrivateHeaderKitBuildInfo.version)
     }
 
-    @Test func runFailureUsesTypedSummaryWithoutReadingStateFiles() async {
+    @Test func runOwnedSuccessCleansBeforeCompletedFinalStatus() async throws {
+        let output = ThreadSafeStrings()
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "iOS",
+                "--version", "27.0",
+                "--out", "/tmp/PrivateHeaderKit",
+                "--target", "AppKit",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient { request, _, _ in
+                resultFixture(
+                    for: request,
+                    counts: .init(total: 1, completed: 1)
+                )
+            },
+            simulatorResolver: { _ in testPrivateHeaderKitRunOwnedSimulatorResolution },
+            simulatorCleaner: { _ in output.append("cleanup command completed") },
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            outputLogger: output.append,
+            errorLogger: errors.append
+        )
+
+        #expect(status == 0)
+        #expect(errors.text.isEmpty)
+        #expect(!output.text.contains(testPrivateHeaderKitRunOwnedSimulatorResolution.deviceName))
+        let rendered = output.text
+        let summary = try #require(rendered.range(of: "Generation completed"))
+        let cleanupCommand = try #require(rendered.range(of: "cleanup command completed"))
+        let cleanupResult = try #require(rendered.range(of: "Cleanup"))
+        let finished = try #require(rendered.range(of: "Finished"))
+        #expect(summary.lowerBound < cleanupCommand.lowerBound)
+        #expect(cleanupCommand.lowerBound < cleanupResult.lowerBound)
+        #expect(cleanupResult.lowerBound < finished.lowerBound)
+        #expect(rendered.hasSuffix("Finished\n  Status     completed"))
+    }
+
+    @Test func runFailureUsesTypedSummaryWithoutReadingStateFiles() async throws {
         let output = ThreadSafeStrings()
         let status = await runPrivateHeaderKitCommand(
             [
                 "privateheaderkit",
-                "--platform", "macOS",
-                "--version", "16.0",
-                "--system-root", "/SystemRoot",
+                "--platform", "iOS",
+                "--version", "27.0",
                 "--out", "/does/not/exist",
                 "--target", "AppKit",
             ],
@@ -793,7 +867,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 run: { request, _, _ in
                     let summary = summaryFixture(
                         for: request,
-                        status: .failed,
+                        status: .partial,
                         counts: PrivateHeaderGeneration.TargetCounts(
                             total: 2,
                             completed: 1,
@@ -808,6 +882,8 @@ struct PrivateHeaderKitCLIExecutionTests {
                     )
                 }
             ),
+            simulatorResolver: { _ in testPrivateHeaderKitRunOwnedSimulatorResolution },
+            simulatorCleaner: { _ in output.append("cleanup command completed") },
             helperResolver: testPrivateHeaderKitHelperResolver,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             outputLogger: output.append,
@@ -818,9 +894,55 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(output.text.contains("framework:AppKit.framework"))
         #expect(
             output.text.contains(
-                "/does/not/exist/.state/macos-v1-16.0-b0/generation.sqlite"
+                "/does/not/exist/.state/ios-v1-27.0-b1-24~41123/generation.sqlite"
             )
         )
+        #expect(!output.text.contains(testPrivateHeaderKitRunOwnedSimulatorResolution.deviceName))
+        #expect(
+            output.text.contains(
+                "UDID: \(testPrivateHeaderKitRunOwnedSimulatorResolution.deviceUDID)"
+            )
+        )
+        let rendered = output.text
+        let summaryRange = try #require(
+            rendered.range(of: "Generation completed with failures")
+        )
+        let cleanupCommand = try #require(rendered.range(of: "cleanup command completed"))
+        let cleanupResult = try #require(rendered.range(of: "Cleanup"))
+        let finished = try #require(rendered.range(of: "Finished"))
+        #expect(summaryRange.lowerBound < cleanupCommand.lowerBound)
+        #expect(cleanupCommand.lowerBound < cleanupResult.lowerBound)
+        #expect(cleanupResult.lowerBound < finished.lowerBound)
+        #expect(rendered.hasSuffix("Finished\n  Status     partial"))
+    }
+
+    @Test func resumeRequiredDoesNotInventATerminalRunStatus() async throws {
+        let resumeSummary = try await unfinishedResumeSummaryFixture()
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "macOS",
+                "--version", "16.0",
+                "--system-root", "/SystemRoot",
+                "--out", "/tmp/resume-required",
+                "--target", "all",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient { _, _, _ in
+                throw PrivateHeaderGeneration.GenerationError.resumeRequired(resumeSummary)
+            },
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 2)
+        #expect(output.text.contains("explicit resume is required"))
+        #expect(output.text.contains("rerun with `--resume`"))
+        #expect(!output.text.contains("Finished"))
+        #expect(!output.text.contains("Status     failed"))
     }
 
     @Test func interruptionAndInfrastructureErrorsRenderTheirTypedSummaries() async {
@@ -874,7 +996,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         }
     }
 
-    @Test func cancelledCoreInterruptionReturns130InsteadOfGenericFailure() async {
+    @Test func cancelledCoreInterruptionReturns130AfterRunOwnedCleanup() async throws {
         let generationStarted = EventCounter()
         let cancellationObserved = EventCounter()
         let output = ThreadSafeStrings()
@@ -882,9 +1004,8 @@ struct PrivateHeaderKitCLIExecutionTests {
             await runPrivateHeaderKitCommand(
                 [
                     "privateheaderkit",
-                    "--platform", "macOS",
-                    "--version", "16.0",
-                    "--system-root", "/SystemRoot",
+                    "--platform", "iOS",
+                    "--version", "27.0",
                     "--out", "/tmp/cancelled-core",
                     "--target", "all",
                 ],
@@ -906,6 +1027,8 @@ struct PrivateHeaderKitCLIExecutionTests {
                         PrivateHeaderGeneration.RunInterruption(summary: summary)
                     )
                 },
+                simulatorResolver: { _ in testPrivateHeaderKitRunOwnedSimulatorResolution },
+                simulatorCleaner: { _ in output.append("cleanup command completed") },
                 helperResolver: testPrivateHeaderKitHelperResolver,
                 releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
                 outputLogger: output.append,
@@ -916,7 +1039,16 @@ struct PrivateHeaderKitCLIExecutionTests {
         await generationStarted.wait(until: 1)
         task.cancel()
         #expect(await task.value == 130)
-        #expect(!output.text.contains("Generation interrupted"))
+        #expect(output.text.contains("Generation interrupted"))
+        let rendered = output.text
+        let summary = try #require(rendered.range(of: "Generation interrupted"))
+        let cleanupCommand = try #require(rendered.range(of: "cleanup command completed"))
+        let cleanupResult = try #require(rendered.range(of: "Cleanup"))
+        let finished = try #require(rendered.range(of: "Finished"))
+        #expect(summary.lowerBound < cleanupCommand.lowerBound)
+        #expect(cleanupCommand.lowerBound < cleanupResult.lowerBound)
+        #expect(cleanupResult.lowerBound < finished.lowerBound)
+        #expect(rendered.hasSuffix("Finished\n  Status     interrupted"))
         #expect(!output.text.contains("error:"))
     }
 
@@ -1862,6 +1994,52 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(preparationCount.value == 1)
     }
 
+    @Test func interactiveSimulatorCleanupFailureReturnsOperationalFailure() async {
+        let input = ScriptedInput(["1", "1"])
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient { request, _, _ in
+                resultFixture(
+                    for: request,
+                    counts: .init(total: 1, completed: 1)
+                )
+            },
+            simulatorResolver: { _ in testPrivateHeaderKitRunOwnedSimulatorResolution },
+            simulatorCleaner: { _ in throw CLIFixtureError.cleanupFailed },
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            interactiveSourceProvider: {
+                [
+                    PrivateHeaderKitInteractiveSource(
+                        platform: .iOS,
+                        version: "27.0",
+                        build: "24A123",
+                        systemRoot: nil
+                    ),
+                ]
+            },
+            interactiveOutputBaseDirectoryProvider: { "/tmp/PrivateHeaderKit" },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 2)
+        #expect(output.text.contains("Generation completed"))
+        #expect(output.text.contains("simulator cleanup failed for"))
+        #expect(output.text.contains(testPrivateHeaderKitRunOwnedSimulatorResolution.deviceName))
+        #expect(
+            output.text.contains(
+                "UDID: \(testPrivateHeaderKitRunOwnedSimulatorResolution.deviceUDID)"
+            )
+        )
+        #expect(!output.text.contains("Temporary device deleted"))
+        #expect(!output.text.contains("Finished"))
+    }
+
     @Test func interactiveIncompatibleResumeRestartsTheSamePreparedGeneration() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2019,6 +2197,18 @@ private let testPrivateHeaderKitSimulatorResolution = PrivateHeaderKitSimulatorR
     deviceName: "iPhone 17 Pro",
     deviceUDID: "SIM-001"
 )
+
+private let testPrivateHeaderKitRunOwnedSimulatorResolution =
+    PrivateHeaderKitSimulatorResolution(
+        runtimeVersion: "27.0",
+        runtimeBuild: "24A123",
+        runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+        resolvedRuntimeRoot: "/ResolvedRuntime",
+        metadataIsSeed: false,
+        deviceName: "PrivateHeaderKit Dump (iOS 27.0) session-001",
+        deviceUDID: "11111111-2222-3333-4444-555555555555",
+        deviceOwnership: .runOwned
+    )
 
 private let testPrivateHeaderKitWatchSimulatorResolution = PrivateHeaderKitSimulatorResolution(
     runtimeVersion: "27.0",
@@ -3523,7 +3713,8 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
 private func resultFixture(
     for request: PrivateHeaderKitGenerationRequest,
     counts: PrivateHeaderGeneration.TargetCounts,
-    warnings: [PrivateHeaderGeneration.GenerationWarning] = []
+    warnings: [PrivateHeaderGeneration.GenerationWarning] = [],
+    runID: PrivateHeaderGeneration.RunID = .init(rawValue: "run-typed")
 ) -> PrivateHeaderGeneration.Result {
     let plan = PrivateHeaderGeneration.makePlan(
         source: request.source,
@@ -3536,7 +3727,7 @@ private func resultFixture(
         generatedTargets: (0..<counts.completed).map {
             PrivateHeaderGeneration.Target.generated(identifier: "target-\($0)")
         },
-        runID: PrivateHeaderGeneration.RunID(rawValue: "run-typed"),
+        runID: runID,
         stateDatabaseURL: plan.databaseURL,
         targetCounts: counts,
         warnings: warnings

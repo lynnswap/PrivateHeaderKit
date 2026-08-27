@@ -163,7 +163,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                     simulatorHelperPath: nil
                 )
                 do {
-                    return try await withPrivateHeaderKitSimulatorSession(
+                    let outcome = try await withPrivateHeaderKitSimulatorSession(
                         command,
                         resolver: simulatorResolver,
                         cleaner: simulatorCleaner,
@@ -197,6 +197,12 @@ func runPrivateHeaderKitInteractiveGenerate(
                             errorLogger: errorLogger
                         )
                     }
+                    renderPrivateHeaderKitCommandOutcome(
+                        outcome,
+                        outputLogger: outputLogger,
+                        errorLogger: errorLogger
+                    )
+                    return outcome.exitCode
                 } catch PrivateHeaderKitInteractiveNavigation.back {
                     continue targetSelection
                 }
@@ -204,6 +210,9 @@ func runPrivateHeaderKitInteractiveGenerate(
         }
     } catch is CancellationError {
         throw CancellationError()
+    } catch let error as PrivateHeaderKitSimulatorSessionCleanupError {
+        errorLogger("error: \(error)")
+        return 2
     } catch let error as PrivateHeaderKitCLIError {
         errorLogger("error: \(error.description)")
         return 1
