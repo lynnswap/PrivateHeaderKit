@@ -916,6 +916,35 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(rendered.hasSuffix("Finished\n  Status     partial"))
     }
 
+    @Test func resumeRequiredDoesNotInventATerminalRunStatus() async throws {
+        let resumeSummary = try await unfinishedResumeSummaryFixture()
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            [
+                "privateheaderkit",
+                "--platform", "macOS",
+                "--version", "16.0",
+                "--system-root", "/SystemRoot",
+                "--out", "/tmp/resume-required",
+                "--target", "all",
+            ],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient { _, _, _ in
+                throw PrivateHeaderGeneration.GenerationError.resumeRequired(resumeSummary)
+            },
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+
+        #expect(status == 2)
+        #expect(output.text.contains("explicit resume is required"))
+        #expect(output.text.contains("rerun with `--resume`"))
+        #expect(!output.text.contains("Finished"))
+        #expect(!output.text.contains("Status     failed"))
+    }
+
     @Test func interruptionAndInfrastructureErrorsRenderTheirTypedSummaries() async {
         for kind in [FailureKind.interrupted, .infrastructure] {
             let output = ThreadSafeStrings()

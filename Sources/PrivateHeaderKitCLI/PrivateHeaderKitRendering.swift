@@ -481,10 +481,11 @@ func renderPrivateHeaderKitCommandOutcome(
     outputLogger: PrivateHeaderKitOutputLogger,
     errorLogger: PrivateHeaderKitOutputLogger
 ) {
+    guard let runStatus = outcome.runStatus else { return }
     let logger = outcome.exitCode == 0 ? outputLogger : errorLogger
     logger("")
     logger("Finished")
-    logger(formatResultField("Status", outcome.runStatus?.rawValue ?? "failed"))
+    logger(formatResultField("Status", runStatus.rawValue))
 }
 
 private func formatResultMetric(_ label: String, _ value: Int) -> String {

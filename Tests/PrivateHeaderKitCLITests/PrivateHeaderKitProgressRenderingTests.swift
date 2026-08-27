@@ -294,6 +294,17 @@ struct PrivateHeaderKitProgressRenderingTests {
         )
 
         #expect(errors.values == ["", "Finished", "  Status     partial"])
+
+        let noRunOutput = ProgressTextRecorder()
+        let noRunErrors = ProgressTextRecorder()
+        renderPrivateHeaderKitCommandOutcome(
+            .init(exitCode: 2, runStatus: nil),
+            outputLogger: { noRunOutput.append($0) },
+            errorLogger: { noRunErrors.append($0) }
+        )
+
+        #expect(noRunOutput.values.isEmpty)
+        #expect(noRunErrors.values.isEmpty)
     }
 }
 
