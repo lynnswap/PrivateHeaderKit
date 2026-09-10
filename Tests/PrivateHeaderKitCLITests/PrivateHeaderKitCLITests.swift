@@ -456,7 +456,6 @@ struct PrivateHeaderKitCLIExecutionTests {
             createCommand,
         ])
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            ["xcrun", "simctl", "boot", deviceUDID],
             ["xcrun", "simctl", "bootstatus", deviceUDID, "-b"],
         ])
     }

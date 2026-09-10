@@ -29,6 +29,14 @@ that device. When generation has produced a typed terminal outcome, its final
 cleanup fails, the command instead reports the exact device name and UDID and
 exits with an error.
 
+If a helper operation fails and the selected simulator is found shut down,
+booting, or shutting down, generation pauses while that same device boots.
+PrivateHeaderKit then retries the interrupted operation before processing any
+later targets. This also applies to shared-cache discovery before generation.
+Press Control-C to cancel while waiting. A helper failure while the device is
+still booted is reported normally. If the device has been deleted, is no longer
+available, or cannot boot, the run stops and keeps previously published headers.
+
 ## Automation
 
 Supplying any generation option disables the wizard. Automation must provide
