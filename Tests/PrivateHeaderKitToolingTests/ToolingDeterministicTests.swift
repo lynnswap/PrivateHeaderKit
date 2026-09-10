@@ -364,6 +364,111 @@ struct SimctlDeterministicTests {
         #expect(await runner.simpleCommandSnapshot().isEmpty)
     }
 
+    @Test func availableDeviceMatchesOnlyTheExactUDIDWithinItsRuntime() async throws {
+        let runner = RecordingCommandRunner()
+        let command = ["xcrun", "simctl", "list", "devices", "available", "-j"]
+        await runner.setCaptureOutput(
+            """
+            {"devices":{
+              "ios-27":[
+                {"name":"SIM-001","udid":"SIM-001-OTHER","state":"Booted"},
+                {"name":"Target","udid":"SIM-001","state":"Shutting Down"}
+              ],
+              "ios-26":[{"name":"Other runtime","udid":"SIM-001","state":"Booted"}]
+            }}
+            """,
+            for: command
+        )
+
+        let device = try await Simctl.availableDevice(
+            runtimeId: "ios-27", udid: "SIM-001", runner: runner
+        )
+
+        #expect(device == DeviceInfo(name: "Target", udid: "SIM-001", state: "Shutting Down"))
+        for query in ["Target", "SIM", "sim-001"] {
+            #expect(try await Simctl.availableDevice(
+                runtimeId: "ios-27", udid: query, runner: runner
+            ) == nil)
+        }
+        #expect(await runner.captureCommandSnapshot().map(\.command) == Array(repeating: command, count: 4))
+    }
+
+    @Test func availableDeviceReturnsNilWhenTheDeviceOrRuntimeIsAbsent() async throws {
+        let runner = RecordingCommandRunner()
+        let command = ["xcrun", "simctl", "list", "devices", "available", "-j"]
+        await runner.setCaptureOutput(
+            """
+            {"devices":{
+              "ios-27":[],
+              "ios-26":[{"name":"Other runtime","udid":"SIM-001","state":"Booted"}]
+            }}
+            """,
+            for: command
+        )
+        await runner.setCaptureOutput(
+            """
+            {"devices":{"ios-27":[{"name":"Unavailable","udid":"SIM-001","state":"Shutdown"}]}}
+            """,
+            for: ["xcrun", "simctl", "list", "devices", "-j"]
+        )
+
+        for runtimeID in ["ios-27", "missing-runtime"] {
+            #expect(try await Simctl.availableDevice(
+                runtimeId: runtimeID, udid: "SIM-001", runner: runner
+            ) == nil)
+        }
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [command, command])
+    }
+
+    @Test func availableDeviceRejectsMalformedJSON() async {
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureOutput(
+            "{invalid",
+            for: ["xcrun", "simctl", "list", "devices", "available", "-j"]
+        )
+
+        await #expect(throws: DecodingError.self) {
+            _ = try await Simctl.availableDevice(
+                runtimeId: "ios-27", udid: "SIM-001", runner: runner
+            )
+        }
+    }
+
+    @Test func availableDevicePropagatesCommandFailure() async {
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureHandler { _, _, _ in
+            throw SimctlTestError.discoveryFailed
+        }
+
+        await #expect(throws: SimctlTestError.self) {
+            _ = try await Simctl.availableDevice(
+                runtimeId: "ios-27", udid: "SIM-001", runner: runner
+            )
+        }
+        #expect(await runner.captureCommandSnapshot().count == 1)
+    }
+
+    @Test func deviceReadinessOperationsPropagateCancellation() async {
+        let runner = RecordingCommandRunner()
+        await runner.setCaptureHandler { _, _, _ in throw CancellationError() }
+        await runner.setSimpleHandler { _, _, _ in throw CancellationError() }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await Simctl.availableDevice(
+                runtimeId: "ios-27", udid: "SIM-001", runner: runner
+            )
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await Simctl.ensureDeviceBooted(
+                DeviceInfo(name: "Target", udid: "SIM-001", state: "Shutdown"),
+                runner: runner,
+                force: false
+            )
+        }
+        #expect(await runner.captureCommandSnapshot().count == 1)
+        #expect(await runner.simpleCommandSnapshot().count == 1)
+    }
+
     @Test func ensureDeviceBootedSkipsBootedDeviceUnlessForced() async throws {
         let runner = RecordingCommandRunner()
         let booted = DeviceInfo(name: "iPhone", udid: "BOOTED", state: "Booted")
@@ -375,8 +480,20 @@ struct SimctlDeterministicTests {
         let forced = try await Simctl.ensureDeviceBooted(booted, runner: runner, force: true)
         #expect(forced.state == "Booted")
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            ["xcrun", "simctl", "boot", "BOOTED"],
             ["xcrun", "simctl", "bootstatus", "BOOTED", "-b"],
+        ])
+    }
+
+    @Test(arguments: ["Shutdown", "Booting", "Shutting Down"])
+    func ensureDeviceBootedWaitsForReadinessThroughOneCommand(state: String) async throws {
+        let runner = RecordingCommandRunner()
+        let device = DeviceInfo(name: "Target", udid: "SIM-001", state: state)
+
+        let ready = try await Simctl.ensureDeviceBooted(device, runner: runner, force: false)
+
+        #expect(ready == DeviceInfo(name: "Target", udid: "SIM-001", state: "Booted"))
+        #expect(await runner.simpleCommandSnapshot().map(\.command) == [
+            ["xcrun", "simctl", "bootstatus", "SIM-001", "-b"],
         ])
     }
 
@@ -423,7 +540,6 @@ struct SimctlDeterministicTests {
         #expect(resolved.device.udid == createdUDID)
         #expect(resolved.device.state == "Booted")
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            ["xcrun", "simctl", "boot", createdUDID],
             ["xcrun", "simctl", "bootstatus", createdUDID, "-b"],
         ])
         let capturedCommands = await runner.captureCommandSnapshot().map(\.command)
@@ -456,7 +572,7 @@ struct SimctlDeterministicTests {
             ]
         )
         await runner.setSimpleHandler { command, _, _ in
-            if command == ["xcrun", "simctl", "boot", createdUDID] {
+            if command == ["xcrun", "simctl", "bootstatus", createdUDID, "-b"] {
                 throw SimctlTestError.bootFailed
             }
         }
@@ -472,7 +588,7 @@ struct SimctlDeterministicTests {
         }
 
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            ["xcrun", "simctl", "boot", createdUDID],
+            ["xcrun", "simctl", "bootstatus", createdUDID, "-b"],
             ["xcrun", "simctl", "delete", createdUDID],
         ])
     }
@@ -504,7 +620,7 @@ struct SimctlDeterministicTests {
         )
         await runner.setSimpleHandler { command, _, _ in
             switch command {
-            case ["xcrun", "simctl", "boot", createdUDID]:
+            case ["xcrun", "simctl", "bootstatus", createdUDID, "-b"]:
                 throw SimctlTestError.bootFailed
             case ["xcrun", "simctl", "delete", createdUDID]:
                 throw SimctlTestError.deleteFailed
@@ -531,7 +647,7 @@ struct SimctlDeterministicTests {
         }
 
         #expect(await runner.simpleCommandSnapshot().map(\.command) == [
-            ["xcrun", "simctl", "boot", createdUDID],
+            ["xcrun", "simctl", "bootstatus", createdUDID, "-b"],
             ["xcrun", "simctl", "delete", createdUDID],
         ])
     }
@@ -921,6 +1037,7 @@ struct SimctlDeterministicTests {
 }
 
 private enum SimctlTestError: Error {
+    case discoveryFailed
     case bootFailed
     case deleteFailed
 }
