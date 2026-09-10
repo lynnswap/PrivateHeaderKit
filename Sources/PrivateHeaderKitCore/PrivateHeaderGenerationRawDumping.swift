@@ -146,6 +146,20 @@ extension PrivateHeaderGeneration {
 }
 
 extension PrivateHeaderGeneration.RawDumping {
+  package enum ExecutionError: Error, Equatable, CustomStringConvertible, Sendable {
+    case environmentUnavailable(String)
+    case retryPreparationFailed(String)
+
+    package var description: String {
+      switch self {
+      case .environmentUnavailable(let reason):
+        "raw helper execution environment unavailable: \(reason)"
+      case .retryPreparationFailed(let reason):
+        "could not prepare raw helper retry: \(reason)"
+      }
+    }
+  }
+
   package enum ContractError: Error, Equatable, CustomStringConvertible, Sendable {
     case missingProcessHandshake(String)
     case invalidProcessHandshake(path: String, reason: String)

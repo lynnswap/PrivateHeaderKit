@@ -36,12 +36,16 @@ struct PrivateHeaderKitGenerationClient: Sendable {
 
     static let live = live(processRunner: ProcessRunner())
 
-    static func live(processRunner: any CommandRunning) -> PrivateHeaderKitGenerationClient {
+    static func live(
+        processRunner: any CommandRunning,
+        recoveryReporter: @escaping PrivateHeaderKitOutputLogger = logCLIError
+    ) -> PrivateHeaderKitGenerationClient {
         PrivateHeaderKitGenerationClient(
             prepare: { request in
                 try await preparePrivateHeaderGeneration(
                     request: request,
-                    processRunner: processRunner
+                    processRunner: processRunner,
+                    recoveryReporter: recoveryReporter
                 )
             }
         )
@@ -50,19 +54,22 @@ struct PrivateHeaderKitGenerationClient: Sendable {
 
 private func preparePrivateHeaderGeneration(
     request: PrivateHeaderKitGenerationRequest,
-    processRunner: any CommandRunning
+    processRunner: any CommandRunning,
+    recoveryReporter: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> PrivateHeaderKitPreparedGeneration {
     let executor = PrivateHeaderGeneration.GenerationExecutor(
         rawDumpRunner: { invocation in
             try await runPrivateHeaderKitRawDump(
                 invocation,
-                processRunner: processRunner
+                processRunner: processRunner,
+                recoveryReporter: recoveryReporter
             )
         },
         sharedCacheInventoryRunner: { invocation in
             try await capturePrivateHeaderKitSharedCacheInventory(
                 invocation,
-                processRunner: processRunner
+                processRunner: processRunner,
+                recoveryReporter: recoveryReporter
             )
         }
     )
@@ -102,6 +109,44 @@ private func preparePrivateHeaderGeneration(
 }
 
 func runPrivateHeaderKitRawDump(
+    _ invocation: PrivateHeaderGeneration.RawDumping.Invocation,
+    processRunner: any CommandRunning,
+    recoveryReporter: @escaping PrivateHeaderKitOutputLogger = logCLIError
+) async throws -> PrivateHeaderGeneration.RawDumping.Result {
+    try await PrivateHeaderKitHelperExecution(
+        processRunner: processRunner,
+        recoveryReporter: recoveryReporter
+    ).run(
+        executionMode: invocation.executionMode,
+        isSuccessful: { $0.succeeded },
+        prepareForRetry: {
+            let fileManager = FileManager.default
+            for url in [
+                invocation.stagingOutputDirectory,
+                invocation.processHandshakeReportURL,
+                invocation.diagnosticsReportURL,
+            ] {
+                do {
+                    try fileManager.removeItem(at: url)
+                } catch {
+                    let cocoaError = error as NSError
+                    guard cocoaError.domain == NSCocoaErrorDomain,
+                          cocoaError.code == CocoaError.Code.fileNoSuchFile.rawValue
+                    else { throw error }
+                }
+            }
+            try fileManager.createDirectory(
+                at: invocation.stagingOutputDirectory,
+                withIntermediateDirectories: true
+            )
+        },
+        operation: {
+            try await runPrivateHeaderKitRawDumpAttempt(invocation, processRunner: processRunner)
+        }
+    )
+}
+
+private func runPrivateHeaderKitRawDumpAttempt(
     _ invocation: PrivateHeaderGeneration.RawDumping.Invocation,
     processRunner: any CommandRunning
 ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
@@ -313,14 +358,24 @@ private func consumeRawDumpDiagnosticsReport(
     return report
 }
 
-private func capturePrivateHeaderKitSharedCacheInventory(
+func capturePrivateHeaderKitSharedCacheInventory(
     _ invocation: PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation,
-    processRunner: any CommandRunning
+    processRunner: any CommandRunning,
+    recoveryReporter: @escaping PrivateHeaderKitOutputLogger = logCLIError
 ) async throws -> Data {
-    let output = try await processRunner.runCapture(
-        invocation.command,
-        env: invocation.environment,
-        cwd: nil
+    try await PrivateHeaderKitHelperExecution(
+        processRunner: processRunner,
+        recoveryReporter: recoveryReporter
+    ).run(
+        executionMode: invocation.executionMode,
+        isSuccessful: { _ in true },
+        operation: {
+            let output = try await processRunner.runCapture(
+                invocation.command,
+                env: invocation.environment,
+                cwd: nil
+            )
+            return Data(output.utf8)
+        }
     )
-    return Data(output.utf8)
 }

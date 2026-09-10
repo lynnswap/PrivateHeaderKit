@@ -226,6 +226,23 @@ public enum Simctl {
 
     public static func listDevices(runtimeId: String, runner: CommandRunning) async throws -> [DeviceInfo] {
         let output = try await runner.runCapture(["xcrun", "simctl", "list", "devices", "-j"], env: nil, cwd: nil)
+        return try decodeDevices(output, runtimeId: runtimeId)
+    }
+
+    package static func availableDevice(
+        runtimeId: String,
+        udid: String,
+        runner: CommandRunning
+    ) async throws -> DeviceInfo? {
+        let output = try await runner.runCapture(
+            ["xcrun", "simctl", "list", "devices", "available", "-j"],
+            env: nil,
+            cwd: nil
+        )
+        return try decodeDevices(output, runtimeId: runtimeId).first { $0.udid == udid }
+    }
+
+    private static func decodeDevices(_ output: String, runtimeId: String) throws -> [DeviceInfo] {
         let data = Data(output.utf8)
         let decoded = try JSONDecoder().decode(DevicesList.self, from: data)
         let devices = decoded.devices?[runtimeId] ?? []
@@ -302,7 +319,6 @@ public enum Simctl {
         force: Bool
     ) async throws -> DeviceInfo {
         if stateEquals(device.state, "Booted"), !force { return device }
-        try await runner.runSimple(["xcrun", "simctl", "boot", device.udid], env: nil, cwd: nil)
         try await runner.runSimple(["xcrun", "simctl", "bootstatus", device.udid, "-b"], env: nil, cwd: nil)
         var booted = device
         booted.state = "Booted"

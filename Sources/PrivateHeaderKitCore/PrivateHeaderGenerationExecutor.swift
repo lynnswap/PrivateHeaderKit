@@ -1037,6 +1037,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
     } catch let error as PrivateHeaderGeneration.RawDumping.ContractError {
       throw error
+    } catch let error as PrivateHeaderGeneration.RawDumping.ExecutionError {
+      throw error
     } catch {
       return Self.failedExecution(
         target: target,
