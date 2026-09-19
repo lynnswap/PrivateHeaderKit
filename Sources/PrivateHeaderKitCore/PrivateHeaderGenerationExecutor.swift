@@ -1813,7 +1813,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     for case let url as URL in enumerator {
       let kind = try publisherItemKind(at: url)
       if kind == .directory { continue }
-      guard kind == .regular, url.pathExtension == "h" || url.pathExtension == "swiftinterface"
+      guard kind == .regular,
+        url.pathExtension == "h" || url.pathExtension == "swiftinterface" || url.pathExtension == "tsv"
       else {
         continue
       }

@@ -524,6 +524,13 @@ private func dumpImage(
         print("Dumping: \(placement.identity.url.path)")
     }
 
+    try dumpSymbols(
+        machO: machO,
+        imagePath: imagePath,
+        outputDir: placement.directory,
+        options: options
+    )
+
     let objcStart = profileNowNanoseconds(enabled: options.profile)
     try await dumpObjC(
         machO: machO,
