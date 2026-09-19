@@ -3,6 +3,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT NSString * _Nullable PHKDemangleCXXName(const char *name);
+
 @interface PHRuntimeObjCPropertySnapshot : NSObject
 @property (nonatomic, readonly, copy) NSString *name;
 @property (nonatomic, readonly, copy) NSString *attributesString;

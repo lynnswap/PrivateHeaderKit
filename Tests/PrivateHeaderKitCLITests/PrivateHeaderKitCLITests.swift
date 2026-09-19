@@ -102,7 +102,7 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(root == alias)
     }
 
-    @Test func rootHelpShowsGenerationAndDecompilationWhileHidingGenerateAlias() async {
+    @Test func rootHelpShowsGenerationSearchAndDecompilationWhileHidingGenerateAlias() async {
         let output = ThreadSafeStrings()
         let errors = ThreadSafeStrings()
         let status = await runPrivateHeaderKitCommand(
@@ -119,6 +119,7 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(output.text.contains("privateheaderkit <subcommand> [<options>]"))
         #expect(output.text.contains("SUBCOMMANDS:"))
         #expect(output.text.contains("decompile"))
+        #expect(output.text.contains("search"))
         #expect(!output.text.contains("\n  generate "))
         #expect(errors.text.isEmpty)
     }

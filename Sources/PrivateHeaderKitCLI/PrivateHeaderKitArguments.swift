@@ -104,9 +104,9 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
 struct PrivateHeaderKitArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "privateheaderkit",
-        abstract: "Generate private headers from an installed Apple runtime.",
+        abstract: "Generate private headers and searchable symbols from an installed Apple runtime.",
         usage: "privateheaderkit [<options>]\n       privateheaderkit <subcommand> [<options>]",
-        subcommands: [PrivateHeaderKitGenerateAlias.self, PrivateHeaderKitDecompileArguments.self]
+        subcommands: [PrivateHeaderKitGenerateAlias.self, PrivateHeaderKitSearchArguments.self, PrivateHeaderKitDecompileArguments.self]
     )
 
     @OptionGroup var generation: PrivateHeaderKitGenerationArguments
@@ -134,6 +134,7 @@ enum PrivateHeaderKitCommand: Equatable {
     case interactiveGenerate
     case generate(PrivateHeaderKitGenerateCommand)
     case decompile(PrivateHeaderKitDecompileCommand)
+    case search(PrivateHeaderKitSearchCommand)
 }
 
 func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCommand {
@@ -150,6 +151,9 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
     var parsed = try PrivateHeaderKitArguments.parseAsRoot(Array(args.dropFirst()))
     if let decompile = parsed as? PrivateHeaderKitDecompileArguments {
         return .decompile(try decompile.command())
+    }
+    if let search = parsed as? PrivateHeaderKitSearchArguments {
+        return .search(search.command)
     }
     if let root = parsed as? PrivateHeaderKitArguments {
         return try root.generation.commandIfSpecified().map(PrivateHeaderKitCommand.generate)

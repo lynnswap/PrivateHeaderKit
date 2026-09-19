@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Generate searchable private headers from this Mac or an installed iOS or
+Generate searchable private headers and symbol lists from this Mac or an installed iOS or
 watchOS Simulator runtime.
 
 Requires macOS 14 or later. Prebuilt releases require Apple Silicon. iOS and
@@ -93,6 +93,18 @@ privateheaderkit \
 Use `privateheaderkit --help` for the complete option list. Replace each example
 version with an installed runtime version. If more than one runtime for the
 selected platform matches a version, add `--build <build>`.
+
+## Search Symbols
+
+After generation, search C/C++, Objective-C, and Swift symbol names:
+
+```bash
+privateheaderkit search 'std::' --in ~/PrivateHeaderKit/generated-headers
+```
+
+Each image includes a `.symbols.tsv` file with original and demangled names.
+Use `--exact` for a complete name. See [symbol search](Docs/generation.md#symbol-search)
+for the output format and limits.
 
 ## Documentation
 

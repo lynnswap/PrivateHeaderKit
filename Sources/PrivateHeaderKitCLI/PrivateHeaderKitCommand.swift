@@ -250,6 +250,8 @@ func runPrivateHeaderKitCommand(
         switch command {
         case .decompile(let decompile):
             exitCode = try await runPrivateHeaderKitDecompileCommand(decompile, outputLogger: outputLogger)
+        case .search(let search):
+            exitCode = try runPrivateHeaderKitSearchCommand(search, outputLogger: outputLogger)
         case .interactiveGenerate:
             exitCode = try await runPrivateHeaderKitInteractiveGenerate(
                 invokedProgramName: args.first ?? "privateheaderkit",
