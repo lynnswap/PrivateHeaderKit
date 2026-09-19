@@ -98,6 +98,8 @@ for the command's generated reference.
 ## Symbol Search
 
 Each generated image also includes `<image-name>.symbols.tsv` beside its headers.
+Long image names are shortened with a stable hash to fit filesystem limits;
+the complete image path remains in the file's first line.
 The list contains the original symbol name, its demangled name, and `export` or
 `local` visibility. It covers C functions and variables, C++ functions and
 RTTI/vtable symbols, and Objective-C and Swift symbols retained in the image.

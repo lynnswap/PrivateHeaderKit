@@ -64,7 +64,10 @@ func makeSearchableSymbolList<MachO: MachORepresentable>(
 }
 
 func dumpSymbols(machO: RawMachO, imagePath: String, outputDir: URL, options: DumpOptions) throws {
-    let fileName = URL(fileURLWithPath: imagePath).lastPathComponent + ".symbols.tsv"
+    let fileName = safeFileName(
+        baseName: URL(fileURLWithPath: imagePath).lastPathComponent,
+        extension: ".symbols.tsv"
+    )
     let outputURL = outputDir.appendingPathComponent(fileName)
     if options.skipExisting && FileManager.default.fileExists(atPath: outputURL.path) { return }
     let list: PrivateHeaderKitSymbolList

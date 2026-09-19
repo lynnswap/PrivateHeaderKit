@@ -5,6 +5,26 @@ import Testing
 @testable import PrivateHeaderKitRawDumpCore
 
 struct SymbolDumpingTests {
+    @Test(arguments: [String(repeating: "a", count: 255), String(repeating: "\u{3042}", count: 85)])
+    func longImageNamesRemainWritableAndKeepTheirIdentity(_ name: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent(name)
+        try symbolMachOFixture().write(to: input)
+        let output = root.appendingPathComponent("output")
+        try dumpSymbols(machO: .file(MachOFile(url: input)), imagePath: input.path, outputDir: output, options: .init(outputDir: output))
+        let files = try FileManager.default.contentsOfDirectory(at: output, includingPropertiesForKeys: nil)
+        let symbols = try #require(files.first)
+        #expect(symbols.lastPathComponent.utf8.count <= 255)
+        #expect(symbols.lastPathComponent.hasSuffix(".symbols.tsv"))
+        #expect(try PrivateHeaderKitSymbolList(tsv: String(contentsOf: symbols, encoding: .utf8)).imagePath == input.path)
+        let swift = swiftInterfaceOutputURL(imagePath: input.path, outputDir: output)
+        try "interface".write(to: swift, atomically: true, encoding: .utf8)
+        #expect(swift.lastPathComponent.utf8.count <= 255)
+        #expect(swift != swiftInterfaceOutputURL(imagePath: input.path + "b", outputDir: output))
+    }
+
     @Test func diskAndLoadedImagesMergeExportsAndLocalSymbols() throws {
         let data = symbolMachOFixture()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

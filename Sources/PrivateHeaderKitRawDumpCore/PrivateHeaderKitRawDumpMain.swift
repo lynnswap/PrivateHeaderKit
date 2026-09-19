@@ -828,7 +828,7 @@ func isSaneObjCTypeName(_ name: String) -> Bool {
     return true
 }
 
-private func safeFileName(baseName: String, suffix: String = "", extension ext: String) -> String {
+func safeFileName(baseName: String, suffix: String = "", extension ext: String) -> String {
     let normalizedExt = ext.isEmpty ? "" : (ext.hasPrefix(".") ? ext : ".\(ext)")
     let maxBaseBytes = max(0, maxPathComponentBytes - suffix.utf8.count - normalizedExt.utf8.count)
     let normalizedBase: String
@@ -1997,7 +1997,7 @@ private func dumpSwift(
 
 func swiftInterfaceOutputURL(imagePath: String, outputDir: URL) -> URL {
     let moduleName = URL(fileURLWithPath: imagePath).lastPathComponent
-    return outputDir.appendingPathComponent("\(moduleName).swiftinterface")
+    return outputDir.appendingPathComponent(safeFileName(baseName: moduleName, extension: ".swiftinterface"))
 }
 
 func shouldSkipSwiftInterface(
