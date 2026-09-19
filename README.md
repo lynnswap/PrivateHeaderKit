@@ -110,6 +110,7 @@ for the output format and limits.
 
 - [Installation and updates](Docs/installation.md)
 - [Generation, output, and resume behavior](Docs/generation.md)
+- [Decompile a selected function locally](Docs/decompilation.md)
 - [Troubleshooting](Docs/troubleshooting.md)
 - [Development and releases](CONTRIBUTING.md)
 

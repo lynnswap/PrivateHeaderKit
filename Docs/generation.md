@@ -121,6 +121,9 @@ name. Exit status is 0 for a match, 1 for no matches, and nonzero for errors.
 Searching does not boot a simulator or load a framework. If no symbol lists
 exist, regenerate the desired targets with this version and `--fresh`.
 
+To inspect a matching function's implementation, use the original name with
+the separate [local decompilation command](decompilation.md).
+
 The file starts with `# image<TAB><logical-image-path>`, followed by the columns
 `visibility`, `name`, and `demangled_name`. Backslash, tab, newline, and carriage
 return within a field are escaped as `\\`, `\t`, `\n`, and `\r`. Rows are sorted

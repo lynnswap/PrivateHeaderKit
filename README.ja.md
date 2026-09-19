@@ -109,6 +109,7 @@ privateheaderkit search 'std::' --in ~/PrivateHeaderKit/generated-headers
 
 - [インストールと更新（英語）](Docs/installation.md)
 - [生成、出力、resume の仕様（英語）](Docs/generation.md)
+- [関数を選んでローカルで逆コンパイルする（英語）](Docs/decompilation.md)
 - [トラブルシューティング（英語）](Docs/troubleshooting.md)
 - [開発と release（英語）](CONTRIBUTING.md)
 
