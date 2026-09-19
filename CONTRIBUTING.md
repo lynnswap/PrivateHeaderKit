@@ -26,6 +26,22 @@ wall-clock timing, generated `swiftc` binaries, network access, or stress
 loops. Gate a necessary integration smoke test behind an explicit opt-in such
 as `PHK_RUN_INTEGRATION_TESTS=1`.
 
+## Optional Ghidra Integration Test
+
+The default suite uses an injected command runner and does not require Ghidra.
+To compile a small local ObjC++ fixture and exercise real C/C++/Objective-C
+decompilation, missing/data/ambiguous symbol errors, and the temporary workspace:
+
+```bash
+PHK_RUN_INTEGRATION_TESTS=1 \
+GHIDRA_HOME=/path/to/ghidra \
+JAVA_HOME=/path/to/jdk/Contents/Home \
+swift test --filter PrivateHeaderKitGhidraIntegrationTests
+```
+
+This opt-in test requires Xcode and a Ghidra installation with a working native
+decompiler. It uses no external model service.
+
 ## iOS Compile Check
 
 Compile the platform-neutral Core target and its test surface for iOS without

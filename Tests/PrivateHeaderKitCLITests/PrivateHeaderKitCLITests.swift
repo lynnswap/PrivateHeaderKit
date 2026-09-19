@@ -102,7 +102,7 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(root == alias)
     }
 
-    @Test func rootHelpHasNoSubcommandPlaceholderAndHidesGenerate() async {
+    @Test func rootHelpShowsGenerationAndDecompilationWhileHidingGenerateAlias() async {
         let output = ThreadSafeStrings()
         let errors = ThreadSafeStrings()
         let status = await runPrivateHeaderKitCommand(
@@ -116,8 +116,10 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(output.text.contains("required when a simulator"))
         #expect(output.text.contains("version is ambiguous"))
         #expect(output.text.contains("is ambiguous"))
-        #expect(!output.text.contains("<subcommand>"))
-        #expect(!output.text.contains("SUBCOMMANDS:"))
+        #expect(output.text.contains("privateheaderkit <subcommand> [<options>]"))
+        #expect(output.text.contains("SUBCOMMANDS:"))
+        #expect(output.text.contains("decompile"))
+        #expect(!output.text.contains("\n  generate "))
         #expect(errors.text.isEmpty)
     }
 

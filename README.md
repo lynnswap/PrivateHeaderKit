@@ -98,6 +98,7 @@ selected platform matches a version, add `--build <build>`.
 
 - [Installation and updates](Docs/installation.md)
 - [Generation, output, and resume behavior](Docs/generation.md)
+- [Decompile a selected function locally](Docs/decompilation.md)
 - [Troubleshooting](Docs/troubleshooting.md)
 - [Development and releases](CONTRIBUTING.md)
 
