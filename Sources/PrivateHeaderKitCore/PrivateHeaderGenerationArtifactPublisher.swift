@@ -729,7 +729,7 @@ package struct ArtifactPublisher: Sendable {
     let actualFiles = try inventoryRegularFiles(
       at: root,
       allowHidden: false,
-      allowedExtensions: ["h", "swiftinterface"]
+      allowedExtensions: ["h", "swiftinterface", "tsv"]
     )
     let expected = Set(expectedSourceFiles.map { $0.standardizedFileURL.path })
     let actual = Set(actualFiles.map { $0.url.standardizedFileURL.path })

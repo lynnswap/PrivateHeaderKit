@@ -11,6 +11,24 @@ private enum ExecutorFixtureError: Error {
 
 @Suite
 struct PrivateHeaderGenerationExecutorTests {
+  @Test func symbolOnlyTargetsPublishResumeAndRecoverLikeHeaders() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let content = "# image\t/Foo\nvisibility\tname\tdemangled_name\nexport\t_Foo\t_Foo\n"
+    let runner = RecordingRunner(contents: content, primaryHeaderName: "Foo.symbols.tsv")
+    _ = try await fixture.executor(runner: runner, runID: "symbols-one", generationID: "symbols-one")
+      .run(plan: try fixture.plan(.query("Foo")))
+    let file = fixture.liveHeaderURL().deletingLastPathComponent().appendingPathComponent("Foo.symbols.tsv")
+    #expect(try String(contentsOf: file, encoding: .utf8) == content)
+    try FileManager.default.removeItem(at: fixture.liveURL)
+    let nextRunner = RecordingRunner(contents: "must not regenerate", primaryHeaderName: "Foo.symbols.tsv")
+    _ = try await fixture.executor(runner: nextRunner, runID: "symbols-two", generationID: "symbols-two")
+      .run(plan: try fixture.plan(.query("Foo")))
+    #expect(await nextRunner.invocationCount == 0)
+    #expect(try String(contentsOf: file, encoding: .utf8) == content)
+  }
+
   private enum InjectedFault: Error {
     case stop
     case rawFailure

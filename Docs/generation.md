@@ -95,6 +95,42 @@ runtime for the selected platform matches a version.
 `--resume` and `--fresh` are mutually exclusive. Run `privateheaderkit --help`
 for the command's generated reference.
 
+## Symbol Search
+
+Each generated image also includes `<image-name>.symbols.tsv` beside its headers.
+Long image names are shortened with a stable hash to fit filesystem limits;
+the complete image path remains in the file's first line.
+The list contains the original symbol name, its demangled name, and `export` or
+`local` visibility. It covers C functions and variables, C++ functions and
+RTTI/vtable symbols, and Objective-C and Swift symbols retained in the image.
+Exports include re-exports. Undefined imports and debugging records are omitted;
+duplicate names are merged, with export visibility taking precedence.
+
+Search an existing release directory, or all generated releases:
+
+```bash
+privateheaderkit search 'std::' --in ~/PrivateHeaderKit/generated-headers
+privateheaderkit search '_CFAbsoluteTimeGetCurrent' \
+  --in ~/PrivateHeaderKit/generated-headers --exact
+```
+
+The default search is a case-insensitive literal substring match against both
+names. `--exact` matches a complete, case-sensitive name. Output is TSV with the
+list file path, logical image path, visibility, original name, and demangled
+name. Exit status is 0 for a match, 1 for no matches, and nonzero for errors.
+Searching does not boot a simulator or load a framework. If no symbol lists
+exist, regenerate the desired targets with this version and `--fresh`.
+
+The file starts with `# image<TAB><logical-image-path>`, followed by the columns
+`visibility`, `name`, and `demangled_name`. Backslash, tab, newline, and carriage
+return within a field are escaped as `\\`, `\t`, `\n`, and `\r`. Rows are sorted
+by original name. An image with no named symbols still gets an empty list.
+These files contain no addresses or reconstructed C/C++ declarations. Symbol
+names cannot recover types that were not encoded in them. The loaded-cache path
+reads symbols retained in that image's symbol table and export trie; stripped
+names and locals stored only in a separate, unmapped symbols file are not
+recovered.
+
 ## Output Contract
 
 Consumers should use only the concrete directory printed as `Headers`:

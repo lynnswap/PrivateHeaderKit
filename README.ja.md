@@ -93,6 +93,18 @@ privateheaderkit \
 runtime に合わせて変更してください。選択した platform で同じ version に一致する runtime
 が複数ある場合は `--build <build>` も指定します。
 
+## シンボル検索
+
+生成後は C/C++・Objective-C・Swift のシンボル名も検索できます。
+
+```bash
+privateheaderkit search 'std::' --in ~/PrivateHeaderKit/generated-headers
+```
+
+各 image の `.symbols.tsv` に元の名前と demangle 後の名前を保存します。
+完全一致には `--exact` を指定します。出力形式と取得範囲は
+[シンボル検索の仕様（英語）](Docs/generation.md#symbol-search)を参照してください。
+
 ## ドキュメント
 
 - [インストールと更新（英語）](Docs/installation.md)
