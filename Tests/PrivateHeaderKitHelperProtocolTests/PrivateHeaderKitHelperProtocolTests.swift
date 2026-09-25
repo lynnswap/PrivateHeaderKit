@@ -292,7 +292,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         let state = try #require(pin["state"] as? [String: Any])
 
         #expect(pin["location"] as? String == "https://github.com/lynnswap/MachOObjCSection.git")
-        #expect(state["revision"] as? String == "cc9a70f46d69683882dedce7d6d293a565e7863a")
+        #expect(state["revision"] as? String == "a046e9d85848ec02f632b0cc3ab2b7649072030e")
         #expect(state["version"] == nil)
 
         let swiftSectionPin = try #require(
@@ -307,7 +307,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         )
         #expect(
             swiftSectionState["revision"] as? String
-                == "905703af9d192c778054417a1a5052a26051cc96"
+                == "5fdc3853b38f21a7e28c926ce63de9b532b8b3b7"
         )
         #expect(swiftSectionState["version"] == nil)
 
@@ -323,7 +323,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         )
         #expect(
             machOKitState["revision"] as? String
-                == "e0e0b30187ae74f2088d932845c8ddac2c79f36c"
+                == "3b5680831700efa08f9960eb42df805c48cc2d68"
         )
         #expect(machOKitState["version"] == nil)
 
