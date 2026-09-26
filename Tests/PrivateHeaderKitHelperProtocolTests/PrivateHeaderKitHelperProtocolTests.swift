@@ -307,7 +307,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         )
         #expect(
             swiftSectionState["revision"] as? String
-                == "04ff26795fca8efc88fce2bb3d09fa0a947e56bf"
+                == "d2cf05f3c388cff362fc1a16c48269f672b21227"
         )
         #expect(swiftSectionState["version"] == nil)
 
