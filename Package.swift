@@ -33,11 +33,11 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            revision: "f6a4f85280733a0e77d33f11274e7a12052c7ce1"
+            revision: "8d451ca2e9d108f0a2024758b33b25e8faa2adbb"
         ),
         .package(
             url: "https://github.com/lynnswap/MachOObjCSection.git",
-            revision: "3ae07d5ec4725bd98590d5246eb550d8794a0b37"
+            revision: "5576f1e1f53ed88faf4e71c781246f7ec1cd1b24"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
@@ -45,11 +45,11 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "785f0748c377502dab02b6795a04f07d21fdbad1"
+            revision: "04ff26795fca8efc88fce2bb3d09fa0a947e56bf"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
-            "0.4.5" ..< "0.5.0"
+            "0.6.3" ..< "0.7.0"
         ),
     ],
     targets: [
