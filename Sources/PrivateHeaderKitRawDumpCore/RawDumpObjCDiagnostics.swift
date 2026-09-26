@@ -667,6 +667,8 @@ private func failureDescription(
         "file header at offset \(offset) is not readable for \(byteCount) bytes"
     case .invalidEntryLogicalOffset:
         "entry logical offset overflowed"
+    case .unresolvedEntryPointer:
+        "entry pointer could not be resolved"
     case .invalidMethodImplementationOffset:
         "method implementation offset overflowed"
     case .invalidRelativeDisplacement:

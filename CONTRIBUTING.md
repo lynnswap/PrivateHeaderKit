@@ -26,6 +26,21 @@ wall-clock timing, generated `swiftc` binaries, network access, or stress
 loops. Gate a necessary integration smoke test behind an explicit opt-in such
 as `PHK_RUN_INTEGRATION_TESTS=1`.
 
+## Optional Objective-C Bind Integration Test
+
+Run file-backed dumps against an installed iOS 27.x Simulator runtime:
+
+```bash
+PHK_RUN_INTEGRATION_TESTS=1 \
+PHK_OBJC_BIND_RUNTIME_ROOT="/path/to/iOS 27.1.simruntime/Contents/Resources/RuntimeRoot" \
+swift test --filter ObjCChainedBindIntegrationTests
+```
+
+The test covers AdSupport, BrowserKit, SensorKit, and MetricKit without runtime
+supplementation. It checks class roots and generated headers, including AdSupport's class methods,
+and verifies that Objective-C metadata diagnostics are empty. A booted Simulator
+is not required for this test.
+
 ## Optional Ghidra Integration Test
 
 The default suite uses an injected command runner and does not require Ghidra.
