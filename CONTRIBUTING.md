@@ -28,7 +28,7 @@ as `PHK_RUN_INTEGRATION_TESTS=1`.
 
 ## Optional Objective-C Bind Integration Test
 
-Run file-backed dumps against an installed iOS 27.1 Simulator runtime:
+Run file-backed dumps against an installed iOS 27.x Simulator runtime:
 
 ```bash
 PHK_RUN_INTEGRATION_TESTS=1 \
@@ -37,8 +37,9 @@ swift test --filter ObjCChainedBindIntegrationTests
 ```
 
 The test covers AdSupport, BrowserKit, SensorKit, and MetricKit without runtime
-supplementation. It checks class roots and generated headers, including
-AdSupport's class methods. A booted Simulator is not required for this test.
+supplementation. It checks class roots and generated headers, including AdSupport's class methods,
+and verifies that Objective-C metadata diagnostics are empty. A booted Simulator
+is not required for this test.
 
 ## Optional Ghidra Integration Test
 

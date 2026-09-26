@@ -41,10 +41,7 @@ struct ObjCChainedBindIntegrationTests {
         #expect(header.contains("@interface \(expectedClass)"))
         if framework == "AdSupport" {
             #expect(header.contains("+ (id)sharedManager;"))
-            #expect(options.objcDiagnostics.report.diagnostics.isEmpty)
         }
-        if framework == "BrowserKit" {
-            #expect(options.objcDiagnostics.report.diagnostics.isEmpty)
-        }
+        #expect(options.objcDiagnostics.report.diagnostics.isEmpty)
     }
 }
