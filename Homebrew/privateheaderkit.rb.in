@@ -6,7 +6,7 @@ __EXPLICIT_VERSION__
   sha256 "__SHA256__"
   license "MIT"
 
-  depends_on xcode: :build
+  depends_on xcode: ["26.4", :build]
   depends_on arch: :arm64
   depends_on macos: :sonoma
 

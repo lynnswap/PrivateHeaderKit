@@ -13,6 +13,9 @@ private macOS, iOS Simulator, and watchOS Simulator helpers.
 - To generate iOS or watchOS headers: Xcode and the corresponding installed
   Simulator runtime. Connected physical devices are not generation sources.
 
+The Formula requires Xcode 26.4 or later when building from source; Xcode 26.4
+includes Swift 6.3. Xcode's own [host macOS requirements](https://developer.apple.com/xcode/system-requirements)
+apply to source builds separately from the tool's runtime minimum.
 A matching Homebrew bottle avoids the source build and its toolchain requirements.
 Bottles are specific to their supported macOS/architecture combinations; if no
 matching bottle is available, Homebrew builds the Formula from source.
