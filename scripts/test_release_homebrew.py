@@ -14,6 +14,8 @@ from pathlib import Path
 import sys
 root = Path(os.environ["PHK_BREW_FIXTURE"])
 args = sys.argv[1:]
+if args[0] == "uninstall" and os.environ.get("HOMEBREW_NO_AUTOREMOVE") != "1":
+    sys.exit("uninstall must not autoremove unrelated dependencies")
 with (root / "calls").open("a") as calls:
     calls.write(json.dumps(args) + "\\n")
 if args[0] == "list":

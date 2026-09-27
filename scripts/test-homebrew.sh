@@ -10,7 +10,7 @@ if brew list --formula --versions privateheaderkit >/dev/null 2>&1; then
   echo "Uninstall the existing Homebrew privateheaderkit before running this test." >&2
   exit 1
 fi
-export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_AUTOREMOVE=1
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 brew tap-new --no-git privateheaderkit/verification
