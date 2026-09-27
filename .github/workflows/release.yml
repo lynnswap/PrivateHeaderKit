@@ -73,17 +73,17 @@ jobs:
   build-release:
     name: Assemble and test release assets
     needs: [prepare, build-platform]
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 20
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     outputs:
       archive_sha256: ${{ steps.release_digest.outputs.archive_sha256 }}
     steps:
-      - name: Checkout release commit
+      - name: Checkout workflow scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Download platform binaries

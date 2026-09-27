@@ -52,6 +52,7 @@ elif tool == "swift":
                    args[args.index("--target") + 1] if "--target" in args else args[0])
         with open(os.environ["PHK_TEST_LOG"], "a") as log:
             log.write(json.dumps({"platform": platform, "product": product, "args": args,
+                "source": str(Path.cwd()),
                 "version": os.environ.get("PRIVATEHEADERKIT_BUILD_VERSION"),
                 "commit": os.environ.get("PRIVATEHEADERKIT_BUILD_COMMIT")}) + "\\n")
         if os.environ.get("PHK_TEST_FAIL_PLATFORM") == platform:
@@ -119,9 +120,9 @@ class ReleaseBuildTests(unittest.TestCase):
         return subprocess.run(["git", "-C", str(self.repo), *args],
                               check=True, capture_output=True, text=True)
 
-    def build(self, *args, success=True, **environment):
+    def build(self, *args, success=True, commit=None, **environment):
         result = subprocess.run([str(self.script), "--version", "v1.2.3", "--commit",
-                                 self.commit, *map(str, args)], cwd=self.repo,
+                                 commit or self.commit, *map(str, args)], cwd=self.repo,
                                 env=dict(self.environment, **environment),
                                 capture_output=True, text=True)
         if success:
@@ -206,6 +207,33 @@ class ReleaseBuildTests(unittest.TestCase):
                                     success=False, PHK_TEST_FAIL_TESTS="1")
                 self.assertEqual(result.returncode, 24)
                 self.assertEqual(self.contents(output), original)
+
+    def test_workflow_tooling_builds_an_older_source_checkout(self):
+        source = self.root / "older-source"
+        (source / "scripts").mkdir(parents=True)
+        legacy_script = source / "scripts/build-release.sh"
+        legacy_script.write_text("#!/bin/sh\necho 'Unknown argument: --test' >&2\nexit 1\n")
+        legacy_script.chmod(0o755)
+        for args in (("init", "--quiet"), ("add", "."),
+                     ("-c", "user.name=release-script-tests", "-c", "user.email=tests@example.invalid",
+                      "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "older source")):
+            subprocess.run(["git", "-C", str(source), *args], check=True, capture_output=True)
+        commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+        self.assertNotEqual(commit, self.commit)
+        output = self.root / "parts"
+        for platform in ("macos", "ios-simulator", "watchos-simulator"):
+            self.build("--source-root", source, "--test", "--platform", platform,
+                       "--dist-root", output, commit=commit)
+            self.assertEqual((output / platform / "build-info.txt").read_text(), f"v1.2.3 {commit}\n")
+        for call in map(json.loads, self.log.read_text().splitlines()):
+            self.assertEqual(call["source"], str(source.resolve()))
+            self.assertEqual(call["commit"], commit)
+        self.assertFalse((self.repo / ".build").exists())
+        self.build("--artifacts-root", output, "--dist-root", self.root / "assembled", commit=commit)
+        (source / "changed-source").write_text("uncommitted change")
+        result = self.build("--source-root", source, "--test", "--platform", "macos",
+                            "--dist-root", output, commit=commit, success=False)
+        self.assertIn("Release source must be clean before building", result.stderr)
 
     def test_missing_helper_preserves_previous_cohort(self):
         parts = self.build_parts()

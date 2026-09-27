@@ -32,19 +32,26 @@ concurrency:
 jobs:
   platform-checks:
     name: Build and Test ${{ matrix.platform }}
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         platform: [macos, ios-simulator, watchos-simulator]
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
-      - name: Checkout
+      - name: Checkout workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout build source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.revision || github.sha }}
+          path: source
           persist-credentials: false
 
       - name: Verify toolchain
@@ -67,7 +74,8 @@ jobs:
             --commit "$COMMIT" \
             --platform "$PLATFORM" \
             --test \
-            --dist-root dist
+            --source-root "$GITHUB_WORKSPACE/source" \
+            --dist-root "$GITHUB_WORKSPACE/dist"
 
       - name: Upload tested platform binaries
         if: inputs.upload_artifacts

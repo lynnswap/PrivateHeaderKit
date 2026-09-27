@@ -10,6 +10,7 @@ Options:
   --platform <platform>    Build macos, ios-simulator, or watchos-simulator only.
   --artifacts-root <dir>   Assemble previously built platform directories.
   --test                   Build test targets and run macOS tests before staging.
+  --source-root <dir>      Source checkout to build (default: this script's repo).
 
 With no platform or artifacts root, builds all platforms locally.
 Platform builds stage binaries under <dist-root>/<platform>/.
@@ -24,6 +25,7 @@ dist_root="dist"
 platform="all"
 artifacts_root=""
 run_tests=0
+source_root=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,6 +52,10 @@ while [[ $# -gt 0 ]]; do
     --test)
       run_tests=1
       shift
+      ;;
+    --source-root)
+      source_root="${2:-}"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -93,7 +99,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+if [[ -z "$source_root" ]]; then
+  source_root="$(dirname "${BASH_SOURCE[0]}")/.."
+fi
+repo_root="$(cd "$source_root" && pwd -P)"
 if [[ "$dist_root" = /* ]]; then
   dist_base="$dist_root"
 else

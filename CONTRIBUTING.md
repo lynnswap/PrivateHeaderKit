@@ -19,7 +19,8 @@ or release publication. The publication tests use an in-memory GitHub client:
 scripts/test-release-scripts.sh
 ```
 
-CI builds and checks macOS, iOS Simulator, and watchOS Simulator in parallel.
+CI uses the macOS 27 [`xcode-27` runner](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md) with Xcode 27.1 to build and check
+macOS, iOS Simulator, and watchOS Simulator in parallel.
 Each job uses the Release configuration and one build directory for its products
 and test targets. The macOS job uses `swift test --build-system swiftbuild` to
 build and run the suite together, then stages its built products without
@@ -145,6 +146,9 @@ and Actions URLs without waiting for publication. Draft creation alone does not
 start the workflow. Do not create or push the release tag locally.
 
 The workflow calls the same platform jobs against the approved SHA and version.
+Build, assembly, and verification scripts come from the workflow revision. The
+approved source revision is checked out separately, so it does not need to
+understand newer workflow options such as `--test`.
 Successful jobs upload their built binaries for release assembly; there is no
 separate CI build of the release target. A macOS assembly job collects the
 binaries, restores executable permissions, signs and validates them, then creates
@@ -168,6 +172,8 @@ directories, `--artifacts-root <directory>` assembles the cohort without
 rebuilding. Each platform directory includes `build-info.txt` with its version
 and commit; assembly requires those values to match the requested release.
 `--dist-root` selects the output root in either mode.
+Use `--source-root <checkout>` to build another source checkout with these
+scripts; relative output paths are resolved under that checkout.
 Add `--test` when building to use the same build-and-test path as CI. This option
 runs the macOS test suite and compiles Simulator test targets before staging any
 new binaries. `scripts/verify-release-assets.sh` performs the installed-binary
