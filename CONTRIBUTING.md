@@ -19,9 +19,14 @@ or release publication. The publication tests use an in-memory GitHub client:
 scripts/test-release-scripts.sh
 ```
 
-CI runs macOS tests and the iOS/watchOS compile checks in parallel. The
-`Package Checks` job succeeds only when all three platform jobs succeed.
-Simulator checks compile the targets described below without booting a device.
+CI builds and checks macOS, iOS Simulator, and watchOS Simulator in parallel.
+Each job uses the Release configuration and one build directory for its products
+and test targets. The macOS job uses `swift test --build-system swiftbuild` to
+build and run the suite together, then stages its built products without
+rebuilding. This engine avoids async executable entry-point collisions in
+optimized test bundles. Simulator jobs compile CoreTests and the helper.
+These builds enable testable imports for the test targets while retaining Release
+optimization. `Package Checks` succeeds only when all three jobs succeed.
 
 Regular tests must be deterministic. Use fixture trees, injected environments,
 and stub command runners. Do not make the default suite depend on the host dyld
@@ -139,13 +144,17 @@ dispatches the `Release` workflow from the default branch. It prints the Draft
 and Actions URLs without waiting for publication. Draft creation alone does not
 start the workflow. Do not create or push the release tag locally.
 
-The workflow runs CI against the approved SHA, including package tests and the
-iOS/watchOS compile checks. It builds macOS, iOS Simulator, and watchOS Simulator
-release binaries in parallel with the same version, target SHA, and Xcode
-configuration. A macOS assembly job collects the binaries, restores executable
-permissions, signs and validates them, then creates the complete `release.json`
-and verifies the packaged cohort and installer. Only after validation and
-assembly succeed does it attach and verify exactly:
+The workflow calls the same platform jobs against the approved SHA and version.
+Successful jobs upload their built binaries for release assembly; there is no
+separate CI build of the release target. A macOS assembly job collects the
+binaries, restores executable permissions, signs and validates them, then creates
+`release.json` and the archive. Verification installs that archive into a temporary
+prefix and exercises those installed binaries: every helper generates headers and
+symbol lists from a small Objective-C fixture, and the installed CLI searches those
+symbols. Simulator helpers run in temporary iOS/watchOS devices that are deleted
+after each check. This release verification requires installed, available runtimes
+for both Simulator platforms. Only after these checks succeed does the workflow
+attach and verify exactly:
 
 - `install.sh`
 - `SHA256SUMS.txt`
@@ -159,6 +168,10 @@ directories, `--artifacts-root <directory>` assembles the cohort without
 rebuilding. Each platform directory includes `build-info.txt` with its version
 and commit; assembly requires those values to match the requested release.
 `--dist-root` selects the output root in either mode.
+Add `--test` when building to use the same build-and-test path as CI. This option
+runs the macOS test suite and compiles Simulator test targets before staging any
+new binaries. `scripts/verify-release-assets.sh` performs the installed-binary
+smoke tests after packaging; it does not rebuild the release binaries.
 
 The final job creates the tag at the tested SHA and automatically publishes the
 same Draft, preserving its title, notes, and prerelease state. Existing tags

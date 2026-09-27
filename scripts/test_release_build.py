@@ -48,19 +48,31 @@ elif tool == "swift":
     if "--show-bin-path" in args:
         print(output)
     else:
-        product = args[args.index("--product") + 1]
+        product = (args[args.index("--product") + 1] if "--product" in args else
+                   args[args.index("--target") + 1] if "--target" in args else args[0])
         with open(os.environ["PHK_TEST_LOG"], "a") as log:
-            log.write(json.dumps({"platform": platform, "product": product,
+            log.write(json.dumps({"platform": platform, "product": product, "args": args,
                 "version": os.environ.get("PRIVATEHEADERKIT_BUILD_VERSION"),
                 "commit": os.environ.get("PRIVATEHEADERKIT_BUILD_COMMIT")}) + "\\n")
         if os.environ.get("PHK_TEST_FAIL_PLATFORM") == platform:
             sys.exit(23)
         output.mkdir(parents=True, exist_ok=True)
-        path = output / product
-        if product == "privateheaderkit-install":
-            path.write_text(Path(os.environ["PHK_TEST_INSTALLER"]).read_text())
+        if args[0] == "test" and os.environ.get("PHK_TEST_FAIL_TESTS"):
+            sys.exit(24)
+        if "--target" in args:
+            if os.environ.get("PHK_TEST_FAIL_TESTS"):
+                sys.exit(24)
+            sys.exit(0)
+        if args[0] == "test":
+            products = ["privateheaderkit", "privateheaderkit-install", "privateheaderkit-raw-helper"]
         else:
-            path.write_text("# platform: " + platform + "\\n" + product + "\\n")
+            products = [product]
+        for product in products:
+            path = output / product
+            if product == "privateheaderkit-install":
+                path.write_text(Path(os.environ["PHK_TEST_INSTALLER"]).read_text())
+            else:
+                path.write_text("# platform: " + platform + "\\n" + product + "\\n")
 elif tool == "codesign":
     if not os.access(args[-1], os.X_OK):
         sys.exit("binary is not executable")
@@ -157,6 +169,43 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(self.contents(assembled), self.contents(local))
         self.build("--artifacts-root", parts, "--dist-root", assembled)
         self.assertEqual(self.contents(assembled), self.contents(local))
+
+    def test_platform_tests_reuse_the_release_build(self):
+        parts = self.root / "parts"
+        for platform in ("macos", "ios-simulator", "watchos-simulator"):
+            self.build("--platform", platform, "--test", "--dist-root", parts)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(calls), 5)
+        host = calls[0]["args"]
+        self.assertEqual(host[0], "test")
+        self.assertEqual(host[host.index("--build-system") + 1], "swiftbuild")
+        self.assertEqual(host[host.index("--sdk") + 1], "/stub-sdk/macosx")
+        self.assertEqual(host[host.index("-c") + 1], "release")
+        self.assertTrue((parts / "macos/cohort/privateheaderkit-raw-helper").is_file())
+        for build, test in zip(calls[1::2], calls[2::2]):
+            self.assertEqual(build["platform"], test["platform"])
+            self.assertEqual(build["version"], test["version"])
+            self.assertEqual(build["commit"], test["commit"])
+            for call in (build, test):
+                args = call["args"]
+                self.assertEqual(args[args.index("-c") + 1], "release")
+                self.assertIn("-enable-testing", args)
+            if build["platform"] != "MACOS":
+                for option in ("--scratch-path", "--sdk", "--triple"):
+                    self.assertEqual(build["args"][build["args"].index(option) + 1],
+                                     test["args"][test["args"].index(option) + 1])
+                self.assertEqual(test["product"], "PrivateHeaderKitCoreTests")
+
+    def test_failed_tests_do_not_stage_new_binaries(self):
+        output = self.root / "parts"
+        for platform in ("macos", "ios-simulator", "watchos-simulator"):
+            with self.subTest(platform=platform):
+                self.build("--platform", platform, "--dist-root", output)
+                original = self.contents(output)
+                result = self.build("--platform", platform, "--test", "--dist-root", output,
+                                    success=False, PHK_TEST_FAIL_TESTS="1")
+                self.assertEqual(result.returncode, 24)
+                self.assertEqual(self.contents(output), original)
 
     def test_missing_helper_preserves_previous_cohort(self):
         parts = self.build_parts()

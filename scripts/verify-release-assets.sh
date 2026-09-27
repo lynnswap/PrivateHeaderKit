@@ -302,6 +302,8 @@ if ! cmp -s "$extract_root/cohort/release.json" "$installed_cohort/release.json"
   exit 1
 fi
 
+python3 "$repo_root/scripts/smoke_release_binaries.py" --cohort-dir "$installed_cohort"
+
 tamper_root="$temporary_directory/tampered"
 mkdir -p "$tamper_root"
 tar -C "$tamper_root" -xzf "$release_base/$archive_asset"
@@ -322,4 +324,4 @@ if [[ -e "$tamper_prefix/libexec/privateheaderkit/current" \
   exit 1
 fi
 
-echo "Verified release assets, temp-prefix install, and tamper rejection."
+echo "Verified release assets, installed binary execution, and tamper rejection."

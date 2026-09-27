@@ -61,57 +61,20 @@ jobs:
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
 
-  validate:
-    name: Validate release target
+  build-platform:
+    name: Build and test release binaries
     needs: prepare
     uses: ./.github/workflows/ci.yml
     with:
       revision: ${{ inputs.target_sha }}
-
-  build-platform:
-    name: Build ${{ matrix.platform }} Release Binaries
-    needs: prepare
-    runs-on: macos-26
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [macos, ios-simulator, watchos-simulator]
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-    steps:
-      - name: Checkout release commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.target_sha }}
-          persist-credentials: false
-
-      - name: Build platform binaries
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          COMMIT: ${{ inputs.target_sha }}
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          scripts/build-release.sh \
-            --version "$VERSION" \
-            --commit "$COMMIT" \
-            --platform "$PLATFORM" \
-            --dist-root dist
-
-      - name: Upload platform binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-binaries-${{ matrix.platform }}
-          path: dist/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+      version: ${{ needs.prepare.outputs.version }}
+      upload_artifacts: true
 
   build-release:
-    name: Assemble Release Assets
+    name: Assemble and test release assets
     needs: [prepare, build-platform]
     runs-on: macos-26
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     outputs:
@@ -153,7 +116,7 @@ jobs:
             --dist-root dist \
             --output-dir release
 
-      - name: Verify release assets
+      - name: Verify release assets and run installed binaries
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           COMMIT: ${{ inputs.target_sha }}
@@ -185,7 +148,7 @@ jobs:
 
   publish:
     name: Publish verified draft
-    needs: [prepare, validate, build-release]
+    needs: [prepare, build-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
