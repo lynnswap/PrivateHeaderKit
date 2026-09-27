@@ -71,6 +71,13 @@ class ReleasePackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Transferred checksums"):
             packaging.verify(self.output, "v1.2.3", trusted)
 
+    def test_prerelease_keeps_its_full_homebrew_version(self):
+        formula = packaging.render_formula("v1.2.3-rc.1", "lynnswap/PrivateHeaderKit", "a" * 64)
+        self.assertIn('  version "1.2.3-rc.1"', formula)
+        self.assertNotIn("__EXPLICIT_VERSION__", formula)
+        stable = packaging.render_formula("v1.2.3", "lynnswap/PrivateHeaderKit", "a" * 64)
+        self.assertNotIn('  version "1.2.3"', stable)
+
     def test_version_classification(self):
         script = Path(__file__).with_name("release-version-is-prerelease.sh")
         for tag, value in (("v1.2.3", "false"), ("v1.2.3-rc.1", "true")):

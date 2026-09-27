@@ -10,9 +10,10 @@ if brew list --formula --versions privateheaderkit >/dev/null 2>&1; then
   echo "Uninstall the existing Homebrew privateheaderkit before running this test." >&2
   exit 1
 fi
-export HOMEBREW_NO_AUTO_UPDATE=1
-brew tap-new --no-git privateheaderkit/verification
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+brew tap-new --no-git privateheaderkit/verification
 cleanup() {
   local result=$?
   trap - EXIT
@@ -20,6 +21,7 @@ cleanup() {
     brew uninstall --force "$formula" || result=1
   fi
   brew untap privateheaderkit/verification || result=1
+  brew untrust --formula "$formula" || result=1
   rm -rf "$work"
   exit "$result"
 }
@@ -30,7 +32,8 @@ brew trust --formula "$formula"
 # source against the same checksum and URL that the published Formula will use.
 cache="$(brew --cache --build-from-source "$formula")"
 mkdir -p "$(dirname "$cache")"
-cp "$release_dir"/privateheaderkit-*.tar.gz "$cache"
+source_archive="$(awk '$2 ~ /^privateheaderkit-.*\.tar\.gz$/ { print $2 }' "$release_dir/SHA256SUMS.txt")"
+cp "$release_dir/$source_archive" "$cache"
 brew install --build-bottle "$formula"
 brew test "$formula"
 cd "$work"

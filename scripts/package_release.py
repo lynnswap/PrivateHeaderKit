@@ -20,7 +20,10 @@ def sha256(path):
 
 def render_formula(tag, repository, source_digest):
     template = Path(__file__).resolve().parent.parent / "Homebrew/privateheaderkit.rb.in"
-    return (template.read_text().replace("__VERSION__", tag.removeprefix("v"))
+    version = tag.removeprefix("v")
+    explicit_version = "" if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) else f'  version "{version}"\n'
+    return (template.read_text().replace("__EXPLICIT_VERSION__\n", explicit_version)
+            .replace("__VERSION__", version)
             .replace("__REPOSITORY__", repository).replace("__SHA256__", source_digest))
 
 

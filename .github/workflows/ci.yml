@@ -70,7 +70,6 @@ jobs:
             --source-root "$GITHUB_WORKSPACE/source" \
             --output-dir "$GITHUB_WORKSPACE/dist/$PLATFORM"
 
-
   package-checks:
     name: Package Checks
     needs: platform-checks

@@ -2,6 +2,7 @@ class Privateheaderkit < Formula
   desc "Generate searchable private headers and symbol lists for Apple platforms"
   homepage "https://github.com/lynnswap/PrivateHeaderKit"
   url "https://github.com/__REPOSITORY__/releases/download/v__VERSION__/privateheaderkit-__VERSION__.tar.gz"
+__EXPLICIT_VERSION__
   sha256 "__SHA256__"
   license "MIT"
 
@@ -30,6 +31,7 @@ class Privateheaderkit < Formula
            "Fixture.m", "-o", "libFixture.dylib"
     system libexec/"privateheaderkit-raw-helper", "-o", testpath/"headers", testpath/"libFixture.dylib"
     assert_match "@interface PHKFormulaFixture", (testpath/"headers/PHKFormulaFixture.h").read
-    assert_match "PHKFormulaSymbol", shell_output("#{bin}/privateheaderkit search PHKFormulaSymbol --in #{testpath}/headers")
+    assert_match "PHKFormulaSymbol",
+                 shell_output("#{bin}/privateheaderkit search PHKFormulaSymbol --in #{testpath}/headers")
   end
 end
