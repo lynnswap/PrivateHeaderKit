@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  package-checks:
-    name: Package Checks
+  macos-tests:
+    name: macOS Tests
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -38,8 +38,6 @@ jobs:
           set -euo pipefail
           xcodebuild -version
           swift --version
-          xcrun --sdk iphonesimulator --show-sdk-path
-          xcrun --sdk watchsimulator --show-sdk-path
 
       - name: Run Swift tests
         run: swift test
@@ -47,41 +45,71 @@ jobs:
       - name: Run release script contract tests
         run: scripts/test-release-scripts.sh
 
-      - name: Compile iOS Core surface
+  simulator-checks:
+    name: ${{ matrix.platform }} Compile Checks
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            sdk: iphonesimulator
+            triple: arm64-apple-ios17.0-simulator
+          - platform: watchOS
+            sdk: watchsimulator
+            triple: arm64-apple-watchos-simulator
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
+
+      - name: Compile Core and test surfaces
+        env:
+          SIMULATOR_SDK: ${{ matrix.sdk }}
+          SIMULATOR_TRIPLE: ${{ matrix.triple }}
         run: |
           set -euo pipefail
-          PHK_IOS_SIMULATOR_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-          PHK_IOS_SIMULATOR_TRIPLE="$(uname -m)-apple-ios17.0-simulator"
-          PHK_IOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-ios-compile/$PHK_IOS_SIMULATOR_TRIPLE"
+          simulator_sdk_path="$(xcrun --sdk "$SIMULATOR_SDK" --show-sdk-path)"
+          build_scratch="$PWD/.build/privateheaderkit-simulator-compile/$SIMULATOR_TRIPLE"
           swift build \
-            --scratch-path "$PHK_IOS_BUILD_SCRATCH" \
-            --sdk "$PHK_IOS_SIMULATOR_SDK" \
-            --triple "$PHK_IOS_SIMULATOR_TRIPLE" \
+            --scratch-path "$build_scratch" \
+            --sdk "$simulator_sdk_path" \
+            --triple "$SIMULATOR_TRIPLE" \
             --target PrivateHeaderKitCore
           swift build \
-            --scratch-path "$PHK_IOS_BUILD_SCRATCH" \
-            --sdk "$PHK_IOS_SIMULATOR_SDK" \
-            --triple "$PHK_IOS_SIMULATOR_TRIPLE" \
+            --scratch-path "$build_scratch" \
+            --sdk "$simulator_sdk_path" \
+            --triple "$SIMULATOR_TRIPLE" \
             --target PrivateHeaderKitCoreTests
 
-      - name: Compile watchOS surfaces
+      - name: Compile watchOS helper
+        if: matrix.platform == 'watchOS'
+        env:
+          SIMULATOR_SDK: ${{ matrix.sdk }}
+          SIMULATOR_TRIPLE: ${{ matrix.triple }}
         run: |
           set -euo pipefail
-          PHK_WATCHOS_SIMULATOR_SDK="$(xcrun --sdk watchsimulator --show-sdk-path)"
-          PHK_WATCHOS_SIMULATOR_TRIPLE="arm64-apple-watchos-simulator"
-          PHK_WATCHOS_BUILD_SCRATCH="$PWD/.build/privateheaderkit-watchos-compile/$PHK_WATCHOS_SIMULATOR_TRIPLE"
+          simulator_sdk_path="$(xcrun --sdk "$SIMULATOR_SDK" --show-sdk-path)"
           swift build \
-            --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
-            --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
-            --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
-            --target PrivateHeaderKitCore
-          swift build \
-            --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
-            --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
-            --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
-            --target PrivateHeaderKitCoreTests
-          swift build \
-            --scratch-path "$PHK_WATCHOS_BUILD_SCRATCH" \
-            --sdk "$PHK_WATCHOS_SIMULATOR_SDK" \
-            --triple "$PHK_WATCHOS_SIMULATOR_TRIPLE" \
+            --scratch-path "$PWD/.build/privateheaderkit-simulator-compile/$SIMULATOR_TRIPLE" \
+            --sdk "$simulator_sdk_path" \
+            --triple "$SIMULATOR_TRIPLE" \
             --product privateheaderkit-sim-helper
+
+  package-checks:
+    name: Package Checks
+    needs: [macos-tests, simulator-checks]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all platform checks
+        env:
+          MACOS_RESULT: ${{ needs.macos-tests.result }}
+          SIMULATOR_RESULT: ${{ needs.simulator-checks.result }}
+        run: test "$MACOS_RESULT" = success && test "$SIMULATOR_RESULT" = success
