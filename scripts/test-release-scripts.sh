@@ -45,7 +45,7 @@ assert_prerelease_classification "v1.2.3.4" true
 expect_failure "Release tag must look like v1.2.3." \
   "$repo_root/scripts/release-version-is-prerelease.sh" "v1.2"
 
-python3 -B -m unittest discover -s "$repo_root/scripts" -p 'test_release.py'
+python3 -B -m unittest discover -s "$repo_root/scripts" -p 'test_release*.py'
 
 installer="$temporary_directory/install.sh"
 "$repo_root/scripts/render-install-script.sh" \

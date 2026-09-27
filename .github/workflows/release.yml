@@ -68,11 +68,50 @@ jobs:
     with:
       revision: ${{ inputs.target_sha }}
 
-  build-release:
-    name: Build Release Assets
+  build-platform:
+    name: Build ${{ matrix.platform }} Release Binaries
     needs: prepare
     runs-on: macos-26
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos, ios-simulator, watchos-simulator]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Build platform binaries
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ inputs.target_sha }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          scripts/build-release.sh \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --platform "$PLATFORM" \
+            --dist-root dist
+
+      - name: Upload platform binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-binaries-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  build-release:
+    name: Assemble Release Assets
+    needs: [prepare, build-platform]
+    runs-on: macos-26
+    timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     outputs:
@@ -84,7 +123,14 @@ jobs:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
 
-      - name: Build release cohort
+      - name: Download platform binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-binaries-*
+          merge-multiple: true
+          path: .build/release-binaries
+
+      - name: Assemble release cohort
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           COMMIT: ${{ inputs.target_sha }}
@@ -92,6 +138,7 @@ jobs:
           scripts/build-release.sh \
             --version "${VERSION}" \
             --commit "${COMMIT}" \
+            --artifacts-root .build/release-binaries \
             --dist-root dist
 
       - name: Package release assets

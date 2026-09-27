@@ -19,6 +19,10 @@ or release publication. The publication tests use an in-memory GitHub client:
 scripts/test-release-scripts.sh
 ```
 
+CI runs macOS tests and the iOS/watchOS compile checks in parallel. The
+`Package Checks` job succeeds only when all three platform jobs succeed.
+Simulator checks compile the targets described below without booting a device.
+
 Regular tests must be deterministic. Use fixture trees, injected environments,
 and stub command runners. Do not make the default suite depend on the host dyld
 shared cache, installed applications, simulator availability or boot state,
@@ -136,12 +140,25 @@ and Actions URLs without waiting for publication. Draft creation alone does not
 start the workflow. Do not create or push the release tag locally.
 
 The workflow runs CI against the approved SHA, including package tests and the
-iOS/watchOS compile checks. It also builds and verifies the release cohort and
-installer. Only after both jobs succeed does it attach and verify exactly:
+iOS/watchOS compile checks. It builds macOS, iOS Simulator, and watchOS Simulator
+release binaries in parallel with the same version, target SHA, and Xcode
+configuration. A macOS assembly job collects the binaries, restores executable
+permissions, signs and validates them, then creates the complete `release.json`
+and verifies the packaged cohort and installer. Only after validation and
+assembly succeed does it attach and verify exactly:
 
 - `install.sh`
 - `SHA256SUMS.txt`
 - `privateheaderkit-darwin-arm64.tar.gz`
+
+For local builds, `scripts/build-release.sh --version <tag> --commit <sha>`
+still builds and stages the complete cohort under `dist/arm64`. Use
+`--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
+to stage one platform under `dist/<platform>`. After collecting those three
+directories, `--artifacts-root <directory>` assembles the cohort without
+rebuilding. Each platform directory includes `build-info.txt` with its version
+and commit; assembly requires those values to match the requested release.
+`--dist-root` selects the output root in either mode.
 
 The final job creates the tag at the tested SHA and automatically publishes the
 same Draft, preserving its title, notes, and prerelease state. Existing tags
