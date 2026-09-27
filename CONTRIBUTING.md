@@ -12,8 +12,8 @@ Run the full Swift test suite:
 swift test
 ```
 
-Run the release-script contract tests when changing installation or release
-packaging:
+Run the release-script contract tests when changing installation, packaging,
+or release publication. The publication tests use an in-memory GitHub client:
 
 ```bash
 scripts/test-release-scripts.sh
@@ -110,19 +110,64 @@ Simulator platforms. Release staging installs the watchOS build as
 
 ## Releases
 
-Maintainers prepare releases with the `Prepare Draft Release` GitHub Actions
-workflow. Dispatch it from the current default branch with:
+Maintainers approve the version, title, release notes, full target commit SHA,
+and automatic publication before starting a release. Save the approved notes
+in a UTF-8 file, then run:
 
-- a version tag such as `v1.2.3`
-- the full commit SHA of the current default-branch HEAD
+```bash
+python3 scripts/release.py start v1.2.3 \
+  --repo lynnswap/PrivateHeaderKit \
+  --target <approved-full-commit-sha> \
+  --notes-file /path/to/release-notes.md
+```
 
-The workflow builds and verifies the cohort, then creates or repairs a draft
-GitHub Release containing exactly:
+Use `--title` to override the title, which defaults to the version. Stable tags
+such as `v1.2.3` become stable releases; suffixed tags such as `v1.2.3-rc.1`
+become prereleases. Keep the installation command at the start of stable release
+notes:
+
+```bash
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+```
+
+The command creates or reuses a matching Draft Release with these notes, then
+dispatches the `Release` workflow from the default branch. It prints the Draft
+and Actions URLs without waiting for publication. Draft creation alone does not
+start the workflow. Do not create or push the release tag locally.
+
+The workflow runs CI against the approved SHA, including package tests and the
+iOS/watchOS compile checks. It also builds and verifies the release cohort and
+installer. Only after both jobs succeed does it attach and verify exactly:
 
 - `install.sh`
 - `SHA256SUMS.txt`
 - `privateheaderkit-darwin-arm64.tar.gz`
 
-Review the draft metadata, release notes, and assets before publishing it
-manually. Publishing and tag creation are not performed by the local build or
-package scripts.
+The final job creates the tag at the tested SHA and automatically publishes the
+same Draft, preserving its title, notes, and prerelease state. Existing tags
+must resolve to that SHA, including annotated tags. Stable releases use GitHub's
+latest-release selection; prereleases are not marked latest. Draft verification
+requires push access, so both preparation and publication run trusted scripts
+from the workflow commit with `contents: write`. Tests and builds receive only
+read access.
+
+Do not edit the Draft, modify its assets, move its tag, or publish it manually
+while the workflow runs. Changed publication content stops the workflow;
+unrelated release metadata does not. GitHub does not provide a transaction
+covering tags, assets, and publication, so maintainers must serialize those
+operations.
+
+If checks fail, the release stays a Draft. A failed upload or publication can
+leave some assets or the correct tag; use GitHub's re-run controls after fixing
+the failure. The publish job replaces the three expected assets, checks their
+uploaded digests, and resumes without moving an existing tag. Unexpected assets
+require maintainer review and removal. Rerunning after successful publication
+does not modify the published release. If dispatch fails or its response is
+uncertain, inspect Actions before repeating the start command to avoid a second
+run. Changed notes require a new start command matching the reviewed content.
+
+The publish job uses `GITHUB_TOKEN` by default. If GitHub rejects tag creation
+because the target needs Workflows permission, configure the optional
+`RELEASE_TOKEN` Actions secret with **Contents: write** and **Workflows: write**
+for this repository, then rerun the failed publish job. That credential is
+available only to the publication step; repository tag rules still apply.
