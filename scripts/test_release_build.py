@@ -38,6 +38,8 @@ elif name == "swift":
 elif name == "codesign":
     if not os.access(args[-1], os.X_OK):
         sys.exit("binary is not executable")
+    if os.environ.get("PHK_TEST_FAIL_SIGN") == Path(args[-1]).name:
+        sys.exit(24)
 else:
     sys.exit("unexpected tool: " + name)
 '''
@@ -104,6 +106,33 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("PrivateHeaderKitCoreTests", calls[1]["args"])
         self.assertTrue(all("arm64-apple-watchos10.0-simulator" == call["triple"] for call in calls))
+
+    def test_late_build_or_signing_failure_preserves_previous_outputs(self):
+        self.output.mkdir()
+        previous = {name: "previous " + name for name in (
+            "privateheaderkit", "privateheaderkit-raw-helper", "privateheaderkit-sim-helper",
+            "privateheaderkit-watch-sim-helper", "unrelated.txt",
+        )}
+        for name, contents in previous.items():
+            (self.output / name).write_text(contents)
+        for failure in (
+            {"PHK_TEST_FAIL": "arm64-apple-watchos10.0-simulator"},
+            {"PHK_TEST_FAIL_SIGN": "privateheaderkit-watch-sim-helper"},
+        ):
+            with self.subTest(failure=failure):
+                result = self.build(**failure)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual({path.name: path.read_text() for path in self.output.iterdir()}, previous)
+
+    def test_successful_platform_build_replaces_only_its_products(self):
+        self.output.mkdir()
+        (self.output / "privateheaderkit").write_text("previous command")
+        (self.output / "privateheaderkit-watch-sim-helper").write_text("previous watch helper")
+        result = self.build("--platform", "macos")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.output / "privateheaderkit").read_text(), "macos privateheaderkit")
+        self.assertEqual((self.output / "privateheaderkit-watch-sim-helper").read_text(), "previous watch helper")
+        self.assertFalse(list(self.output.glob(".privateheaderkit.*")))
 
 
 if __name__ == "__main__":

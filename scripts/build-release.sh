@@ -41,14 +41,16 @@ cd "$source_root"
 output_dir="${output_dir:-$PWD/.build/distribution}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
+staging_dir="$(mktemp -d "$output_dir/.privateheaderkit.XXXXXX")"
+trap 'rm -rf "$staging_dir"' EXIT
 export PRIVATEHEADERKIT_BUILD_VERSION="$version"
 # SwiftPM's plugin sandbox cannot nest inside Homebrew's build sandbox.
 common=(-c release --disable-sandbox --force-resolved-versions)
 
 stage() {
   local source="$1" name="$2"
-  install -m 755 "$source" "$output_dir/$name"
-  codesign --force --sign - "$output_dir/$name"
+  install -m 755 "$source" "$staging_dir/$name"
+  codesign --force --sign - "$staging_dir/$name"
 }
 
 if [[ "$platform" == all || "$platform" == macos ]]; then
@@ -91,3 +93,8 @@ for simulator in ios-simulator watchos-simulator; do
   simulator_bin="$(swift build "${arguments[@]}" --show-bin-path)"
   stage "$simulator_bin/privateheaderkit-sim-helper" "$name"
 done
+
+if ! mv -f "$staging_dir"/* "$output_dir/"; then
+  echo "Could not publish all build products; $output_dir may contain partially replaced outputs." >&2
+  exit 1
+fi
