@@ -22,7 +22,11 @@ cleanup() {
   fi
   brew untap privateheaderkit/verification || result=1
   brew untrust --formula "$formula" || result=1
-  rm -rf "$work"
+  if [[ "$result" == 0 ]]; then
+    rm -rf "$work"
+  else
+    echo "Verification artifacts retained at: $work" >&2
+  fi
   exit "$result"
 }
 trap cleanup EXIT
@@ -37,9 +41,18 @@ cp "$release_dir/$source_archive" "$cache"
 brew install --build-bottle "$formula"
 brew test "$formula"
 cd "$work"
-brew bottle --json "$formula"
+brew bottle --json --root-url=https://example.invalid/privateheaderkit-verification "$formula"
+brew bottle --merge --write --no-commit "$work"/*.bottle.json
+bottle_cache="$(brew --cache --force-bottle "$formula")"
+cp "$work"/*.bottle.tar.gz "$bottle_cache"
 brew uninstall "$formula"
-brew install "$work"/*.bottle.tar.gz
+brew install --force-bottle "$formula"
+brew info --json=v2 "$formula" | python3 -c '
+import json, sys
+installed = json.load(sys.stdin)["formulae"][0]["installed"][0]
+if not installed["poured_from_bottle"]:
+    sys.exit("Homebrew verification expected a bottle installation.")
+'
 brew test "$formula"
 if [[ "${2:-}" == --simulators ]]; then
   python3 "$repo_root/scripts/smoke_release_binaries.py" \

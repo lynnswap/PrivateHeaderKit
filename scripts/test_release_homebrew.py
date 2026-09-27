@@ -58,7 +58,7 @@ class HomebrewVerificationTests(unittest.TestCase):
         (self.release / "privateheaderkit-1.0.0.tar.gz").write_bytes(b"retired source")
         (self.release / "SHA256SUMS.txt").write_text("digest  privateheaderkit-1.2.3.tar.gz\n")
         self.environment = dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}",
-                                PHK_BREW_FIXTURE=str(self.root))
+                                PHK_BREW_FIXTURE=str(self.root), TMPDIR=str(self.root))
 
     def verify(self):
         script = Path(__file__).with_name("test-homebrew.sh")

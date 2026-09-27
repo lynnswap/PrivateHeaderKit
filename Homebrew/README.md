@@ -67,7 +67,8 @@ scripts/test-homebrew.sh .build/homebrew-release --simulators
 
 This uses a temporary `privateheaderkit/verification` tap. It requires that no
 Homebrew `privateheaderkit` installation already exists, and removes its own
-installation and tap afterwards. It does not change an older standalone install
+installation and tap afterwards. On failure, generated bottle files are kept at
+the path printed in the error log. It does not change an older standalone install
 or generated data. `--simulators` creates and deletes temporary devices and
 requires available iOS and watchOS runtimes; omit it for the host Formula test.
 
