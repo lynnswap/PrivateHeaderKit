@@ -9,6 +9,8 @@ Options:
   --dist-root <dir>        Output directory (default: dist).
   --platform <platform>    Build macos, ios-simulator, or watchos-simulator only.
   --artifacts-root <dir>   Assemble previously built platform directories.
+  --test                   Build test targets and run macOS tests before staging.
+  --source-root <dir>      Source checkout to build (default: this script's repo).
 
 With no platform or artifacts root, builds all platforms locally.
 Platform builds stage binaries under <dist-root>/<platform>/.
@@ -22,6 +24,8 @@ commit=""
 dist_root="dist"
 platform="all"
 artifacts_root=""
+run_tests=0
+source_root=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +47,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --artifacts-root)
       artifacts_root="${2:-}"
+      shift 2
+      ;;
+    --test)
+      run_tests=1
+      shift
+      ;;
+    --source-root)
+      source_root="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -76,6 +88,10 @@ if [[ "$platform" != "all" && -n "$artifacts_root" ]]; then
   echo "--platform and --artifacts-root cannot be combined." >&2
   exit 1
 fi
+if [[ "$run_tests" == 1 && -n "$artifacts_root" ]]; then
+  echo "--test belongs to the platform build; assembly does not rebuild test targets." >&2
+  exit 1
+fi
 commit="$(printf '%s' "$commit" | tr 'A-F' 'a-f')"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -83,7 +99,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+if [[ -z "$source_root" ]]; then
+  source_root="$(dirname "${BASH_SOURCE[0]}")/.."
+fi
+repo_root="$(cd "$source_root" && pwd -P)"
 if [[ "$dist_root" = /* ]]; then
   dist_base="$dist_root"
 else
@@ -219,10 +238,17 @@ else
   export PRIVATEHEADERKIT_BUILD_COMMIT="$commit"
   pushd "$repo_root" >/dev/null
   if [[ "$platform" == "all" || "$platform" == "macos" ]]; then
-    for product in privateheaderkit privateheaderkit-install privateheaderkit-raw-helper; do
-      swift build -c release --arch arm64 --product "$product"
-    done
-    host_bin="$(swift build -c release --arch arm64 --show-bin-path)"
+    host_arguments=(-c release --arch arm64)
+    if [[ "$run_tests" == 1 ]]; then
+      # Swift Build keeps async executable entry points separate in optimized test bundles.
+      host_arguments+=(--build-system swiftbuild --sdk "$(xcrun --sdk macosx --show-sdk-path)")
+      swift test "${host_arguments[@]}"
+    else
+      for product in privateheaderkit privateheaderkit-install privateheaderkit-raw-helper; do
+        swift build "${host_arguments[@]}" --product "$product"
+      done
+    fi
+    host_bin="$(swift build "${host_arguments[@]}" --show-bin-path)"
     source_files+=(
       "$host_bin/privateheaderkit-install"
       "$host_bin/privateheaderkit"
@@ -249,7 +275,13 @@ else
       --sdk "$simulator_sdk"
       --triple "$simulator_triple"
     )
+    if [[ "$run_tests" == 1 ]]; then
+      simulator_arguments+=(-Xswiftc -enable-testing)
+    fi
     swift build "${simulator_arguments[@]}" --product privateheaderkit-sim-helper
+    if [[ "$run_tests" == 1 ]]; then
+      swift build "${simulator_arguments[@]}" --target PrivateHeaderKitCoreTests
+    fi
     simulator_bin="$(swift build "${simulator_arguments[@]}" --show-bin-path)"
     source_files+=("$simulator_bin/privateheaderkit-sim-helper")
   done

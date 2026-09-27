@@ -11,6 +11,16 @@ on:
       revision:
         required: true
         type: string
+      version:
+        description: Build version embedded in release binaries
+        required: false
+        type: string
+        default: v0.0.0-ci
+      upload_artifacts:
+        description: Pass tested binaries to the release assembly job
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -20,96 +30,71 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  macos-tests:
-    name: macOS Tests
-    runs-on: macos-26
-    timeout-minutes: 20
+  platform-checks:
+    name: Build and Test ${{ matrix.platform }}
+    runs-on: xcode-27
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos, ios-simulator, watchos-simulator]
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
-      - name: Checkout
+      - name: Checkout workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout build source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.revision || github.sha }}
+          path: source
           persist-credentials: false
 
       - name: Verify toolchain
         run: |
-          set -euo pipefail
           xcodebuild -version
           swift --version
 
-      - name: Run Swift tests
-        run: swift test
-
       - name: Run release script contract tests
+        if: matrix.platform == 'macos'
         run: scripts/test-release-scripts.sh
 
-  simulator-checks:
-    name: ${{ matrix.platform }} Compile Checks
-    runs-on: macos-26
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: iOS
-            sdk: iphonesimulator
-            triple: arm64-apple-ios17.0-simulator
-          - platform: watchOS
-            sdk: watchsimulator
-            triple: arm64-apple-watchos-simulator
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and test platform binaries
+        env:
+          VERSION: ${{ inputs.version || 'v0.0.0-ci' }}
+          COMMIT: ${{ inputs.revision || github.sha }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          scripts/build-release.sh \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --platform "$PLATFORM" \
+            --test \
+            --source-root "$GITHUB_WORKSPACE/source" \
+            --dist-root "$GITHUB_WORKSPACE/dist"
+
+      - name: Upload tested platform binaries
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          ref: ${{ inputs.revision || github.sha }}
-          persist-credentials: false
-
-      - name: Compile Core and test surfaces
-        env:
-          SIMULATOR_SDK: ${{ matrix.sdk }}
-          SIMULATOR_TRIPLE: ${{ matrix.triple }}
-        run: |
-          set -euo pipefail
-          simulator_sdk_path="$(xcrun --sdk "$SIMULATOR_SDK" --show-sdk-path)"
-          build_scratch="$PWD/.build/privateheaderkit-simulator-compile/$SIMULATOR_TRIPLE"
-          swift build \
-            --scratch-path "$build_scratch" \
-            --sdk "$simulator_sdk_path" \
-            --triple "$SIMULATOR_TRIPLE" \
-            --target PrivateHeaderKitCore
-          swift build \
-            --scratch-path "$build_scratch" \
-            --sdk "$simulator_sdk_path" \
-            --triple "$SIMULATOR_TRIPLE" \
-            --target PrivateHeaderKitCoreTests
-
-      - name: Compile watchOS helper
-        if: matrix.platform == 'watchOS'
-        env:
-          SIMULATOR_SDK: ${{ matrix.sdk }}
-          SIMULATOR_TRIPLE: ${{ matrix.triple }}
-        run: |
-          set -euo pipefail
-          simulator_sdk_path="$(xcrun --sdk "$SIMULATOR_SDK" --show-sdk-path)"
-          swift build \
-            --scratch-path "$PWD/.build/privateheaderkit-simulator-compile/$SIMULATOR_TRIPLE" \
-            --sdk "$simulator_sdk_path" \
-            --triple "$SIMULATOR_TRIPLE" \
-            --product privateheaderkit-sim-helper
+          name: release-binaries-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
   package-checks:
     name: Package Checks
-    needs: [macos-tests, simulator-checks]
+    needs: platform-checks
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require all platform checks
         env:
-          MACOS_RESULT: ${{ needs.macos-tests.result }}
-          SIMULATOR_RESULT: ${{ needs.simulator-checks.result }}
-        run: test "$MACOS_RESULT" = success && test "$SIMULATOR_RESULT" = success
+          PLATFORM_RESULT: ${{ needs.platform-checks.result }}
+        run: test "$PLATFORM_RESULT" = success
