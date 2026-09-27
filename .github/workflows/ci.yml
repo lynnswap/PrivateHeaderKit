@@ -16,11 +16,6 @@ on:
         required: false
         type: string
         default: v0.0.0-ci
-      upload_artifacts:
-        description: Pass tested binaries to the release assembly job
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -66,26 +61,15 @@ jobs:
       - name: Build and test platform binaries
         env:
           VERSION: ${{ inputs.version || 'v0.0.0-ci' }}
-          COMMIT: ${{ inputs.revision || github.sha }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           scripts/build-release.sh \
             --version "$VERSION" \
-            --commit "$COMMIT" \
             --platform "$PLATFORM" \
             --test \
             --source-root "$GITHUB_WORKSPACE/source" \
-            --dist-root "$GITHUB_WORKSPACE/dist"
+            --output-dir "$GITHUB_WORKSPACE/dist/$PLATFORM"
 
-      - name: Upload tested platform binaries
-        if: inputs.upload_artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-binaries-${{ matrix.platform }}
-          path: dist/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
 
   package-checks:
     name: Package Checks

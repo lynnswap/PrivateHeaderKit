@@ -5,59 +5,42 @@
 Generate searchable private headers and symbol lists from this Mac or an installed iOS or
 watchOS Simulator runtime.
 
-Requires macOS 14 or later. Prebuilt releases require Apple Silicon. iOS and
-watchOS generation require Xcode and a matching installed Simulator runtime;
-physical devices are not generation sources. Source installation requires
-Swift 6.3 and Xcode with iOS and watchOS Simulator SDKs.
+Requires an Apple Silicon Mac with macOS 14 or later. iOS and watchOS generation
+require Xcode and a matching installed Simulator runtime; physical devices are
+not generation sources. Building from source requires Swift 6.3 or later and
+Xcode with iOS and watchOS Simulator SDKs.
 
 ## Quick Start
 
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
-```
-
-The installer is not written to the current directory.
-
-If the installer prints a `Next steps` block, follow it instead of the command
-below. Otherwise run:
-
-```bash
+```sh
+brew install lynnswap/tap/privateheaderkit
 privateheaderkit
 ```
 
+Homebrew uses a matching bottle when available, or builds from source.
 Choose a source, then generate all targets or enter specific framework, bundle,
 or dylib names. PrivateHeaderKit writes to `~/PrivateHeaderKit` by default and
 prints the exact `Headers` directory for the generated files.
 Generated headers are grouped by platform and exact source, for example
 `generated-headers/iOS/27.0_beta_24A5390f`.
 
-The installer does not edit shell profiles.
+Update with `brew upgrade privateheaderkit`; remove with
+`brew uninstall privateheaderkit`. Generated headers are kept.
+For an existing standalone installation, follow the
+[migration instructions](Docs/installation.md#move-from-the-standalone-installer).
 
 ## Build from Source
 
-Build and run the source installer from the checkout:
+From a checkout or extracted source archive:
 
-```bash
-git clone https://github.com/lynnswap/PrivateHeaderKit.git
-cd PrivateHeaderKit
-swift run -c release privateheaderkit-install
+```sh
+scripts/build-release.sh --version dev
+.build/distribution/privateheaderkit
 ```
 
-The installer builds `privateheaderkit` and three internal helpers from the same
-checkout. It accepts the same `--prefix` and `--bindir` options as `install.sh`.
-
-## Install Options
-
-<details>
-<summary>Custom directories</summary>
-
-Install the command in `~/bin`:
-
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
-```
-
-</details>
+This builds the command and its three internal helpers together without
+installing them. See [installation](Docs/installation.md) for requirements
+and build options.
 
 ## Automation
 

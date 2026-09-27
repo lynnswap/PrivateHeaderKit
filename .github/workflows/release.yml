@@ -61,24 +61,13 @@ jobs:
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
 
-  build-platform:
-    name: Build and test release binaries
+  package-source:
+    name: Package approved source and Formula
     needs: prepare
-    uses: ./.github/workflows/ci.yml
-    with:
-      revision: ${{ inputs.target_sha }}
-      version: ${{ needs.prepare.outputs.version }}
-      upload_artifacts: true
-
-  build-release:
-    name: Assemble and test release assets
-    needs: [prepare, build-platform]
-    runs-on: xcode-27
-    timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
-      archive_sha256: ${{ steps.release_digest.outputs.archive_sha256 }}
+      checksums_sha256: ${{ steps.digest.outputs.checksums_sha256 }}
     steps:
       - name: Checkout workflow scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,69 +75,78 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      - name: Download platform binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Checkout approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          pattern: release-binaries-*
-          merge-multiple: true
-          path: .build/release-binaries
+          ref: ${{ inputs.target_sha }}
+          path: source
+          persist-credentials: false
 
-      - name: Assemble release cohort
+      - name: Package source and Formula
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           COMMIT: ${{ inputs.target_sha }}
         run: |
-          scripts/build-release.sh \
-            --version "${VERSION}" \
-            --commit "${COMMIT}" \
-            --artifacts-root .build/release-binaries \
-            --dist-root dist
+          python3 scripts/package_release.py create \
+            --source-root source --commit "$COMMIT" --version "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" --output-dir release
+          python3 scripts/package_release.py verify --version "$VERSION" --release-dir release
 
-      - name: Package release assets
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          COMMIT: ${{ inputs.target_sha }}
-        run: |
-          scripts/package-release.sh \
-            --version "${VERSION}" \
-            --commit "${COMMIT}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --dist-root dist \
-            --output-dir release
+      - name: Record release checksums digest
+        id: digest
+        run: echo "checksums_sha256=$(sha256sum release/SHA256SUMS.txt | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
-      - name: Verify release assets and run installed binaries
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          COMMIT: ${{ inputs.target_sha }}
-        run: |
-          scripts/verify-release-assets.sh \
-            --version "${VERSION}" \
-            --commit "${COMMIT}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --release-dir release
-
-      - name: Record trusted archive digest
-        id: release_digest
-        run: |
-          set -euo pipefail
-          archive_sha256="$(shasum -a 256 release/privateheaderkit-darwin-arm64.tar.gz | awk '{ print $1 }')"
-          echo "archive_sha256=${archive_sha256}" >> "${GITHUB_OUTPUT}"
-
-      - name: Upload release assets
+      - name: Upload source release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets
-          path: |
-            release/privateheaderkit-darwin-arm64.tar.gz
-            release/install.sh
-            release/SHA256SUMS.txt
+          path: release/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
+  package-tests:
+    name: Test approved source
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ inputs.target_sha }}
+      version: ${{ needs.prepare.outputs.version }}
+
+  homebrew:
+    name: Test Formula and installed bottle
+    needs: [prepare, package-source]
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Download source release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release
+
+      - name: Verify transferred assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
+        run: |
+          python3 scripts/package_release.py verify --version "$VERSION" \
+            --release-dir release --checksums-sha256 "$CHECKSUMS_SHA256"
+
+      - name: Build, bottle, reinstall and exercise all helpers
+        run: scripts/test-homebrew.sh release --simulators
+
   publish:
-    name: Publish verified draft
-    needs: [prepare, build-release]
+    name: Publish verified source release
+    needs: [prepare, package-source, package-tests, homebrew]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -167,19 +165,13 @@ jobs:
           name: release-assets
           path: release
 
-      - name: Verify downloaded release assets
+      - name: Verify transferred assets
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          COMMIT: ${{ inputs.target_sha }}
-          ARCHIVE_SHA256: ${{ needs.build-release.outputs.archive_sha256 }}
+          CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
         run: |
-          scripts/verify-release-assets.sh \
-            --version "${VERSION}" \
-            --commit "${COMMIT}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --release-dir release \
-            --archive-sha256 "${ARCHIVE_SHA256}" \
-            --skip-install-smoke
+          python3 scripts/package_release.py verify --version "$VERSION" \
+            --release-dir release --checksums-sha256 "$CHECKSUMS_SHA256"
 
       - name: Upload assets and publish approved draft
         env:

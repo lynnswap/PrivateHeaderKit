@@ -5,58 +5,37 @@
 この Mac またはインストール済み iOS / watchOS Simulator runtime から、検索可能な
 private header を生成します。
 
-macOS 14 以降が必要です。prebuilt release は Apple Silicon 向けです。iOS / watchOS
-の header 生成には Xcode と対応するインストール済み Simulator runtime が必要です。
-実機は生成元にできません。source install には Swift 6.3 と iOS / watchOS Simulator
-SDK を含む Xcode が必要です。
+Apple Silicon 搭載の Mac と macOS 14 以降が必要です。iOS / watchOS のヘッダー生成には、
+Xcode と対応するインストール済み Simulator runtime が必要です。実機は生成元にできません。
+ソースからビルドする場合は、Swift 6.3 以降と iOS / watchOS Simulator SDK を含む Xcode が必要です。
 
 ## クイックスタート
 
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
-```
-
-installer はカレントディレクトリに保存しません。
-
-installer が `Next steps` を表示した場合は、下の command の代わりにその内容を実行します。
-表示されなかった場合は:
-
-```bash
+```sh
+brew install lynnswap/tap/privateheaderkit
 privateheaderkit
 ```
 
-source を選び、全 target または個別の framework、bundle、dylib 名を指定します。
-デフォルトでは `~/PrivateHeaderKit` に生成し、実際の出力先を `Headers` として表示します。
-生成した header は platform と正確な source ごとに整理されます。たとえば
-`generated-headers/iOS/27.0_beta_24A5390f` です。
+対応する bottle（ビルド済みパッケージ）があればそれを使い、なければソースからビルドします。
+生成元を選び、すべての対象を生成するか、個別の framework・bundle・dylib 名を入力します。
+出力先はデフォルトで `~/PrivateHeaderKit` です。完了時に `Headers` ディレクトリの場所を表示します。
+生成したヘッダーは `generated-headers/iOS/27.0_beta_24A5390f` のように、platform と生成元ごとに保存します。
 
-installer が shell profile を勝手に編集することはありません。
+更新は `brew upgrade privateheaderkit`、削除は `brew uninstall privateheaderkit` で行います。
+削除しても生成済みヘッダーは残ります。従来のインストーラーを使っている場合は、
+[移行手順](Docs/installation.md#move-from-the-standalone-installer)を参照してください。
 
-## Source から build
+## ソースからビルド
 
-source installer を checkout から build して実行します。
+checkout または展開したソースアーカイブで実行します。
 
-```bash
-git clone https://github.com/lynnswap/PrivateHeaderKit.git
-cd PrivateHeaderKit
-swift run -c release privateheaderkit-install
+```sh
+scripts/build-release.sh --version dev
+.build/distribution/privateheaderkit
 ```
 
-installer は同じ checkout から `privateheaderkit` と 3 つの内部 helper を build します。
-`install.sh` と同じ `--prefix`、`--bindir` option を指定できます。
-
-## インストールオプション
-
-<details>
-<summary>インストール先の変更</summary>
-
-command を `~/bin` にインストールする場合:
-
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
-```
-
-</details>
+コマンド本体と3つの内部ヘルパーをまとめてビルドします。インストールや `PATH` の変更は行いません。
+必要な環境とビルドオプションは[インストール手順](Docs/installation.md)を参照してください。
 
 ## 自動実行
 

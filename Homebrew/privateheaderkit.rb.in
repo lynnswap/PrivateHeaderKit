@@ -1,0 +1,35 @@
+class Privateheaderkit < Formula
+  desc "Generate searchable private headers and symbol lists for Apple platforms"
+  homepage "https://github.com/lynnswap/PrivateHeaderKit"
+  url "https://github.com/__REPOSITORY__/releases/download/v__VERSION__/privateheaderkit-__VERSION__.tar.gz"
+  sha256 "__SHA256__"
+  license "MIT"
+
+  depends_on xcode: :build
+  depends_on arch: :arm64
+  depends_on macos: :sonoma
+
+  def install
+    system "scripts/build-release.sh", "--version", "v#{version}",
+           "--output-dir", buildpath/"products"
+    libexec.install Dir["products/*"]
+    bin.install_symlink libexec/"privateheaderkit"
+  end
+
+  test do
+    (testpath/"Fixture.m").write <<~OBJC
+      #import <Foundation/Foundation.h>
+      @interface PHKFormulaFixture : NSObject
+      @property(nonatomic) NSInteger value;
+      @end
+      @implementation PHKFormulaFixture
+      @end
+      int PHKFormulaSymbol(void) { return 42; }
+    OBJC
+    system ENV.cc, "-dynamiclib", "-fobjc-arc", "-framework", "Foundation",
+           "Fixture.m", "-o", "libFixture.dylib"
+    system libexec/"privateheaderkit-raw-helper", "-o", testpath/"headers", testpath/"libFixture.dylib"
+    assert_match "@interface PHKFormulaFixture", (testpath/"headers/PHKFormulaFixture.h").read
+    assert_match "PHKFormulaSymbol", shell_output("#{bin}/privateheaderkit search PHKFormulaSymbol --in #{testpath}/headers")
+  end
+end
