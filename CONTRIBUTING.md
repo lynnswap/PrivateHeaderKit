@@ -22,15 +22,16 @@ CI uses the macOS 27 [`xcode-27` runner](https://github.com/actions/runner-image
 with Xcode 27.1 to check macOS, iOS Simulator, and watchOS Simulator in parallel.
 The macOS job runs `swift test --build-system swiftbuild` in Release configuration;
 Simulator jobs compile CoreTests and the helper with testable imports. CI then
-transfers the same macOS executables to Apple Silicon runners for macOS 15, 26,
-and 27 and runs the CLI, header generation, and symbol search without rebuilding.
+transfers the same macOS executables to Apple Silicon runners for macOS 26 and
+27 and runs the CLI, header generation, and symbol search without rebuilding.
 The host smoke test also generates a fixture through the public CLI so helper
 preparation and bundled Swift runtime libraries are exercised.
 `Package Checks` requires both the platform jobs and these execution checks to
-succeed. macOS 14 remains the deployment target but is outside the CI matrix.
-The release workflow separately
-builds the approved source archive through its Homebrew Formula and tests the
-installed bottle before publication.
+succeed. macOS 14 remains the deployment target; versions before macOS 26 are
+outside the supported distribution and verification range. The release workflow
+separately builds the approved source archive through its Homebrew Formula on
+macOS 26 with Xcode 26.6, matching the tap builder, and tests the installed bottle
+before publication.
 
 Regular tests must be deterministic. Use fixture trees, injected environments,
 and stub command runners. Do not make the default suite depend on the host dyld

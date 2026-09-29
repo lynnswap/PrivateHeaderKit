@@ -5,8 +5,8 @@
 この Mac またはインストール済み iOS / watchOS Simulator runtime から、検索可能な
 private header を生成します。
 
-Apple Silicon 搭載の Mac が必要です。CI での動作確認と Homebrew bottle の配布対象は macOS 15 以降です。
-実行ファイルの deployment target は macOS 14 のままですが、14 は未検証で、対応する bottle は配布しません。
+Apple Silicon 搭載の Mac が必要です。CI での動作確認と Homebrew bottle の配布対象は macOS 26 以降です。
+実行ファイルの deployment target は macOS 14 のままですが、26 より古い macOS は配布・検証のサポート対象外です。
 iOS / watchOS のヘッダー生成には、
 Xcode と対応するインストール済み Simulator runtime が必要です。実機は生成元にできません。
 ソースからビルドする場合は、Swift 6.3 以降と iOS / watchOS Simulator SDK を含む Xcode が必要です。

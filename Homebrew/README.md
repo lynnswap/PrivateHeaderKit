@@ -36,17 +36,14 @@ reviewed revision. Repository Actions settings must allow that workflow to
 write contents and merge pull requests. No cross-repository token is needed
 for this manual release-to-tap update process.
 
-PrivateHeaderKit's bottle compatibility configuration in the tap registers the
-Apple Silicon bottle as `arm64_sequoia` after testing it on macOS 15, 26, and 27.
-The source build still runs with a recent Xcode. The archive contents and recorded
-build environment are preserved; only its published tag, filenames, and matching
-bottle metadata change. The tap verifies ordinary bottle installation and the
-Formula test on each configured runner before publication.
+The tap builds on Apple Silicon macOS 26 with Xcode 26.6 and uses the normal
+Homebrew bottle tag for that host. No older-OS tag substitution is performed.
+The source release's Homebrew check uses the same builder environment.
 
-The upstream CI owns the CLI/helper execution tests across those macOS versions.
-macOS 14 remains the executable deployment target but is not tested or a bottle
-target. A successful build on a recent host alone does not establish compatibility
-with an older host.
+Upstream CI owns CLI/helper execution tests on macOS 26 and 27. macOS 14 remains
+the executable deployment target, but older macOS versions are outside the
+supported distribution and verification range. A successful build alone does not
+establish compatibility with an older host.
 
 Do not install the draft release formula outside the release verification job:
 its canonical download URL becomes available only after publication. Never
@@ -86,7 +83,6 @@ described in [installation](../Docs/installation.md).
 Keep the formula buildable from versioned source, retain the functional test,
 and keep build requirements separate from per-command runtime requirements.
 Homebrew can build from source where a matching bottle is unavailable and the
-host can run the required Xcode. The tap's older-OS bottle registration is a
-maintainer-tested compatibility declaration, not a `homebrew/core` convention.
+host can run the required Xcode.
 Acceptance into `homebrew/core` still requires review against its current
 platform, dependency, license, and maintenance requirements.
