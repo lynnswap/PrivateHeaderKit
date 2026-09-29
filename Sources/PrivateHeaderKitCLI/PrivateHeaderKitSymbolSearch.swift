@@ -32,47 +32,51 @@ struct PrivateHeaderKitSearchArguments: ParsableCommand {
     }
 }
 
-enum PrivateHeaderKitSymbolSearchError: Error, CustomStringConvertible {
-    case noLists(String)
-    case invalidList(path: String, reason: String)
-
-    var description: String {
-        switch self {
-        case .noLists(let directory):
-            "no .symbols.tsv files found in \(directory); generate the targets with this version using --fresh"
-        case .invalidList(let path, let reason):
-            "could not read symbol list \(path): \(reason)"
-        }
-    }
-}
-
 func runPrivateHeaderKitSearchCommand(
     _ command: PrivateHeaderKitSearchCommand,
-    outputLogger: (String) -> Void
+    outputLogger: (String) -> Void,
+    errorLogger: @escaping (String) -> Void = logCLIError
 ) throws -> Int32 {
+    try Task.checkCancellation()
     let directory = URL(fileURLWithPath: command.directory, isDirectory: true).standardizedFileURL
-    var enumerationError: (any Error)?
+    var hadErrors = false
+    func reportFailure(_ message: String) {
+        hadErrors = true
+        errorLogger("error: \(message)")
+    }
     guard let enumerator = FileManager.default.enumerator(
         at: directory,
         includingPropertiesForKeys: [.isRegularFileKey],
         options: [.skipsHiddenFiles],
-        errorHandler: { _, error in
-            enumerationError = error
-            return false
+        errorHandler: { url, error in
+            reportFailure("could not enumerate \(url.path): \(error)")
+            return !Task.isCancelled
         }
     ) else {
-        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: directory.path])
+        try Task.checkCancellation()
+        if !hadErrors { reportFailure("could not enumerate directory \(directory.path)") }
+        return 2
     }
     var files: [URL] = []
     for case let url as URL in enumerator {
         try Task.checkCancellation()
-        guard url.lastPathComponent.hasSuffix(".symbols.tsv"),
-              try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
-        else { continue }
-        files.append(url)
+        guard url.lastPathComponent.hasSuffix(".symbols.tsv") else { continue }
+        do {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                files.append(url)
+            }
+        } catch {
+            try Task.checkCancellation()
+            reportFailure("could not inspect \(url.path): \(error)")
+        }
     }
-    if let enumerationError { throw enumerationError }
-    guard !files.isEmpty else { throw PrivateHeaderKitSymbolSearchError.noLists(directory.path) }
+    try Task.checkCancellation()
+    guard !files.isEmpty else {
+        if !hadErrors {
+            reportFailure("no .symbols.tsv files found in \(directory.path); generate the requested targets first")
+        }
+        return 2
+    }
 
     outputLogger("file\timage\tvisibility\tname\tdemangled_name")
     var found = false
@@ -82,7 +86,9 @@ func runPrivateHeaderKitSearchCommand(
         do {
             list = try PrivateHeaderKitSymbolList(tsv: String(contentsOf: file, encoding: .utf8))
         } catch {
-            throw PrivateHeaderKitSymbolSearchError.invalidList(path: file.path, reason: String(describing: error))
+            try Task.checkCancellation()
+            reportFailure("could not read symbol list \(file.path): \(error)")
+            continue
         }
         for symbol in list.symbols {
             try Task.checkCancellation()
@@ -101,5 +107,6 @@ func runPrivateHeaderKitSearchCommand(
             ].map(PrivateHeaderKitSymbolList.escape).joined(separator: "\t"))
         }
     }
-    return found ? 0 : 1
+    try Task.checkCancellation()
+    return hadErrors ? 2 : (found ? 0 : 1)
 }
