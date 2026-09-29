@@ -11,7 +11,7 @@ import sys
 from urllib.parse import quote
 
 
-ASSETS = ("privateheaderkit-darwin-arm64.tar.gz", "install.sh", "SHA256SUMS.txt")
+from package_release import asset_names
 
 
 class ReleaseError(Exception):
@@ -175,10 +175,11 @@ def publish(github, release_id, sha, digest, release_dir):
         print(f"Already published: {release['html_url']}")
         return
 
-    unexpected = [asset["name"] for asset in release["assets"] if asset["name"] not in ASSETS]
+    names = asset_names(tag)
+    unexpected = [asset["name"] for asset in release["assets"] if asset["name"] not in names]
     if unexpected:
         raise ReleaseError(f"Remove unexpected draft assets before retrying: {', '.join(unexpected)}")
-    paths = [release_dir / name for name in ASSETS]
+    paths = [release_dir / name for name in names]
     expected = {path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in paths}
     try:

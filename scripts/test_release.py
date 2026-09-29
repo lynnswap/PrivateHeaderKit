@@ -101,7 +101,7 @@ class ReleaseTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.release_dir = Path(directory.name)
-        for name in release.ASSETS:
+        for name in release.asset_names("v0.1.0"):
             (self.release_dir / name).write_text("verified " + name)
 
     def tearDown(self):
@@ -200,6 +200,8 @@ class ReleaseTests(unittest.TestCase):
     def test_publish_creates_exact_tag_and_preserves_stable_or_prerelease_content(self):
         for prerelease in (False, True):
             tag = "v0.1.0-rc.1" if prerelease else "v0.1.0"
+            for name in release.asset_names(tag):
+                (self.release_dir / name).write_text("verified " + name)
             github = FakeGitHub(draft(tag_name=tag, prerelease=prerelease))
             digest = release.fingerprint(github.release)
             self.publish(github, digest)
@@ -241,7 +243,7 @@ class ReleaseTests(unittest.TestCase):
         github.upload_error = False
         self.publish(github, digest)
         self.assertFalse(github.release["draft"])
-        self.assertEqual({asset["name"] for asset in github.release["assets"]}, set(release.ASSETS))
+        self.assertEqual({asset["name"] for asset in github.release["assets"]}, set(release.asset_names("v0.1.0")))
 
     def test_changed_uploads_stop_publication(self):
         def corrupt(state):

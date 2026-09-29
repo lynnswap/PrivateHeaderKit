@@ -2291,6 +2291,39 @@ private func macOSGenerateCommand(systemRoot: String) -> PrivateHeaderKitGenerat
 
 @Suite
 struct PrivateHeaderKitHelperLookupTests {
+    @Test func installedHelpersCarryTheirPlatformRuntimesAndTrackChanges() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["privateheaderkit", "privateheaderkit-raw-helper", "privateheaderkit-watch-sim-helper"] {
+            try writeCLIExecutable(UUID().uuidString, to: root.appendingPathComponent(name))
+        }
+        let names = ["macosx", "watchsimulator"]
+        for sdk in names {
+            let directory = root.appendingPathComponent("privateheaderkit-runtime-\(sdk)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("\(sdk)-runtime".utf8).write(to: directory.appendingPathComponent("libswiftCompatibilitySpan.dylib"))
+        }
+        let executable = root.appendingPathComponent("privateheaderkit")
+        let plan = try await resolvePrivateHeaderKitHelperPlan(
+            publicExecutableURL: executable, simulatorHelperPath: nil, simulatorPlatform: .watchOS
+        )
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: RecordingCommandRunner())
+        let prepared = plan.helperURLs.host.deletingLastPathComponent()
+        for sdk in names {
+            let library = prepared.appendingPathComponent("privateheaderkit-runtime-\(sdk)/libswiftCompatibilitySpan.dylib")
+            #expect(try String(contentsOf: library, encoding: .utf8) == "\(sdk)-runtime")
+        }
+        let library = root.appendingPathComponent("privateheaderkit-runtime-macosx/libswiftCompatibilitySpan.dylib")
+        try Data("changed-runtime".utf8).write(to: library)
+        await #expect(throws: ToolingError.self) {
+            try await executePrivateHeaderKitHelperBuilds(plan, runner: RecordingCommandRunner())
+        }
+        let changed = try await resolvePrivateHeaderKitHelperPlan(
+            publicExecutableURL: executable, simulatorHelperPath: nil, simulatorPlatform: .watchOS
+        )
+        #expect(changed.helperURLs.host != plan.helperURLs.host)
+    }
+
     @Test func installedPublicSymlinkResolvesHelpersFromActiveCohort() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

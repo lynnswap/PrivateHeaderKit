@@ -10,7 +10,6 @@ let package = Package(
     ],
     products: [
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
-        .executable(name: "privateheaderkit-install", targets: ["PrivateHeaderKitInstallCLI"]),
         .executable(name: "privateheaderkit-raw-helper", targets: ["PrivateHeaderKitRawDumpHelper"]),
         .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
     ],
@@ -109,30 +108,12 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
-        .target(
-            name: "PrivateHeaderKitInstall",
-            dependencies: [
-                "PrivateHeaderKitTooling",
-            ]
-        ),
         .executableTarget(
             name: "PrivateHeaderKitCLI",
             dependencies: [
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitTooling",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(
-                    name: "UnixSignals",
-                    package: "swift-service-lifecycle",
-                    condition: .when(platforms: [.macOS])
-                ),
-            ]
-        ),
-        .executableTarget(
-            name: "PrivateHeaderKitInstallCLI",
-            dependencies: [
-                "PrivateHeaderKitInstall",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(
                     name: "UnixSignals",
@@ -220,37 +201,6 @@ let package = Package(
                 "PrivateHeaderKitTestSupport",
                 .target(
                     name: "PrivateHeaderKitToolingTestHelper",
-                    condition: .when(platforms: [.macOS])
-                ),
-            ]
-        ),
-        .testTarget(
-            name: "PrivateHeaderKitInstallTests",
-            dependencies: [
-                .target(
-                    name: "PrivateHeaderKitInstall",
-                    condition: .when(platforms: [.macOS])
-                ),
-                .target(
-                    name: "PrivateHeaderKitTestSupport",
-                    condition: .when(platforms: [.macOS])
-                ),
-                .target(
-                    name: "PrivateHeaderKitInstallCLI",
-                    condition: .when(platforms: [.macOS])
-                ),
-                .target(
-                    name: "PrivateHeaderKitTooling",
-                    condition: .when(platforms: [.macOS])
-                ),
-                .product(
-                    name: "ArgumentParser",
-                    package: "swift-argument-parser",
-                    condition: .when(platforms: [.macOS])
-                ),
-                .product(
-                    name: "UnixSignals",
-                    package: "swift-service-lifecycle",
                     condition: .when(platforms: [.macOS])
                 ),
             ]

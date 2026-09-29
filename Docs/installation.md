@@ -1,129 +1,103 @@
 # Installation and Updates
 
-PrivateHeaderKit installs one public command, `privateheaderkit`. The raw macOS,
-iOS Simulator, and watchOS Simulator helpers are internal artifacts that are
-installed and updated with it as one validated cohort.
+PrivateHeaderKit is distributed through the `lynnswap/tap` Homebrew Formula.
+Homebrew installs the public `privateheaderkit` command together with the
+private macOS, iOS Simulator, and watchOS Simulator helpers and their required
+Swift compatibility libraries.
 
 ## Requirements
 
-GitHub release installation requires:
+- An Apple Silicon Mac running macOS 26 or later for supported Homebrew
+  distribution and CI verification. The executable deployment target remains
+  macOS 14; older systems are outside that support range rather than explicitly
+  rejected by the executable.
+- Homebrew.
+- To build from source: Swift 6.3 or later and Xcode with the iOS Simulator and
+  watchOS Simulator SDKs.
+- To generate iOS or watchOS headers: Xcode and the corresponding installed
+  Simulator runtime. Connected physical devices are not generation sources.
 
-- an Apple Silicon Mac
-- macOS 14 or later
+The Formula requires Xcode 26.4 or later when building from source; Xcode 26.4
+includes Swift 6.3. Xcode's own [host macOS requirements](https://developer.apple.com/xcode/system-requirements)
+apply to source builds separately from the tool's runtime minimum.
+A matching Homebrew bottle avoids the source build and its toolchain requirements.
+Bottles use Homebrew's normal registration for the macOS 26 build host. If no
+matching bottle is available, Homebrew attempts a source build, which still needs
+a host OS supported by the required Xcode. Retaining the macOS 14 deployment
+target does not promise Homebrew installation on older systems.
 
-It does not require a Swift toolchain. Generating iOS or watchOS headers
-additionally requires Xcode with the matching Simulator runtime. Connected
-physical devices are not generation sources.
+## Install, Update, and Remove
 
-## Install a Release
-
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+```sh
+brew install lynnswap/tap/privateheaderkit
+privateheaderkit
 ```
 
-The default command is installed at `~/.local/bin/privateheaderkit`.
-The installer is not written to the current directory.
+Update through Homebrew:
 
-The installer checks whether the resolved command directory is already on
-`PATH`. If it is missing, the installer prints a `Next steps` block with:
-
-- a command to update the appropriate zsh or bash login profile when that
-  profile can be updated safely
-- an `export` command for the current shell
-- the `privateheaderkit` command to run next
-
-The installer never creates, edits, or sources a shell profile itself. For an
-unknown login shell, it prints the command directory instead of guessing a
-profile or shell syntax.
-
-The release installer verifies the downloaded archive checksum, exact archive
-contents, release manifest, executable hashes, architecture, platform,
-permissions, and code signatures before activation.
-
-### Custom destination
-
-Install under another prefix. The public command is placed in `<prefix>/bin`:
-
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --prefix ~/Tools/PrivateHeaderKit
+```sh
+brew update
+brew upgrade privateheaderkit
 ```
 
-Or choose the public command directory directly:
+Remove the installed tool:
 
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir ~/bin
+```sh
+brew uninstall privateheaderkit
 ```
 
-Choose either `--prefix` or `--bindir`. The installer resolves `~`, relative
-paths, and symlinked ancestors before installing and reporting the command
-location.
+Uninstalling the Formula does not remove generated headers or the data under
+`~/PrivateHeaderKit`. Homebrew manages the command's location and version links;
+do not run a separate updater over a Homebrew-managed installation.
 
-### Install a specific release
+## Build from Source
 
-Replace `<version>` with a release tag such as `v1.2.3`:
+Build all four executables from a checkout or extracted source archive:
 
-```text
-https://github.com/lynnswap/PrivateHeaderKit/releases/download/<version>/install.sh
+```sh
+scripts/build-release.sh --version dev
+.build/distribution/privateheaderkit
 ```
 
-## Install from Source
+For a released source archive, pass its release version instead of `dev`.
+The build uses the revisions in `Package.resolved` and does not require an
+installed Simulator runtime or a Git checkout. The output directory contains
+all four executables; keep them together when running the built command.
+Use `--output-dir <directory>` to select another build output directory.
+This build command does not install or change `PATH`.
 
-Source installation builds the public command and three internal helpers from
-the same checkout:
+To build the published Formula from source under Homebrew:
 
-```bash
-git clone https://github.com/lynnswap/PrivateHeaderKit.git
-cd PrivateHeaderKit
-swift run -c release privateheaderkit-install
+```sh
+brew install --build-from-source lynnswap/tap/privateheaderkit
 ```
 
-This path requires Swift 6.3 and Xcode with `xcrun`, the iOS Simulator SDK, and
-the watchOS Simulator SDK because the installed cohort always includes both
-simulator helpers. It does not require either runtime merely to build the
-helpers, and it does not download release assets. `--prefix` and `--bindir` are
-also available for source installation.
+## Move from the Standalone Installer
 
-## Update
+New releases no longer provide the standalone installer or the
+`privateheaderkit-install` executable. Existing installations and already
+published release assets remain available until you choose to remove them.
 
-Run the release installation command again, or update the source checkout and
-rerun the source installation command above. Preserve the same `--prefix` or
-`--bindir` option when updating a custom destination.
+1. Install the Formula and check the new command directly:
 
-Release and source installation both publish an immutable cohort and switch
-the stable command only after the complete cohort passes validation. Download,
-build, validation, or staging failures leave the previous cohort active; an
-activation failure attempts to restore it and reports any restoration failure.
+   ```sh
+   brew install lynnswap/tap/privateheaderkit
+   "$(brew --prefix privateheaderkit)/bin/privateheaderkit" --help
+   ```
 
-## Installed Layout
+2. Inspect the commands selected by your shell:
 
-The default layout is:
+   ```sh
+   type -a privateheaderkit
+   ls -l ~/.local/bin/privateheaderkit
+   ```
 
-```text
-~/.local/bin/privateheaderkit
-  -> ../libexec/privateheaderkit/current/privateheaderkit
-~/.local/libexec/privateheaderkit/
-  current -> versions/<version>+<cohort-sha256>
-  versions/<version>+<cohort-sha256>/
-    privateheaderkit
-    privateheaderkit-raw-helper
-    privateheaderkit-sim-helper
-    privateheaderkit-watch-sim-helper
-    release.json
-```
+3. If that path is the old standalone command, remove that command link. After
+   confirming the Homebrew installation works, you may also remove the old
+   `~/.local/libexec/privateheaderkit` installation directory. If you used a
+   custom prefix or bindir, inspect and remove only the corresponding old
+   installation paths instead.
 
-Only `privateheaderkit` is a public command. The helpers are always resolved
-through the active validated cohort.
-
-After activating a validated cohort, the installer removes the retired
-`privateheaderkit-dump`, `headerdump`, and `headerdump-sim` commands from the
-selected command directory. Release and source installation use the same
-cleanup path. These names are reserved PrivateHeaderKit installation paths;
-choosing a custom `--prefix` or `--bindir` also authorizes their removal from
-that selected command directory.
-
-An older direct install containing all three executables is migrated under the
-installer lock. Partial, ambiguous, or modified legacy install layouts are
-rejected instead of guessed. An interrupted install migration is recovered
-from its recorded intent on the next install. Generation-state and output
-migration is a separate contract described in
-[Generation, Output, and Resume Behavior](generation.md#legacy-output).
+Keep `~/PrivateHeaderKit` and any custom output directory: they contain your
+results, not the old executable installation. The Formula does not scan or
+remove standalone installations and does not edit shell profiles.

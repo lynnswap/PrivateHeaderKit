@@ -1,7 +1,6 @@
 # Contributing
 
-PrivateHeaderKit uses Swift 6.3 as its baseline. Source builds and release
-cohorts require Xcode with `xcrun`, the iOS Simulator SDK, and the watchOS
+PrivateHeaderKit uses Swift 6.3 as its baseline. Source builds require Xcode with `xcrun`, the iOS Simulator SDK, and the watchOS
 Simulator SDK.
 
 ## Tests
@@ -19,15 +18,20 @@ or release publication. The publication tests use an in-memory GitHub client:
 scripts/test-release-scripts.sh
 ```
 
-CI uses the macOS 27 [`xcode-27` runner](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md) with Xcode 27.1 to build and check
-macOS, iOS Simulator, and watchOS Simulator in parallel.
-Each job uses the Release configuration and one build directory for its products
-and test targets. The macOS job uses `swift test --build-system swiftbuild` to
-build and run the suite together, then stages its built products without
-rebuilding. This engine avoids async executable entry-point collisions in
-optimized test bundles. Simulator jobs compile CoreTests and the helper.
-These builds enable testable imports for the test targets while retaining Release
-optimization. `Package Checks` succeeds only when all three jobs succeed.
+CI uses the macOS 27 [`xcode-27` runner](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
+with Xcode 27.1 to check macOS, iOS Simulator, and watchOS Simulator in parallel.
+The macOS job runs `swift test --build-system swiftbuild` in Release configuration;
+Simulator jobs compile CoreTests and the helper with testable imports. CI then
+transfers the same macOS executables to Apple Silicon runners for macOS 26 and
+27 and runs the CLI, header generation, and symbol search without rebuilding.
+The host smoke test also generates a fixture through the public CLI so helper
+preparation and bundled Swift runtime libraries are exercised.
+`Package Checks` requires both the platform jobs and these execution checks to
+succeed. macOS 14 remains the deployment target; versions before macOS 26 are
+outside the supported distribution and verification range. The release workflow
+separately builds the approved source archive through its Homebrew Formula on
+macOS 26 with Xcode 26.6, matching the tap builder, and tests the installed bottle
+before publication.
 
 Regular tests must be deterministic. Use fixture trees, injected environments,
 and stub command runners. Do not make the default suite depend on the host dyld
@@ -133,51 +137,47 @@ python3 scripts/release.py start v1.2.3 \
 
 Use `--title` to override the title, which defaults to the version. Stable tags
 such as `v1.2.3` become stable releases; suffixed tags such as `v1.2.3-rc.1`
-become prereleases. Keep the installation command at the start of stable release
-notes:
+become prereleases. Use the Homebrew installation command at the start of stable
+release notes once the tap is available:
 
-```bash
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+```sh
+brew install lynnswap/tap/privateheaderkit
 ```
 
-The command creates or reuses a matching Draft Release with these notes, then
-dispatches the `Release` workflow from the default branch. It prints the Draft
-and Actions URLs without waiting for publication. Draft creation alone does not
-start the workflow. Do not create or push the release tag locally.
+The command creates or reuses a matching Draft Release, then dispatches the
+`Release` workflow from the default branch. It prints the Draft and Actions URLs
+without waiting for publication. Do not create or push the release tag locally.
 
-The workflow calls the same platform jobs against the approved SHA and version.
-Build, assembly, and verification scripts come from the workflow revision. The
-approved source revision is checked out separately, so it does not need to
-understand newer workflow options such as `--test`.
-Successful jobs upload their built binaries for release assembly; there is no
-separate CI build of the release target. A macOS assembly job collects the
-binaries, restores executable permissions, signs and validates them, then creates
-`release.json` and the archive. Verification installs that archive into a temporary
-prefix and exercises those installed binaries: every helper generates headers and
-symbol lists from a small Objective-C fixture, and the installed CLI searches those
-symbols. Simulator helpers run in temporary iOS/watchOS devices that are deleted
-after each check. This release verification requires installed, available runtimes
-for both Simulator platforms. Only after these checks succeed does the workflow
-attach and verify exactly:
+The workflow packages the approved Git commit as a source archive, preserving
+`Package.resolved` and the checked-in SwiftPM mirrors. It generates a Formula
+with that archive's canonical versioned URL and SHA-256. The source archive needs
+no `.git` directory to build. Publication tooling comes from the workflow
+revision; package tests run against the approved source revision.
 
-- `install.sh`
+A separate Homebrew job seeds the unpublished archive into Homebrew's download
+cache, builds the Formula, runs its functional test, creates a bottle, reinstalls
+that bottle and tests it again. Every helper also generates headers and symbols
+from a small Objective-C fixture, and the installed CLI searches the result.
+Simulator smoke tests create and delete their own temporary devices; available
+iOS and watchOS runtimes are required for those release checks.
+
+After package and Homebrew checks succeed, the workflow publishes exactly:
+
+- `privateheaderkit-<version>.tar.gz` (source; the filename version omits `v`)
+- `privateheaderkit.rb`
 - `SHA256SUMS.txt`
-- `privateheaderkit-darwin-arm64.tar.gz`
 
-For local builds, `scripts/build-release.sh --version <tag> --commit <sha>`
-still builds and stages the complete cohort under `dist/arm64`. Use
+The publication job binds the transferred assets to the checksums digest from
+the packaging job. It never runs the source or Formula with publication credentials.
+After publication, copy the release Formula into a pull request in
+`lynnswap/homebrew-tap`. Its shared CI builds and publishes the distribution
+bottles. See [Homebrew packaging](Homebrew/README.md) for initial tap setup,
+local verification, and the future `homebrew/core` path.
+
+For local source builds, use `scripts/build-release.sh --version dev`. Use
 `--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
-to stage one platform under `dist/<platform>`. After collecting those three
-directories, `--artifacts-root <directory>` assembles the cohort without
-rebuilding. Each platform directory includes `build-info.txt` with its version
-and commit; assembly requires those values to match the requested release.
-`--dist-root` selects the output root in either mode.
-Use `--source-root <checkout>` to build another source checkout with these
-scripts; relative output paths are resolved under that checkout.
-Add `--test` when building to use the same build-and-test path as CI. This option
-runs the macOS test suite and compiles Simulator test targets before staging any
-new binaries. `scripts/verify-release-assets.sh` performs the installed-binary
-smoke tests after packaging; it does not rebuild the release binaries.
+for one platform and `--output-dir <directory>` to select the output location.
+The caller owns installation; the script only builds and stages executables.
 
 The final job creates the tag at the tested SHA and automatically publishes the
 same Draft, preserving its title, notes, and prerelease state. Existing tags

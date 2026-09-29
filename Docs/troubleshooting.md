@@ -2,13 +2,17 @@
 
 ## `privateheaderkit: command not found`
 
-The default command directory is `~/.local/bin`. When it is not on `PATH`, the
-installer prints a `Next steps` block for the detected login shell, including
-an export for the current session. Copy those commands exactly, or open a new
-terminal if the profile already contains the printed entry.
+Check the installed Formula and the command paths:
 
-Rerunning the installer is safe and will print the guidance again when needed.
-The installer does not edit or source shell profiles itself.
+```sh
+brew list --versions privateheaderkit
+type -a privateheaderkit
+"$(brew --prefix privateheaderkit)/bin/privateheaderkit" --help
+```
+
+If the direct command works, complete Homebrew's shell setup so its `bin`
+directory is on `PATH`. If an older standalone command appears first, follow
+the [migration steps](installation.md#move-from-the-standalone-installer).
 
 ## No iOS or watchOS source appears in the wizard
 
@@ -71,11 +75,11 @@ left unchanged when this conflict is detected.
 
 ## An install or update failed
 
-Read the first reported validation or filesystem error. Download, build,
-validation, and staging failures do not replace the active validated cohort.
-If activation itself fails, the installer reports whether restoring the
-previous cohort also failed.
+Read Homebrew's reported download, build, or link error. If Homebrew is building
+from source, check that Xcode supplies Swift 6.3 or later and both iOS and watchOS
+Simulator SDKs. Simulator runtimes are needed for generation, not for building.
 
-Run the same install command again after correcting the reported cause. Do not
-manually replace individual helper binaries; the public command, both simulator
-helpers, and the raw macOS helper are validated and activated as one cohort.
+After correcting the reported cause, retry `brew install`, `brew upgrade`, or
+`brew reinstall privateheaderkit` as appropriate. Keep the CLI and its helpers
+under Homebrew management instead of replacing individual files. Generated
+headers and other data under `~/PrivateHeaderKit` are independent of the Formula.
