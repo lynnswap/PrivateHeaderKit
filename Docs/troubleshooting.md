@@ -16,6 +16,10 @@ the [migration steps](installation.md#move-from-the-standalone-installer).
 
 ## No iOS or watchOS source appears in the wizard
 
+Check the wizard's `Unavailable sources` section for a discovery or metadata
+error. Other readable sources remain selectable. An explicitly selected source
+with unreadable metadata still stops generation rather than guessing its identity.
+
 iOS and watchOS generation require full Xcode and a matching installed
 Simulator runtime. Confirm that Xcode's command-line tools are selected and
 inspect the available runtimes:

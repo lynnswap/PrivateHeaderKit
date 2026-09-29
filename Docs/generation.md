@@ -15,6 +15,11 @@ The wizard guides you through:
 2. all available targets or a comma-separated list of target names
 3. Continue or Restart when an all-target run has compatible unfinished work
 
+The source picker lists usable sources even if another runtime cannot be read.
+An `Unavailable sources` section identifies failed discovery or metadata reads.
+Fix the reported source and rerun the command to make it selectable. If no source
+can be used, the command reports the failures and exits without starting generation.
+
 For specific targets, enter an exact name or path, or a partial name that matches
 one target. If a name is missing or matches multiple targets, the wizard shows
 the affected terms and candidate paths and lets you correct the input while

@@ -1306,9 +1306,7 @@ func resolvePrivateHeaderKitSimulator(
     )
 }
 
-func discoverPrivateHeaderKitInteractiveSources() async throws
-    -> [PrivateHeaderKitInteractiveSource]
-{
+func discoverPrivateHeaderKitInteractiveSources() async throws -> PrivateHeaderKitSourceDiscovery {
     try await discoverPrivateHeaderKitInteractiveSources(
         runner: ProcessRunner(),
         releaseMetadataResolver: resolvePrivateHeaderKitReleaseMetadata
@@ -1319,27 +1317,57 @@ func discoverPrivateHeaderKitInteractiveSources(
     runner: CommandRunning,
     releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver =
         resolvePrivateHeaderKitReleaseMetadata
-) async throws -> [PrivateHeaderKitInteractiveSource] {
-    var sources = try await (Simctl.listRuntimesIfAvailable(runner: runner) ?? []).map {
-        let metadataIsSeed = try releaseMetadataResolver(
-            canonicalDirectoryURL(path: $0.runtimeRoot),
-            .simulator
-        )
-        return PrivateHeaderKitInteractiveSource(
-            platform: .init(simulatorPlatform: $0.platform),
-            version: $0.version,
-            build: $0.build.isEmpty ? nil : $0.build,
-            metadataIsSeed: metadataIsSeed,
-            systemRoot: nil
-        )
+) async throws -> PrivateHeaderKitSourceDiscovery {
+    try Task.checkCancellation()
+    var sources: [PrivateHeaderKitInteractiveSource] = []
+    var failures: [PrivateHeaderKitSourceDiscovery.Failure] = []
+    let runtimes: [RuntimeInfo]
+    do {
+        runtimes = try await Simctl.listRuntimes(runner: runner)
+    } catch is CancellationError {
+        throw CancellationError()
+    } catch {
+        try Task.checkCancellation()
+        failures.append(.init(source: "Simulator runtimes", message: String(describing: error)))
+        runtimes = []
     }
-    sources.append(
-        try await currentMacOSInteractiveSource(
-            runner: runner,
-            releaseMetadataResolver: releaseMetadataResolver
-        )
-    )
-    return sources
+    for runtime in runtimes {
+        try Task.checkCancellation()
+        do {
+            let metadataIsSeed = try releaseMetadataResolver(
+                canonicalDirectoryURL(path: runtime.runtimeRoot), .simulator
+            )
+            sources.append(.init(
+                platform: .init(simulatorPlatform: runtime.platform),
+                version: runtime.version,
+                build: runtime.build.isEmpty ? nil : runtime.build,
+                metadataIsSeed: metadataIsSeed,
+                systemRoot: nil
+            ))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            let build = runtime.build.isEmpty ? "" : " (\(runtime.build))"
+            failures.append(.init(
+                source: "\(runtime.platform.userFacingSourceName) \(runtime.version)\(build)",
+                message: String(describing: error)
+            ))
+        }
+    }
+    try Task.checkCancellation()
+    do {
+        sources.append(try await currentMacOSInteractiveSource(
+            runner: runner, releaseMetadataResolver: releaseMetadataResolver
+        ))
+    } catch is CancellationError {
+        throw CancellationError()
+    } catch {
+        try Task.checkCancellation()
+        failures.append(.init(source: "macOS", message: String(describing: error)))
+    }
+    try Task.checkCancellation()
+    return .init(sources: sources, failures: failures)
 }
 
 private func currentMacOSInteractiveSource(
