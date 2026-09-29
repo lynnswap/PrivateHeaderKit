@@ -1001,18 +1001,18 @@ package actor GenerationStore {
       })
       let decisions = selectedTargetIDs.map {
         targetID -> PrivateHeaderGeneration.ResumeTargetDecision in
-        guard let attempt = attempts[targetID] else {
-          return .init(targetID: targetID, status: .pending)
-        }
         let currentArtifacts = currentArtifactsByTarget[targetID].map(Set.init)
         let publishedTarget = publishedTargets[targetID]
-        if attempt.status == .completed,
+        if publishedTarget?.status == .completed,
           publications[targetID]?.fingerprint == planFingerprint,
           let publishedSequence = publications[targetID]?.sequence,
           publishedSequence >= latestSequence,
           currentArtifacts == Set(publishedTarget?.artifacts ?? [])
         {
           return .init(targetID: targetID, status: .completed)
+        }
+        guard let attempt = attempts[targetID] else {
+          return .init(targetID: targetID, status: .pending)
         }
         if attempt.status == .skipped,
           publications[targetID]?.fingerprint == planFingerprint,

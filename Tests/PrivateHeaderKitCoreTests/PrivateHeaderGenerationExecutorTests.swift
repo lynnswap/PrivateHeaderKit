@@ -88,6 +88,36 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try fixture.readLiveHeader(framework: "Zulu") == "resumed")
   }
 
+  @Test(arguments: ["Bravo", "Charlie", "Delta"])
+  func allTargetResumeReusesIndividualRepairsAndNewTargets(_ repairedTarget: String) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    for target in ["Alpha", "Bravo", "Charlie"] {
+      try fixture.createFramework("\(target).framework")
+    }
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "batch", cancelsForFramework: "Bravo.framework"),
+        runID: "run-batch", generationID: "generation-batch"
+      ).run(plan: fixture.plan(.allAvailable))
+      Issue.record("expected interruption")
+    } catch PrivateHeaderGeneration.GenerationError.runInterrupted(let interruption) {
+      #expect(interruption.summary.targetCounts.completed == 1)
+    }
+    if repairedTarget == "Delta" { try fixture.createFramework("Delta.framework") }
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "repaired"),
+      runID: "run-repaired", generationID: "generation-repaired"
+    ).run(plan: fixture.plan(.query(repairedTarget)))
+    let runner = RecordingRunner(contents: "resumed")
+    let result = try await fixture.executor(
+      runner: runner, runID: "run-resumed", generationID: "generation-resumed"
+    ).run(plan: fixture.plan(.allAvailable, resumeBehavior: .resume))
+    #expect(await runner.invocationCount == (repairedTarget == "Delta" ? 2 : 1))
+    #expect(result.targetCounts.skipped == 2)
+    #expect(try fixture.readLiveHeader(framework: repairedTarget) == "repaired")
+  }
+
   @Test func completedAllTargetRunRegeneratesUnlessResumeIsRequested() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
