@@ -15,6 +15,48 @@ import PrivateHeaderKitTooling
 
 @Suite
 struct PrivateHeaderKitCLIArgumentTests {
+    @Test(arguments: [false, true], [false, true])
+    func toolVersionExitsWithoutGenerationSideEffects(_ usesAlias: Bool, _ includesPartialInputs: Bool) async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unusedOutput = root.appendingPathComponent("Unused")
+        let arguments = ["privateheaderkit"] + (usesAlias ? ["generate"] : [])
+            + ["--tool-version"]
+            + (includesPartialInputs ? ["--version", "27.0", "--out", unusedOutput.path] : [])
+        let output = ThreadSafeStrings()
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            arguments,
+            currentExecutableURL: nil,
+            generationClient: .init(prepare: { _ in
+                Issue.record("version reporting prepared generation")
+                throw ToolingError.message("unexpected generation")
+            }),
+            helperResolver: { _, _, _ in
+                Issue.record("version reporting resolved helpers")
+                throw ToolingError.message("unexpected helper resolution")
+            },
+            interactiveSourceProvider: {
+                Issue.record("version reporting discovered sources")
+                return .init(sources: [])
+            },
+            interactiveOutputBaseDirectoryProvider: {
+                Issue.record("version reporting requested an output directory")
+                return unusedOutput.path
+            },
+            inputReader: {
+                Issue.record("version reporting prompted for input")
+                return nil
+            },
+            outputLogger: output.append,
+            errorLogger: errors.append
+        )
+        #expect(status == 0)
+        #expect(output.text.trimmingCharacters(in: .newlines) == PrivateHeaderKitBuildInfo.version)
+        #expect(errors.text.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: unusedOutput.path))
+    }
+
     @Test func noArgumentsAndHiddenGenerateStartInteractiveMode() throws {
         #expect(try parsePrivateHeaderKitCommand(["privateheaderkit"]) == .interactiveGenerate(outputBaseDirectory: nil))
         #expect(
@@ -133,6 +175,7 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(output.text.contains("SUBCOMMANDS:"))
         #expect(output.text.contains("decompile"))
         #expect(output.text.contains("search"))
+        #expect(output.text.contains("--tool-version"))
         #expect(output.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             .contains("Use alone to start the wizard."))
         #expect(!output.text.contains("\n  generate "))

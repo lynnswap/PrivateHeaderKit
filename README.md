@@ -30,6 +30,7 @@ Generated headers are grouped by platform and exact source, for example
 
 Update with `brew upgrade privateheaderkit`; remove with
 `brew uninstall privateheaderkit`. Generated headers are kept.
+Check the running CLI build with `privateheaderkit --tool-version`.
 For an existing standalone installation, follow the
 [migration instructions](Docs/installation.md#move-from-the-standalone-installer).
 

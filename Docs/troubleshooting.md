@@ -1,5 +1,16 @@
 # Troubleshooting
 
+## Check the running version
+
+```sh
+privateheaderkit --tool-version
+```
+
+Include this build version in bug reports. `--tool-version` prints the version
+embedded in the running CLI and exits without discovering sources or preparing
+helpers. The separate `--version <version>` option selects the source OS for
+generation.
+
 ## `privateheaderkit: command not found`
 
 Check the installed Formula and the command paths:
