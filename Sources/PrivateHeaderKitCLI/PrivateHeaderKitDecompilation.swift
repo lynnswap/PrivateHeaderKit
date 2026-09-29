@@ -32,7 +32,8 @@ func decompilePrivateHeaderKitFunction(
     processRunner: any CommandRunning = ProcessRunner(),
     environment: [String: String] = ProcessInfo.processInfo.environment,
     temporaryDirectory: URL = FileManager.default.temporaryDirectory,
-    removeDirectory: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    removeDirectory: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) },
+    progressReporter: PrivateHeaderKitOutputLogger = { _ in }
 ) async throws -> String {
     let headless: String
     if let home = command.ghidraHome ?? environment["GHIDRA_HOME"] {
@@ -49,7 +50,8 @@ func decompilePrivateHeaderKitFunction(
     let result: Result<String, any Error>
     do {
         result = .success(try await runGhidraDecompilation(
-            command, headless: headless, directory: directory, processRunner: processRunner, environment: environment
+            command, headless: headless, directory: directory, processRunner: processRunner,
+            environment: environment, progressReporter: progressReporter
         ))
     } catch {
         result = .failure(error)
@@ -84,7 +86,8 @@ private func runGhidraDecompilation(
     headless: String,
     directory: URL,
     processRunner: any CommandRunning,
-    environment: [String: String]
+    environment: [String: String],
+    progressReporter: PrivateHeaderKitOutputLogger
 ) async throws -> String {
     let binary: URL
     switch command.source {
@@ -95,6 +98,7 @@ private func runGhidraDecompilation(
         try FileManager.default.createDirectory(at: images, withIntermediateDirectories: false)
         let ipsw = command.ipsw.contains("/")
             ? URL(fileURLWithPath: command.ipsw).standardizedFileURL.path : command.ipsw
+        progressReporter("Extracting shared-cache image with ipsw...")
         let extraction = try await processRunner.runBuffered([
             ipsw, "dyld", "extract", URL(fileURLWithPath: path).standardizedFileURL.path,
             image, "--slide", "--objc", "--output", images.path,
@@ -119,6 +123,7 @@ private func runGhidraDecompilation(
         "-readOnly", "-deleteProject",
     ]
     if let processor = command.processor { invocation += ["-processor", processor] }
+    progressReporter("Analyzing and decompiling with Ghidra...")
     let execution = try await processRunner.runBuffered(invocation, env: environment, cwd: directory)
     guard execution.status == 0, !execution.wasKilled else {
         throw PrivateHeaderKitDecompilationError.toolFailed("Ghidra failed: \(execution.diagnosticText)")
@@ -138,9 +143,12 @@ private func runGhidraDecompilation(
 func runPrivateHeaderKitDecompileCommand(
     _ command: PrivateHeaderKitDecompileCommand,
     processRunner: any CommandRunning = ProcessRunner(),
-    outputLogger: PrivateHeaderKitOutputLogger
+    outputLogger: PrivateHeaderKitOutputLogger,
+    progressReporter: PrivateHeaderKitOutputLogger = logCLIError
 ) async throws -> Int32 {
-    let code = try await decompilePrivateHeaderKitFunction(command, processRunner: processRunner)
+    let code = try await decompilePrivateHeaderKitFunction(
+        command, processRunner: processRunner, progressReporter: progressReporter
+    )
     if let path = command.outputPath {
         let url = URL(fileURLWithPath: path)
         try Data(code.utf8).write(to: url, options: .withoutOverwriting)

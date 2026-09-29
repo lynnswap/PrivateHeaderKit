@@ -248,7 +248,9 @@ func runPrivateHeaderKitCommand(
     do {
         switch command {
         case .decompile(let decompile):
-            exitCode = try await runPrivateHeaderKitDecompileCommand(decompile, outputLogger: outputLogger)
+            exitCode = try await runPrivateHeaderKitDecompileCommand(
+                decompile, outputLogger: outputLogger, progressReporter: errorLogger
+            )
         case .search(let search):
             exitCode = try runPrivateHeaderKitSearchCommand(
                 search, outputLogger: outputLogger, errorLogger: errorLogger

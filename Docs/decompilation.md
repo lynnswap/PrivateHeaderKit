@@ -68,6 +68,19 @@ already selected Mach-O slice.
 
 ## Results and Failures
 
+Progress is written to standard error before each external tool starts:
+
+```text
+Extracting shared-cache image with ipsw...
+Analyzing and decompiling with Ghidra...
+```
+
+Standalone binary input skips the extraction phase. Standard output contains
+only the pseudocode, or the `Pseudocode: <path>` result when `--output` is used.
+Full subprocess logs are not printed during normal execution; failures retain
+their diagnostic output. Redirecting stdout therefore keeps progress out of
+saved pseudocode.
+
 Ghidra imports and analyzes the selected image, then emits only the selected
 function's pseudocode. Original symbol selection happens before analysis can
 rename symbols. Ghidra's imported-name normalization applies to names such as
