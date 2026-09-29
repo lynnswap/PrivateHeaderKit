@@ -231,10 +231,12 @@ func runPrivateHeaderKitCommand(
         return exitCode
     }
 
-    let defaultInputSession: PrivateHeaderKitInputSession? =
-        command == .interactiveGenerate && inputReader == nil
-            ? PrivateHeaderKitInputSession()
-            : nil
+    let defaultInputSession: PrivateHeaderKitInputSession?
+    if case .interactiveGenerate = command, inputReader == nil {
+        defaultInputSession = PrivateHeaderKitInputSession()
+    } else {
+        defaultInputSession = nil
+    }
     let effectiveInputReader: PrivateHeaderKitInputReader = inputReader ?? {
         try await defaultInputSession?.readLine()
     }
@@ -251,7 +253,7 @@ func runPrivateHeaderKitCommand(
             exitCode = try runPrivateHeaderKitSearchCommand(
                 search, outputLogger: outputLogger, errorLogger: errorLogger
             )
-        case .interactiveGenerate:
+        case .interactiveGenerate(let outputBaseDirectory):
             exitCode = try await runPrivateHeaderKitInteractiveGenerate(
                 invokedProgramName: args.first ?? "privateheaderkit",
                 currentExecutableURL: currentExecutableURL,
@@ -261,7 +263,9 @@ func runPrivateHeaderKitCommand(
                 helperResolver: helperResolver,
                 releaseMetadataResolver: releaseMetadataResolver,
                 sourceProvider: interactiveSourceProvider,
-                outputBaseDirectoryProvider: interactiveOutputBaseDirectoryProvider,
+                outputBaseDirectoryProvider: {
+                    outputBaseDirectory ?? interactiveOutputBaseDirectoryProvider()
+                },
                 screenClearer: interactiveScreenClearer,
                 inputReader: effectiveInputReader,
                 inputFinalizer: inputFinalizer,

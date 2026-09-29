@@ -27,8 +27,15 @@ keeping the selected source. Escape returns to target selection. A temporary
 Simulator is reused while correcting names and cleaned up when you leave the
 selection or finish generation.
 
-The default output base is `~/PrivateHeaderKit`. The command prints the concrete
-header directory when a run starts and again in the completion summary.
+The default output base is `~/PrivateHeaderKit`. To use the same wizard with a
+different output directory, pass only `--out`:
+
+```bash
+privateheaderkit --out ~/CustomHeaders
+```
+
+The command prints the concrete header directory when a run starts and again
+in the completion summary.
 
 macOS generation works from the host system. iOS and watchOS generation require
 Xcode, `xcrun`, `simctl`, and the selected Simulator runtime. PrivateHeaderKit
@@ -51,8 +58,9 @@ available, or cannot boot, the run stops and keeps previously published headers.
 
 ## Automation
 
-Supplying any generation option disables the wizard. Automation must provide
-all required inputs.
+Supplying generation options other than `--out` disables the wizard. Automation
+must provide all required inputs; incomplete source or target options report an
+error instead of opening the wizard.
 
 ### macOS
 
@@ -97,7 +105,7 @@ runtime for the selected platform matches a version.
 | `--version <version>` | Source OS version. |
 | `--build <build>` | Source build identifier; needed for ambiguous Simulator runtime versions. |
 | `--system-root <path>` | Runtime root; required for macOS and optional as a Simulator override. |
-| `--out <path>` | Output base for generated headers and state. |
+| `--out <path>` | Output base for generated headers and state. Used alone, starts the wizard. |
 | `--target all\|<query>` | All targets or comma-separated target names. |
 | `--device <name-or-udid>` | Preferred compatible iOS or watchOS Simulator device. |
 | `--sim-helper <path>` | Explicit helper for the selected Simulator platform. |

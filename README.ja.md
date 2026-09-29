@@ -21,6 +21,7 @@ privateheaderkit
 対応する bottle（ビルド済みパッケージ）があればそれを使い、なければソースからビルドします。
 生成元を選び、すべての対象を生成するか、個別の framework・bundle・dylib 名を入力します。
 出力先はデフォルトで `~/PrivateHeaderKit` です。完了時に `Headers` ディレクトリの場所を表示します。
+`privateheaderkit --out ~/CustomHeaders` と実行すると、出力先を変えて同じ対話操作を使えます。
 生成したヘッダーは `generated-headers/iOS/27.0_beta_24A5390f` のように、platform と生成元ごとに保存します。
 
 更新は `brew upgrade privateheaderkit`、削除は `brew uninstall privateheaderkit` で行います。

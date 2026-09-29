@@ -16,10 +16,10 @@ import PrivateHeaderKitTooling
 @Suite
 struct PrivateHeaderKitCLIArgumentTests {
     @Test func noArgumentsAndHiddenGenerateStartInteractiveMode() throws {
-        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit"]) == .interactiveGenerate)
+        #expect(try parsePrivateHeaderKitCommand(["privateheaderkit"]) == .interactiveGenerate(outputBaseDirectory: nil))
         #expect(
             try parsePrivateHeaderKitCommand(["privateheaderkit", "generate"])
-                == .interactiveGenerate
+                == .interactiveGenerate(outputBaseDirectory: nil)
         )
     }
 
@@ -49,6 +49,19 @@ struct PrivateHeaderKitCLIArgumentTests {
                     simulatorHelperPath: "/tmp/sim-helper"
                 )
             )
+        )
+    }
+
+    @Test(arguments: [false, true])
+    func outputOnlyStartsTheSameWizard(_ usesAlias: Bool) throws {
+        let prefix = ["privateheaderkit"] + (usesAlias ? ["generate"] : [])
+        #expect(
+            try parsePrivateHeaderKitCommand(prefix + ["--out", "~/Custom Headers"])
+                == .interactiveGenerate(outputBaseDirectory: "~/Custom Headers")
+        )
+        #expect(
+            try parsePrivateHeaderKitCommand(prefix + ["--out=relative/headers"])
+                == .interactiveGenerate(outputBaseDirectory: "relative/headers")
         )
     }
 
@@ -120,6 +133,8 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(output.text.contains("SUBCOMMANDS:"))
         #expect(output.text.contains("decompile"))
         #expect(output.text.contains("search"))
+        #expect(output.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            .contains("Use alone to start the wizard."))
         #expect(!output.text.contains("\n  generate "))
         #expect(errors.text.isEmpty)
     }
@@ -146,16 +161,37 @@ struct PrivateHeaderKitCLIArgumentTests {
         #expect(errors.text.contains("already been set"))
     }
 
-    @Test func partialDirectOptionsFailInsteadOfFallingBackToInteractiveMode() async {
+    @Test(arguments: [
+        ["--version", "27.0"],
+        ["--out", "/tmp/headers", "--target", "Foo"],
+        ["--out", "/tmp/headers", "--fresh"],
+    ])
+    func partialDirectOptionsFailInsteadOfFallingBackToInteractiveMode(_ arguments: [String]) async {
         let errors = ThreadSafeStrings()
         let status = await runPrivateHeaderKitCommand(
-            ["privateheaderkit", "--version", "27.0"],
+            ["privateheaderkit"] + arguments,
             currentExecutableURL: nil,
             outputLogger: { _ in },
             errorLogger: errors.append
         )
         #expect(status != 0)
         #expect(errors.text.contains("--platform"))
+    }
+
+    @Test func emptyInteractiveOutputIsRejectedBeforeSourceDiscovery() async {
+        let errors = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit", "--out", ""],
+            currentExecutableURL: nil,
+            interactiveSourceProvider: {
+                Issue.record("empty output unexpectedly entered the wizard")
+                return .init(sources: [])
+            },
+            outputLogger: { _ in },
+            errorLogger: errors.append
+        )
+        #expect(status != 0)
+        #expect(errors.text.contains("Argument '--out <out>' must not be empty"))
     }
 
     @Test func legacyExecutableNamesAsFirstArgumentKeepMigrationGuidance() async {
@@ -1927,6 +1963,77 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(status == 0)
         #expect(runCount.value == 1)
         #expect(!output.text.contains("Select action:"))
+    }
+
+    @Test(arguments: ["default", "custom", "alias", "automation"])
+    func outputSelectionReachesPublishedFiles(_ mode: String) async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let systemRoot = root.appendingPathComponent("SystemRoot")
+        let framework = systemRoot.appendingPathComponent("System/Library/Frameworks/Foo.framework")
+        try FileManager.default.createDirectory(at: framework, withIntermediateDirectories: true)
+        try Data().write(to: framework.appendingPathComponent("Foo"))
+        let defaultOutput = root.appendingPathComponent("Default Output")
+        let customOutput = root.appendingPathComponent("Custom Output")
+        let expectedOutput = mode == "default" ? defaultOutput : customOutput
+        let runner = RecordingCommandRunner()
+        await runner.setStreamingHandler { command, _, _ in
+            try writeRawDumpProcessHandshake(for: command)
+            let outputIndex = try #require(command.firstIndex(of: "-o"))
+            let headers = URL(fileURLWithPath: command[outputIndex + 1]).appendingPathComponent(
+                "System/Library/Frameworks/Foo.framework/Headers"
+            )
+            try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+            try "generated".write(to: headers.appendingPathComponent("Generated.h"), atomically: true, encoding: .utf8)
+            let reportIndex = try #require(command.firstIndex(of: "--diagnostics-report"))
+            try JSONEncoder().encode(PrivateHeaderKitRawDumpDiagnosticsReport(diagnostics: []))
+                .write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
+            return .init(status: 0, wasKilled: false, lastLines: [])
+        }
+        let arguments: [String] = switch mode {
+        case "custom": ["privateheaderkit", "--out", customOutput.path]
+        case "alias": ["privateheaderkit", "generate", "--out", customOutput.path]
+        case "automation": [
+            "privateheaderkit", "--platform", "macOS", "--version", "16.0",
+            "--system-root", systemRoot.path, "--target", "Foo", "--out", customOutput.path,
+        ]
+        default: ["privateheaderkit"]
+        }
+        let input = ScriptedInput(["1", "2", "Foo"])
+        let output = ThreadSafeStrings()
+        let defaultOutputCalls = ThreadSafeCounter()
+        let status = await runPrivateHeaderKitCommand(
+            arguments,
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: .live(processRunner: runner),
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            interactiveSourceProvider: {
+                #expect(mode != "automation")
+                return .init(sources: [.init(platform: .macOS, version: "16.0", build: nil, systemRoot: systemRoot.path)])
+            },
+            interactiveOutputBaseDirectoryProvider: {
+                defaultOutputCalls.increment()
+                return defaultOutput.path
+            },
+            interactiveScreenClearer: {},
+            inputReader: {
+                #expect(mode != "automation")
+                return try await input.readLine()
+            },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == 0)
+        #expect(defaultOutputCalls.value == (mode == "default" ? 1 : 0))
+        #expect(await runner.streamingCommandSnapshot().count == 1)
+        let source = try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0", metadataIsSeed: false)
+        let layout = PrivateHeaderGeneration.Output(baseDirectory: expectedOutput)
+        let artifacts = layout.artifactDirectory(for: source)
+        #expect(try String(contentsOf: artifacts.appendingPathComponent("Frameworks/Foo/Headers/Generated.h"), encoding: .utf8) == "generated")
+        #expect(FileManager.default.fileExists(atPath: layout.stateDirectory(for: source).appendingPathComponent("generation.sqlite").path))
+        #expect(output.text.contains(artifacts.path))
+        #expect(!FileManager.default.fileExists(atPath: (mode == "default" ? customOutput : defaultOutput).path))
     }
 
     @Test func interactiveRunUsesDefaultGenerationWithoutGrantingLegacyMigration() async throws {

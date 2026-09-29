@@ -22,7 +22,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("system-root"), help: "Runtime system root. Required for macOS.")
     var systemRoot: String?
 
-    @Option(name: .customLong("out"), help: "Base directory for generated headers and state.")
+    @Option(name: .customLong("out"), help: "Base directory for generated headers and state. Use alone to start the wizard.")
     var outputBaseDirectory: String?
 
     @Option(name: .customLong("target"), help: "Target query, or 'all'.")
@@ -37,21 +37,23 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Flag(exclusivity: .exclusive, help: "Continue or restart all-target generation. --fresh also permits legacy migration.")
     var continuationMode: PrivateHeaderKitContinuationMode?
 
-    var isEmpty: Bool {
+    var usesInteractiveSelection: Bool {
         platform == nil
             && sourceVersion == nil
             && build == nil
             && systemRoot == nil
-            && outputBaseDirectory == nil
             && targetQuery == nil
             && device == nil
             && simulatorHelperPath == nil
             && continuationMode == nil
     }
 
-    func commandIfSpecified() throws -> PrivateHeaderKitGenerateCommand? {
-        guard !isEmpty else {
-            return nil
+    func command() throws -> PrivateHeaderKitCommand {
+        if let outputBaseDirectory, outputBaseDirectory.isEmpty {
+            throw ValidationError("Argument '--out <out>' must not be empty")
+        }
+        if usesInteractiveSelection {
+            return .interactiveGenerate(outputBaseDirectory: outputBaseDirectory)
         }
         guard let platform else {
             throw ValidationError("Missing expected argument '--platform <platform>'")
@@ -62,7 +64,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
         if let build, build.isEmpty {
             throw ValidationError("Argument '--build <build>' must not be empty")
         }
-        guard let outputBaseDirectory, !outputBaseDirectory.isEmpty else {
+        guard let outputBaseDirectory else {
             throw ValidationError("Missing expected argument '--out <out>'")
         }
         guard let targetQuery, !targetQuery.isEmpty else {
@@ -87,7 +89,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             build: build
         )
 
-        return PrivateHeaderKitGenerateCommand(
+        return .generate(PrivateHeaderKitGenerateCommand(
             platform: platform,
             version: sourceVersion,
             build: build,
@@ -97,7 +99,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             continuationMode: continuationMode,
             device: device,
             simulatorHelperPath: simulatorHelperPath
-        )
+        ))
     }
 }
 
@@ -112,7 +114,7 @@ struct PrivateHeaderKitArguments: ParsableCommand {
     @OptionGroup var generation: PrivateHeaderKitGenerationArguments
 
     mutating func validate() throws {
-        _ = try generation.commandIfSpecified()
+        _ = try generation.command()
     }
 }
 
@@ -126,12 +128,12 @@ struct PrivateHeaderKitGenerateAlias: ParsableCommand {
     @OptionGroup var generation: PrivateHeaderKitGenerationArguments
 
     mutating func validate() throws {
-        _ = try generation.commandIfSpecified()
+        _ = try generation.command()
     }
 }
 
 enum PrivateHeaderKitCommand: Equatable {
-    case interactiveGenerate
+    case interactiveGenerate(outputBaseDirectory: String?)
     case generate(PrivateHeaderKitGenerateCommand)
     case decompile(PrivateHeaderKitDecompileCommand)
     case search(PrivateHeaderKitSearchCommand)
@@ -156,12 +158,10 @@ func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCo
         return .search(search.command)
     }
     if let root = parsed as? PrivateHeaderKitArguments {
-        return try root.generation.commandIfSpecified().map(PrivateHeaderKitCommand.generate)
-            ?? .interactiveGenerate
+        return try root.generation.command()
     }
     if let generate = parsed as? PrivateHeaderKitGenerateAlias {
-        return try generate.generation.commandIfSpecified().map(PrivateHeaderKitCommand.generate)
-            ?? .interactiveGenerate
+        return try generate.generation.command()
     }
     // ArgumentParser represents both `--help` and its built-in `help` command as
     // an internal command value. Running it produces the library's typed CleanExit.
