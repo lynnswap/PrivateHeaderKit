@@ -10,7 +10,24 @@ import Glibc
 
 typealias PrivateHeaderKitInteractiveScreenClearer = () -> Void
 typealias PrivateHeaderKitInteractiveSourceProvider = @Sendable () async throws
-    -> [PrivateHeaderKitInteractiveSource]
+    -> PrivateHeaderKitSourceDiscovery
+
+struct PrivateHeaderKitSourceDiscovery: Equatable, Sendable {
+    struct Failure: Equatable, Sendable {
+        let source: String
+        let message: String
+
+        var description: String { "\(source): \(message)" }
+    }
+
+    let sources: [PrivateHeaderKitInteractiveSource]
+    let failures: [Failure]
+
+    init(sources: [PrivateHeaderKitInteractiveSource], failures: [Failure] = []) {
+        self.sources = sources
+        self.failures = failures
+    }
+}
 
 struct PrivateHeaderKitInteractiveSource: Equatable, Sendable {
     let platform: PrivateHeaderKitGenerateCommand.Platform
@@ -87,14 +104,17 @@ func runPrivateHeaderKitInteractiveGenerate(
     errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> Int32 {
     do {
-        let sources = try await sourceProvider()
+        let discovery = try await sourceProvider()
+        let sources = discovery.sources
         guard !sources.isEmpty else {
+            for failure in discovery.failures { errorLogger("error: \(failure.description)") }
             errorLogger("error: no available generation sources found")
             return 2
         }
         while true {
             renderInteractiveSourceScreen(
                 sources: sources,
+                failures: discovery.failures,
                 screenClearer: screenClearer,
                 outputLogger: outputLogger
             )
@@ -359,6 +379,7 @@ func defaultInteractiveOutputBaseDirectory() -> String {
 
 private func renderInteractiveSourceScreen(
     sources: [PrivateHeaderKitInteractiveSource],
+    failures: [PrivateHeaderKitSourceDiscovery.Failure],
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     outputLogger: PrivateHeaderKitOutputLogger
 ) {
@@ -375,6 +396,11 @@ private func renderInteractiveSourceScreen(
             previousPlatform = source.platform
         }
         outputLogger("  [\(index + 1)] \(source.versionAndBuildDisplayName)")
+    }
+    if !failures.isEmpty {
+        outputLogger("")
+        outputLogger("Unavailable sources")
+        for failure in failures { outputLogger("  \(failure.description)") }
     }
     outputLogger("")
     outputLogger("Press Escape to cancel.")

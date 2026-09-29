@@ -1107,7 +1107,8 @@ struct PrivateHeaderKitCLIExecutionTests {
             }
         )
 
-        #expect(sources == [
+        #expect(sources.failures.isEmpty)
+        #expect(sources.sources == [
             PrivateHeaderKitInteractiveSource(
                 platform: .iOS,
                 version: "17.5",
@@ -1130,7 +1131,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         ])
     }
 
-    @Test func sourceDiscoveryModelsSimulatorAvailabilityAndPropagatesListingFailures() async throws {
+    @Test func sourceDiscoveryModelsAvailabilityAndReportsListingFailures() async throws {
         let availableRunner = CaptureOnlyCommandRunner { command, _, _ in
             switch command {
             case ["xcrun", "--find", "simctl"]:
@@ -1156,7 +1157,8 @@ struct PrivateHeaderKitCLIExecutionTests {
                 }
             }
         )
-        #expect(sources == [
+        #expect(sources.failures.isEmpty)
+        #expect(sources.sources == [
             PrivateHeaderKitInteractiveSource(
                 platform: .iOS,
                 version: "27.0",
@@ -1180,7 +1182,7 @@ struct PrivateHeaderKitCLIExecutionTests {
 
         let unavailableRunner = CaptureOnlyCommandRunner { command, _, _ in
             switch command {
-            case ["xcrun", "--find", "simctl"]:
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]:
                 throw DiscoveryProbeError.commandFailed
             case ["/usr/bin/sw_vers", "-productVersion"]:
                 return "16.0\n"
@@ -1194,7 +1196,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             try await discoverPrivateHeaderKitInteractiveSources(
                 runner: unavailableRunner,
                 releaseMetadataResolver: { _, _ in false }
-            ) == [
+            ).sources == [
                 PrivateHeaderKitInteractiveSource(
                     platform: .macOS,
                     version: "16.0",
@@ -1204,23 +1206,16 @@ struct PrivateHeaderKitCLIExecutionTests {
             ]
         )
 
-        let failingRunner = CaptureOnlyCommandRunner { command, _, _ in
-            if command == ["xcrun", "--find", "simctl"] {
-                return "/Applications/Xcode.app/Contents/Developer/usr/bin/simctl\n"
-            }
+        let failingRunner = CaptureOnlyCommandRunner { _, _, _ in
             throw DiscoveryProbeError.commandFailed
         }
-        do {
-            _ = try await discoverPrivateHeaderKitInteractiveSources(runner: failingRunner)
-            Issue.record("expected available simulator discovery failure")
-        } catch let error as DiscoveryProbeError {
-            #expect(error == .commandFailed)
-        } catch {
-            Issue.record("unexpected discovery error: \(error)")
-        }
+        let failed = try await discoverPrivateHeaderKitInteractiveSources(runner: failingRunner)
+        #expect(failed.sources.isEmpty)
+        #expect(failed.failures.map(\.source) == ["Simulator runtimes", "macOS"])
+        #expect(failed.failures.allSatisfy { $0.message.contains("commandFailed") })
 
         let cancellingRunner = CaptureOnlyCommandRunner { command, _, _ in
-            #expect(command == ["xcrun", "--find", "simctl"])
+            #expect(command == ["xcrun", "simctl", "list", "runtimes", "-j"])
             throw CancellationError()
         }
         do {
@@ -1231,6 +1226,138 @@ struct PrivateHeaderKitCLIExecutionTests {
         } catch {
             Issue.record("unexpected cancellation error: \(error)")
         }
+    }
+
+    @Test(arguments: ["simulator", "host", "both"])
+    func sourceDiscoveryKeepsIndependentSourcesAndDisplaysFailures(_ failedSource: String) async throws {
+        let runner = CaptureOnlyCommandRunner { command, _, _ in
+            switch command {
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]:
+                if failedSource != "host" { throw ToolingError.message("simulator-list-failed") }
+                return #"{"runtimes":[{"platform":"iOS","version":"27.0","buildversion":"24A123","identifier":"ios-27","runtimeRoot":"/runtimes/iOS","isAvailable":true}]}"#
+            case ["/usr/bin/sw_vers", "-productVersion"]:
+                if failedSource != "simulator" { throw ToolingError.message("host-version-failed") }
+                return "27.0"
+            case ["/usr/bin/sw_vers", "-buildVersion"]:
+                return "26A123"
+            default:
+                throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+        let discovery = try await discoverPrivateHeaderKitInteractiveSources(
+            runner: runner, releaseMetadataResolver: { _, _ in false }
+        )
+        let expectedPlatforms: [PrivateHeaderKitGenerateCommand.Platform] = switch failedSource {
+        case "simulator": [.macOS]
+        case "host": [.iOS]
+        default: []
+        }
+        #expect(discovery.sources.map(\.platform) == expectedPlatforms)
+        #expect(discovery.failures.count == (failedSource == "both" ? 2 : 1))
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            interactiveSourceProvider: { discovery },
+            interactiveScreenClearer: {},
+            inputReader: {
+                #expect(!discovery.sources.isEmpty)
+                return "\u{001B}"
+            },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == (failedSource == "both" ? 2 : 1))
+        for failure in discovery.failures {
+            #expect(output.text.contains(failure.description))
+        }
+        if failedSource == "both" {
+            #expect(output.text.contains("no available generation sources found"))
+        } else {
+            #expect(output.text.contains("Unavailable sources"))
+            #expect(output.text.contains("Select source:"))
+        }
+    }
+
+    @Test func malformedRuntimeMetadataDoesNotHideOtherSourcesOrAllowExplicitGeneration() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let broken = root.appendingPathComponent("Broken")
+        let usable = root.appendingPathComponent("Usable")
+        for directory in [broken, usable] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("not a plist".utf8).write(to: broken.appendingPathComponent("RestoreVersion.plist"))
+        try PropertyListSerialization.data(
+            fromPropertyList: ["IsSeed": true], format: .binary, options: 0
+        ).write(to: usable.appendingPathComponent("RestoreVersion.plist"))
+        let listing = """
+        {"runtimes":[
+          {"platform":"iOS","version":"27.0","buildversion":"24A123","identifier":"ios-27","runtimeRoot":"\(broken.path)","isAvailable":true},
+          {"platform":"iOS","version":"27.1","buildversion":"24A234","identifier":"ios-27-1","runtimeRoot":"\(usable.path)","isAvailable":true}
+        ]}
+        """
+        let runner = CaptureOnlyCommandRunner { command, _, _ in
+            switch command {
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]: return listing
+            case ["/usr/bin/sw_vers", "-productVersion"]: return "27.0"
+            case ["/usr/bin/sw_vers", "-buildVersion"]: return "26A123"
+            default: throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+        let discovery = try await discoverPrivateHeaderKitInteractiveSources(
+            runner: runner,
+            releaseMetadataResolver: { root, layout in
+                switch layout {
+                case .macOS: return false
+                case .simulator: return try resolvePrivateHeaderKitReleaseMetadata(systemRoot: root, layout: layout)
+                }
+            }
+        )
+        #expect(discovery.sources.map(\.platform) == [.iOS, .macOS])
+        #expect(discovery.sources.first?.version == "27.1")
+        #expect(discovery.sources.first?.metadataIsSeed == true)
+        #expect(discovery.failures.map(\.source) == ["iOS 27.0 (24A123)"])
+        #expect(discovery.failures.first?.message.contains(broken.path) == true)
+        let command = PrivateHeaderKitGenerateCommand(
+            platform: .iOS, version: "27.0", build: "24A123", systemRoot: nil,
+            outputBaseDirectory: root.appendingPathComponent("Output").path,
+            targetQuery: "Foo", continuationMode: nil, device: nil, simulatorHelperPath: nil
+        )
+        do {
+            _ = try await resolvePrivateHeaderKitSimulator(for: command, runner: runner)
+            Issue.record("malformed metadata was accepted for generation")
+        } catch let error as ToolingError {
+            #expect(error.description.contains("failed to decode runtime release metadata"))
+            #expect(error.description.contains(broken.path))
+        }
+    }
+
+    @Test(arguments: ["listing", "metadata", "host"])
+    func sourceDiscoveryPropagatesCancellationAtEachReadBoundary(_ phase: String) async throws {
+        let calls = ThreadSafeStrings()
+        let runner = CaptureOnlyCommandRunner { command, _, _ in
+            calls.append(command.joined(separator: " "))
+            switch command {
+            case ["xcrun", "simctl", "list", "runtimes", "-j"]:
+                if phase == "listing" { throw CancellationError() }
+                return #"{"runtimes":[{"platform":"iOS","version":"27.0","buildversion":"24A123","identifier":"ios-27","runtimeRoot":"/runtimes/iOS","isAvailable":true}]}"#
+            case ["/usr/bin/sw_vers", "-productVersion"]:
+                throw CancellationError()
+            default:
+                throw ToolingError.message("unexpected command: \(command)")
+            }
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await discoverPrivateHeaderKitInteractiveSources(
+                runner: runner,
+                releaseMetadataResolver: { _, _ in
+                    if phase == "metadata" { throw CancellationError() }
+                    return false
+                }
+            )
+        }
+        #expect(calls.text.contains("sw_vers") == (phase == "host"))
+        #expect(!calls.text.contains("-buildVersion"))
     }
 
     @Test func liveGenerationClientUsesOneRunnerForInventoryAndRawDump() async throws {
@@ -1596,7 +1723,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             ["privateheaderkit"],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "16.4.1",
@@ -1623,7 +1750,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                         build: "25G76",
                         systemRoot: "/"
                     ),
-                ]
+                ])
             },
             interactiveScreenClearer: {},
             inputReader: { try await input.readLine() },
@@ -1730,7 +1857,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
                 sourceCount.increment()
-                return [.init(platform: .iOS, version: "27.0", build: "24A123", systemRoot: nil)]
+                return .init(sources: [.init(platform: .iOS, version: "27.0", build: "24A123", systemRoot: nil)])
             },
             interactiveOutputBaseDirectoryProvider: { outputBase.path },
             interactiveScreenClearer: {},
@@ -1789,7 +1916,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: testPrivateHeaderKitHelperResolver,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
-                [.init(platform: .macOS, version: "27.0", build: "24A1", systemRoot: "/")]
+                .init(sources: [.init(platform: .macOS, version: "27.0", build: "24A1", systemRoot: "/")])
             },
             interactiveOutputBaseDirectoryProvider: { "/tmp/headers" },
             interactiveScreenClearer: {},
@@ -1844,14 +1971,14 @@ struct PrivateHeaderKitCLIExecutionTests {
             },
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .macOS,
                         version: "16.0",
                         build: nil,
                         systemRoot: root.path
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { outputBase.path },
             interactiveScreenClearer: {},
@@ -1953,14 +2080,14 @@ struct PrivateHeaderKitCLIExecutionTests {
                 )
             },
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: nil,
                         systemRoot: nil
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { outputBase.path },
             interactiveScreenClearer: {},
@@ -2046,14 +2173,14 @@ struct PrivateHeaderKitCLIExecutionTests {
                 )
             },
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: nil,
                         systemRoot: nil
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { outputBase.path },
             interactiveScreenClearer: {},
@@ -2123,14 +2250,14 @@ struct PrivateHeaderKitCLIExecutionTests {
                 )
             },
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: nil,
                         systemRoot: nil
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { outputBase.path },
             interactiveScreenClearer: {},
@@ -2165,14 +2292,14 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: testPrivateHeaderKitHelperResolver,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: "24A123",
                         systemRoot: nil
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { "/tmp/PrivateHeaderKit" },
             interactiveScreenClearer: {},
@@ -2243,14 +2370,14 @@ struct PrivateHeaderKitCLIExecutionTests {
                 )
             },
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: nil,
                         systemRoot: nil
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { root.path },
             interactiveScreenClearer: {},
@@ -2310,14 +2437,14 @@ struct PrivateHeaderKitCLIExecutionTests {
             helperResolver: testPrivateHeaderKitHelperResolver,
             releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
             interactiveSourceProvider: {
-                [
+                .init(sources: [
                     PrivateHeaderKitInteractiveSource(
                         platform: .iOS,
                         version: "27.0",
                         build: "24A123",
                         systemRoot: nil
                     ),
-                ]
+                ])
             },
             interactiveOutputBaseDirectoryProvider: { root.path },
             interactiveScreenClearer: {},
@@ -3357,14 +3484,14 @@ struct PrivateHeaderKitAsyncInputTests {
                     }
                 ),
                 interactiveSourceProvider: {
-                    [
+                    .init(sources: [
                         PrivateHeaderKitInteractiveSource(
                             platform: .macOS,
                             version: "16.0",
                             build: nil,
                             systemRoot: "/"
                         ),
-                    ]
+                    ])
                 },
                 interactiveScreenClearer: {},
                 inputReader: { try await promptInput.readLine() },
@@ -3855,14 +3982,14 @@ private func assertInteractiveLegacyMigration(
         helperResolver: testPrivateHeaderKitHelperResolver,
         releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
         interactiveSourceProvider: {
-            [
+            .init(sources: [
                 PrivateHeaderKitInteractiveSource(
                     platform: .macOS,
                     version: "16.0",
                     build: nil,
                     systemRoot: systemRoot.path
                 ),
-            ]
+            ])
         },
         interactiveOutputBaseDirectoryProvider: { outputBase.path },
         interactiveScreenClearer: {},
