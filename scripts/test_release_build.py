@@ -17,7 +17,20 @@ import sys
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 if name == "xcrun":
-    print("/sdk/" + args[args.index("--sdk") + 1])
+    if args[:2] == ["--find", "swiftc"]:
+        print(Path(sys.argv[0]).parent / "swiftc")
+    elif args[0] == "swift-stdlib-tool":
+        sdk = args[args.index("--platform") + 1]
+        if os.environ.get("PHK_TEST_FAIL_RUNTIME") == sdk:
+            sys.exit(25)
+        runtime = Path(args[args.index("--destination") + 1]) / "libswiftCompatibilitySpan.dylib"
+        runtime.write_text(sdk + " runtime")
+        runtime.chmod(0o755)
+    elif args[0] == "install_name_tool":
+        if not args[2].startswith("@loader_path/privateheaderkit-runtime-"):
+            sys.exit("runtime path must resolve beside the installed executable")
+    else:
+        print("/sdk/" + args[args.index("--sdk") + 1])
 elif name == "swift":
     triple = args[args.index("--triple") + 1] if "--triple" in args else "macos"
     output = Path.cwd() / ".build" / "stub" / triple
@@ -74,9 +87,14 @@ class ReleaseBuildTests(unittest.TestCase):
         result = self.build()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(p.name for p in self.output.iterdir()), [
-            "privateheaderkit", "privateheaderkit-raw-helper", "privateheaderkit-sim-helper",
+            "privateheaderkit", "privateheaderkit-raw-helper",
+            "privateheaderkit-runtime-iphonesimulator", "privateheaderkit-runtime-macosx",
+            "privateheaderkit-runtime-watchsimulator", "privateheaderkit-sim-helper",
             "privateheaderkit-watch-sim-helper",
         ])
+        for sdk in ("macosx", "iphonesimulator", "watchsimulator"):
+            runtime = self.output / f"privateheaderkit-runtime-{sdk}/libswiftCompatibilitySpan.dylib"
+            self.assertEqual(runtime.read_text(), sdk + " runtime")
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertEqual(len(calls), 4)
         self.assertTrue(all(call["version"] == "v1.2.3" for call in calls))
@@ -118,6 +136,7 @@ class ReleaseBuildTests(unittest.TestCase):
         for failure in (
             {"PHK_TEST_FAIL": "arm64-apple-watchos10.0-simulator"},
             {"PHK_TEST_FAIL_SIGN": "privateheaderkit-watch-sim-helper"},
+            {"PHK_TEST_FAIL_RUNTIME": "watchsimulator"},
         ):
             with self.subTest(failure=failure):
                 result = self.build(**failure)
@@ -128,10 +147,15 @@ class ReleaseBuildTests(unittest.TestCase):
         self.output.mkdir()
         (self.output / "privateheaderkit").write_text("previous command")
         (self.output / "privateheaderkit-watch-sim-helper").write_text("previous watch helper")
+        runtime = self.output / "privateheaderkit-runtime-macosx/libswiftCompatibilitySpan.dylib"
+        runtime.parent.mkdir()
+        runtime.write_text("previous runtime")
         result = self.build("--platform", "macos")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.output / "privateheaderkit").read_text(), "macos privateheaderkit")
         self.assertEqual((self.output / "privateheaderkit-watch-sim-helper").read_text(), "previous watch helper")
+        self.assertEqual(runtime.read_text(), "macosx runtime")
+        self.assertTrue(os.access(self.output / "privateheaderkit", os.X_OK))
         self.assertFalse(list(self.output.glob(".privateheaderkit.*")))
 
 

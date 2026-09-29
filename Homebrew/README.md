@@ -3,7 +3,10 @@
 PrivateHeaderKit is packaged as a source-based Formula. Homebrew owns its
 installation, upgrade, version selection, and removal. The public command and
 three private helpers are installed together in the formula's `libexec`;
-only `privateheaderkit` is linked into Homebrew's `bin`.
+only `privateheaderkit` is linked into Homebrew's `bin`. Required Swift compatibility
+libraries are collected with `swift-stdlib-tool` and installed in platform-specific
+sibling directories. Each executable locates its libraries relative to itself,
+so it can run without the build host's Xcode installation.
 
 `privateheaderkit.rb.in` is the release formula template. `scripts/package_release.py`
 packages an approved Git commit as a source archive and fills the template with

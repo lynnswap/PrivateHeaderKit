@@ -2,7 +2,8 @@
 
 PrivateHeaderKit is distributed through the `lynnswap/tap` Homebrew Formula.
 Homebrew installs the public `privateheaderkit` command together with the
-private macOS, iOS Simulator, and watchOS Simulator helpers.
+private macOS, iOS Simulator, and watchOS Simulator helpers and their required
+Swift compatibility libraries.
 
 ## Requirements
 

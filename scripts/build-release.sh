@@ -46,10 +46,26 @@ trap 'rm -rf "$staging_dir"' EXIT
 export PRIVATEHEADERKIT_BUILD_VERSION="$version"
 # SwiftPM's plugin sandbox cannot nest inside Homebrew's build sandbox.
 common=(-c release --disable-sandbox --force-resolved-versions)
+toolchain_lib="$(dirname "$(dirname "$(xcrun --find swiftc)")")/lib"
 
 stage() {
-  local source="$1" name="$2"
+  local source="$1" name="$2" sdk="$3" library directory
+  local runtime_dir="$staging_dir/privateheaderkit-runtime-$sdk"
+  local library_sources=(--source-libraries "$toolchain_lib/swift/$sdk")
   install -m 755 "$source" "$staging_dir/$name"
+  mkdir -p "$runtime_dir"
+  # Compatibility libraries live in versioned Swift directories in the selected toolchain.
+  for directory in "$toolchain_lib"/swift-*/"$sdk"; do
+    [[ -d "$directory" ]] || continue
+    library_sources+=(--source-libraries "$directory")
+  done
+  xcrun swift-stdlib-tool --copy --platform "$sdk" \
+    "${library_sources[@]}" --scan-executable "$staging_dir/$name" --destination "$runtime_dir"
+  for library in "$runtime_dir"/*.dylib; do
+    [[ -f "$library" ]] || continue
+    codesign --force --sign - "$library"
+  done
+  xcrun install_name_tool -add_rpath "@loader_path/privateheaderkit-runtime-$sdk" "$staging_dir/$name"
   codesign --force --sign - "$staging_dir/$name"
 }
 
@@ -65,7 +81,7 @@ if [[ "$platform" == all || "$platform" == macos ]]; then
   fi
   host_bin="$(swift build "${host_arguments[@]}" --show-bin-path)"
   for product in privateheaderkit privateheaderkit-raw-helper; do
-    stage "$host_bin/$product" "$product"
+    stage "$host_bin/$product" "$product" macosx
   done
 fi
 
@@ -91,10 +107,10 @@ for simulator in ios-simulator watchos-simulator; do
     swift build "${arguments[@]}" --target PrivateHeaderKitCoreTests
   fi
   simulator_bin="$(swift build "${arguments[@]}" --show-bin-path)"
-  stage "$simulator_bin/privateheaderkit-sim-helper" "$name"
+  stage "$simulator_bin/privateheaderkit-sim-helper" "$name" "$sdk"
 done
 
-if ! mv -f "$staging_dir"/* "$output_dir/"; then
+if ! cp -Rp "$staging_dir/." "$output_dir/"; then
   echo "Could not publish all build products; $output_dir may contain partially replaced outputs." >&2
   exit 1
 fi
