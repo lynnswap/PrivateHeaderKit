@@ -129,7 +129,11 @@ privateheaderkit search '_CFAbsoluteTimeGetCurrent' \
 The default search is a case-insensitive literal substring match against both
 names. `--exact` matches a complete, case-sensitive name. Output is TSV with the
 list file path, logical image path, visibility, original name, and demangled
-name. Exit status is 0 for a match, 1 for no matches, and nonzero for errors.
+name. Exit status is 0 for a complete search with matches, 1 for a complete
+search with no matches, and 2 for errors. If a list or directory cannot be read,
+search continues through the other accessible files, reports failed paths on
+standard error, and returns 2 even if it found matches. Standard output remains
+TSV, so partial results can still be consumed. Cancellation stops the search.
 Searching does not boot a simulator or load a framework. If no symbol lists
 exist, regenerate the desired named targets with this version.
 
