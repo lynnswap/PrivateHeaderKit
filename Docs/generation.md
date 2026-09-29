@@ -266,7 +266,7 @@ Named targets are generated every time they are requested. They do not require
 `--resume`, `--fresh`, or a continuation decision in the wizard. They also do not
 replace the progress of an interrupted all-target run. Successful replacements
 remain visible, and a failed target keeps its last successfully published files.
-Legacy migration is separate: when an older state or artifact tree must be
+Legacy migration is separate: when an older artifact tree must be
 migrated, both named-target and all-target commands still require an explicit
 `--fresh` or the wizard's migration choice. Selecting a named target alone does
 not authorize moving the old output.
@@ -302,10 +302,11 @@ a new run.
 
 ## Legacy Output
 
-PrivateHeaderKit does not silently adopt either legacy form:
+Legacy state and legacy artifacts are handled separately:
 
-- Older JSON state is not imported as resumable state. A fresh migration
-  creates `generation.sqlite` and leaves the JSON paths in place.
+- Older JSON state is not imported as resumable state. PrivateHeaderKit creates
+  `generation.sqlite` automatically and leaves the JSON files untouched. State
+  files alone do not require a confirmation or `--fresh`.
 - A pre-rewrite `<output-base>/<source-storage-id>` directory is inventoried and
   copied into the draft generation. A fresh migration publishes the new
   generation, then atomically moves the original directory under
