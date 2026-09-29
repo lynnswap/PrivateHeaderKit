@@ -347,6 +347,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         planFingerprint: fingerprint,
         selectedTargetIDs: targetIDs,
         currentArtifactsByTarget: currentLiveArtifactsByTarget,
+        includingCompletedRuns: plan.options.resumeBehavior.resumeRequested,
         at: dateProvider()
       )
       if let resumeSummary,
@@ -1685,6 +1686,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         ),
         selectedTargetIDs: preparedPlan.selectedTargetIDs,
         currentArtifactsByTarget: currentLiveArtifactsByTarget,
+        includingCompletedRuns: plan.options.resumeBehavior.resumeRequested,
         at: Date()
       )
       return summary?.isUnfinished == true ? summary : nil

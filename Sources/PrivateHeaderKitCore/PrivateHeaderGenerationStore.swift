@@ -948,6 +948,7 @@ package actor GenerationStore {
     planFingerprint: String,
     selectedTargetIDs: [String],
     currentArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
+    includingCompletedRuns: Bool,
     at date: Date
   ) throws -> PrivateHeaderGeneration.ResumeSummary? {
     try databaseQueue.read { db in
@@ -968,6 +969,7 @@ package actor GenerationStore {
       let latestID: String = latest["id"]
       let latestSequence: Int64 = latest["sequence"]
       let run = try Self.fetchRun(db, id: PrivateHeaderGeneration.RunID(latestID))
+      if run.status == .completed, !includingCompletedRuns { return nil }
       guard run.planFingerprint == planFingerprint else {
         throw PrivateHeaderGeneration.GenerationError.incompatibleResume("plan fingerprint changed")
       }

@@ -253,8 +253,9 @@ Continuation applies only to `--target all`:
   or missing targets. A changed plan is rejected.
 - `--fresh` regenerates every target. It also permits legacy artifact migration.
 - With neither flag, generation starts normally when no all-target state exists
-  or the previous all-target run is complete. Unfinished all-target work requires
-  an explicit `--resume` or `--fresh` decision.
+  or the previous all-target run is complete, even if the producer version or
+  generation settings have changed. Unfinished all-target work requires an
+  explicit `--resume` or `--fresh` decision.
 
 The wizard offers Continue or Restart only for unfinished all-target work.
 Named-target updates do not discard that progress; compatible successful

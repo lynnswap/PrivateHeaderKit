@@ -775,6 +775,7 @@ struct PrivateHeaderGenerationStoreTests {
       planFingerprint: "fingerprint",
       selectedTargetIDs: ["framework:Foo", "framework:Bar"],
       currentArtifactsByTarget: current,
+      includingCompletedRuns: true,
       at: fixture.date
     )
     #expect(expanded?.targets.map(\.status) == [.completed, .pending])
@@ -784,6 +785,7 @@ struct PrivateHeaderGenerationStoreTests {
         planFingerprint: "fingerprint",
         selectedTargetIDs: [],
         currentArtifactsByTarget: current,
+        includingCompletedRuns: true,
         at: fixture.date
       )
       Issue.record("shrinking target set unexpectedly resumed")
@@ -848,6 +850,7 @@ struct PrivateHeaderGenerationStoreTests {
         planFingerprint: "fingerprint",
         selectedTargetIDs: ["framework:Foo"],
         currentArtifactsByTarget: fixture.marker(first.generationID).artifactsByTarget,
+        includingCompletedRuns: true,
         at: fixture.date
       )
     )

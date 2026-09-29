@@ -134,6 +134,75 @@ struct PrivateHeaderGenerationExecutorTests {
     }
   }
 
+  @Test(arguments: ["producer", "options", "targets"])
+  func completedAllTargetRunStartsAgainAfterConfigurationChange(_ change: String) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    if change == "targets" { try fixture.createFramework("Bar.framework") }
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "first", result: .init(
+        terminationStatus: 0,
+        diagnosticsReport: .init(producerVersion: "v1", diagnostics: [])
+      )),
+      runID: "run-first", generationID: "generation-first"
+    ).run(plan: fixture.plan(.allAvailable, producerVersion: "v1"))
+    if change == "targets" {
+      try FileManager.default.removeItem(
+        at: fixture.systemRoot.appendingPathComponent("System/Library/Frameworks/Bar.framework")
+      )
+    }
+    let version = change == "producer" ? "v2" : "v1"
+    let runner = RecordingRunner(contents: "regenerated", result: .init(
+      terminationStatus: 0,
+      diagnosticsReport: .init(producerVersion: version, diagnostics: [])
+    ))
+    let executor = fixture.executor(
+      runner: runner, runID: "run-next", generationID: "generation-next"
+    )
+    let prepared = try await executor.prepare(fixture.plan(
+      .allAvailable, rawDumpingOptions: .init(verbose: change == "options"),
+      producerVersion: version
+    ))
+    #expect(try await executor.availableResumeSummary(for: prepared) == nil)
+    let result = try await executor.run(prepared)
+    #expect(await runner.invocationCount == 1)
+    #expect(result.targetCounts.completed == 1)
+    #expect(try fixture.readLiveHeader() == "regenerated")
+  }
+
+  @Test(arguments: [true, false])
+  func changedProducerStillRejectsExplicitResumeOrUnfinishedWork(_ completed: Bool) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "first", result: .init(
+          terminationStatus: completed ? 0 : 1,
+          diagnosticsReport: .init(producerVersion: "v1", diagnostics: [])
+        )),
+        runID: "run-first", generationID: "generation-first"
+      ).run(plan: fixture.plan(.allAvailable, producerVersion: "v1"))
+      #expect(completed)
+    } catch PrivateHeaderGeneration.GenerationError.runFailed {
+      #expect(!completed)
+    }
+    let runner = RecordingRunner(contents: "must not run")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-next", generationID: "generation-next"
+    )
+    let prepared = try await executor.prepare(fixture.plan(
+      .allAvailable,
+      resumeBehavior: completed ? .resume : .requireExplicitResume(resumeRequested: false),
+      producerVersion: "v2"
+    ))
+    let expected = PrivateHeaderGeneration.GenerationError.incompatibleResume("plan fingerprint changed")
+    await #expect(throws: expected) { _ = try await executor.availableResumeSummary(for: prepared) }
+    await #expect(throws: expected) { _ = try await executor.run(prepared) }
+    #expect(await runner.invocationCount == 0)
+  }
+
   private enum InjectedFault: Error {
     case stop
     case rawFailure
