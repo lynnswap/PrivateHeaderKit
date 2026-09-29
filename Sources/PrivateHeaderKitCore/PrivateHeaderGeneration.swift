@@ -575,7 +575,7 @@ extension PrivateHeaderGeneration {
     )
     case noDiscoveredTargets(systemRoot: String)
     case unknownSelectedTargets([String])
-    case unresolvedTargetQuery(String)
+    case unresolvedTargetQuery(TargetResolution)
     case incompatibleResume(String)
     case resumeRequired(ResumeSummary)
     case legacyMigrationRequiresFresh(LegacyMigrationRequirement)
@@ -605,8 +605,8 @@ extension PrivateHeaderGeneration {
         "no private header targets were discovered under \(systemRoot)"
       case .unknownSelectedTargets(let targetIDs):
         "selected targets were not discovered: \(targetIDs.joined(separator: ", "))"
-      case .unresolvedTargetQuery(let query):
-        "target query could not be resolved: \(query)"
+      case .unresolvedTargetQuery(let resolution):
+        "target query could not be resolved:\n" + resolution.diagnostics.joined(separator: "\n")
       case .incompatibleResume(let reason):
         "existing generation state is incompatible: \(reason)"
       case .resumeRequired(let summary):

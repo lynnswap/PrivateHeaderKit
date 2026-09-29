@@ -1654,6 +1654,123 @@ struct PrivateHeaderKitCLIExecutionTests {
             """)
     }
 
+    @Test(arguments: ["correct", "back", "cancel", "automation"])
+    func targetSelectionUsesOneOwnedSimulatorSession(_ action: String) async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtimeRoot = root.appendingPathComponent("RuntimeRoot")
+        let outputBase = root.appendingPathComponent("Output")
+        for name in ["FooOne", "FooTwo"] {
+            let bundle = runtimeRoot.appendingPathComponent("System/Library/Frameworks/\(name).framework")
+            try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+            try Data().write(to: bundle.appendingPathComponent(name))
+        }
+        let runner = RecordingCommandRunner()
+        let inventory = try JSONEncoder().encode(PrivateHeaderKitSharedCacheInventory(
+            cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            imagePaths: [
+                "/System/Library/Frameworks/FooOne.framework/FooOne",
+                "/System/Library/Frameworks/FooTwo.framework/FooTwo",
+            ]
+        ))
+        await runner.setCaptureOutput(String(decoding: inventory, as: UTF8.self), for: [
+            "xcrun", "simctl", "spawn", "SIM-CORRECTION",
+            testPrivateHeaderKitHelperURLs.simulator.path, "__shared-cache-inventory",
+        ])
+        await runner.setStreamingHandler { command, _, _ in
+            #expect(command.last == "/System/Library/Frameworks/FooOne.framework")
+            try writeRawDumpProcessHandshake(for: command)
+            let outputIndex = try #require(command.firstIndex(of: "-o"))
+            let headers = URL(fileURLWithPath: command[outputIndex + 1]).appendingPathComponent(
+                "System/Library/Frameworks/FooOne.framework/Headers"
+            )
+            try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+            try "generated".write(to: headers.appendingPathComponent("Generated.h"), atomically: true, encoding: .utf8)
+            let reportIndex = try #require(command.firstIndex(of: "--diagnostics-report"))
+            try JSONEncoder().encode(PrivateHeaderKitRawDumpDiagnosticsReport(diagnostics: []))
+                .write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
+            return .init(status: 0, wasKilled: false, lastLines: [])
+        }
+        let lastInputs: [String] = switch action {
+        case "correct": ["/System/Library/Frameworks/FooOne.framework"]
+        case "back": ["\u{001B}", "\u{001B}", "\u{001B}"]
+        default: ["cancel"]
+        }
+        let input = ScriptedInput(["1", "2", "FooOne,", "all,FooOne", "Missing", "Foo"] + lastInputs)
+        let simulatorCount = ThreadSafeCounter()
+        let helperCount = ThreadSafeCounter()
+        let cleanupCount = ThreadSafeCounter()
+        let output = ThreadSafeStrings()
+        let sourceCount = ThreadSafeCounter()
+        let arguments = action == "automation" ? [
+            "privateheaderkit", "--platform", "iOS", "--version", "27.0",
+            "--build", "24A123", "--out", outputBase.path, "--target", "Foo,Missing",
+        ] : ["privateheaderkit"]
+        let status = await runPrivateHeaderKitCommand(
+            arguments,
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: .live(processRunner: runner),
+            simulatorResolver: { _ in
+                simulatorCount.increment()
+                return .init(
+                    runtimeVersion: "27.0", runtimeBuild: "24A123",
+                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    resolvedRuntimeRoot: runtimeRoot.path, metadataIsSeed: false,
+                    deviceName: "Correction", deviceUDID: "SIM-CORRECTION", deviceOwnership: .runOwned
+                )
+            },
+            simulatorCleaner: { resolution in
+                #expect(resolution.deviceUDID == "SIM-CORRECTION")
+                cleanupCount.increment()
+            },
+            helperResolver: { _, _, _ in
+                helperCount.increment()
+                return .init(helperURLs: testPrivateHeaderKitHelperURLs)
+            },
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            interactiveSourceProvider: {
+                sourceCount.increment()
+                return [.init(platform: .iOS, version: "27.0", build: "24A123", systemRoot: nil)]
+            },
+            interactiveOutputBaseDirectoryProvider: { outputBase.path },
+            interactiveScreenClearer: {},
+            inputReader: {
+                #expect(action != "automation")
+                let line = try await input.readLine()
+                if line == "Missing" { #expect(simulatorCount.value == 0) }
+                if line == "cancel" { throw CancellationError() }
+                return line
+            },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        let expectedStatus: Int32 = switch action {
+        case "correct": 0
+        case "back": 1
+        case "automation": 2
+        default: 130
+        }
+        #expect(status == expectedStatus)
+        #expect(sourceCount.value == (action == "automation" ? 0 : 1))
+        #expect(simulatorCount.value == 1)
+        #expect(helperCount.value == 1)
+        #expect(cleanupCount.value == 1)
+        #expect(await runner.streamingCommandSnapshot().count == (action == "correct" ? 1 : 0))
+        if action != "automation" {
+            #expect(output.text.contains("target name must not be empty"))
+            #expect(output.text.contains("all available targets cannot be combined"))
+        }
+        #expect(output.text.contains("no target matches \"Missing\""))
+        #expect(output.text.contains("matches multiple candidates"))
+        #expect(output.text.contains("/System/Library/Frameworks/FooTwo.framework"))
+        if action == "correct" {
+            let header = outputBase.appendingPathComponent(
+                "generated-headers/iOS/27.0_24A123/Frameworks/FooOne/Headers/Generated.h"
+            )
+            #expect(try String(contentsOf: header, encoding: .utf8) == "generated")
+        }
+    }
+
     @Test func interactiveNamedTargetsDoNotPromptForContinuation() async throws {
         let input = ScriptedInput(["1", "2", "Foo"])
         let runCount = ThreadSafeCounter()

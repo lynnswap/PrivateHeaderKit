@@ -15,6 +15,13 @@ The wizard guides you through:
 2. all available targets or a comma-separated list of target names
 3. Continue or Restart when an all-target run has compatible unfinished work
 
+For specific targets, enter an exact name or path, or a partial name that matches
+one target. If a name is missing or matches multiple targets, the wizard shows
+the affected terms and candidate paths and lets you correct the input while
+keeping the selected source. Escape returns to target selection. A temporary
+Simulator is reused while correcting names and cleaned up when you leave the
+selection or finish generation.
+
 The default output base is `~/PrivateHeaderKit`. The command prints the concrete
 header directory when a run starts and again in the completion summary.
 

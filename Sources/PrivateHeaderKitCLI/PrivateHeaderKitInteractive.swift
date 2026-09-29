@@ -140,12 +140,12 @@ func runPrivateHeaderKitInteractiveGenerate(
                         outputLogger: outputLogger
                     )
                     do {
-                        targetQuery = try await promptRequiredValue(
+                        targetQuery = try await promptTargetQuery(
                             prompt: "Targets:",
                             inputReader: inputReader,
-                            outputLogger: outputLogger
+                            outputLogger: outputLogger,
+                            errorLogger: errorLogger
                         )
-                        try validatePrivateHeaderKitTargetQuery(targetQuery)
                     } catch PrivateHeaderKitInteractiveNavigation.back {
                         continue targetSelection
                     }
@@ -169,7 +169,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                         cleaner: simulatorCleaner,
                         outputLogger: outputLogger
                     ) { simulatorResolution in
-                        let request = try await preparePrivateHeaderKitGenerationRequest(
+                        var request = try await preparePrivateHeaderKitGenerationRequest(
                             command,
                             invokedProgramName: invokedProgramName,
                             currentExecutableURL: currentExecutableURL,
@@ -177,25 +177,44 @@ func runPrivateHeaderKitInteractiveGenerate(
                             helperResolver: helperResolver,
                             releaseMetadataResolver: releaseMetadataResolver
                         )
-                        let preparedGeneration = try await generationClient.prepare(request)
-                        let executionOptions = try await interactiveExecutionOptions(
-                            preparedGeneration: preparedGeneration,
-                            request: request,
-                            outputBaseDirectory: command.outputBaseDirectory,
-                            screenClearer: screenClearer,
-                            inputReader: inputReader,
-                            outputLogger: outputLogger
-                        )
-                        try await inputFinalizer()
-                        return try await runPrivateHeaderKitPreparedGeneration(
-                            preparedGeneration,
-                            request: request,
-                            targetQuery: command.targetQuery,
-                            executionOptions: executionOptions,
-                            resultScreenClearer: screenClearer,
-                            outputLogger: outputLogger,
-                            errorLogger: errorLogger
-                        )
+                        var query = command.targetQuery
+                        while true {
+                            let preparedGeneration: PrivateHeaderKitPreparedGeneration
+                            do {
+                                preparedGeneration = try await generationClient.prepare(request)
+                            } catch let error as PrivateHeaderGeneration.GenerationError {
+                                guard case .unresolvedTargetQuery = error else { throw error }
+                                errorLogger("error: \(error.description)")
+                                query = try await promptTargetQuery(
+                                    prompt: "Targets:", inputReader: inputReader,
+                                    outputLogger: outputLogger, errorLogger: errorLogger
+                                )
+                                var options = request.options
+                                options.targetRequest = query == "all" ? .allAvailable : .query(query)
+                                request = PrivateHeaderKitGenerationRequest(
+                                    source: request.source, output: request.output, options: options
+                                )
+                                continue
+                            }
+                            let executionOptions = try await interactiveExecutionOptions(
+                                preparedGeneration: preparedGeneration,
+                                request: request,
+                                outputBaseDirectory: command.outputBaseDirectory,
+                                screenClearer: screenClearer,
+                                inputReader: inputReader,
+                                outputLogger: outputLogger
+                            )
+                            try await inputFinalizer()
+                            return try await runPrivateHeaderKitPreparedGeneration(
+                                preparedGeneration,
+                                request: request,
+                                targetQuery: query,
+                                executionOptions: executionOptions,
+                                resultScreenClearer: screenClearer,
+                                outputLogger: outputLogger,
+                                errorLogger: errorLogger
+                            )
+                        }
                     }
                     renderPrivateHeaderKitCommandOutcome(
                         outcome,
@@ -448,10 +467,11 @@ private func promptIndexedSelection<Value>(
     }
 }
 
-private func promptRequiredValue(
+private func promptTargetQuery(
     prompt: String,
     inputReader: @escaping PrivateHeaderKitInputReader,
-    outputLogger: PrivateHeaderKitOutputLogger
+    outputLogger: PrivateHeaderKitOutputLogger,
+    errorLogger: PrivateHeaderKitOutputLogger
 ) async throws -> String {
     while true {
         outputLogger(prompt)
@@ -462,10 +482,16 @@ private func promptRequiredValue(
             throw PrivateHeaderKitInteractiveNavigation.back
         }
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !value.isEmpty {
-            return value
+        guard !value.isEmpty else {
+            outputLogger("Enter at least one target.")
+            continue
         }
-        outputLogger("Enter at least one target.")
+        do {
+            try validatePrivateHeaderKitTargetQuery(value)
+            return value
+        } catch let error as PrivateHeaderGeneration.ValidationError {
+            errorLogger("error: \(error.description)")
+        }
     }
 }
 

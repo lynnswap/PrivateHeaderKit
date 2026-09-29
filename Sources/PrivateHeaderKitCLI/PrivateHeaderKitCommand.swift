@@ -18,15 +18,12 @@ let legacyPrivateHeaderKitCommandNames: Set<String> = [
 
 enum PrivateHeaderKitCLIError: Error, Equatable, CustomStringConvertible {
     case legacyCommand(String)
-    case invalidTargetQuery(String)
     case missingSimulatorResolution
 
     var description: String {
         switch self {
         case .legacyCommand(let command):
             "\(command) is no longer a user-facing command; use privateheaderkit instead"
-        case .invalidTargetQuery(let value):
-            "target query must be 'all' or a comma-separated list without empty entries: \(value)"
         case .missingSimulatorResolution:
             "simulator generation requires a resolved runtime and device"
         }
@@ -1380,13 +1377,5 @@ func privateHeaderKitExecutableURL(
 }
 
 func validatePrivateHeaderKitTargetQuery(_ query: String) throws {
-    if query == "all" {
-        return
-    }
-    let entries = query.split(separator: ",", omittingEmptySubsequences: false)
-    guard !entries.isEmpty,
-          entries.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-    else {
-        throw PrivateHeaderKitCLIError.invalidTargetQuery(query)
-    }
+    _ = try PrivateHeaderGeneration.TargetQuery(commaSeparated: query)
 }

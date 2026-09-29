@@ -1728,7 +1728,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       return deduplicated(selected)
     case .query(let query):
       let targetQuery = try PrivateHeaderGeneration.TargetQuery(commaSeparated: query)
-      switch catalog.resolver.resolve(targetQuery) {
+      let resolution = catalog.resolver.resolve(targetQuery)
+      switch resolution {
       case .selected(.allAvailable):
         return deduplicated(catalog.allExecutionTargets)
       case .selected(.targets(let candidates)):
@@ -1737,7 +1738,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
             expandTarget(identifier: candidate.identifier, catalog: catalog)
           })
       case .needsDisambiguation, .failed, .unresolved:
-        throw PrivateHeaderGeneration.GenerationError.unresolvedTargetQuery(query)
+        throw PrivateHeaderGeneration.GenerationError.unresolvedTargetQuery(resolution)
       }
     }
   }
