@@ -230,7 +230,6 @@ private func interactiveResumeDecision(
     inputReader: @escaping PrivateHeaderKitInputReader,
     outputLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> PrivateHeaderGeneration.ResumeBehavior {
-    guard request.options.targetRequest.requestsAllTargets else { return .fresh }
     let summary = try await preparedGeneration.summary()
     switch summary {
     case .legacyMigration(let requirement):
@@ -268,7 +267,7 @@ private func interactiveResumeDecision(
         }
         return .fresh
     case .noUnfinishedRun:
-        return .fresh
+        return request.options.resumeBehavior
     case .unfinished(let resumeSummary):
         renderInteractiveResumeScreen(
             sourceDisplayName: request.source.label.displayName,

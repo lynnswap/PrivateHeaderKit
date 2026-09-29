@@ -242,6 +242,10 @@ Named targets are generated every time they are requested. They do not require
 `--resume`, `--fresh`, or a continuation decision in the wizard. They also do not
 replace the progress of an interrupted all-target run. Successful replacements
 remain visible, and a failed target keeps its last successfully published files.
+Legacy migration is separate: when an older state or artifact tree must be
+migrated, both named-target and all-target commands still require an explicit
+`--fresh` or the wizard's migration choice. Selecting a named target alone does
+not authorize moving the old output.
 
 Continuation applies only to `--target all`:
 

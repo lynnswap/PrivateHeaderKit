@@ -1654,7 +1654,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             """)
     }
 
-    @Test func interactiveNamedTargetsDoNotInspectContinuationState() async throws {
+    @Test func interactiveNamedTargetsDoNotPromptForContinuation() async throws {
         let input = ScriptedInput(["1", "2", "Foo"])
         let runCount = ThreadSafeCounter()
         let output = ThreadSafeStrings()
@@ -1662,14 +1662,11 @@ struct PrivateHeaderKitCLIExecutionTests {
             ["privateheaderkit"],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
             generationClient: testPrivateHeaderKitGenerationClient(
-                summary: { _ in
-                    Issue.record("named-target generation requested a continuation decision")
-                    return .incompatibleResume(reason: "old batch")
-                },
                 run: { request, behavior, _ in
                     runCount.increment()
                     #expect(request.options.targetRequest == .query("Foo"))
-                    #expect(behavior == .fresh)
+                    #expect(behavior == .requireExplicitResume(resumeRequested: false))
+                    #expect(request.options.startsFresh)
                     return resultFixture(for: request, counts: .init(total: 1, completed: 1))
                 }
             ),
@@ -1689,7 +1686,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(!output.text.contains("Select action:"))
     }
 
-    @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
+    @Test func interactiveRunUsesDefaultGenerationWithoutGrantingLegacyMigration() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let framework = root.appendingPathComponent(
@@ -1716,7 +1713,7 @@ struct PrivateHeaderKitCLIExecutionTests {
             generationClient: testPrivateHeaderKitGenerationClient(
                 run: { request, resumeBehavior, _ in
                     requestBox.set(request)
-                    #expect(resumeBehavior == .fresh)
+                    #expect(resumeBehavior == .requireExplicitResume(resumeRequested: false))
                     return resultFixture(
                         for: request,
                         counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
@@ -1764,6 +1761,10 @@ struct PrivateHeaderKitCLIExecutionTests {
 
     @Test func interactiveConfirmsLegacyArtifactTreeMigration() async throws {
         try await assertInteractiveLegacyMigration(kind: .artifactTree)
+    }
+
+    @Test func interactiveNamedTargetsStillConfirmLegacyArtifactMigration() async throws {
+        try await assertInteractiveLegacyMigration(kind: .artifactTree, namedTarget: true)
     }
 
     @Test func interactiveConfirmsCombinedLegacyMigrationOnceAndDisplaysBothEffects() async throws {
@@ -3672,7 +3673,9 @@ private enum LegacyInputKind {
     case artifactTree
 }
 
-private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throws {
+private func assertInteractiveLegacyMigration(
+    kind: LegacyInputKind, namedTarget: Bool = false
+) async throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let systemRoot = root.appendingPathComponent("SystemRoot", isDirectory: true)
@@ -3705,7 +3708,7 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
     )
     try Data("legacy".utf8).write(to: detectedURL)
 
-    let input = ScriptedInput(["1", "1", "1"])
+    let input = ScriptedInput(namedTarget ? ["1", "2", "Foo", "1"] : ["1", "1", "1"])
     let output = ThreadSafeStrings()
     let requestBox = ThreadSafeRequestBox()
     let status = await runPrivateHeaderKitCommand(

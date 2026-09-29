@@ -451,11 +451,13 @@ extension PrivateHeaderGeneration {
     package var rawDumpingOptions: RawDumping.Options
     package var includeNestedChildren: Bool
     package var resumeBehavior: ResumeBehavior
+    package var producerVersion: String
 
     package var startsFresh: Bool {
       !targetRequest.requestsAllTargets || resumeBehavior == .fresh
     }
-    package var producerVersion: String
+
+    package var allowsLegacyMigration: Bool { resumeBehavior == .fresh }
 
     package init(
       layout: Layout = .headers,

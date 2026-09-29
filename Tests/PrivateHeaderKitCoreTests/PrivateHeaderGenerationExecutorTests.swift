@@ -33,7 +33,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    for (index, version) in ["v1", "v1", "v2"].enumerated() {
+    for (index, version) in ["v1", "v2", "v2"].enumerated() {
       let runner = RecordingRunner(
         contents: "run-\(index)",
         result: .init(
@@ -44,7 +44,9 @@ struct PrivateHeaderGenerationExecutorTests {
       let executor = fixture.executor(
         runner: runner, runID: "run-\(index)", generationID: "generation-\(index)"
       )
-      let plan = try fixture.plan(.query("Foo"), producerVersion: version)
+      let plan = try fixture.plan(
+        index == 0 ? .allAvailable : .query("Foo"), producerVersion: version
+      )
       let prepared = try await executor.prepare(plan)
       #expect(try await executor.availableResumeSummary(for: prepared) == nil)
       let result = try await executor.run(prepared)
@@ -2687,14 +2689,17 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect((try FileManager.default.contentsOfDirectory(atPath: external.path)).isEmpty)
   }
 
-  @Test func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry() async throws {
+  @Test(arguments: [PrivateHeaderGeneration.TargetRequest.allAvailable, .query("Foo")])
+  func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry(
+    _ targetRequest: PrivateHeaderGeneration.TargetRequest
+  ) async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
     try FileManager.default.createDirectory(
       at: fixture.stateDirectory, withIntermediateDirectories: true)
     try Data("{}".utf8).write(to: fixture.stateDirectory.appendingPathComponent("manifest.json"))
-    let plan = try fixture.plan(.allAvailable)
+    let plan = try fixture.plan(targetRequest)
 
     for suffix in ["one", "two"] {
       await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
@@ -2749,6 +2754,42 @@ struct PrivateHeaderGenerationExecutorTests {
 
     #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
     #expect(!FileManager.default.fileExists(atPath: fixture.liveURL.path))
+  }
+
+  @Test(arguments: [false, true])
+  func namedTargetLegacyArtifactsRequireExplicitMigration(_ hasDatabase: Bool) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    if hasDatabase { _ = try GenerationStore(databaseURL: fixture.databaseURL) }
+    let legacyFile = fixture.legacyArtifactURL.appendingPathComponent("Notes/keep.txt")
+    try FileManager.default.createDirectory(
+      at: legacyFile.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try "legacy".write(to: legacyFile, atomically: true, encoding: .utf8)
+    let runner = RecordingRunner(contents: "generated")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-targeted", generationID: "generation-targeted"
+    )
+    let prepared = try await executor.prepare(fixture.plan(.query("Foo")))
+    let expected = PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
+      .artifacts(path: fixture.legacyArtifactURL.path)
+    )
+    await #expect(throws: expected) { _ = try await executor.availableResumeSummary(for: prepared) }
+    await #expect(throws: expected) { _ = try await executor.run(prepared) }
+    #expect(await runner.invocationCount == 0)
+    #expect(try String(contentsOf: legacyFile, encoding: .utf8) == "legacy")
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyBackupsURL.path))
+    #expect(FileManager.default.fileExists(atPath: fixture.databaseURL.path) == hasDatabase)
+
+    let result = try await executor.run(prepared.withResumeBehavior(.fresh))
+    #expect(result.targetCounts.completed == 1)
+    #expect(await runner.invocationCount == 1)
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyArtifactURL.path))
+    #expect(FileManager.default.fileExists(atPath: fixture.legacyBackupsURL.path))
+    #expect(try String(
+      contentsOf: fixture.liveURL.appendingPathComponent("Notes/keep.txt"), encoding: .utf8
+    ) == "legacy")
   }
 
   @Test func freshLegacyMigrationPublishesOpaqueArtifactInLiveOutput() async throws {
