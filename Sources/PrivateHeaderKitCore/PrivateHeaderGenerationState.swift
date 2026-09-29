@@ -249,6 +249,11 @@ extension PrivateHeaderGeneration {
     package let targets: [TargetAttemptSnapshot]
 
     package var counts: TargetCounts { TargetCounts(targets: targets) }
+
+    package var publishedArtifactCounts: ArtifactCounts {
+      // Completed attempts have committed their live replacement; partial attempts have not.
+      ArtifactCounts(artifacts: targets.filter { $0.status == .completed }.flatMap(\.artifacts))
+    }
   }
 
   package struct ResumeTargetDecision: Equatable, Sendable {

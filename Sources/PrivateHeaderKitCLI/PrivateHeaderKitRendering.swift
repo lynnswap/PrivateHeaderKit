@@ -402,6 +402,12 @@ func renderPrivateHeaderKitRunSummary(
                 "Unfinished", summary.targetCounts.pending + summary.targetCounts.running))
     }
 
+    outputLogger("")
+    outputLogger("Files published this run")
+    outputLogger("  Objective-C headers (.h): \(summary.artifactCounts.objectiveCHeaders)")
+    outputLogger("  Swift interfaces (.swiftinterface): \(summary.artifactCounts.swiftInterfaces)")
+    outputLogger("  Symbol lists (.symbols.tsv): \(summary.artifactCounts.symbolLists)")
+
     if let infrastructureMessage {
         outputLogger("")
         outputLogger("Infrastructure failure")

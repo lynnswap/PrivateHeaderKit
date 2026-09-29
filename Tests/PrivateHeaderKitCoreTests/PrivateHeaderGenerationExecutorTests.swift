@@ -11,20 +11,52 @@ private enum ExecutorFixtureError: Error {
 
 @Suite
 struct PrivateHeaderGenerationExecutorTests {
+  @Test(arguments: ["Generated.h", "Generated.swiftinterface"])
+  func artifactSummaryCountsOnlyFilesPublishedByThisInvocation(_ primaryFile: String) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Old.framework")
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "old", additionalHeaderName: "Old.h"),
+      runID: "old-run", generationID: "old-generation"
+    ).run(plan: fixture.plan(.query("Old")))
+
+    try fixture.createFramework("Foo.framework")
+    let result = try await fixture.executor(
+      runner: RecordingRunner(
+        contents: "generated", primaryHeaderName: primaryFile, additionalHeaderName: "Foo.symbols.tsv"
+      ),
+      runID: "new-run", generationID: "new-generation"
+    ).run(plan: fixture.plan(.query("Foo")))
+
+    #expect(result.artifactCounts.objectiveCHeaders == (primaryFile == "Generated.h" ? 1 : 0))
+    #expect(result.artifactCounts.swiftInterfaces == (primaryFile == "Generated.swiftinterface" ? 1 : 0))
+    #expect(result.artifactCounts.symbolLists == 1)
+    #expect(result.summary.artifactCounts == result.artifactCounts)
+    #expect(result.summary.status == .completed)
+    #expect(try fixture.readLiveHeader(framework: "Old") == "old")
+  }
+
   @Test func symbolOnlyTargetsPublishResumeAndRecoverLikeHeaders() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
     let content = "# image\t/Foo\nvisibility\tname\tdemangled_name\nexport\t_Foo\t_Foo\n"
     let runner = RecordingRunner(contents: content, primaryHeaderName: "Foo.symbols.tsv")
-    _ = try await fixture.executor(runner: runner, runID: "symbols-one", generationID: "symbols-one")
+    let first = try await fixture.executor(runner: runner, runID: "symbols-one", generationID: "symbols-one")
       .run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
+    #expect(first.summary.status == .completed)
+    #expect(first.artifactCounts.objectiveCHeaders == 0)
+    #expect(first.artifactCounts.swiftInterfaces == 0)
+    #expect(first.artifactCounts.symbolLists == 1)
     let file = fixture.liveHeaderURL().deletingLastPathComponent().appendingPathComponent("Foo.symbols.tsv")
     #expect(try String(contentsOf: file, encoding: .utf8) == content)
     try FileManager.default.removeItem(at: fixture.liveURL)
     let nextRunner = RecordingRunner(contents: "must not regenerate", primaryHeaderName: "Foo.symbols.tsv")
-    _ = try await fixture.executor(runner: nextRunner, runID: "symbols-two", generationID: "symbols-two")
+    let resumed = try await fixture.executor(runner: nextRunner, runID: "symbols-two", generationID: "symbols-two")
       .run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
+    #expect(resumed.targetCounts.skipped == 1)
+    #expect(resumed.artifactCounts == .init(artifacts: []))
     #expect(await nextRunner.invocationCount == 0)
     #expect(try String(contentsOf: file, encoding: .utf8) == content)
   }
@@ -86,6 +118,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(await runner.invocationCount == 1)
     #expect(await runner.invocations.first?.inputPath.hasSuffix("/Zulu.framework") == true)
     #expect(result.targetCounts.skipped == 1)
+    #expect(result.artifactCounts.objectiveCHeaders == 1)
     #expect(try fixture.readLiveHeader(framework: "Alpha") == "targeted")
     #expect(try fixture.readLiveHeader(framework: "Zulu") == "resumed")
   }
@@ -888,6 +921,7 @@ struct PrivateHeaderGenerationExecutorTests {
     } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
       #expect(failure.summary.targetCounts.completed == 2)
       #expect(failure.summary.targetCounts.failed == 1)
+      #expect(failure.summary.artifactCounts.objectiveCHeaders == 2)
       #expect(failure.summary.targetCounts.pending == 0)
       #expect(failure.summary.targetCounts.running == 0)
       #expect(failure.failedTargetIDs == ["framework:Bar.framework"])
@@ -924,6 +958,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(await resumedRunner.invocations.first?.inputPath.hasSuffix("/Bar.framework") == true)
     #expect(result.targetCounts.skipped == 2)
     #expect(result.targetCounts.completed == 1)
+    #expect(result.artifactCounts.objectiveCHeaders == 1)
     #expect(try fixture.readLiveHeader(framework: "Foo") == "first-run")
     #expect(try fixture.readLiveHeader(framework: "Baz") == "first-run")
     #expect(try fixture.readLiveHeader(framework: "Bar") == "resumed")
@@ -1658,6 +1693,7 @@ struct PrivateHeaderGenerationExecutorTests {
       #expect(failure.summary.runID == .init(rawValue: "run-002"))
       #expect(failure.summary.status == .partial)
       #expect(failure.summary.targetCounts.partial == 1)
+      #expect(failure.summary.artifactCounts == .init(artifacts: []))
       #expect(failure.summary.artifactDirectory == fixture.liveURL)
       #expect(failure.summary.stateDatabaseURL == fixture.databaseURL)
       #expect(failure.failedTargetIDs == ["framework:Foo.framework"])
@@ -1859,6 +1895,7 @@ struct PrivateHeaderGenerationExecutorTests {
       #expect(interruption.summary.status == .interrupted)
       #expect(interruption.summary.targetCounts.completed == 1)
       #expect(interruption.summary.targetCounts.interrupted == 1)
+      #expect(interruption.summary.artifactCounts.objectiveCHeaders == 1)
     }
 
     #expect(await runner.invocationCount == 2)
@@ -1882,6 +1919,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(summary.status == .interrupted)
     #expect(summary.targetCounts.completed == 1)
     #expect(summary.targetCounts.interrupted == 1)
+    #expect(summary.artifactCounts.objectiveCHeaders == 1)
     #expect(summary.artifactDirectory == fixture.liveURL)
     #expect(summary.stateDatabaseURL == fixture.databaseURL)
   }
@@ -2282,6 +2320,7 @@ struct PrivateHeaderGenerationExecutorTests {
       #expect(failure.summary.status == .failed)
       #expect(failure.summary.targetCounts.completed == 1)
       #expect(failure.summary.targetCounts.failed == 0)
+      #expect(failure.summary.artifactCounts.objectiveCHeaders == 1)
       #expect(failure.message.contains("missing marker"))
     }
 
