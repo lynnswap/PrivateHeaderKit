@@ -103,6 +103,7 @@ runtime for the selected platform matches a version.
 | --- | --- |
 | `--platform iOS\|watchOS\|macOS` | Source platform. |
 | `--version <version>` | Source OS version. |
+| `--tool-version` | Print the running PrivateHeaderKit build version and exit. |
 | `--build <build>` | Source build identifier; needed for ambiguous Simulator runtime versions. |
 | `--system-root <path>` | Runtime root; required for macOS and optional as a Simulator override. |
 | `--out <path>` | Output base for generated headers and state. Used alone, starts the wizard. |

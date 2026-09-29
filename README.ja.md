@@ -24,6 +24,7 @@ privateheaderkit
 `privateheaderkit --out ~/CustomHeaders` と実行すると、出力先を変えて同じ対話操作を使えます。
 生成したヘッダーは `generated-headers/iOS/27.0_beta_24A5390f` のように、platform と生成元ごとに保存します。
 
+実行中のCLIのバージョンは `privateheaderkit --tool-version` で確認できます。
 更新は `brew upgrade privateheaderkit`、削除は `brew uninstall privateheaderkit` で行います。
 削除しても生成済みヘッダーは残ります。従来のインストーラーを使っている場合は、
 [移行手順](Docs/installation.md#move-from-the-standalone-installer)を参照してください。

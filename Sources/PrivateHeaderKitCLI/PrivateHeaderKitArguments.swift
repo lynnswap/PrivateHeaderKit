@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import PrivateHeaderKitCore
+import PrivateHeaderKitHelperProtocol
 
 enum PrivateHeaderKitContinuationMode: String, EnumerableFlag, Equatable, Sendable {
     case resume
@@ -10,6 +11,9 @@ enum PrivateHeaderKitContinuationMode: String, EnumerableFlag, Equatable, Sendab
 extension PrivateHeaderKitGenerateCommand.Platform: ExpressibleByArgument {}
 
 struct PrivateHeaderKitGenerationArguments: ParsableArguments {
+    @Flag(name: .customLong("tool-version"), help: "Print the PrivateHeaderKit build version and exit. --version selects the source OS version.")
+    var showsToolVersion = false
+
     @Option(help: "Source platform: iOS, watchOS, or macOS.")
     var platform: PrivateHeaderKitGenerateCommand.Platform?
 
@@ -49,6 +53,9 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     }
 
     func command() throws -> PrivateHeaderKitCommand {
+        if showsToolVersion {
+            throw CleanExit.message(PrivateHeaderKitBuildInfo.version)
+        }
         if let outputBaseDirectory, outputBaseDirectory.isEmpty {
             throw ValidationError("Argument '--out <out>' must not be empty")
         }
