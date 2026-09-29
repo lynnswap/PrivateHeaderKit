@@ -10,7 +10,7 @@ extension PrivateHeaderGeneration {
         case other
     }
 
-    struct TargetCandidate: Hashable, Sendable {
+    package struct TargetCandidate: Hashable, Sendable {
         let identifier: String
         let displayName: String
         let kind: TargetKind
@@ -58,16 +58,16 @@ extension PrivateHeaderGeneration {
         }
     }
 
-    enum TargetSelection: Hashable, Sendable {
+    package enum TargetSelection: Hashable, Sendable {
         case allAvailable
         case targets([TargetCandidate])
     }
 
-    struct TargetQuery: Hashable, Sendable {
+    package struct TargetQuery: Hashable, Sendable {
         let rawValue: String
         let terms: [String]
 
-        init(commaSeparated rawValue: String) throws {
+        package init(commaSeparated rawValue: String) throws {
             let terms = rawValue
                 .split(separator: ",", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -96,7 +96,7 @@ extension PrivateHeaderGeneration {
             var requestedAll = false
             for term in terms {
                 guard !term.isEmpty else {
-                    throw ValidationError.emptyComponent(field: "query")
+                    throw ValidationError.emptyComponent(field: "target name")
                 }
                 let normalizedTerm = normalize(term)
                 if allAvailableTerms.contains(normalizedTerm) {
@@ -226,13 +226,13 @@ extension PrivateHeaderGeneration {
         }
     }
 
-    enum TargetResolution: Hashable, Sendable {
+    package enum TargetResolution: Hashable, Sendable {
         case selected(TargetSelection)
         case needsDisambiguation([Ambiguity])
         case failed([Failure])
         case unresolved(ambiguities: [Ambiguity], failures: [Failure])
 
-        struct Ambiguity: Hashable, Sendable {
+        package struct Ambiguity: Hashable, Sendable {
             let query: String
             let candidates: [TargetCandidate]
 
@@ -242,7 +242,7 @@ extension PrivateHeaderGeneration {
             }
         }
 
-        struct Failure: Hashable, Sendable {
+        package struct Failure: Hashable, Sendable {
             let query: String
             let reason: FailureReason
 
@@ -255,14 +255,28 @@ extension PrivateHeaderGeneration {
         enum FailureReason: String, Hashable, Sendable {
             case noMatch
         }
+
+        var diagnostics: [String] {
+            switch self {
+            case .selected:
+                []
+            case .needsDisambiguation(let ambiguities):
+                ambiguities.flatMap(\.diagnostics)
+            case .failed(let failures):
+                failures.map { "no target matches \"\($0.query)\"" }
+            case .unresolved(let ambiguities, let failures):
+                failures.map { "no target matches \"\($0.query)\"" }
+                    + ambiguities.flatMap(\.diagnostics)
+            }
+        }
     }
 
-    enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
+    package enum ValidationError: Error, Equatable, CustomStringConvertible, Sendable {
         case emptyComponent(field: String)
         case invalidPathComponent(field: String, value: String)
         case invalidAllTargetsCombination
 
-        var description: String {
+        package var description: String {
             switch self {
             case .emptyComponent(let field):
                 "\(field) must not be empty"
@@ -271,6 +285,14 @@ extension PrivateHeaderGeneration {
             case .invalidAllTargetsCombination:
                 "all available targets cannot be combined with explicit target queries"
             }
+        }
+    }
+}
+
+extension PrivateHeaderGeneration.TargetResolution.Ambiguity {
+    fileprivate var diagnostics: [String] {
+        ["target \"\(query)\" matches multiple candidates:"] + candidates.map { candidate in
+            "  " + (candidate.aliases.first { $0.hasPrefix("/") } ?? candidate.displayName)
         }
     }
 }

@@ -265,6 +265,34 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(await runner.invocationCount == 2)
   }
 
+  @Test func unresolvedQueryPreservesMissingTermsAndCandidatePaths() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("FooOne.framework")
+    try fixture.createFramework("FooTwo.framework")
+    let runner = RecordingRunner(contents: "must not run")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-unresolved", generationID: "generation-unresolved"
+    )
+    do {
+      _ = try await executor.prepare(fixture.plan(.query("Foo,Missing")))
+      Issue.record("expected unresolved selection")
+    } catch let error as PrivateHeaderGeneration.GenerationError {
+      guard case .unresolvedTargetQuery(.unresolved(let ambiguities, let failures)) = error else {
+        Issue.record("unexpected error: \(error)")
+        return
+      }
+      #expect(failures.map(\.query) == ["Missing"])
+      #expect(ambiguities.map(\.query) == ["Foo"])
+      #expect(ambiguities.first?.candidates.map(\.displayName) == ["FooOne", "FooTwo"])
+      #expect(error.description.contains("no target matches \"Missing\""))
+      #expect(error.description.contains("/System/Library/Frameworks/FooOne.framework"))
+      #expect(error.description.contains("/System/Library/Frameworks/FooTwo.framework"))
+    }
+    #expect(await runner.invocationCount == 0)
+    #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
+  }
+
   private enum InjectedFault: Error {
     case stop
     case rawFailure
