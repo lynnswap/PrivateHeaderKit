@@ -436,12 +436,6 @@ extension PrivateHeaderGeneration {
     }
   }
 
-  package enum ResumeBehavior: Hashable, Sendable {
-    case resume
-    case fresh
-    case requireExplicitResume(resumeRequested: Bool)
-  }
-
   package struct Options: Hashable, Sendable {
     package var layout: Layout
     package var targetRequest: TargetRequest
@@ -450,14 +444,8 @@ extension PrivateHeaderGeneration {
     package var executionMode: RawDumping.ExecutionMode?
     package var rawDumpingOptions: RawDumping.Options
     package var includeNestedChildren: Bool
-    package var resumeBehavior: ResumeBehavior
+    package var executionOptions: ExecutionOptions
     package var producerVersion: String
-
-    package var startsFresh: Bool {
-      !targetRequest.requestsAllTargets || resumeBehavior == .fresh
-    }
-
-    package var allowsLegacyMigration: Bool { resumeBehavior == .fresh }
 
     package init(
       layout: Layout = .headers,
@@ -467,7 +455,7 @@ extension PrivateHeaderGeneration {
       executionMode: RawDumping.ExecutionMode? = nil,
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
       includeNestedChildren: Bool = true,
-      resumeBehavior: ResumeBehavior = .requireExplicitResume(resumeRequested: false),
+      executionOptions: ExecutionOptions = .init(),
       producerVersion: String = PrivateHeaderKitBuildInfo.version
     ) {
       self.layout = layout
@@ -477,7 +465,7 @@ extension PrivateHeaderGeneration {
       self.executionMode = executionMode
       self.rawDumpingOptions = rawDumpingOptions
       self.includeNestedChildren = includeNestedChildren
-      self.resumeBehavior = resumeBehavior
+      self.executionOptions = executionOptions
       self.producerVersion = producerVersion
     }
   }

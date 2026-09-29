@@ -67,9 +67,9 @@ extension PrivateHeaderGeneration {
         self.sharedCacheCohort = sharedCacheCohort
       }
 
-      package func withResumeBehavior(_ resumeBehavior: ResumeBehavior) -> PreparedPlan {
+      package func withExecutionOptions(_ executionOptions: ExecutionOptions) -> PreparedPlan {
         var options = plan.options
-        options.resumeBehavior = resumeBehavior
+        options.executionOptions = executionOptions
         return PreparedPlan(
           plan: Plan(source: plan.source, output: plan.output, options: options),
           selectedTargets: selectedTargets,
@@ -153,7 +153,7 @@ extension PrivateHeaderGeneration {
         )
         let hadDatabase = try Self.regularFileExists(databaseURL)
         if !hadDatabase,
-          !options.allowsLegacyMigration,
+          !options.executionOptions.allowsLegacyMigration,
           let requirement = try Self.legacyMigrationRequirement(
             stateDirectory: stateDirectory,
             publisher: publisher
@@ -325,7 +325,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     )
 
     if publication.legacyArtifactState.isDirectory,
-      !plan.options.allowsLegacyMigration
+      !plan.options.executionOptions.allowsLegacyMigration
     {
       throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
         .artifacts(path: publisher.legacyArtifactURL.path)
@@ -339,35 +339,18 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       executionMode: executionMode,
       sharedCacheCohort: sharedCacheCohort
     )
-    var resumeSummary: PrivateHeaderGeneration.ResumeSummary?
-    if plan.options.startsFresh {
-      resumeSummary = nil
-    } else {
-      resumeSummary = try await store.resumeSummary(
-        planFingerprint: fingerprint,
-        selectedTargetIDs: targetIDs,
-        currentArtifactsByTarget: currentLiveArtifactsByTarget,
-        includingCompletedRuns: plan.options.resumeBehavior.resumeRequested,
-        at: dateProvider()
-      )
-      if let resumeSummary,
-        resumeSummary.isUnfinished,
-        !plan.options.resumeBehavior.resumeRequested
-      {
-        throw PrivateHeaderGeneration.GenerationError.resumeRequired(resumeSummary)
-      }
-      if resumeSummary?.isUnfinished == false,
-        !plan.options.resumeBehavior.resumeRequested
-      {
-        resumeSummary = nil
-      }
-    }
-
+    let decision = try await Self.continuationDecision(
+      plan: plan, targetIDs: targetIDs, fingerprint: fingerprint,
+      currentArtifactsByTarget: currentLiveArtifactsByTarget, store: store, at: dateProvider()
+    )
     let targetIDsToRun: Set<String>
-    if let resumeSummary {
-      targetIDsToRun = Set(resumeSummary.targets.filter(\.shouldRun).map(\.targetID))
-    } else {
+    switch decision {
+    case .generate:
       targetIDsToRun = Set(targetIDs)
+    case .resume(let summary):
+      targetIDsToRun = Set(summary.targets.filter(\.shouldRun).map(\.targetID))
+    case .requiresResume(let summary):
+      throw PrivateHeaderGeneration.GenerationError.resumeRequired(summary)
     }
 
     let runID = try PrivateHeaderGeneration.RunID(runIDGenerator())
@@ -399,7 +382,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try Self.ensureEmptyDirectory(runStagingDirectory)
       let initialOpaquePaths = try publisher.opaquePathsForTargetValidation(
         in: publication,
-        allowLegacyMigration: plan.options.allowsLegacyMigration,
+        allowLegacyMigration: plan.options.executionOptions.allowsLegacyMigration,
         claimedBy: publishedArtifactsByTarget.values.flatMap { $0 }
       )
       var generatedTargetIDs: [String] = []
@@ -638,7 +621,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         }
         let initialDraft = try publisher.beginDraft(
           generationID: generationID,
-          allowLegacyMigration: plan.options.allowsLegacyMigration
+          allowLegacyMigration: plan.options.executionOptions.allowsLegacyMigration
         )
         let draft = try publisher.replaceCompletedTargets(
           snapshotFilesByTarget,
@@ -1595,10 +1578,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     for preparedPlan: PreparedPlan
   ) async throws -> PrivateHeaderGeneration.ResumeSummary? {
     let plan = preparedPlan.plan
+    let needsContinuation = plan.options.targetRequest.requestsAllTargets
+      && plan.options.executionOptions.continuation != .restart
+    guard needsContinuation || !plan.options.executionOptions.allowsLegacyMigration else { return nil }
     guard let executionMode = plan.options.executionMode else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
     }
-    guard !plan.options.allowsLegacyMigration else { return nil }
     let publisher = try ArtifactPublisher(
       outputBaseDirectory: plan.output.baseDirectory,
       sourceLabel: plan.source.storageIdentifier
@@ -1617,6 +1602,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
       let hadDatabase = try regularFileExists(databaseURL)
       if !hadDatabase,
+        !plan.options.executionOptions.allowsLegacyMigration,
         let requirement = try legacyMigrationRequirement(
           stateDirectory: stateDirectory,
           publisher: publisher
@@ -1642,12 +1628,14 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try publisher.cleanupStaging()
       try cleanupStateStaging(in: stateDirectory)
       let publication = try publisher.inspect()
-      if publication.legacyArtifactState.isDirectory {
+      if publication.legacyArtifactState.isDirectory,
+        !plan.options.executionOptions.allowsLegacyMigration
+      {
         throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
           .artifacts(path: publisher.legacyArtifactURL.path)
         )
       }
-      guard plan.options.targetRequest.requestsAllTargets else { return nil }
+      guard needsContinuation else { return nil }
       let publishedTargetsByID = try await store.publishedTargetsByID()
       let publishedArtifactsByTarget = publishedTargetsByID.mapValues(\.artifacts)
       let liveArtifactStore = PrivateHeaderGeneration.ArtifactStore(
@@ -1677,19 +1665,24 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         publishedTargetSources: publishedTargetSources,
         under: artifactDirectory
       )
-      let summary = try await store.resumeSummary(
-        planFingerprint: planFingerprint(
+      let decision = try await continuationDecision(
+        plan: plan,
+        targetIDs: preparedPlan.selectedTargetIDs,
+        fingerprint: planFingerprint(
           plan,
           canonicalOutputBase: publisher.outputBaseDirectory,
           executionMode: executionMode,
           sharedCacheCohort: preparedPlan.sharedCacheCohort
         ),
-        selectedTargetIDs: preparedPlan.selectedTargetIDs,
         currentArtifactsByTarget: currentLiveArtifactsByTarget,
-        includingCompletedRuns: plan.options.resumeBehavior.resumeRequested,
+        store: store,
         at: Date()
       )
-      return summary?.isUnfinished == true ? summary : nil
+      switch decision {
+      case .generate: return nil
+      case .resume(let summary), .requiresResume(let summary):
+        return summary.isUnfinished ? summary : nil
+      }
     }
   }
 }
@@ -2311,15 +2304,5 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     _ error: ManagedFileSystem.Failure
   ) -> PrivateHeaderGeneration.StateError {
     .corruptPublication(error.description)
-  }
-}
-
-extension PrivateHeaderGeneration.ResumeBehavior {
-  fileprivate var resumeRequested: Bool {
-    switch self {
-    case .resume: true
-    case .fresh: false
-    case .requireExplicitResume(let requested): requested
-    }
   }
 }

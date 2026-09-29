@@ -291,7 +291,7 @@ struct PrivateHeaderKitSimulatorRecoveryTests {
             recoveryReporter: { _ in }
         ).prepare(request)
         let operation = Task {
-            try await bootGate.track { try await prepared.run(.fresh, { _ in }) }
+            try await bootGate.track { try await prepared.run(.init(continuation: .restart, allowsLegacyMigration: true), { _ in }) }
         }
         try #require(await bootGate.waitUntilEntered())
         let pendingCommands = await runner.streamingCommandSnapshot().map(\.command)
@@ -400,7 +400,7 @@ private struct SimulatorRecoveryFixture: Sendable {
                 systemRoot: runtimeRoot,
                 helperURLs: helperURLs,
                 executionMode: executionMode,
-                resumeBehavior: .fresh
+                executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)
             )
         )
     }

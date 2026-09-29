@@ -75,11 +75,11 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     let device: String?
     let simulatorHelperPath: String?
 
-    var resumeBehavior: PrivateHeaderGeneration.ResumeBehavior {
+    var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
         switch continuationMode {
-        case .resume: .resume
-        case .fresh: .fresh
-        case nil: .requireExplicitResume(resumeRequested: false)
+        case .resume: .init(continuation: .resume)
+        case .fresh: .init(continuation: .restart, allowsLegacyMigration: true)
+        case nil: .init()
         }
     }
 }
@@ -333,7 +333,7 @@ func runPrivateHeaderKitGenerateCommand(
                     preparedGeneration,
                     request: request,
                     targetQuery: command.targetQuery,
-                    resumeBehavior: command.resumeBehavior,
+                    executionOptions: command.executionOptions,
                     resultScreenClearer: resultScreenClearer,
                     outputLogger: outputLogger,
                     errorLogger: errorLogger
@@ -408,14 +408,14 @@ func runPrivateHeaderKitPreparedGeneration(
     _ preparedGeneration: PrivateHeaderKitPreparedGeneration,
     request: PrivateHeaderKitGenerationRequest,
     targetQuery: String,
-    resumeBehavior: PrivateHeaderGeneration.ResumeBehavior,
+    executionOptions: PrivateHeaderGeneration.ExecutionOptions,
     resultScreenClearer: PrivateHeaderKitInteractiveScreenClearer?,
     outputLogger: @escaping PrivateHeaderKitOutputLogger,
     errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> PrivateHeaderKitCommandOutcome {
     do {
         let result = try await preparedGeneration.run(
-            resumeBehavior,
+            executionOptions,
             privateHeaderKitProgressReporter(
                 artifactDirectory: request.output.artifactDirectory(for: request.source),
                 outputLogger: outputLogger,
@@ -519,7 +519,7 @@ private func makePrivateHeaderGenerationRequest(
             preferRuntimeMetadata: true,
             helperEnvironment: ["PH_RUNTIME_ROOT": effectiveSource.systemRoot.path]
         ),
-        resumeBehavior: command.resumeBehavior,
+        executionOptions: command.executionOptions,
         producerVersion: PrivateHeaderKitBuildInfo.version
     )
     return PrivateHeaderKitGenerationRequest(source: source, output: output, options: options)

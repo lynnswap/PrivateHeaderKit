@@ -19,7 +19,7 @@ struct PrivateHeaderKitPreparedGeneration: Sendable {
 
     typealias LoadSummary = @Sendable () async throws -> Summary
     typealias Run = @Sendable (
-        PrivateHeaderGeneration.ResumeBehavior,
+        PrivateHeaderGeneration.ExecutionOptions,
         @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
     ) async throws -> PrivateHeaderGeneration.Result
 
@@ -99,9 +99,9 @@ private func preparePrivateHeaderGeneration(
                 }
             }
         },
-        run: { resumeBehavior, progressReporter in
+        run: { executionOptions, progressReporter in
             try await executor.run(
-                preparedPlan.withResumeBehavior(resumeBehavior),
+                preparedPlan.withExecutionOptions(executionOptions),
                 progressReporter: progressReporter
             )
         }

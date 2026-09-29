@@ -944,97 +944,42 @@ package actor GenerationStore {
     }
   }
 
-  package func resumeSummary(
-    planFingerprint: String,
-    selectedTargetIDs: [String],
-    currentArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
-    includingCompletedRuns: Bool,
-    at date: Date
-  ) throws -> PrivateHeaderGeneration.ResumeSummary? {
+  package func allTargetCheckpoint(
+    currentArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]]
+  ) throws -> PrivateHeaderGeneration.AllTargetCheckpoint? {
     try databaseQueue.read { db in
-      guard
-        let latest = try Row.fetchOne(
-          db,
-          sql: """
-            SELECT runs.id, runOrdering.sequence
-            FROM runs JOIN runOrdering ON runOrdering.runID = runs.id
-            WHERE runs.isResumable = 1
-            ORDER BY runOrdering.sequence DESC
-            LIMIT 1
-            """
-        )
-      else {
-        return nil
-      }
+      guard let latest = try Row.fetchOne(
+        db,
+        sql: """
+          SELECT runs.id, runOrdering.sequence
+          FROM runs JOIN runOrdering ON runOrdering.runID = runs.id
+          WHERE runs.isResumable = 1
+          ORDER BY runOrdering.sequence DESC
+          LIMIT 1
+          """
+      ) else { return nil }
       let latestID: String = latest["id"]
-      let latestSequence: Int64 = latest["sequence"]
       let run = try Self.fetchRun(db, id: PrivateHeaderGeneration.RunID(latestID))
-      if run.status == .completed, !includingCompletedRuns { return nil }
-      guard run.planFingerprint == planFingerprint else {
-        throw PrivateHeaderGeneration.GenerationError.incompatibleResume("plan fingerprint changed")
-      }
-      let previousTargets = Set(run.targetIDs)
-      let selectedTargets = Set(selectedTargetIDs)
-      guard previousTargets.isSubset(of: selectedTargets) else {
-        throw PrivateHeaderGeneration.GenerationError.incompatibleResume(
-          "selected target set shrank")
-      }
-
-      let attempts = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0) })
-      let publishedTargets = try Dictionary(
-        uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT * FROM targets").map {
-          let snapshot = try Self.targetSnapshot($0)
-          return (snapshot.targetID, snapshot)
-        }
-      )
       let publications = try Dictionary(uniqueKeysWithValues: Row.fetchAll(
         db,
         sql: """
-          SELECT targets.targetID, runs.planFingerprint, runOrdering.sequence
+          SELECT targets.*, runs.planFingerprint AS publishedFingerprint,
+                 runOrdering.sequence AS publishedSequence
           FROM targets
           JOIN runs ON runs.id = targets.lastSuccessfulRunID
           JOIN runOrdering ON runOrdering.runID = runs.id
           """
       ).map { row in
-        let targetID: String = row["targetID"]
-        let fingerprint: String = row["planFingerprint"]
-        let sequence: Int64 = row["sequence"]
-        return (targetID, (fingerprint: fingerprint, sequence: sequence))
+        let target = try Self.targetSnapshot(row)
+        return (target.targetID, PrivateHeaderGeneration.AllTargetCheckpoint.Publication(
+          fingerprint: row["publishedFingerprint"],
+          sequence: row["publishedSequence"],
+          isAvailable: target.status == .completed
+            && currentArtifactsByTarget[target.targetID].map(Set.init) == Set(target.artifacts)
+        ))
       })
-      let decisions = selectedTargetIDs.map {
-        targetID -> PrivateHeaderGeneration.ResumeTargetDecision in
-        let currentArtifacts = currentArtifactsByTarget[targetID].map(Set.init)
-        let publishedTarget = publishedTargets[targetID]
-        if publishedTarget?.status == .completed,
-          publications[targetID]?.fingerprint == planFingerprint,
-          let publishedSequence = publications[targetID]?.sequence,
-          publishedSequence >= latestSequence,
-          currentArtifacts == Set(publishedTarget?.artifacts ?? [])
-        {
-          return .init(targetID: targetID, status: .completed)
-        }
-        guard let attempt = attempts[targetID] else {
-          return .init(targetID: targetID, status: .pending)
-        }
-        if attempt.status == .skipped,
-          publications[targetID]?.fingerprint == planFingerprint,
-          publishedTarget?.status == .completed,
-          currentArtifacts == Set(publishedTarget?.artifacts ?? [])
-        {
-          return .init(targetID: targetID, status: .completed)
-        }
-        return .init(
-          targetID: targetID,
-          status: attempt.status == .completed || attempt.status == .skipped
-            ? .pending
-            : attempt.status
-        )
-      }
-      return PrivateHeaderGeneration.ResumeSummary(
-        latestRunID: run.id,
-        startedAt: run.startedAt,
-        updatedAt: run.endedAt ?? date,
-        targets: decisions
+      return PrivateHeaderGeneration.AllTargetCheckpoint(
+        run: run, sequence: latest["sequence"], publications: publications
       )
     }
   }

@@ -258,6 +258,13 @@ Continuation applies only to `--target all`:
   explicit `--resume` or `--fresh` decision.
 
 The wizard offers Continue or Restart only for unfinished all-target work.
+A run interrupted during finalization can already have published every target;
+that run has no remaining generation work even though its terminal status is
+`interrupted`. Normal generation starts a new run in that case. Explicit resume
+checks compatibility and regenerates any missing or incompatible target output.
+Restarting in the wizard does not grant legacy migration permission; the separate
+migration choice does.
+
 Named-target updates do not discard that progress; compatible successful
 replacements remain reusable when the all-target run resumes.
 
