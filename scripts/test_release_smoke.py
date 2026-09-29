@@ -82,6 +82,15 @@ class ReleaseSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "watchOS Simulator runtime"):
             smoke.select_runtime([runtime("iOS")], "watchOS")
 
+    def test_macos_command_does_not_require_simulator_sdks_or_runtimes(self):
+        with patch("sys.argv", ["smoke_release_binaries.py", "--cohort-dir",
+                               str(self.cohort), "--platform", "macOS"]):
+            self.assertEqual(smoke.main(), 0)
+        self.assertFalse(any(args[:2] == ["xcrun", "simctl"] for args in self.calls))
+        sdk_calls = [args for args in self.calls if "--show-sdk-path" in args]
+        self.assertEqual(sdk_calls, [["xcrun", "--sdk", "macosx", "--show-sdk-path"]])
+        self.assertEqual(len([args for args in self.calls if "search" in args]), 1)
+
     def test_failed_boot_or_helper_still_deletes_only_its_device(self):
         for operation in ("bootstatus", "spawn"):
             with self.subTest(operation=operation):

@@ -17,22 +17,13 @@ against the Formula's checksum. The workflow builds a bottle, reinstalls it,
 runs the Formula's functional test, and exercises all three helpers with local
 Objective-C fixtures before publishing the source release.
 
-## Prepare the shared tap
+## Update the shared tap
 
-`tap/` contains the initial files for `lynnswap/homebrew-tap`. It is shared by
-PrivateHeaderKit and any other tools added under `Formula/`; it is not a
-PrivateHeaderKit-specific build system. These files are a bootstrap template,
-not a second live copy of the tap. After creating the tap, maintain its workflows
-in that repository.
-
-After the first source release using this packaging has been published:
-
-1. Copy the contents of `Homebrew/tap/`, including `.github`, into a new local
-   `homebrew-tap` repository.
-2. Create its `Formula` directory and download the published `privateheaderkit.rb`
-   into that directory. Check `SHA256SUMS.txt` from the same release.
-3. Publish the tap repository through the normal repository approval process.
-4. Use a formula pull request to build and publish bottles with the shared CI.
+[lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap) owns the shared
+Formula and bottle workflows. Maintain those workflows in that repository.
+After publishing a source release, download its `privateheaderkit.rb`, verify it
+against `SHA256SUMS.txt`, and submit it under the tap's `Formula/` directory in a
+pull request.
 
 The source formula works before a bottle is published, provided the build
 requirements are installed. The tap workflows follow `brew tap-new`: the test
@@ -41,6 +32,18 @@ dispatched publish workflow uses `brew pr-pull` to publish them and merge the
 reviewed revision. Repository Actions settings must allow that workflow to
 write contents and merge pull requests. No cross-repository token is needed
 for this manual release-to-tap update process.
+
+PrivateHeaderKit's bottle compatibility configuration in the tap registers the
+Apple Silicon bottle as `arm64_sequoia` after testing it on macOS 15, 26, and 27.
+The source build still runs with a recent Xcode. The archive contents and recorded
+build environment are preserved; only its published tag, filenames, and matching
+bottle metadata change. The tap verifies ordinary bottle installation and the
+Formula test on each configured runner before publication.
+
+The upstream CI owns the CLI/helper execution tests across those macOS versions.
+macOS 14 remains the executable deployment target but is not tested or a bottle
+target. A successful build on a recent host alone does not establish compatibility
+with an older host.
 
 Do not install the draft release formula outside the release verification job:
 its canonical download URL becomes available only after publication. Never
@@ -79,7 +82,8 @@ described in [installation](../Docs/installation.md).
 
 Keep the formula buildable from versioned source, retain the functional test,
 and keep build requirements separate from per-command runtime requirements.
-The tap may publish bottles for a subset of the package's supported systems;
-Homebrew can build from source where a matching bottle is unavailable.
+Homebrew can build from source where a matching bottle is unavailable and the
+host can run the required Xcode. The tap's older-OS bottle registration is a
+maintainer-tested compatibility declaration, not a `homebrew/core` convention.
 Acceptance into `homebrew/core` still requires review against its current
 platform, dependency, license, and maintenance requirements.

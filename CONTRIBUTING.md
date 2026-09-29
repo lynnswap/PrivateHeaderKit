@@ -21,8 +21,12 @@ scripts/test-release-scripts.sh
 CI uses the macOS 27 [`xcode-27` runner](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
 with Xcode 27.1 to check macOS, iOS Simulator, and watchOS Simulator in parallel.
 The macOS job runs `swift test --build-system swiftbuild` in Release configuration;
-Simulator jobs compile CoreTests and the helper with testable imports. `Package
-Checks` succeeds only when all three jobs succeed. The release workflow separately
+Simulator jobs compile CoreTests and the helper with testable imports. CI then
+transfers the same macOS executables to Apple Silicon runners for macOS 15, 26,
+and 27 and runs the CLI, header generation, and symbol search without rebuilding.
+`Package Checks` requires both the platform jobs and these execution checks to
+succeed. macOS 14 remains the deployment target but is outside the CI matrix.
+The release workflow separately
 builds the approved source archive through its Homebrew Formula and tests the
 installed bottle before publication.
 

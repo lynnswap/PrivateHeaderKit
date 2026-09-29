@@ -5,7 +5,9 @@
 Generate searchable private headers and symbol lists from this Mac or an installed iOS or
 watchOS Simulator runtime.
 
-Requires an Apple Silicon Mac with macOS 14 or later. iOS and watchOS generation
+Requires an Apple Silicon Mac. CI verifies macOS 15 and later, and Homebrew bottles
+target those systems. The executables retain a macOS 14 deployment target;
+macOS 14 is untested and has no published bottle. iOS and watchOS generation
 require Xcode and a matching installed Simulator runtime; physical devices are
 not generation sources. Building from source requires Swift 6.3 or later and
 Xcode with iOS and watchOS Simulator SDKs.

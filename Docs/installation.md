@@ -6,7 +6,9 @@ private macOS, iOS Simulator, and watchOS Simulator helpers.
 
 ## Requirements
 
-- An Apple Silicon Mac running macOS 14 or later.
+- An Apple Silicon Mac. CI verifies macOS 15 and later; Homebrew bottles target
+  those systems. The executable deployment target remains macOS 14, but macOS 14
+  is untested and has no matching bottle.
 - Homebrew.
 - To build from source: Swift 6.3 or later and Xcode with the iOS Simulator and
   watchOS Simulator SDKs.
@@ -17,8 +19,11 @@ The Formula requires Xcode 26.4 or later when building from source; Xcode 26.4
 includes Swift 6.3. Xcode's own [host macOS requirements](https://developer.apple.com/xcode/system-requirements)
 apply to source builds separately from the tool's runtime minimum.
 A matching Homebrew bottle avoids the source build and its toolchain requirements.
-Bottles are specific to their supported macOS/architecture combinations; if no
-matching bottle is available, Homebrew builds the Formula from source.
+Bottles are registered for their tested macOS/architecture combinations. If no
+matching bottle is available, Homebrew attempts a source build, which still needs
+a host OS supported by the required Xcode. macOS 14 cannot satisfy that source-build
+requirement; retaining the deployment target does not promise Homebrew installation
+on macOS 14.
 
 ## Install, Update, and Remove
 

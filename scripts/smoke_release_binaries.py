@@ -102,9 +102,13 @@ def smoke(cohort, platforms=PLATFORMS):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cohort-dir", required=True, type=Path)
+    parser.add_argument("--platform", choices=[platform[0] for platform in PLATFORMS],
+                        action="append", help="Test only these platforms (default: all).")
     arguments = parser.parse_args()
+    platforms = [platform for platform in PLATFORMS
+                 if arguments.platform is None or platform[0] in arguments.platform]
     try:
-        smoke(arguments.cohort_dir)
+        smoke(arguments.cohort_dir, platforms=platforms)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(error, file=sys.stderr)
         return 1
