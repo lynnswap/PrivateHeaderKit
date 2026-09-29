@@ -30,6 +30,7 @@ struct PrivateHeaderGenerationStoreTests {
         "v2-run-logs-and-indexes",
         "v3-causal-ordering",
         "v4-published-artifact-digests",
+        "v5-all-target-resume",
       ])
     let columns = try await queue.read { db in
       try db.columns(in: "runLogs").map(\.name)
@@ -760,7 +761,7 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
-  @Test func resumeAllowsTargetExpansionAndRejectsShrink() async throws {
+  @Test func checkpointReportsPublishedAndNewTargets() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
     let ids = try await fixture.prepareCompletedPublication(targetIDs: ["framework:Foo"])
@@ -769,29 +770,21 @@ struct PrivateHeaderGenerationStoreTests {
     let current = [
       "framework:Foo": [try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")]
     ]
-
-    let expanded = try await fixture.store.resumeSummary(
-      planFingerprint: "fingerprint",
-      selectedTargetIDs: ["framework:Foo", "framework:Bar"],
-      currentArtifactsByTarget: current,
-      at: fixture.date
+    let checkpoint = try #require(try await fixture.store.allTargetCheckpoint(
+      currentArtifactsByTarget: current
+    ))
+    #expect(!checkpoint.hasUnfinishedWork)
+    let summary = checkpoint.resumeSummary(
+      selectedTargetIDs: ["framework:Foo", "framework:Bar"], at: fixture.date
     )
-    #expect(expanded?.targets.map(\.status) == [.completed, .pending])
-
-    do {
-      _ = try await fixture.store.resumeSummary(
-        planFingerprint: "fingerprint",
-        selectedTargetIDs: [],
-        currentArtifactsByTarget: current,
-        at: fixture.date
-      )
-      Issue.record("shrinking target set unexpectedly resumed")
-    } catch let error as PrivateHeaderGeneration.GenerationError {
-      guard case .incompatibleResume = error else {
-        Issue.record("unexpected error: \(error)")
-        return
-      }
-    }
+    #expect(summary.targets.map(\.status) == [.completed, .pending])
+    let missingArtifacts = try #require(try await fixture.store.allTargetCheckpoint(
+      currentArtifactsByTarget: [:]
+    ))
+    #expect(!missingArtifacts.hasUnfinishedWork)
+    #expect(missingArtifacts.resumeSummary(
+      selectedTargetIDs: ["framework:Foo"], at: fixture.date
+    ).targets.map(\.status) == [.pending])
   }
 
   @Test func completedAttemptRequiresTransactionalPublicationOwnershipToResumeAsComplete()
@@ -842,14 +835,11 @@ struct PrivateHeaderGenerationStoreTests {
       ) == .discardGeneration(secondGenerationID)
     )
 
-    let summary = try #require(
-      try await fixture.store.resumeSummary(
-        planFingerprint: "fingerprint",
-        selectedTargetIDs: ["framework:Foo"],
-        currentArtifactsByTarget: fixture.marker(first.generationID).artifactsByTarget,
-        at: fixture.date
-      )
-    )
+    let checkpoint = try #require(try await fixture.store.allTargetCheckpoint(
+      currentArtifactsByTarget: fixture.marker(first.generationID).artifactsByTarget
+    ))
+    #expect(checkpoint.hasUnfinishedWork)
+    let summary = checkpoint.resumeSummary(selectedTargetIDs: ["framework:Foo"], at: fixture.date)
     #expect(summary.targets == [.init(targetID: "framework:Foo", status: .pending)])
   }
 
@@ -1026,6 +1016,7 @@ private final class StoreFixture: @unchecked Sendable {
       sourceIdentity: "iOS|27.0|24A",
       fingerprint: "fingerprint",
       targetIDs: targetIDs,
+      isResumable: true
     )
   }
 

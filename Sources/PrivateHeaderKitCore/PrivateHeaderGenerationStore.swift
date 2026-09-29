@@ -237,8 +237,8 @@ package actor GenerationStore {
       try db.execute(
         sql: """
           INSERT INTO runs(
-              id, sourceIdentity, planFingerprint, targetIDs, startedAt, endedAt, status
-          ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+              id, sourceIdentity, planFingerprint, targetIDs, startedAt, endedAt, status, isResumable
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
           """,
         arguments: [
           id.rawValue,
@@ -247,6 +247,7 @@ package actor GenerationStore {
           try Self.encodeStrings(plan.targetIDs),
           date.timeIntervalSinceReferenceDate,
           PrivateHeaderGeneration.RunStatus.running.rawValue,
+          plan.isResumable,
         ]
       )
       try db.execute(
@@ -943,76 +944,42 @@ package actor GenerationStore {
     }
   }
 
-  package func resumeSummary(
-    planFingerprint: String,
-    selectedTargetIDs: [String],
-    currentArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
-    at date: Date
-  ) throws -> PrivateHeaderGeneration.ResumeSummary? {
+  package func allTargetCheckpoint(
+    currentArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]]
+  ) throws -> PrivateHeaderGeneration.AllTargetCheckpoint? {
     try databaseQueue.read { db in
-      guard
-        let latestID = try String.fetchOne(
-          db,
-          sql: """
-            SELECT runs.id
-            FROM runs JOIN runOrdering ON runOrdering.runID = runs.id
-            ORDER BY runOrdering.sequence DESC
-            LIMIT 1
-            """
-        )
-      else {
-        return nil
-      }
+      guard let latest = try Row.fetchOne(
+        db,
+        sql: """
+          SELECT runs.id, runOrdering.sequence
+          FROM runs JOIN runOrdering ON runOrdering.runID = runs.id
+          WHERE runs.isResumable = 1
+          ORDER BY runOrdering.sequence DESC
+          LIMIT 1
+          """
+      ) else { return nil }
+      let latestID: String = latest["id"]
       let run = try Self.fetchRun(db, id: PrivateHeaderGeneration.RunID(latestID))
-      guard run.planFingerprint == planFingerprint else {
-        throw PrivateHeaderGeneration.GenerationError.incompatibleResume("plan fingerprint changed")
-      }
-      let previousTargets = Set(run.targetIDs)
-      let selectedTargets = Set(selectedTargetIDs)
-      guard previousTargets.isSubset(of: selectedTargets) else {
-        throw PrivateHeaderGeneration.GenerationError.incompatibleResume(
-          "selected target set shrank")
-      }
-
-      let attempts = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0) })
-      let publishedTargets = try Dictionary(
-        uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT * FROM targets").map {
-          let snapshot = try Self.targetSnapshot($0)
-          return (snapshot.targetID, snapshot)
-        }
-      )
-      let decisions = selectedTargetIDs.map {
-        targetID -> PrivateHeaderGeneration.ResumeTargetDecision in
-        guard let attempt = attempts[targetID] else {
-          return .init(targetID: targetID, status: .pending)
-        }
-        let currentArtifacts = currentArtifactsByTarget[targetID].map(Set.init)
-        let publishedTarget = publishedTargets[targetID]
-        if attempt.status == .completed,
-          publishedTarget?.lastSuccessfulRunID == run.id,
-          Set(publishedTarget?.artifacts ?? []) == Set(attempt.artifacts),
-          currentArtifacts == Set(attempt.artifacts)
-        {
-          return .init(targetID: targetID, status: .completed)
-        }
-        if attempt.status == .skipped,
-          publishedTarget?.status == .completed,
-          currentArtifacts == Set(publishedTarget?.artifacts ?? [])
-        {
-          return .init(targetID: targetID, status: .completed)
-        }
-        return .init(
-          targetID: targetID,
-          status: attempt.status == .completed || attempt.status == .skipped
-            ? .pending
-            : attempt.status
-        )
-      }
-      return PrivateHeaderGeneration.ResumeSummary(
-        latestRunID: run.id,
-        startedAt: run.startedAt,
-        updatedAt: run.endedAt ?? date,
-        targets: decisions
+      let publications = try Dictionary(uniqueKeysWithValues: Row.fetchAll(
+        db,
+        sql: """
+          SELECT targets.*, runs.planFingerprint AS publishedFingerprint,
+                 runOrdering.sequence AS publishedSequence
+          FROM targets
+          JOIN runs ON runs.id = targets.lastSuccessfulRunID
+          JOIN runOrdering ON runOrdering.runID = runs.id
+          """
+      ).map { row in
+        let target = try Self.targetSnapshot(row)
+        return (target.targetID, PrivateHeaderGeneration.AllTargetCheckpoint.Publication(
+          fingerprint: row["publishedFingerprint"],
+          sequence: row["publishedSequence"],
+          isAvailable: target.status == .completed
+            && currentArtifactsByTarget[target.targetID].map(Set.init) == Set(target.artifacts)
+        ))
+      })
+      return PrivateHeaderGeneration.AllTargetCheckpoint(
+        run: run, sequence: latest["sequence"], publications: publications
       )
     }
   }
@@ -1188,6 +1155,11 @@ extension GenerationStore {
           ALTER TABLE targets
           ADD COLUMN artifactDigests TEXT NOT NULL DEFAULT '{}';
           """)
+    }
+    migrator.registerMigration("v5-all-target-resume") { db in
+      // Older runs did not record their selection scope. Keep their artifacts without
+      // guessing whether an individual selection was an all-target run.
+      try db.execute(sql: "ALTER TABLE runs ADD COLUMN isResumable BOOLEAN NOT NULL DEFAULT 0")
     }
     return migrator
   }

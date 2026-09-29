@@ -747,7 +747,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
         #expect(status == 0)
         let request = try #require(requestBox.value)
-        #expect(request.options.resumeBehavior == .fresh)
+        #expect(request.options.executionOptions == .init(continuation: .restart, allowsLegacyMigration: true))
         #expect(request.options.targetRequest == .query("AppKit,Foundation"))
         #expect(request.options.executionMode == .host)
         #expect(request.options.helperURLs?.host.path == "/cohort/privateheaderkit-raw-helper")
@@ -1301,7 +1301,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
                     useSharedCache: true
                 ),
-                resumeBehavior: .fresh
+                executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)
             )
         )
         let prepared = try await PrivateHeaderKitGenerationClient
@@ -1311,7 +1311,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(try await prepared.summary() == .noUnfinishedRun)
         #expect(await runner.captureCommandSnapshot().count == 1)
 
-        let result = try await prepared.run(.fresh, { _ in })
+        let result = try await prepared.run(.init(continuation: .restart, allowsLegacyMigration: true), { _ in })
         #expect(result.targetCounts.completed == 1)
         #expect(await runner.captureCommandSnapshot().map(\.command) == [
             inventoryCommand,
@@ -1654,7 +1654,38 @@ struct PrivateHeaderKitCLIExecutionTests {
             """)
     }
 
-    @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
+    @Test func interactiveNamedTargetsDoNotPromptForContinuation() async throws {
+        let input = ScriptedInput(["1", "2", "Foo"])
+        let runCount = ThreadSafeCounter()
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient(
+                run: { request, behavior, _ in
+                    runCount.increment()
+                    #expect(request.options.targetRequest == .query("Foo"))
+                    #expect(behavior == .init())
+                    return resultFixture(for: request, counts: .init(total: 1, completed: 1))
+                }
+            ),
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            interactiveSourceProvider: {
+                [.init(platform: .macOS, version: "27.0", build: "24A1", systemRoot: "/")]
+            },
+            interactiveOutputBaseDirectoryProvider: { "/tmp/headers" },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == 0)
+        #expect(runCount.value == 1)
+        #expect(!output.text.contains("Select action:"))
+    }
+
+    @Test func interactiveRunUsesDefaultGenerationWithoutGrantingLegacyMigration() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let framework = root.appendingPathComponent(
@@ -1679,9 +1710,9 @@ struct PrivateHeaderKitCLIExecutionTests {
             ["privateheaderkit"],
             currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
             generationClient: testPrivateHeaderKitGenerationClient(
-                run: { request, resumeBehavior, _ in
+                run: { request, executionOptions, _ in
                     requestBox.set(request)
-                    #expect(resumeBehavior == .fresh)
+                    #expect(executionOptions == .init())
                     return resultFixture(
                         for: request,
                         counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
@@ -1713,8 +1744,8 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
         #expect(status == 0)
         #expect(
-            requestBox.value?.options.resumeBehavior
-                == .requireExplicitResume(resumeRequested: false)
+            requestBox.value?.options.executionOptions
+                == .init()
         )
         #expect(requestBox.value?.options.helperURLs == helperURLs)
         #expect(requestBox.value?.options.producerVersion == PrivateHeaderKitBuildInfo.version)
@@ -1729,6 +1760,10 @@ struct PrivateHeaderKitCLIExecutionTests {
 
     @Test func interactiveConfirmsLegacyArtifactTreeMigration() async throws {
         try await assertInteractiveLegacyMigration(kind: .artifactTree)
+    }
+
+    @Test func interactiveNamedTargetsStillConfirmLegacyArtifactMigration() async throws {
+        try await assertInteractiveLegacyMigration(kind: .artifactTree, namedTarget: true)
     }
 
     @Test func interactiveConfirmsCombinedLegacyMigrationOnceAndDisplaysBothEffects() async throws {
@@ -1773,9 +1808,9 @@ struct PrivateHeaderKitCLIExecutionTests {
                         )
                     )
                 },
-                run: { request, resumeBehavior, _ in
+                run: { request, executionOptions, _ in
                     runCount.increment()
-                    #expect(resumeBehavior == .fresh)
+                    #expect(executionOptions == .init(continuation: .restart, allowsLegacyMigration: true))
                     return resultFixture(
                         for: request,
                         counts: .init(total: 1, completed: 1)
@@ -1866,9 +1901,9 @@ struct PrivateHeaderKitCLIExecutionTests {
                         .state(path: legacyManifest.deletingLastPathComponent().path)
                     )
                 },
-                run: { request, resumeBehavior, _ in
+                run: { request, executionOptions, _ in
                     requestBox.set(request)
-                    #expect(resumeBehavior == .fresh)
+                    #expect(executionOptions == .init(continuation: .restart, allowsLegacyMigration: true))
                     return resultFixture(
                         for: request,
                         counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
@@ -1935,8 +1970,8 @@ struct PrivateHeaderKitCLIExecutionTests {
                 requestBox.set(request)
                 return PrivateHeaderKitPreparedGeneration(
                     summary: { .unfinished(unfinishedSummary) },
-                    run: { resumeBehavior, _ in
-                        #expect(resumeBehavior == .resume)
+                    run: { executionOptions, _ in
+                        #expect(executionOptions == .init(continuation: .resume))
                         return resultFixture(
                             for: request,
                             counts: PrivateHeaderGeneration.TargetCounts(
@@ -2056,9 +2091,9 @@ struct PrivateHeaderKitCLIExecutionTests {
                 preparationCount.increment()
                 return PrivateHeaderKitPreparedGeneration(
                     summary: { .incompatibleResume(reason: "plan fingerprint changed") },
-                    run: { resumeBehavior, _ in
+                    run: { executionOptions, _ in
                         runCount.increment()
-                        #expect(resumeBehavior == .fresh)
+                        #expect(executionOptions == .init(continuation: .restart))
                         return resultFixture(
                             for: request,
                             counts: .init(total: 1, completed: 1)
@@ -3615,7 +3650,7 @@ private func testPrivateHeaderKitGenerationClient(
     ) async throws -> PrivateHeaderKitPreparedGeneration.Summary = { _ in .noUnfinishedRun },
     run: @escaping @Sendable (
         PrivateHeaderKitGenerationRequest,
-        PrivateHeaderGeneration.ResumeBehavior,
+        PrivateHeaderGeneration.ExecutionOptions,
         PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
     ) async throws -> PrivateHeaderGeneration.Result
 ) -> PrivateHeaderKitGenerationClient {
@@ -3624,8 +3659,8 @@ private func testPrivateHeaderKitGenerationClient(
             onPrepare(request)
             return PrivateHeaderKitPreparedGeneration(
                 summary: { try await summary(request) },
-                run: { resumeBehavior, progressReporter in
-                    try await run(request, resumeBehavior, progressReporter)
+                run: { executionOptions, progressReporter in
+                    try await run(request, executionOptions, progressReporter)
                 }
             )
         }
@@ -3637,7 +3672,9 @@ private enum LegacyInputKind {
     case artifactTree
 }
 
-private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throws {
+private func assertInteractiveLegacyMigration(
+    kind: LegacyInputKind, namedTarget: Bool = false
+) async throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let systemRoot = root.appendingPathComponent("SystemRoot", isDirectory: true)
@@ -3670,7 +3707,7 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
     )
     try Data("legacy".utf8).write(to: detectedURL)
 
-    let input = ScriptedInput(["1", "1", "1"])
+    let input = ScriptedInput(namedTarget ? ["1", "2", "Foo", "1"] : ["1", "1", "1"])
     let output = ThreadSafeStrings()
     let requestBox = ThreadSafeRequestBox()
     let status = await runPrivateHeaderKitCommand(
@@ -3689,9 +3726,9 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
                     )
                 }
             },
-            run: { request, resumeBehavior, _ in
+            run: { request, executionOptions, _ in
                 requestBox.set(request)
-                #expect(resumeBehavior == .fresh)
+                #expect(executionOptions == .init(continuation: .restart, allowsLegacyMigration: true))
                 return resultFixture(
                     for: request,
                     counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
@@ -3719,8 +3756,8 @@ private func assertInteractiveLegacyMigration(kind: LegacyInputKind) async throw
 
     #expect(status == 0)
     #expect(
-        requestBox.value?.options.resumeBehavior
-            == .requireExplicitResume(resumeRequested: false)
+        requestBox.value?.options.executionOptions
+            == .init()
     )
     #expect(output.text.contains("Migrate and start fresh"))
     #expect(output.text.contains("[2] Back"))
@@ -3799,7 +3836,7 @@ private func unfinishedResumeSummaryFixture() async throws
             systemRoot: systemRoot,
             helperURLs: testPrivateHeaderKitHelperURLs,
             executionMode: .host,
-            resumeBehavior: .requireExplicitResume(resumeRequested: false)
+            executionOptions: .init()
         )
     )
     let executor = PrivateHeaderGeneration.GenerationExecutor(

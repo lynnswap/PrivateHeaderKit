@@ -425,12 +425,15 @@ extension PrivateHeaderGeneration {
     case allAvailable
     case identifiers([String])
     case query(String)
-  }
 
-  package enum ResumeBehavior: Hashable, Sendable {
-    case resume
-    case fresh
-    case requireExplicitResume(resumeRequested: Bool)
+    package var requestsAllTargets: Bool {
+      switch self {
+      case .allAvailable: true
+      case .query(let query):
+        (try? TargetQuery(commaSeparated: query).requestsAllAvailableTargets) == true
+      case .frameworks, .system, .identifiers: false
+      }
+    }
   }
 
   package struct Options: Hashable, Sendable {
@@ -441,7 +444,7 @@ extension PrivateHeaderGeneration {
     package var executionMode: RawDumping.ExecutionMode?
     package var rawDumpingOptions: RawDumping.Options
     package var includeNestedChildren: Bool
-    package var resumeBehavior: ResumeBehavior
+    package var executionOptions: ExecutionOptions
     package var producerVersion: String
 
     package init(
@@ -452,7 +455,7 @@ extension PrivateHeaderGeneration {
       executionMode: RawDumping.ExecutionMode? = nil,
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
       includeNestedChildren: Bool = true,
-      resumeBehavior: ResumeBehavior = .requireExplicitResume(resumeRequested: false),
+      executionOptions: ExecutionOptions = .init(),
       producerVersion: String = PrivateHeaderKitBuildInfo.version
     ) {
       self.layout = layout
@@ -462,7 +465,7 @@ extension PrivateHeaderGeneration {
       self.executionMode = executionMode
       self.rawDumpingOptions = rawDumpingOptions
       self.includeNestedChildren = includeNestedChildren
-      self.resumeBehavior = resumeBehavior
+      self.executionOptions = executionOptions
       self.producerVersion = producerVersion
     }
   }

@@ -18,15 +18,251 @@ struct PrivateHeaderGenerationExecutorTests {
     let content = "# image\t/Foo\nvisibility\tname\tdemangled_name\nexport\t_Foo\t_Foo\n"
     let runner = RecordingRunner(contents: content, primaryHeaderName: "Foo.symbols.tsv")
     _ = try await fixture.executor(runner: runner, runID: "symbols-one", generationID: "symbols-one")
-      .run(plan: try fixture.plan(.query("Foo")))
+      .run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
     let file = fixture.liveHeaderURL().deletingLastPathComponent().appendingPathComponent("Foo.symbols.tsv")
     #expect(try String(contentsOf: file, encoding: .utf8) == content)
     try FileManager.default.removeItem(at: fixture.liveURL)
     let nextRunner = RecordingRunner(contents: "must not regenerate", primaryHeaderName: "Foo.symbols.tsv")
     _ = try await fixture.executor(runner: nextRunner, runID: "symbols-two", generationID: "symbols-two")
-      .run(plan: try fixture.plan(.query("Foo")))
+      .run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
     #expect(await nextRunner.invocationCount == 0)
     #expect(try String(contentsOf: file, encoding: .utf8) == content)
+  }
+
+  @Test func namedTargetsRegenerateWithoutContinuationFlagsAfterProducerChange() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    for (index, version) in ["v1", "v2", "v2"].enumerated() {
+      let runner = RecordingRunner(
+        contents: "run-\(index)",
+        result: .init(
+          terminationStatus: 0,
+          diagnosticsReport: .init(producerVersion: version, diagnostics: [])
+        )
+      )
+      let executor = fixture.executor(
+        runner: runner, runID: "run-\(index)", generationID: "generation-\(index)"
+      )
+      let plan = try fixture.plan(
+        index == 0 ? .allAvailable : .query("Foo"), producerVersion: version
+      )
+      let prepared = try await executor.prepare(plan)
+      #expect(try await executor.availableResumeSummary(for: prepared) == nil)
+      let result = try await executor.run(prepared)
+      #expect(await runner.invocationCount == 1)
+      #expect(result.targetCounts.completed == 1)
+      #expect(try fixture.readLiveHeader() == "run-\(index)")
+    }
+  }
+
+  @Test func targetedGenerationPreservesInterruptedAllTargetProgress() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Alpha.framework")
+    try fixture.createFramework("Zulu.framework")
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "batch", cancelsForFramework: "Zulu.framework"),
+        runID: "run-batch", generationID: "generation-batch"
+      ).run(plan: fixture.plan(.allAvailable))
+      Issue.record("expected interruption")
+    } catch PrivateHeaderGeneration.GenerationError.runInterrupted(let interruption) {
+      #expect(interruption.summary.targetCounts.completed == 1)
+    }
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "targeted", additionalHeaderName: "Additional.h"),
+      runID: "run-targeted", generationID: "generation-targeted"
+    ).run(plan: fixture.plan(.query("Alpha")))
+    let runner = RecordingRunner(contents: "resumed")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-resumed", generationID: "generation-resumed"
+    )
+    let prepared = try await executor.prepare(fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
+    let summary = try #require(try await executor.availableResumeSummary(for: prepared))
+    #expect(summary.latestRunID.rawValue == "run-batch")
+    #expect(summary.counts.completed == 1)
+    let result = try await executor.run(prepared)
+    #expect(await runner.invocationCount == 1)
+    #expect(await runner.invocations.first?.inputPath.hasSuffix("/Zulu.framework") == true)
+    #expect(result.targetCounts.skipped == 1)
+    #expect(try fixture.readLiveHeader(framework: "Alpha") == "targeted")
+    #expect(try fixture.readLiveHeader(framework: "Zulu") == "resumed")
+  }
+
+  @Test(arguments: ["Bravo", "Charlie", "Delta"])
+  func allTargetResumeReusesIndividualRepairsAndNewTargets(_ repairedTarget: String) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    for target in ["Alpha", "Bravo", "Charlie"] {
+      try fixture.createFramework("\(target).framework")
+    }
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "batch", cancelsForFramework: "Bravo.framework"),
+        runID: "run-batch", generationID: "generation-batch"
+      ).run(plan: fixture.plan(.allAvailable))
+      Issue.record("expected interruption")
+    } catch PrivateHeaderGeneration.GenerationError.runInterrupted(let interruption) {
+      #expect(interruption.summary.targetCounts.completed == 1)
+    }
+    if repairedTarget == "Delta" { try fixture.createFramework("Delta.framework") }
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "repaired"),
+      runID: "run-repaired", generationID: "generation-repaired"
+    ).run(plan: fixture.plan(.query(repairedTarget)))
+    let runner = RecordingRunner(contents: "resumed")
+    let result = try await fixture.executor(
+      runner: runner, runID: "run-resumed", generationID: "generation-resumed"
+    ).run(plan: fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
+    #expect(await runner.invocationCount == (repairedTarget == "Delta" ? 2 : 1))
+    #expect(result.targetCounts.skipped == 2)
+    #expect(try fixture.readLiveHeader(framework: repairedTarget) == "repaired")
+  }
+
+  @Test func completedAllTargetRunRegeneratesUnlessResumeIsRequested() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    for index in 0..<2 {
+      let runner = RecordingRunner(contents: "run-\(index)")
+      let result = try await fixture.executor(
+        runner: runner, runID: "run-\(index)", generationID: "generation-\(index)"
+      ).run(plan: fixture.plan(.allAvailable))
+      #expect(await runner.invocationCount == 1)
+      #expect(result.targetCounts.completed == 1)
+    }
+  }
+
+  @Test(arguments: ["producer", "options", "targets"])
+  func completedAllTargetRunStartsAgainAfterConfigurationChange(_ change: String) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    if change == "targets" { try fixture.createFramework("Bar.framework") }
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "first", result: .init(
+        terminationStatus: 0,
+        diagnosticsReport: .init(producerVersion: "v1", diagnostics: [])
+      )),
+      runID: "run-first", generationID: "generation-first"
+    ).run(plan: fixture.plan(.allAvailable, producerVersion: "v1"))
+    if change == "targets" {
+      try FileManager.default.removeItem(
+        at: fixture.systemRoot.appendingPathComponent("System/Library/Frameworks/Bar.framework")
+      )
+    }
+    let version = change == "producer" ? "v2" : "v1"
+    let runner = RecordingRunner(contents: "regenerated", result: .init(
+      terminationStatus: 0,
+      diagnosticsReport: .init(producerVersion: version, diagnostics: [])
+    ))
+    let executor = fixture.executor(
+      runner: runner, runID: "run-next", generationID: "generation-next"
+    )
+    let prepared = try await executor.prepare(fixture.plan(
+      .allAvailable, rawDumpingOptions: .init(verbose: change == "options"),
+      producerVersion: version
+    ))
+    #expect(try await executor.availableResumeSummary(for: prepared) == nil)
+    let result = try await executor.run(prepared)
+    #expect(await runner.invocationCount == 1)
+    #expect(result.targetCounts.completed == 1)
+    #expect(try fixture.readLiveHeader() == "regenerated")
+  }
+
+  @Test(arguments: [true, false])
+  func changedProducerStillRejectsExplicitResumeOrUnfinishedWork(_ completed: Bool) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "first", result: .init(
+          terminationStatus: completed ? 0 : 1,
+          diagnosticsReport: .init(producerVersion: "v1", diagnostics: [])
+        )),
+        runID: "run-first", generationID: "generation-first"
+      ).run(plan: fixture.plan(.allAvailable, producerVersion: "v1"))
+      #expect(completed)
+    } catch PrivateHeaderGeneration.GenerationError.runFailed {
+      #expect(!completed)
+    }
+    let runner = RecordingRunner(contents: "must not run")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-next", generationID: "generation-next"
+    )
+    let prepared = try await executor.prepare(fixture.plan(
+      .allAvailable,
+      executionOptions: .init(continuation: completed ? .resume : .automatic),
+      producerVersion: "v2"
+    ))
+    let expected = PrivateHeaderGeneration.GenerationError.incompatibleResume("plan fingerprint changed")
+    await #expect(throws: expected) { _ = try await executor.availableResumeSummary(for: prepared) }
+    await #expect(throws: expected) { _ = try await executor.run(prepared) }
+    #expect(await runner.invocationCount == 0)
+  }
+
+  @Test(arguments: [PrivateHeaderGeneration.Continuation.automatic, .resume, .restart])
+  func interruptedFinalizationUsesPublishedProgressForEveryExecutionChoice(
+    _ continuation: PrivateHeaderGeneration.Continuation
+  ) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    let interruption = await captureInterruption {
+      try await fixture.executor(
+        runner: RecordingRunner(contents: "published"),
+        runID: "run-interrupted", generationID: "generation-interrupted",
+        storeFaultInjector: { point in
+          if point == .afterSemanticFinalize { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+      ).run(plan: fixture.plan(.allAvailable))
+    }
+    #expect(try #require(interruption).summary.status == .interrupted)
+    let runner = RecordingRunner(contents: "next")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-next", generationID: "generation-next"
+    )
+    let prepared = try await executor.prepare(fixture.plan(
+      .allAvailable, executionOptions: .init(continuation: continuation)
+    ))
+    #expect(try await executor.availableResumeSummary(for: prepared) == nil)
+    let result = try await executor.run(prepared)
+    #expect(await runner.invocationCount == (continuation == .resume ? 0 : 1))
+    #expect(result.targetCounts.skipped == (continuation == .resume ? 1 : 0))
+    #expect(try fixture.readLiveHeader() == (continuation == .resume ? "published" : "next"))
+  }
+
+  @Test func individualRepairCanFinishAnOlderCheckpointBeforeNormalGeneration() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Alpha.framework")
+    try fixture.createFramework("Zulu.framework")
+    do {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "original", cancelsForFramework: "Zulu.framework"),
+        runID: "run-original", generationID: "generation-original"
+      ).run(plan: fixture.plan(.allAvailable))
+      Issue.record("expected interruption")
+    } catch PrivateHeaderGeneration.GenerationError.runInterrupted {}
+    let updatedResult = PrivateHeaderGeneration.RawDumping.Result(
+      terminationStatus: 0,
+      diagnosticsReport: .init(producerVersion: "updated", diagnostics: [])
+    )
+    _ = try await fixture.executor(
+      runner: RecordingRunner(contents: "repaired", result: updatedResult),
+      runID: "run-repair", generationID: "generation-repair"
+    ).run(plan: fixture.plan(.query("Zulu"), producerVersion: "updated"))
+    let runner = RecordingRunner(contents: "new-batch", result: updatedResult)
+    let executor = fixture.executor(
+      runner: runner, runID: "run-new", generationID: "generation-new"
+    )
+    let prepared = try await executor.prepare(fixture.plan(.allAvailable, producerVersion: "updated"))
+    #expect(try await executor.availableResumeSummary(for: prepared) == nil)
+    let result = try await executor.run(prepared)
+    #expect(result.targetCounts.completed == 2)
+    #expect(await runner.invocationCount == 2)
   }
 
   private enum InjectedFault: Error {
@@ -172,7 +408,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: fixture.outputBase.path))
   }
 
-  @Test func preparedPlanCanChangeOnlyInteractiveResumeBehaviorWithoutReloadingCohort() async throws
+  @Test func preparedPlanCanChangeOnlyInteractiveExecutionOptionsWithoutReloadingCohort() async throws
   {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
@@ -195,9 +431,9 @@ struct PrivateHeaderGenerationExecutorTests {
       )
     )
 
-    let resumedPlan = preparedPlan.withResumeBehavior(.resume)
+    let resumedPlan = preparedPlan.withExecutionOptions(.init(continuation: .resume))
 
-    #expect(resumedPlan.plan.options.resumeBehavior == .resume)
+    #expect(resumedPlan.plan.options.executionOptions == .init(continuation: .resume))
     #expect(resumedPlan.sharedCacheCohort == preparedPlan.sharedCacheCohort)
     #expect(resumedPlan.selectedTargetIDs == preparedPlan.selectedTargetIDs)
     #expect(await inventoryRunner.invocationCount == 1)
@@ -606,12 +842,8 @@ struct PrivateHeaderGenerationExecutorTests {
     try fixture.createFramework("Bar.framework")
     try fixture.createFramework("Baz.framework")
     let plan = try fixture.plan(
-      .identifiers([
-        "framework:Foo.framework",
-        "framework:Bar.framework",
-        "framework:Baz.framework",
-      ]),
-      resumeBehavior: .resume
+      .allAvailable,
+      executionOptions: .init(continuation: .resume)
     )
     let firstRunner = RecordingRunner(
       contents: "first-run",
@@ -682,7 +914,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -692,7 +924,7 @@ struct PrivateHeaderGenerationExecutorTests {
         storeFaultInjector: { point in
           if point == .afterRunTargetWrite { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     let staleHeader = fixture.liveURL.appendingPathComponent(
       "Frameworks/Foo/Headers/Stale.h"
@@ -705,7 +937,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-recovered",
       generationID: "generation-recovered"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .resume)))
 
     #expect(await resumedRunner.invocationCount == 1)
     #expect(try fixture.readLiveHeader() == "second")
@@ -720,7 +952,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old", additionalHeaderName: "Removed.h"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -730,7 +962,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     let removedHeader = fixture.liveURL.appendingPathComponent(
       "Frameworks/Foo/Headers/Removed.h"
@@ -743,7 +975,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     #expect(await resumedRunner.invocationCount == 0)
     #expect(try fixture.readLiveHeader() == "new")
@@ -758,7 +990,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     let volumeValues = try fixture.liveURL.resourceValues(
       forKeys: [.volumeSupportsCaseSensitiveNamesKey]
     )
@@ -772,7 +1004,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     let lowercasedLiveHeader = fixture.liveURL.appendingPathComponent(
       "Frameworks/Foo/Headers/generated.h"
@@ -784,7 +1016,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     let lowercasedCurrentHeader = fixture.currentURL.appendingPathComponent(
       "Frameworks/Foo/Headers/generated.h"
@@ -807,7 +1039,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -817,7 +1049,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     try FileManager.default.removeItem(at: fixture.liveHeaderURL())
 
@@ -826,7 +1058,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .resume)))
 
     #expect(await resumedRunner.invocationCount == 1)
     #expect(try fixture.readLiveHeader() == "recovered")
@@ -840,7 +1072,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -850,7 +1082,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     try Data("tampered".utf8).write(to: fixture.liveHeaderURL())
 
@@ -859,7 +1091,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .resume)))
 
     #expect(await resumedRunner.invocationCount == 1)
     #expect(try fixture.readLiveHeader() == "recovered")
@@ -875,7 +1107,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old", additionalHeaderName: "Removed.h"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -885,7 +1117,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     try FileManager.default.removeItem(at: fixture.liveHeaderURL(framework: "Foo"))
 
@@ -893,7 +1125,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "bar"),
       runID: "run-bar",
       generationID: "generation-bar"
-    ).run(plan: try fixture.plan(.query("Bar"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Bar"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     let marker = try #require(fixture.publisher().inspect().currentMarker)
     #expect(marker.artifactsByTarget.keys.sorted() == ["framework:Bar.framework"])
@@ -919,8 +1151,7 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-recovered"
     ).run(
       plan: try fixture.plan(
-        .identifiers(["framework:Foo.framework", "framework:Bar.framework"]),
-        resumeBehavior: .resume
+        .query("Foo")
       )
     )
     #expect(await recoveredRunner.invocationCount == 1)
@@ -936,7 +1167,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "first"),
       runID: "run-001",
@@ -960,7 +1191,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "first"),
       runID: "run-first",
@@ -1073,7 +1304,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-recovered",
       generationID: "generation-recovered"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await runner.invocationCount == 1)
     #expect(result.targetCounts.completed == 1)
@@ -1107,7 +1338,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "first"),
       runID: "run-first",
@@ -1136,7 +1367,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "first"),
       runID: "run-first",
@@ -1183,7 +1414,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-regenerated",
       generationID: "generation-regenerated"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await runner.invocationCount == 1)
     #expect(result.targetCounts.completed == 1)
@@ -1203,7 +1434,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo")))
+    ).run(plan: try fixture.plan(.allAvailable))
     let mutation = FileMutationRecorder()
     let draftURL = fixture.outputBase
       .appendingPathComponent(".privateheaderkit/\(fixture.sourceLabel)/staging", isDirectory: true)
@@ -1219,7 +1450,7 @@ struct PrivateHeaderGenerationExecutorTests {
             try FileManager.default.removeItem(at: draftURL)
           }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
       Issue.record("missing prepared generation unexpectedly committed")
     } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
       #expect(failure.message.contains("missing marker"))
@@ -1239,13 +1470,13 @@ struct PrivateHeaderGenerationExecutorTests {
       runID: "run-regenerated",
       generationID: "generation-regenerated"
     )
-    let preparedPlan = try await executor.prepare(try fixture.plan(.query("Foo")))
+    let preparedPlan = try await executor.prepare(try fixture.plan(.allAvailable))
 
     _ = try await executor.availableResumeSummary(for: preparedPlan)
     #expect(try fixture.publisher().inspect().legacyArtifactState == .absent)
     #expect(!FileManager.default.fileExists(atPath: fixture.legacyArtifactURL.path))
 
-    let result = try await executor.run(preparedPlan.withResumeBehavior(.fresh))
+    let result = try await executor.run(preparedPlan.withExecutionOptions(.init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await runner.invocationCount == 1)
     #expect(result.targetCounts.completed == 1)
@@ -1275,7 +1506,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: barRunner,
       runID: "run-bar",
       generationID: "generation-bar"
-    ).run(plan: try fixture.plan(.query("Bar"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Bar"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(mutation.message == nil)
     #expect(await barRunner.invocationCount == 1)
@@ -1305,7 +1536,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-generated",
         generationID: "generation-generated"
-      ).run(plan: try fixture.plan(.query("Foo,Bar"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo,Bar"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
       Issue.record("changed generated staging unexpectedly became an immutable generation")
     } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
       #expect(failure.summary.targetCounts.completed == 2)
@@ -1323,12 +1554,11 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    try fixture.createFramework("Bar.framework")
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "old"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
         runner: RecordingRunner(contents: "new"),
@@ -1337,9 +1567,10 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     let previousGenerationID = try #require(fixture.publisher().inspect().currentGenerationID)
+    try fixture.createFramework("Bar.framework")
     let mutation = FileMutationRecorder()
     let runner = RecordingRunner(contents: "bar") {
       mutation.run {
@@ -1356,7 +1587,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-resumed",
         generationID: "generation-resumed"
-      ).run(plan: try fixture.plan(.query("Foo,Bar"), resumeBehavior: .resume))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
       Issue.record("changed newer live output unexpectedly became an immutable generation")
     } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
       #expect(failure.summary.targetCounts.completed == 1)
@@ -1382,7 +1613,7 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-001"
     ).run(plan: try fixture.plan(.query("Foo")))
     let oldCurrent = try fixture.publisher().inspect().currentGenerationID
-    let partialPlan = try fixture.plan(.query("Foo"), resumeBehavior: .fresh)
+    let partialPlan = try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true))
     let partialRunner = RecordingRunner(
       contents: "uncommitted",
       result: .init(terminationStatus: 7, failureSummary: "raw dump failed")
@@ -1453,7 +1684,7 @@ struct PrivateHeaderGenerationExecutorTests {
 
       do {
         _ = try await executor.run(
-          plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh)
+          plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true))
         )
         Issue.record("raw helper failure unexpectedly returned success")
       } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
@@ -1640,7 +1871,7 @@ struct PrivateHeaderGenerationExecutorTests {
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
     let runner = RecordingRunner(contents: "generated")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable)
 
     let capturedInterruption = await captureInterruption {
       try await fixture.executor(
@@ -1667,6 +1898,22 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(
       try await store.publicationIntent(generationID: .init(rawValue: "generation-interrupted"))?
         .state == .committed)
+
+    let nextRunner = RecordingRunner(contents: "next", result: .init(
+      terminationStatus: 0,
+      diagnosticsReport: .init(producerVersion: "next-version", diagnostics: [])
+    ))
+    let nextExecutor = fixture.executor(
+      runner: nextRunner, runID: "run-next", generationID: "generation-next"
+    )
+    let prepared = try await nextExecutor.prepare(
+      fixture.plan(.allAvailable, producerVersion: "next-version")
+    )
+    #expect(try await nextExecutor.availableResumeSummary(for: prepared) == nil)
+    let next = try await nextExecutor.run(prepared)
+    #expect(next.targetCounts.completed == 1)
+    #expect(await nextRunner.invocationCount == 1)
+    #expect(try fixture.readLiveHeader() == "next")
   }
 
   @Test func cancellationLatchedImmediatelyAfterRawResultDoesNotPublishTarget() async throws {
@@ -1742,7 +1989,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "first"),
       runID: "run-001",
@@ -1770,7 +2017,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     let firstRunner = RecordingRunner(contents: "recoverable")
     let first = fixture.executor(
       runner: firstRunner,
@@ -1815,7 +2062,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"), resumeBehavior: .resume)
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     let firstRunner = RecordingRunner(contents: "first-attempt")
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -1876,7 +2123,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old-content"),
       runID: "run-old",
       generationID: "generation-old"
-    ).run(plan: try fixture.plan(.query("Foo")))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -1886,7 +2133,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == faultPoint { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     let resumedRunner = RecordingRunner(contents: "resumed-content")
@@ -1894,7 +2141,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     #expect(await resumedRunner.invocationCount == 0)
     #expect(try fixture.readLiveHeader() == "unpublished-content")
@@ -1931,7 +2178,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "bar"),
       runID: "run-seed",
       generationID: "generation-seed"
-    ).run(plan: try fixture.plan(.query("Bar"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Bar"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
@@ -1941,7 +2188,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     try FileManager.default.removeItem(at: fixture.liveHeaderURL(framework: "Foo"))
@@ -1951,7 +2198,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: resumedRunner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Baz"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Baz"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await resumedRunner.invocationCount == 1)
     #expect(try fixture.readLiveHeader(framework: "Baz") == "baz")
@@ -1967,7 +2214,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: fooRunner,
       runID: "run-foo",
       generationID: "generation-foo"
-    ).run(plan: try fixture.plan(.query("Foo,Baz"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.query("Foo")))
 
     #expect(await fooRunner.invocationCount == 1)
     #expect(try fixture.readLiveHeader(framework: "Foo") == "regenerated-foo")
@@ -2000,7 +2247,7 @@ struct PrivateHeaderGenerationExecutorTests {
           }
         }
       ).run(
-        plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh)
+        plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true))
       )
       Issue.record("missing prepared generation unexpectedly moved and committed")
     } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
@@ -2032,7 +2279,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "old"),
       runID: "run-001",
       generationID: "generation-001"
-    ).run(plan: try fixture.plan(.query("Foo")))
+    ).run(plan: try fixture.plan(.allAvailable))
     let previousGenerationID = try #require(fixture.publisher().inspect().currentGenerationID)
     let mutation = FileMutationRecorder()
     let draftHeader = fixture.outputBase
@@ -2051,7 +2298,7 @@ struct PrivateHeaderGenerationExecutorTests {
             try "tampered".write(to: draftHeader, atomically: true, encoding: .utf8)
           }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
       Issue.record("changed prepared generation unexpectedly committed")
     } catch let PrivateHeaderGeneration.GenerationError.infrastructureFailed(failure) {
       #expect(failure.summary.status == .failed)
@@ -2071,7 +2318,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: retryRunner,
       runID: "run-003",
       generationID: "generation-003"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     #expect(await retryRunner.invocationCount == 0)
     #expect(try fixture.readLiveHeader() == "new")
@@ -2093,7 +2340,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "bar"),
       runID: "run-bar",
       generationID: "generation-bar"
-    ).run(plan: try fixture.plan(.query("Bar"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Bar"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     let store = try GenerationStore(
       databaseURL: fixture.databaseURL,
@@ -2141,7 +2388,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(try fixture.readLiveHeader(framework: "Bar") == "bar")
@@ -2178,7 +2425,7 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-regenerated"
     )
     let preparedPlan = try await executor.prepare(
-      fixture.plan(.query("Foo"), resumeBehavior: .fresh)
+      fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true))
     )
 
     #expect(try await executor.availableResumeSummary(for: preparedPlan) == nil)
@@ -2201,7 +2448,7 @@ struct PrivateHeaderGenerationExecutorTests {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     _ = try await fixture.executor(
       runner: RecordingRunner(contents: "first"),
       runID: "run-first",
@@ -2223,7 +2470,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try fixture.readCurrentHeader() == "first")
   }
 
-  @Test func resumeRunRebuildsStateWhenManagedGenerationOutlivesDatabase() async throws {
+  @Test func resumeStartsNewAllTargetRunAfterDatabaseLoss() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
@@ -2231,20 +2478,20 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "first"),
       runID: "run-first",
       generationID: "generation-first"
-    ).run(plan: try fixture.plan(.query("Foo")))
+    ).run(plan: try fixture.plan(.allAvailable))
     try fixture.removeDatabaseFiles()
-    let runner = RecordingRunner(contents: "unexpected")
+    let runner = RecordingRunner(contents: "regenerated")
 
     let result = try await fixture.executor(
       runner: runner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
-    #expect(await runner.invocationCount == 0)
-    #expect(result.targetCounts.skipped == 1)
-    #expect(try fixture.readLiveHeader() == "first")
-    #expect(try fixture.readCurrentHeader() == "first")
+    #expect(await runner.invocationCount == 1)
+    #expect(result.targetCounts.completed == 1)
+    #expect(try fixture.readLiveHeader() == "regenerated")
+    #expect(try fixture.readCurrentHeader() == "regenerated")
   }
 
   @Test func freshDatabaseBootstrapSurvivesFailedPublicationAndRetries() async throws {
@@ -2266,7 +2513,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     let runner = RecordingRunner(contents: "recovered")
@@ -2274,7 +2521,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-recovered",
       generationID: "generation-recovered"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await runner.invocationCount == 1)
     #expect(result.targetCounts.completed == 1)
@@ -2294,7 +2541,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterCurrentPointerSwitch { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     #expect(try fixture.publisher().inspect().legacyArtifactState == .absent)
     #expect(!FileManager.default.fileExists(atPath: fixture.legacyArtifactURL.path))
@@ -2305,7 +2552,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-regenerated",
       generationID: "generation-regenerated"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await runner.invocationCount == 1)
     #expect(try fixture.publisher().inspect().legacyArtifactState == .absent)
@@ -2323,7 +2570,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "new"),
       runID: "run-new",
       generationID: "generation-new"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     try "old".write(
       to: fixture.liveHeaderURL(framework: "Foo"),
@@ -2369,7 +2616,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-bar",
       generationID: "generation-bar"
-    ).run(plan: try fixture.plan(.query("Bar"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Bar"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(await runner.invocationCount == 1)
     #expect(try fixture.readLiveHeader(framework: "Foo") == "new")
@@ -2386,7 +2633,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "stable"),
       runID: "run-stable",
       generationID: "generation-stable"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
         runner: RecordingRunner(contents: "incremental"),
@@ -2395,7 +2642,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     try fixture.removeDatabaseFiles()
     let runner = RecordingRunner(contents: "must-not-run")
@@ -2405,7 +2652,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-retry",
         generationID: "generation-retry"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(await runner.invocationCount == 0)
@@ -2419,7 +2666,7 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-summary"
     )
     let summaryPlan = try await summaryExecutor.prepare(
-      fixture.plan(.query("Foo"), resumeBehavior: .resume)
+      fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     )
     await #expect(throws: PrivateHeaderGeneration.ArtifactStoreError.self) {
       _ = try await summaryExecutor.availableResumeSummary(for: summaryPlan)
@@ -2433,7 +2680,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: secondRetryRunner,
         runID: "run-second-retry",
         generationID: "generation-second-retry"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     #expect(await secondRetryRunner.invocationCount == 0)
     #expect(try fixture.readLiveHeader() == "incremental")
@@ -2447,7 +2694,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "stable"),
       runID: "run-stable",
       generationID: "generation-stable"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     await #expect(throws: InjectedFault.self) {
       _ = try await fixture.executor(
         runner: RecordingRunner(contents: "stable", additionalHeaderName: "Additional.h"),
@@ -2456,7 +2703,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     try fixture.removeDatabaseFiles()
     let additionalHeader = fixture.liveURL.appendingPathComponent(
@@ -2469,7 +2716,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-retry",
         generationID: "generation-retry"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(await runner.invocationCount == 0)
@@ -2489,7 +2736,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == .afterPrepared { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     try FileManager.default.moveItem(at: fixture.liveURL, to: fixture.legacyStorageLiveURL)
@@ -2509,7 +2756,7 @@ struct PrivateHeaderGenerationExecutorTests {
       generationID: "generation-layout-summary"
     )
     let preparedPlan = try await summaryExecutor.prepare(
-      fixture.plan(.query("Foo"), resumeBehavior: .resume)
+      fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
     )
     #expect(try await summaryExecutor.availableResumeSummary(for: preparedPlan) == nil)
     #expect(!FileManager.default.fileExists(atPath: fixture.legacyStorageLiveURL.path))
@@ -2520,7 +2767,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-after-layout-migration",
       generationID: "generation-after-layout-migration"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     #expect(await runner.invocationCount == 0)
     #expect(result.artifactDirectory == fixture.liveURL)
@@ -2548,7 +2795,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-conflicting-layouts",
         generationID: "generation-conflicting-layouts"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(await runner.invocationCount == 0)
@@ -2582,21 +2829,24 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-symlink-platform",
         generationID: "generation-symlink-platform"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(await runner.invocationCount == 0)
     #expect((try FileManager.default.contentsOfDirectory(atPath: external.path)).isEmpty)
   }
 
-  @Test func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry() async throws {
+  @Test(arguments: [PrivateHeaderGeneration.TargetRequest.allAvailable, .query("Foo")])
+  func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry(
+    _ targetRequest: PrivateHeaderGeneration.TargetRequest
+  ) async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
     try FileManager.default.createDirectory(
       at: fixture.stateDirectory, withIntermediateDirectories: true)
     try Data("{}".utf8).write(to: fixture.stateDirectory.appendingPathComponent("manifest.json"))
-    let plan = try fixture.plan(.query("Foo"))
+    let plan = try fixture.plan(targetRequest)
 
     for suffix in ["one", "two"] {
       await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
@@ -2633,7 +2883,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runID: "run-unused",
       generationID: "generation-unused"
     )
-    let preparedPlan = try await executor.prepare(try fixture.plan(.query("Foo")))
+    let preparedPlan = try await executor.prepare(try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     do {
       _ = try await executor.availableResumeSummary(for: preparedPlan)
@@ -2653,6 +2903,45 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: fixture.liveURL.path))
   }
 
+  @Test(arguments: [false, true])
+  func namedTargetLegacyArtifactsRequireExplicitMigration(_ hasDatabase: Bool) async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    if hasDatabase { _ = try GenerationStore(databaseURL: fixture.databaseURL) }
+    let legacyFile = fixture.legacyArtifactURL.appendingPathComponent("Notes/keep.txt")
+    try FileManager.default.createDirectory(
+      at: legacyFile.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try "legacy".write(to: legacyFile, atomically: true, encoding: .utf8)
+    let runner = RecordingRunner(contents: "generated")
+    let executor = fixture.executor(
+      runner: runner, runID: "run-targeted", generationID: "generation-targeted"
+    )
+    let prepared = try await executor.prepare(fixture.plan(.query("Foo")))
+    let expected = PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
+      .artifacts(path: fixture.legacyArtifactURL.path)
+    )
+    await #expect(throws: expected) { _ = try await executor.availableResumeSummary(for: prepared) }
+    await #expect(throws: expected) { _ = try await executor.run(prepared) }
+    await #expect(throws: expected) {
+      _ = try await executor.run(prepared.withExecutionOptions(.init(continuation: .restart)))
+    }
+    #expect(await runner.invocationCount == 0)
+    #expect(try String(contentsOf: legacyFile, encoding: .utf8) == "legacy")
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyBackupsURL.path))
+    #expect(FileManager.default.fileExists(atPath: fixture.databaseURL.path) == hasDatabase)
+
+    let result = try await executor.run(prepared.withExecutionOptions(.init(continuation: .restart, allowsLegacyMigration: true)))
+    #expect(result.targetCounts.completed == 1)
+    #expect(await runner.invocationCount == 1)
+    #expect(!FileManager.default.fileExists(atPath: fixture.legacyArtifactURL.path))
+    #expect(FileManager.default.fileExists(atPath: fixture.legacyBackupsURL.path))
+    #expect(try String(
+      contentsOf: fixture.liveURL.appendingPathComponent("Notes/keep.txt"), encoding: .utf8
+    ) == "legacy")
+  }
+
   @Test func freshLegacyMigrationPublishesOpaqueArtifactInLiveOutput() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
@@ -2668,7 +2957,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "generated"),
       runID: "run-legacy",
       generationID: "generation-legacy"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     let liveArtifact = fixture.liveURL.appendingPathComponent("Notes/custom.txt")
     #expect(result.artifactDirectory == fixture.liveURL)
@@ -2715,7 +3004,7 @@ struct PrivateHeaderGenerationExecutorTests {
         publicationFaultInjector: { point in
           if point == faultPoint { throw InjectedFault.stop }
         }
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
     let runner = RecordingRunner(contents: "unexpected")
 
@@ -2723,7 +3012,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner,
       runID: "run-resumed",
       generationID: "generation-resumed"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .resume))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     #expect(await runner.invocationCount == 0)
     #expect(result.targetCounts.skipped == 1)
@@ -2760,7 +3049,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "generated"),
       runID: "run-claim",
       generationID: "generation-claim"
-    ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+    ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
 
     #expect(try fixture.readLiveHeader() == "generated")
     let publisher = try ArtifactPublisher(
@@ -2798,7 +3087,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-legacy-collision",
         generationID: "generation-legacy-collision"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(await runner.invocationCount == 1)
@@ -2833,7 +3122,7 @@ struct PrivateHeaderGenerationExecutorTests {
         runner: runner,
         runID: "run-reserved-marker",
         generationID: "generation-reserved-marker"
-      ).run(plan: try fixture.plan(.query("Foo"), resumeBehavior: .fresh))
+      ).run(plan: try fixture.plan(.query("Foo"), executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)))
     }
 
     #expect(await runner.invocationCount == 0)
@@ -2903,14 +3192,14 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: RecordingRunner(contents: "first"),
       runID: "run-001",
       generationID: "generation-001"
-    ).run(plan: try fixture.plan(.query("Foo"), outputBase: alias))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume), outputBase: alias))
     let secondRunner = RecordingRunner(contents: "second")
 
     let result = try await fixture.executor(
       runner: secondRunner,
       runID: "run-002",
       generationID: "generation-002"
-    ).run(plan: try fixture.plan(.query("Foo")))
+    ).run(plan: try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume)))
 
     #expect(await secondRunner.invocationCount == 0)
     #expect(result.artifactDirectory == fixture.liveURL)
@@ -3408,8 +3697,7 @@ private struct ExecutorFixture {
   func plan(
     _ targetRequest: PrivateHeaderGeneration.TargetRequest,
     layout: PrivateHeaderGeneration.Layout = .headers,
-    resumeBehavior: PrivateHeaderGeneration.ResumeBehavior = .requireExplicitResume(
-      resumeRequested: false),
+    executionOptions: PrivateHeaderGeneration.ExecutionOptions = .init(),
     outputBase: URL? = nil,
     rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options = .init(),
     producerVersion: String = PrivateHeaderKitBuildInfo.version
@@ -3424,7 +3712,7 @@ private struct ExecutorFixture {
         helperURLs: helperURLs,
         executionMode: .host,
         rawDumpingOptions: rawDumpingOptions,
-        resumeBehavior: resumeBehavior,
+        executionOptions: executionOptions,
         producerVersion: producerVersion
       )
     )

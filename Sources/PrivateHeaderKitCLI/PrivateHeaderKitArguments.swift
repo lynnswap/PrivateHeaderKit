@@ -34,7 +34,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("sim-helper"), help: "Explicit simulator helper path.")
     var simulatorHelperPath: String?
 
-    @Flag(exclusivity: .exclusive, help: "Continue unfinished state or start a fresh run.")
+    @Flag(exclusivity: .exclusive, help: "Continue or restart all-target generation. --fresh also permits legacy migration.")
     var continuationMode: PrivateHeaderKitContinuationMode?
 
     var isEmpty: Bool {

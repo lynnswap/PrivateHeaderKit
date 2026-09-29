@@ -178,7 +178,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                             releaseMetadataResolver: releaseMetadataResolver
                         )
                         let preparedGeneration = try await generationClient.prepare(request)
-                        let resumeBehavior = try await interactiveResumeDecision(
+                        let executionOptions = try await interactiveExecutionOptions(
                             preparedGeneration: preparedGeneration,
                             request: request,
                             outputBaseDirectory: command.outputBaseDirectory,
@@ -191,7 +191,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                             preparedGeneration,
                             request: request,
                             targetQuery: command.targetQuery,
-                            resumeBehavior: resumeBehavior,
+                            executionOptions: executionOptions,
                             resultScreenClearer: screenClearer,
                             outputLogger: outputLogger,
                             errorLogger: errorLogger
@@ -222,14 +222,14 @@ func runPrivateHeaderKitInteractiveGenerate(
     }
 }
 
-private func interactiveResumeDecision(
+private func interactiveExecutionOptions(
     preparedGeneration: PrivateHeaderKitPreparedGeneration,
     request: PrivateHeaderKitGenerationRequest,
     outputBaseDirectory: String,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
     outputLogger: @escaping PrivateHeaderKitOutputLogger
-) async throws -> PrivateHeaderGeneration.ResumeBehavior {
+) async throws -> PrivateHeaderGeneration.ExecutionOptions {
     let summary = try await preparedGeneration.summary()
     switch summary {
     case .legacyMigration(let requirement):
@@ -248,7 +248,7 @@ private func interactiveResumeDecision(
         guard action == .migrateAndStartFresh else {
             throw PrivateHeaderKitInteractiveNavigation.back
         }
-        return .fresh
+        return .init(continuation: .restart, allowsLegacyMigration: true)
     case .incompatibleResume(let reason):
         renderInteractiveIncompatibleResumeScreen(
             sourceDisplayName: request.source.label.displayName,
@@ -265,9 +265,9 @@ private func interactiveResumeDecision(
         guard action == .restart else {
             throw PrivateHeaderKitInteractiveNavigation.back
         }
-        return .fresh
+        return .init(continuation: .restart)
     case .noUnfinishedRun:
-        return .fresh
+        return request.options.executionOptions
     case .unfinished(let resumeSummary):
         renderInteractiveResumeScreen(
             sourceDisplayName: request.source.label.displayName,
@@ -281,7 +281,7 @@ private func interactiveResumeDecision(
             inputReader: inputReader,
             outputLogger: outputLogger
         )
-        return action == .continuePrevious ? .resume : .fresh
+        return .init(continuation: action == .continuePrevious ? .resume : .restart)
     }
 }
 

@@ -124,15 +124,18 @@ extension PrivateHeaderGeneration {
     package let sourceIdentity: String
     package let fingerprint: String
     package let targetIDs: [String]
+    package let isResumable: Bool
 
     package init(
       sourceIdentity: String,
       fingerprint: String,
-      targetIDs: [String]
+      targetIDs: [String],
+      isResumable: Bool = false
     ) {
       self.sourceIdentity = sourceIdentity
       self.fingerprint = fingerprint
       self.targetIDs = targetIDs
+      self.isResumable = isResumable
     }
   }
 

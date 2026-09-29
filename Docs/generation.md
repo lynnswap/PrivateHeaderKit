@@ -13,7 +13,7 @@ The wizard guides you through:
 1. an installed iOS or watchOS Simulator runtime, or the current macOS
    installation
 2. all available targets or a comma-separated list of target names
-3. Continue or Restart when compatible unfinished work exists
+3. Continue or Restart when an all-target run has compatible unfinished work
 
 The default output base is `~/PrivateHeaderKit`. The command prints the concrete
 header directory when a run starts and again in the completion summary.
@@ -89,8 +89,8 @@ runtime for the selected platform matches a version.
 | `--target all\|<query>` | All targets or comma-separated target names. |
 | `--device <name-or-udid>` | Preferred compatible iOS or watchOS Simulator device. |
 | `--sim-helper <path>` | Explicit helper for the selected Simulator platform. |
-| `--resume` | Continue the latest compatible unfinished plan. |
-| `--fresh` | Start a new run and permit explicit legacy migration. |
+| `--resume` | Continue the latest compatible all-target run. |
+| `--fresh` | Restart all-target generation and permit legacy artifact migration. |
 
 `--resume` and `--fresh` are mutually exclusive. Run `privateheaderkit --help`
 for the command's generated reference.
@@ -119,7 +119,7 @@ names. `--exact` matches a complete, case-sensitive name. Output is TSV with the
 list file path, logical image path, visibility, original name, and demangled
 name. Exit status is 0 for a match, 1 for no matches, and nonzero for errors.
 Searching does not boot a simulator or load a framework. If no symbol lists
-exist, regenerate the desired targets with this version and `--fresh`.
+exist, regenerate the desired named targets with this version.
 
 To inspect a matching function's implementation, use the original name with
 the separate [local decompilation command](decompilation.md).
@@ -238,23 +238,43 @@ create a top-level source link.
 
 ## Continue or Restart
 
-- `--resume` continues the latest compatible plan and runs only unfinished or
-  missing targets. A changed plan or smaller selected target set is rejected.
-- `--fresh` starts a new run for every selected target. It also permits an
-  explicit migration from legacy state or output.
-- With neither flag, automation starts a new run when no prior state exists.
-  Compatible completed state may be reused, but unfinished state requires an
+Named targets are generated every time they are requested. They do not require
+`--resume`, `--fresh`, or a continuation decision in the wizard. They also do not
+replace the progress of an interrupted all-target run. Successful replacements
+remain visible, and a failed target keeps its last successfully published files.
+Legacy migration is separate: when an older state or artifact tree must be
+migrated, both named-target and all-target commands still require an explicit
+`--fresh` or the wizard's migration choice. Selecting a named target alone does
+not authorize moving the old output.
+
+Continuation applies only to `--target all`:
+
+- `--resume` continues the latest compatible all-target run and runs unfinished
+  or missing targets. A changed plan is rejected.
+- `--fresh` regenerates every target. It also permits legacy artifact migration.
+- With neither flag, generation starts normally when no all-target state exists
+  or the previous all-target run is complete, even if the producer version or
+  generation settings have changed. Unfinished all-target work requires an
   explicit `--resume` or `--fresh` decision.
 
-The interactive wizard presents the same Continue or Restart choice when it
-finds compatible unfinished work.
+The wizard offers Continue or Restart only for unfinished all-target work.
+A run interrupted during finalization can already have published every target;
+that run has no remaining generation work even though its terminal status is
+`interrupted`. Normal generation starts a new run in that case. Explicit resume
+checks compatibility and regenerates any missing or incompatible target output.
+Restarting in the wizard does not grant legacy migration permission; the separate
+migration choice does.
 
-Resume compatibility is bound to the PrivateHeaderKit producer version emitted
-by the raw helper, the selected source and Simulator runtime, generation
-options, and the loaded shared-cache cohort when used. A simulator device UDID
-is only a temporary execution address and does not affect compatibility. After
-upgrading from state created before producer-version tracking, select Restart or
-use `--fresh` once; existing published headers remain available until replaced.
+Named-target updates do not discard that progress; compatible successful
+replacements remain reusable when the all-target run resumes.
+
+Resume compatibility is bound to the PrivateHeaderKit producer version, the
+selected source and Simulator runtime, generation options, and the loaded
+shared-cache cohort. A simulator device UDID is only a temporary execution
+address and does not affect compatibility. Older databases did not record whether
+a run selected all targets, so their artifacts are preserved but their runs are
+not adopted as all-target resume checkpoints. The next all-target command starts
+a new run.
 
 ## Legacy Output
 
