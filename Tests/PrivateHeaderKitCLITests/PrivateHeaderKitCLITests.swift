@@ -4046,6 +4046,7 @@ private func resultFixture(
         runID: runID,
         stateDatabaseURL: plan.databaseURL,
         targetCounts: counts,
+        artifactCounts: .init(artifacts: []),
         warnings: warnings
     )
 }
@@ -4122,6 +4123,7 @@ private func summaryFixture(
         runID: PrivateHeaderGeneration.RunID(rawValue: "run-error"),
         status: status,
         targetCounts: counts,
+        artifactCounts: .init(artifacts: []),
         artifactDirectory: plan.artifactDirectory,
         stateDatabaseURL: plan.databaseURL
     )

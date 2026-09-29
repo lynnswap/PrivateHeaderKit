@@ -344,10 +344,25 @@ extension PrivateHeaderGeneration {
     }
   }
 
+  /// Counts of files published by this invocation, excluding reused output and unpublished attempts.
+  package struct ArtifactCounts: Hashable, Sendable {
+    package let objectiveCHeaders: Int
+    package let swiftInterfaces: Int
+    package let symbolLists: Int
+
+    package init(artifacts: [ArtifactPath]) {
+      let paths = Set(artifacts.map(\.rawValue))
+      objectiveCHeaders = paths.count { $0.hasSuffix(".h") }
+      swiftInterfaces = paths.count { $0.hasSuffix(".swiftinterface") }
+      symbolLists = paths.count { $0.hasSuffix(".symbols.tsv") }
+    }
+  }
+
   package struct RunSummary: Hashable, Sendable {
     package let runID: RunID
     package let status: RunStatus
     package let targetCounts: TargetCounts
+    package let artifactCounts: ArtifactCounts
     package let artifactDirectory: URL
     package let stateDatabaseURL: URL
     package let warnings: [GenerationWarning]
@@ -357,6 +372,7 @@ extension PrivateHeaderGeneration {
       runID: RunID,
       status: RunStatus,
       targetCounts: TargetCounts,
+      artifactCounts: ArtifactCounts,
       artifactDirectory: URL,
       stateDatabaseURL: URL,
       warnings: [GenerationWarning] = [],
@@ -365,6 +381,7 @@ extension PrivateHeaderGeneration {
       self.runID = runID
       self.status = status
       self.targetCounts = targetCounts
+      self.artifactCounts = artifactCounts
       self.artifactDirectory = artifactDirectory
       self.stateDatabaseURL = stateDatabaseURL
       self.warnings = warnings
@@ -531,6 +548,7 @@ extension PrivateHeaderGeneration {
     package let runID: RunID
     package let stateDatabaseURL: URL
     package let targetCounts: TargetCounts
+    package let artifactCounts: ArtifactCounts
     package let warnings: [GenerationWarning]
 
     package init(
@@ -540,6 +558,7 @@ extension PrivateHeaderGeneration {
       runID: RunID,
       stateDatabaseURL: URL,
       targetCounts: TargetCounts,
+      artifactCounts: ArtifactCounts,
       warnings: [GenerationWarning] = []
     ) {
       self.plan = plan
@@ -548,6 +567,7 @@ extension PrivateHeaderGeneration {
       self.runID = runID
       self.stateDatabaseURL = stateDatabaseURL
       self.targetCounts = targetCounts
+      self.artifactCounts = artifactCounts
       self.warnings = warnings
     }
 
@@ -556,6 +576,7 @@ extension PrivateHeaderGeneration {
         runID: runID,
         status: .completed,
         targetCounts: targetCounts,
+        artifactCounts: artifactCounts,
         artifactDirectory: artifactDirectory,
         stateDatabaseURL: stateDatabaseURL,
         warnings: warnings

@@ -6,6 +6,34 @@ import Testing
 
 @Suite
 struct PrivateHeaderKitProgressRenderingTests {
+    @Test(arguments: [false, true])
+    func completionShowsArtifactKindsIncludingZeroHeaders(_ includesHeaders: Bool) {
+        let output = ProgressTextRecorder()
+        let paths = ["Foo/Foo.symbols.tsv"]
+            + (includesHeaders ? ["Foo/Foo.h", "Foo/Bar.h", "Foo/Foo.swiftinterface"] : [])
+        renderPrivateHeaderKitRunSummary(
+            .init(
+                runID: .init(rawValue: "run-artifacts"),
+                status: .completed,
+                targetCounts: .init(total: 1, completed: 1),
+                artifactCounts: .init(artifacts: paths.map { .init(rawValue: $0) }),
+                artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
+                stateDatabaseURL: URL(fileURLWithPath: "/tmp/generation.sqlite")
+            ),
+            sourceDisplayName: "iOS 27.0",
+            targetQuery: "Foo",
+            title: "Generation completed",
+            outputLogger: { output.append($0) }
+        )
+
+        #expect(output.values.contains("Files published this run"))
+        #expect(output.values.contains("  Objective-C headers (.h): \(includesHeaders ? 2 : 0)"))
+        #expect(output.values.contains("  Swift interfaces (.swiftinterface): \(includesHeaders ? 1 : 0)"))
+        #expect(output.values.contains("  Symbol lists (.symbols.tsv): 1"))
+        #expect(output.values.contains("  Status     completed"))
+        #expect(output.values.contains("  Headers    /tmp/generated-headers/source"))
+    }
+
     @Test func nonTerminalOutputOmitsSuccessfulTargetsAndReportsOnlyFailures() {
         let output = ProgressTextRecorder()
         let failures = ProgressTextRecorder()
@@ -84,6 +112,7 @@ struct PrivateHeaderKitProgressRenderingTests {
                 runID: .init(rawValue: "run-capsule"),
                 status: .partial,
                 targetCounts: .init(total: 1, partial: 1),
+                artifactCounts: .init(artifacts: []),
                 artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
                 stateDatabaseURL: URL(fileURLWithPath: "/tmp/generation.sqlite"),
                 targetFailures: [
@@ -149,6 +178,7 @@ struct PrivateHeaderKitProgressRenderingTests {
                     runID: .init(rawValue: "run-001"),
                     status: .failed,
                     targetCounts: .init(total: 2, completed: 1, failed: 1),
+                    artifactCounts: .init(artifacts: []),
                     artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
                     stateDatabaseURL: URL(fileURLWithPath: "/tmp/generation.sqlite")
                 )
@@ -196,6 +226,7 @@ struct PrivateHeaderKitProgressRenderingTests {
                     runID: .init(rawValue: "run-001"),
                     status: .completed,
                     targetCounts: .init(total: 1, completed: 1),
+                    artifactCounts: .init(artifacts: []),
                     artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
                     stateDatabaseURL: URL(fileURLWithPath: "/tmp/generation.sqlite")
                 )
@@ -232,6 +263,7 @@ struct PrivateHeaderKitProgressRenderingTests {
                     runID: .init(rawValue: "run-001"),
                     status: .failed,
                     targetCounts: .init(total: 1, failed: 1),
+                    artifactCounts: .init(artifacts: []),
                     artifactDirectory: URL(fileURLWithPath: "/tmp/generated-headers/source"),
                     stateDatabaseURL: URL(fileURLWithPath: "/tmp/generation.sqlite")
                 )

@@ -163,6 +163,14 @@ state database and the full, unabridged run identifier are listed separately
 under `Diagnostics`; they are troubleshooting references, not generated-header
 locations.
 
+`Files published this run` counts Objective-C headers (`.h`), Swift interfaces
+(`.swiftinterface`), and symbol lists (`.symbols.tsv`) published by this invocation.
+These counts exclude existing output from skipped or unselected targets and
+staged files from failed, partial, or interrupted attempts. If a run stops after
+some targets complete, their published files are included. A successful
+symbol-only target shows zero Objective-C headers; this is not a generation
+failure. The target counts and terminal status are reported separately.
+
 Platform directories use the displayed Apple platform name: `iOS`, `watchOS`,
 or `macOS`. Release directories include the exact build when it is available:
 

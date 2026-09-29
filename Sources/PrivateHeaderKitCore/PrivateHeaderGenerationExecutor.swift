@@ -770,6 +770,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         runID: runID,
         status: finalSnapshot.status,
         targetCounts: finalSnapshot.counts,
+        artifactCounts: finalSnapshot.publishedArtifactCounts,
         artifactDirectory: artifactDirectory,
         stateDatabaseURL: databaseURL,
         warnings: warnings,
@@ -799,6 +800,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         runID: runID,
         stateDatabaseURL: databaseURL,
         targetCounts: finalSnapshot.counts,
+        artifactCounts: finalSnapshot.publishedArtifactCounts,
         warnings: warnings
       )
     } catch let fault as DeliberateFault {
@@ -925,6 +927,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       runID: runID,
       status: snapshot.status,
       targetCounts: snapshot.counts,
+      artifactCounts: snapshot.publishedArtifactCounts,
       artifactDirectory: artifactDirectory,
       stateDatabaseURL: databaseURL,
       warnings: warnings,
