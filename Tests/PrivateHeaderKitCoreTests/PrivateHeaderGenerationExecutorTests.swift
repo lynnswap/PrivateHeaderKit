@@ -2903,31 +2903,42 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect((try FileManager.default.contentsOfDirectory(atPath: external.path)).isEmpty)
   }
 
-  @Test(arguments: [PrivateHeaderGeneration.TargetRequest.allAvailable, .query("Foo")])
-  func legacyJSONGateRunsBeforeDatabaseCreationOnEveryRetry(
-    _ targetRequest: PrivateHeaderGeneration.TargetRequest
+  @Test(
+    arguments: [PrivateHeaderGeneration.TargetRequest.allAvailable, .query("Foo")], [false, true]
+  )
+  func legacyJSONRemainsUntouchedWithoutMigrationPermission(
+    _ targetRequest: PrivateHeaderGeneration.TargetRequest, _ inspectSummary: Bool
   ) async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
+    let manifest = fixture.stateDirectory.appendingPathComponent("manifest.json")
+    let oldRun = fixture.stateDirectory.appendingPathComponent("runs/old-run.json")
     try FileManager.default.createDirectory(
-      at: fixture.stateDirectory, withIntermediateDirectories: true)
-    try Data("{}".utf8).write(to: fixture.stateDirectory.appendingPathComponent("manifest.json"))
-    let plan = try fixture.plan(targetRequest)
+      at: oldRun.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    let legacyData = Data("legacy metadata is retained without parsing".utf8)
+    for file in [manifest, oldRun] { try legacyData.write(to: file) }
 
     for suffix in ["one", "two"] {
-      await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
-        _ = try await fixture.executor(
-          runner: RecordingRunner(contents: "unused"),
-          runID: "run-\(suffix)",
-          generationID: "generation-\(suffix)"
-        ).run(plan: plan)
+      let runner = RecordingRunner(contents: suffix)
+      let executor = fixture.executor(
+        runner: runner, runID: "run-\(suffix)", generationID: "generation-\(suffix)"
+      )
+      let prepared = try await executor.prepare(fixture.plan(targetRequest))
+      if inspectSummary {
+        #expect(try await executor.availableResumeSummary(for: prepared) == nil)
       }
-      #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
+      let result = try await executor.run(prepared)
+      #expect(result.targetCounts.completed == 1)
+      #expect(await runner.invocationCount == 1)
+      #expect(try fixture.readLiveHeader() == suffix)
+      #expect(FileManager.default.fileExists(atPath: fixture.databaseURL.path))
+      for file in [manifest, oldRun] { #expect(try Data(contentsOf: file) == legacyData) }
     }
   }
 
-  @Test func combinedLegacyStateAndArtifactsAreReportedBeforeDatabaseCreation() async throws {
+  @Test func legacyArtifactsWithJSONStillRequireMigrationBeforeDatabaseCreation() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
@@ -2955,16 +2966,12 @@ struct PrivateHeaderGenerationExecutorTests {
     do {
       _ = try await executor.availableResumeSummary(for: preparedPlan)
       Issue.record("combined legacy migration unexpectedly returned a resume summary")
-    } catch let PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
-      requirement
-    ) {
-      guard case .stateAndArtifacts(let statePath, let artifactsPath) = requirement else {
-        Issue.record("unexpected legacy migration requirement: \(requirement)")
-        return
-      }
-      #expect(statePath == fixture.stateDirectory.path)
-      #expect(artifactsPath == fixture.legacyArtifactURL.path)
+    } catch let PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(path) {
+      #expect(path == fixture.legacyArtifactURL.path)
     }
+    #expect(try String(
+      contentsOf: fixture.stateDirectory.appendingPathComponent("manifest.json"), encoding: .utf8
+    ) == "{}")
 
     #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
     #expect(!FileManager.default.fileExists(atPath: fixture.liveURL.path))
@@ -2987,7 +2994,7 @@ struct PrivateHeaderGenerationExecutorTests {
     )
     let prepared = try await executor.prepare(fixture.plan(.query("Foo")))
     let expected = PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
-      .artifacts(path: fixture.legacyArtifactURL.path)
+      fixture.legacyArtifactURL.path
     )
     await #expect(throws: expected) { _ = try await executor.availableResumeSummary(for: prepared) }
     await #expect(throws: expected) { _ = try await executor.run(prepared) }

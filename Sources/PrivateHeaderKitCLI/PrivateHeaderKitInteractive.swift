@@ -271,11 +271,11 @@ private func interactiveExecutionOptions(
 ) async throws -> PrivateHeaderGeneration.ExecutionOptions {
     let summary = try await preparedGeneration.summary()
     switch summary {
-    case .legacyMigration(let requirement):
+    case .legacyMigration(let artifactPath):
         let action = try await promptLegacyMigrationDecision(
             sourceDisplayName: request.source.label.displayName,
             outputBaseDirectory: outputBaseDirectory,
-            requirement: requirement,
+            artifactPath: artifactPath,
             backupDirectory: request.output.baseDirectory
                 .appendingPathComponent(".privateheaderkit", isDirectory: true)
                 .appendingPathComponent(request.source.storageIdentifier, isDirectory: true)
@@ -327,7 +327,7 @@ private func interactiveExecutionOptions(
 private func promptLegacyMigrationDecision(
     sourceDisplayName: String,
     outputBaseDirectory: String,
-    requirement: PrivateHeaderGeneration.LegacyMigrationRequirement,
+    artifactPath: String,
     backupDirectory: URL,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
@@ -337,30 +337,14 @@ private func promptLegacyMigrationDecision(
     outputLogger("PrivateHeaderKit")
     outputLogger("")
     outputLogger("Step 3 of 3: Migrate legacy output")
-    outputLogger("Legacy PrivateHeaderKit state or artifacts were found.")
+    outputLogger("Legacy PrivateHeaderKit artifacts were found.")
     outputLogger("")
     outputLogger("Source: \(sourceDisplayName)")
     outputLogger("Output: \(outputBaseDirectory)")
-    switch requirement {
-    case .state(let path):
-        outputLogger("Legacy state: \(path)")
-        outputLogger("")
-        outputLogger("Legacy state files will remain in place.")
-        outputLogger("A new generation.sqlite database will become the source of truth.")
-    case .artifacts(let path):
-        outputLogger("Legacy artifacts: \(path)")
-        outputLogger("")
-        outputLogger("The existing artifact tree and unknown regular files will be preserved.")
-        outputLogger("Artifact backup: \(backupDirectory.path)/")
-    case .stateAndArtifacts(let statePath, let artifactsPath):
-        outputLogger("Legacy state: \(statePath)")
-        outputLogger("Legacy artifacts: \(artifactsPath)")
-        outputLogger("")
-        outputLogger("Legacy state files will remain in place.")
-        outputLogger("A new generation.sqlite database will become the source of truth.")
-        outputLogger("The existing artifact tree and unknown regular files will be preserved.")
-        outputLogger("Artifact backup: \(backupDirectory.path)/")
-    }
+    outputLogger("Legacy artifacts: \(artifactPath)")
+    outputLogger("")
+    outputLogger("The existing artifact tree and unknown regular files will be preserved.")
+    outputLogger("Artifact backup: \(backupDirectory.path)/")
     outputLogger("")
     outputLogger("  [1] Migrate and start fresh")
     outputLogger("  [2] Back")

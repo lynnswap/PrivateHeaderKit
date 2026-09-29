@@ -599,7 +599,7 @@ extension PrivateHeaderGeneration {
     case unresolvedTargetQuery(TargetResolution)
     case incompatibleResume(String)
     case resumeRequired(ResumeSummary)
-    case legacyMigrationRequiresFresh(LegacyMigrationRequirement)
+    case legacyMigrationRequiresFresh(String)
     case conflictingArtifactDirectories(legacyPath: String, currentPath: String)
     case runFailed(RunFailure)
     case runInterrupted(RunInterruption)
@@ -632,16 +632,8 @@ extension PrivateHeaderGeneration {
         "existing generation state is incompatible: \(reason)"
       case .resumeRequired(let summary):
         "existing generation state is unfinished; explicit resume is required for \(summary.latestRunID.rawValue)"
-      case .legacyMigrationRequiresFresh(let requirement):
-        switch requirement {
-        case .state(let path):
-          "legacy JSON state at \(path) requires an explicit fresh migration"
-        case .artifacts(let path):
-          "legacy artifact directory at \(path) requires an explicit fresh migration"
-        case .stateAndArtifacts(let statePath, let artifactsPath):
-          "legacy JSON state at \(statePath) and artifact directory at \(artifactsPath) "
-            + "require an explicit fresh migration"
-        }
+      case .legacyMigrationRequiresFresh(let path):
+        "legacy artifact directory at \(path) requires an explicit fresh migration"
       case .conflictingArtifactDirectories(let legacyPath, let currentPath):
         "both the legacy and current generated-header directories exist "
           + "(legacy: \(legacyPath), current: \(currentPath)); "

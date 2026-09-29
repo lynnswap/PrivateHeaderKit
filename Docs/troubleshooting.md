@@ -59,12 +59,13 @@ to restart. Named targets are always regenerated and do not require either flag.
 PrivateHeaderKit rejects an implicit decision here so that a script cannot
 discard or reinterpret unfinished work accidentally.
 
-## Legacy state or output blocks a run
+## Legacy output blocks a run
 
 Use the interactive wizard to review what will be preserved and backed up. In
-automation, `--fresh` is the explicit permission to migrate. PrivateHeaderKit
-does not treat legacy JSON state as resumable state and does not silently adopt
-an unmanaged output directory.
+automation, `--fresh` is the explicit permission to migrate an old artifact
+directory. Legacy JSON state alone does not block a run: a new SQLite database
+is initialized automatically, while the old files remain untouched and are not
+used for resume.
 
 See [Generation, Output, and Resume Behavior](generation.md#legacy-output) for
 the migration contract.
