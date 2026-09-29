@@ -76,7 +76,10 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     let simulatorHelperPath: String?
 
     var resumeBehavior: PrivateHeaderGeneration.ResumeBehavior {
-        switch continuationMode {
+        guard PrivateHeaderGeneration.TargetRequest.query(targetQuery).requestsAllTargets else {
+            return .fresh
+        }
+        return switch continuationMode {
         case .resume: .resume
         case .fresh: .fresh
         case nil: .requireExplicitResume(resumeRequested: false)

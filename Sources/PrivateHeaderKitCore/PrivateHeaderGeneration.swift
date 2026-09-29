@@ -425,6 +425,15 @@ extension PrivateHeaderGeneration {
     case allAvailable
     case identifiers([String])
     case query(String)
+
+    package var requestsAllTargets: Bool {
+      switch self {
+      case .allAvailable: true
+      case .query(let query):
+        (try? TargetQuery(commaSeparated: query).requestsAllAvailableTargets) == true
+      case .frameworks, .system, .identifiers: false
+      }
+    }
   }
 
   package enum ResumeBehavior: Hashable, Sendable {
@@ -442,6 +451,10 @@ extension PrivateHeaderGeneration {
     package var rawDumpingOptions: RawDumping.Options
     package var includeNestedChildren: Bool
     package var resumeBehavior: ResumeBehavior
+
+    package var startsFresh: Bool {
+      !targetRequest.requestsAllTargets || resumeBehavior == .fresh
+    }
     package var producerVersion: String
 
     package init(

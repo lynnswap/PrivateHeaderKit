@@ -30,6 +30,7 @@ struct PrivateHeaderGenerationStoreTests {
         "v2-run-logs-and-indexes",
         "v3-causal-ordering",
         "v4-published-artifact-digests",
+        "v5-all-target-resume",
       ])
     let columns = try await queue.read { db in
       try db.columns(in: "runLogs").map(\.name)
@@ -1026,6 +1027,7 @@ private final class StoreFixture: @unchecked Sendable {
       sourceIdentity: "iOS|27.0|24A",
       fingerprint: "fingerprint",
       targetIDs: targetIDs,
+      isResumable: true
     )
   }
 

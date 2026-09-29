@@ -1654,6 +1654,41 @@ struct PrivateHeaderKitCLIExecutionTests {
             """)
     }
 
+    @Test func interactiveNamedTargetsDoNotInspectContinuationState() async throws {
+        let input = ScriptedInput(["1", "2", "Foo"])
+        let runCount = ThreadSafeCounter()
+        let output = ThreadSafeStrings()
+        let status = await runPrivateHeaderKitCommand(
+            ["privateheaderkit"],
+            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
+            generationClient: testPrivateHeaderKitGenerationClient(
+                summary: { _ in
+                    Issue.record("named-target generation requested a continuation decision")
+                    return .incompatibleResume(reason: "old batch")
+                },
+                run: { request, behavior, _ in
+                    runCount.increment()
+                    #expect(request.options.targetRequest == .query("Foo"))
+                    #expect(behavior == .fresh)
+                    return resultFixture(for: request, counts: .init(total: 1, completed: 1))
+                }
+            ),
+            helperResolver: testPrivateHeaderKitHelperResolver,
+            releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
+            interactiveSourceProvider: {
+                [.init(platform: .macOS, version: "27.0", build: "24A1", systemRoot: "/")]
+            },
+            interactiveOutputBaseDirectoryProvider: { "/tmp/headers" },
+            interactiveScreenClearer: {},
+            inputReader: { try await input.readLine() },
+            outputLogger: output.append,
+            errorLogger: output.append
+        )
+        #expect(status == 0)
+        #expect(runCount.value == 1)
+        #expect(!output.text.contains("Select action:"))
+    }
+
     @Test func interactiveRunUsesOneScriptedActorAndFreshCoreDecision() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

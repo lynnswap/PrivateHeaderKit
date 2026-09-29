@@ -48,9 +48,9 @@ and watchOS runtimes with the same version do not conflict.
 
 ## An unfinished run already exists
 
-Run `privateheaderkit` and choose Continue or Restart. In automation, rerun with
-the same plan and `--resume`, or use `--fresh` to start every selected target
-again.
+For an all-target run, use `privateheaderkit` and choose Continue or Restart.
+In automation, use `--target all --resume` to continue or `--target all --fresh`
+to restart. Named targets are always regenerated and do not require either flag.
 
 PrivateHeaderKit rejects an implicit decision here so that a script cannot
 discard or reinterpret unfinished work accidentally.

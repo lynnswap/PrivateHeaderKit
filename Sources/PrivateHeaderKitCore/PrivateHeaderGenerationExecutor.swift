@@ -153,7 +153,7 @@ extension PrivateHeaderGeneration {
         )
         let hadDatabase = try Self.regularFileExists(databaseURL)
         if !hadDatabase,
-          !options.resumeBehavior.isFresh,
+          !options.startsFresh,
           let requirement = try Self.legacyMigrationRequirement(
             stateDirectory: stateDirectory,
             publisher: publisher
@@ -325,7 +325,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     )
 
     if publication.legacyArtifactState.isDirectory,
-      !plan.options.resumeBehavior.isFresh
+      !plan.options.startsFresh
     {
       throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
         .artifacts(path: publisher.legacyArtifactURL.path)
@@ -339,8 +339,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       executionMode: executionMode,
       sharedCacheCohort: sharedCacheCohort
     )
-    let resumeSummary: PrivateHeaderGeneration.ResumeSummary?
-    if plan.options.resumeBehavior.isFresh {
+    var resumeSummary: PrivateHeaderGeneration.ResumeSummary?
+    if plan.options.startsFresh {
       resumeSummary = nil
     } else {
       resumeSummary = try await store.resumeSummary(
@@ -354,6 +354,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         !plan.options.resumeBehavior.resumeRequested
       {
         throw PrivateHeaderGeneration.GenerationError.resumeRequired(resumeSummary)
+      }
+      if resumeSummary?.isUnfinished == false,
+        !plan.options.resumeBehavior.resumeRequested
+      {
+        resumeSummary = nil
       }
     }
 
@@ -369,7 +374,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let runPlan = PrivateHeaderGeneration.RunPlan(
       sourceIdentity: plan.source.storageIdentifier,
       fingerprint: fingerprint,
-      targetIDs: targetIDs
+      targetIDs: targetIDs,
+      isResumable: plan.options.targetRequest.requestsAllTargets
     )
     _ = try await store.beginRun(id: runID, plan: runPlan, at: dateProvider())
     progressReporter?(.runStarted(runID: runID, totalTargetCount: targetIDsToRun.count))
@@ -392,7 +398,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try Self.ensureEmptyDirectory(runStagingDirectory)
       let initialOpaquePaths = try publisher.opaquePathsForTargetValidation(
         in: publication,
-        allowLegacyMigration: plan.options.resumeBehavior.isFresh,
+        allowLegacyMigration: plan.options.startsFresh,
         claimedBy: publishedArtifactsByTarget.values.flatMap { $0 }
       )
       var generatedTargetIDs: [String] = []
@@ -631,7 +637,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         }
         let initialDraft = try publisher.beginDraft(
           generationID: generationID,
-          allowLegacyMigration: plan.options.resumeBehavior.isFresh
+          allowLegacyMigration: plan.options.startsFresh
         )
         let draft = try publisher.replaceCompletedTargets(
           snapshotFilesByTarget,
@@ -1591,7 +1597,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     guard let executionMode = plan.options.executionMode else {
       throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
     }
-    guard !plan.options.resumeBehavior.isFresh else { return nil }
+    guard !plan.options.startsFresh else { return nil }
     let publisher = try ArtifactPublisher(
       outputBaseDirectory: plan.output.baseDirectory,
       sourceLabel: plan.source.storageIdentifier
@@ -1610,7 +1616,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
       let hadDatabase = try regularFileExists(databaseURL)
       if !hadDatabase,
-        !plan.options.resumeBehavior.isFresh,
+        !plan.options.startsFresh,
         let requirement = try legacyMigrationRequirement(
           stateDirectory: stateDirectory,
           publisher: publisher
@@ -1637,7 +1643,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       try cleanupStateStaging(in: stateDirectory)
       let publication = try publisher.inspect()
       if publication.legacyArtifactState.isDirectory,
-        !plan.options.resumeBehavior.isFresh
+        !plan.options.startsFresh
       {
         throw PrivateHeaderGeneration.GenerationError.legacyMigrationRequiresFresh(
           .artifacts(path: publisher.legacyArtifactURL.path)
@@ -2309,11 +2315,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 }
 
 extension PrivateHeaderGeneration.ResumeBehavior {
-  fileprivate var isFresh: Bool {
-    if case .fresh = self { return true }
-    return false
-  }
-
   fileprivate var resumeRequested: Bool {
     switch self {
     case .resume: true

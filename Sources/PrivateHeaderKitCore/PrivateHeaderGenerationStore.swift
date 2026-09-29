@@ -237,8 +237,8 @@ package actor GenerationStore {
       try db.execute(
         sql: """
           INSERT INTO runs(
-              id, sourceIdentity, planFingerprint, targetIDs, startedAt, endedAt, status
-          ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+              id, sourceIdentity, planFingerprint, targetIDs, startedAt, endedAt, status, isResumable
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
           """,
         arguments: [
           id.rawValue,
@@ -247,6 +247,7 @@ package actor GenerationStore {
           try Self.encodeStrings(plan.targetIDs),
           date.timeIntervalSinceReferenceDate,
           PrivateHeaderGeneration.RunStatus.running.rawValue,
+          plan.isResumable,
         ]
       )
       try db.execute(
@@ -951,11 +952,12 @@ package actor GenerationStore {
   ) throws -> PrivateHeaderGeneration.ResumeSummary? {
     try databaseQueue.read { db in
       guard
-        let latestID = try String.fetchOne(
+        let latest = try Row.fetchOne(
           db,
           sql: """
-            SELECT runs.id
+            SELECT runs.id, runOrdering.sequence
             FROM runs JOIN runOrdering ON runOrdering.runID = runs.id
+            WHERE runs.isResumable = 1
             ORDER BY runOrdering.sequence DESC
             LIMIT 1
             """
@@ -963,6 +965,8 @@ package actor GenerationStore {
       else {
         return nil
       }
+      let latestID: String = latest["id"]
+      let latestSequence: Int64 = latest["sequence"]
       let run = try Self.fetchRun(db, id: PrivateHeaderGeneration.RunID(latestID))
       guard run.planFingerprint == planFingerprint else {
         throw PrivateHeaderGeneration.GenerationError.incompatibleResume("plan fingerprint changed")
@@ -981,6 +985,20 @@ package actor GenerationStore {
           return (snapshot.targetID, snapshot)
         }
       )
+      let publications = try Dictionary(uniqueKeysWithValues: Row.fetchAll(
+        db,
+        sql: """
+          SELECT targets.targetID, runs.planFingerprint, runOrdering.sequence
+          FROM targets
+          JOIN runs ON runs.id = targets.lastSuccessfulRunID
+          JOIN runOrdering ON runOrdering.runID = runs.id
+          """
+      ).map { row in
+        let targetID: String = row["targetID"]
+        let fingerprint: String = row["planFingerprint"]
+        let sequence: Int64 = row["sequence"]
+        return (targetID, (fingerprint: fingerprint, sequence: sequence))
+      })
       let decisions = selectedTargetIDs.map {
         targetID -> PrivateHeaderGeneration.ResumeTargetDecision in
         guard let attempt = attempts[targetID] else {
@@ -989,13 +1007,15 @@ package actor GenerationStore {
         let currentArtifacts = currentArtifactsByTarget[targetID].map(Set.init)
         let publishedTarget = publishedTargets[targetID]
         if attempt.status == .completed,
-          publishedTarget?.lastSuccessfulRunID == run.id,
-          Set(publishedTarget?.artifacts ?? []) == Set(attempt.artifacts),
-          currentArtifacts == Set(attempt.artifacts)
+          publications[targetID]?.fingerprint == planFingerprint,
+          let publishedSequence = publications[targetID]?.sequence,
+          publishedSequence >= latestSequence,
+          currentArtifacts == Set(publishedTarget?.artifacts ?? [])
         {
           return .init(targetID: targetID, status: .completed)
         }
         if attempt.status == .skipped,
+          publications[targetID]?.fingerprint == planFingerprint,
           publishedTarget?.status == .completed,
           currentArtifacts == Set(publishedTarget?.artifacts ?? [])
         {
@@ -1188,6 +1208,11 @@ extension GenerationStore {
           ALTER TABLE targets
           ADD COLUMN artifactDigests TEXT NOT NULL DEFAULT '{}';
           """)
+    }
+    migrator.registerMigration("v5-all-target-resume") { db in
+      // Older runs did not record their selection scope. Keep their artifacts without
+      // guessing whether an individual selection was an all-target run.
+      try db.execute(sql: "ALTER TABLE runs ADD COLUMN isResumable BOOLEAN NOT NULL DEFAULT 0")
     }
     return migrator
   }
