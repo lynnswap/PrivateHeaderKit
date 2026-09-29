@@ -46,6 +46,10 @@ class ReleaseSmokeTests(unittest.TestCase):
                 self.dump(args[4:])
         elif "--show-sdk-path" in args:
             return "/sdk\n"
+        elif "clang" in args:
+            Path(args[-1]).write_bytes(b"fixture dylib")
+        elif "--system-root" in args:
+            self.dump(["-o", str(Path(args[args.index("--out") + 1]) / "generated-headers")])
         elif "search" in args:
             return "" if self.missing_symbol else "export PHKReleaseSmokeValue\n"
         elif args[0].endswith("privateheaderkit-raw-helper"):
@@ -54,7 +58,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def dump(self, args):
         headers = Path(args[args.index("-o") + 1])
-        headers.mkdir()
+        headers.mkdir(parents=True)
         (headers / "PHKReleaseSmoke.h").write_text(
             "" if self.invalid_header else "@interface PHKReleaseSmoke : NSObject\n@end\n")
 
@@ -63,7 +67,8 @@ class ReleaseSmokeTests(unittest.TestCase):
         host_calls = [args for args in self.calls if args[0].startswith(str(self.cohort))]
         self.assertIn(str(self.cohort / "privateheaderkit-raw-helper"), [args[0] for args in host_calls])
         searches = [args for args in host_calls if "search" in args]
-        self.assertEqual(len(searches), 3)
+        self.assertEqual(len(searches), 4)
+        self.assertTrue(any("--system-root" in args for args in host_calls))
         spawns = [args for args in self.calls if args[:3] == ["xcrun", "simctl", "spawn"]]
         self.assertEqual([args[4] for args in spawns], [
             str(self.cohort / "privateheaderkit-sim-helper"),
@@ -89,7 +94,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertFalse(any(args[:2] == ["xcrun", "simctl"] for args in self.calls))
         sdk_calls = [args for args in self.calls if "--show-sdk-path" in args]
         self.assertEqual(sdk_calls, [["xcrun", "--sdk", "macosx", "--show-sdk-path"]])
-        self.assertEqual(len([args for args in self.calls if "search" in args]), 1)
+        self.assertEqual(len([args for args in self.calls if "search" in args]), 2)
 
     def test_failed_boot_or_helper_still_deletes_only_its_device(self):
         for operation in ("bootstatus", "spawn"):

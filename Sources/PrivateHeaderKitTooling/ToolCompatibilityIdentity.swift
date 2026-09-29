@@ -8,10 +8,12 @@ import CryptoKit
 package struct ToolArtifactInput: Equatable, Sendable {
     package let role: String
     package let url: URL
+    package let requiresExecutable: Bool
 
-    package init(role: String, url: URL) {
+    package init(role: String, url: URL, requiresExecutable: Bool = true) {
         self.role = role
         self.url = url
+        self.requiresExecutable = requiresExecutable
     }
 }
 
@@ -722,7 +724,7 @@ private func artifactRecords(
             )
         }
         let permissions = (attributes[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
-        guard permissions & 0o111 != 0 else {
+        guard !artifact.requiresExecutable || permissions & 0o111 != 0 else {
             throw ToolingError.message(
                 "\(artifact.role) is not executable: \(artifact.url.path)"
             )

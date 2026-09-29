@@ -24,6 +24,8 @@ The macOS job runs `swift test --build-system swiftbuild` in Release configurati
 Simulator jobs compile CoreTests and the helper with testable imports. CI then
 transfers the same macOS executables to Apple Silicon runners for macOS 15, 26,
 and 27 and runs the CLI, header generation, and symbol search without rebuilding.
+The host smoke test also generates a fixture through the public CLI so helper
+preparation and bundled Swift runtime libraries are exercised.
 `Package Checks` requires both the platform jobs and these execution checks to
 succeed. macOS 14 remains the deployment target but is outside the CI matrix.
 The release workflow separately

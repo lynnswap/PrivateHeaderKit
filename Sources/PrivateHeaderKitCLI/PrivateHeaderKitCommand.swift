@@ -672,6 +672,7 @@ func resolvePrivateHeaderKitHelperPlan(
                 url: simulatorURL
             ))
         }
+        artifacts = try addingBundledHelperRuntimes(to: artifacts, simulatorPlatform: simulatorPlatform)
         let baseline = try captureToolArtifactSnapshot(
             runningExecutableIdentity: runningExecutableIdentity,
             artifacts: artifacts,
@@ -786,6 +787,12 @@ func resolvePrivateHeaderKitHelperPlan(
             platform: .iOS
         )
     }
+    externalArtifacts = try addingBundledHelperRuntimes(
+        to: externalArtifacts, simulatorPlatform: simulatorPlatform
+    )
+    preparedArtifacts = try addingBundledHelperRuntimes(
+        to: preparedArtifacts, simulatorPlatform: simulatorPlatform
+    )
     let identityContext = SwiftPMToolIdentityContext(
         repoRoot: layout.repoRoot,
         runningExecutableIdentity: runningExecutableIdentity,
@@ -810,6 +817,43 @@ func resolvePrivateHeaderKitHelperPlan(
             preparedArtifacts: preparedArtifacts
         ))
     )
+}
+
+private func addingBundledHelperRuntimes(
+    to helpers: [ToolArtifactInput],
+    simulatorPlatform: SimulatorPlatform?,
+    fileManager: FileManager = .default
+) throws -> [ToolArtifactInput] {
+    var artifacts = helpers
+    for helper in helpers {
+        let sdk: String
+        switch helper.role {
+        case "host-helper": sdk = "macosx"
+        case "simulator-helper":
+            guard let simulatorPlatform else { continue }
+            sdk = simulatorPlatform.sdkName
+        default: continue
+        }
+        let directoryName = "privateheaderkit-runtime-\(sdk)"
+        let directory = helper.url.resolvingSymlinksInPath().deletingLastPathComponent()
+            .appendingPathComponent(directoryName, isDirectory: true)
+        let libraries: [URL]
+        do {
+            libraries = try fileManager.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil
+            )
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            continue
+        }
+        for library in libraries where library.pathExtension == "dylib" {
+            artifacts.append(ToolArtifactInput(
+                role: "runtime/\(directoryName)/\(library.lastPathComponent)",
+                url: library,
+                requiresExecutable: false
+            ))
+        }
+    }
+    return artifacts
 }
 
 func preparePrivateHeaderKitHelpers(_ plan: PrivateHeaderKitHelperPlan) async throws {
@@ -917,17 +961,24 @@ private func materializePrivateHeaderKitHelpers(
     destinations: PrivateHeaderGeneration.RawDumping.HelperURLs,
     fileManager: FileManager
 ) throws {
-    let destinationByRole = [
+    let finalDirectory = destinations.host.deletingLastPathComponent()
+    var destinationByRole = [
         "host-helper": destinations.host,
         "simulator-helper": destinations.simulator,
     ]
+    for source in sources where source.role.hasPrefix("runtime/") {
+        destinationByRole[source.role] = finalDirectory.appendingPathComponent(
+            String(source.role.dropFirst("runtime/".count)), isDirectory: false
+        )
+    }
     let destinationInputs = try sources.map { source -> ToolArtifactInput in
         guard let destination = destinationByRole[source.role] else {
             throw ToolingError.message("unsupported prepared helper role: \(source.role)")
         }
-        return ToolArtifactInput(role: source.role, url: destination)
+        return ToolArtifactInput(
+            role: source.role, url: destination, requiresExecutable: source.requiresExecutable
+        )
     }
-    let finalDirectory = destinations.host.deletingLastPathComponent()
     guard destinations.simulator.deletingLastPathComponent() == finalDirectory else {
         throw ToolingError.message("prepared helpers must share one content directory")
     }
@@ -959,16 +1010,26 @@ private func materializePrivateHeaderKitHelpers(
             throw ToolingError.message("unsupported prepared helper role: \(source.role)")
         }
         let stagingURL = stagingDirectory.appendingPathComponent(
-            finalURL.lastPathComponent,
+            String(finalURL.path.dropFirst(finalDirectory.path.count + 1)),
             isDirectory: false
+        )
+        try fileManager.createDirectory(
+            at: stagingURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try fileManager.copyItem(
             at: source.url.resolvingSymlinksInPath(),
             to: stagingURL
         )
         try fileManager.setAttributes(
-            [.posixPermissions: NSNumber(value: UInt16(0o555))],
+            [.posixPermissions: NSNumber(value: UInt16(source.requiresExecutable ? 0o555 : 0o444))],
             ofItemAtPath: stagingURL.path
+        )
+    }
+    for directory in try fileManager.contentsOfDirectory(
+        at: stagingDirectory, includingPropertiesForKeys: [.isDirectoryKey]
+    ) where try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: UInt16(0o555))], ofItemAtPath: directory.path
         )
     }
     try fileManager.setAttributes(
