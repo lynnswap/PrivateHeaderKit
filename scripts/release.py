@@ -192,9 +192,9 @@ def publish(github, release_id, sha, digest, release_dir):
             except APIError as error:
                 if error.status != 422 or check_tag(github, tag, sha) is None:
                     raise ReleaseError(
-                        f"{error}\nInspect tag rules and publication credentials. If GitHub requires "
-                        "Workflows permission for this commit, configure RELEASE_TOKEN with "
-                        "Contents and Workflows write access."
+                        f"{error}\nGITHUB_TOKEN could not create the tested tag. Inspect tag rules "
+                        "and workflow-file differences from the default branch before retrying. "
+                        "Publication stopped; do not change the approved target without a new approval."
                     ) from error
         # Tag creation and asset uploads are separate from publication on GitHub.
         release = verify(github, release_id, sha, digest)
@@ -246,6 +246,7 @@ def main():
             if arguments.github_output:
                 with arguments.github_output.open("a", encoding="utf-8") as output:
                     output.write(f"version={release['tag_name']}\n")
+                    output.write(f"release_url={release['html_url']}\n")
             print(f"Verified: {release['html_url']} at {arguments.target}")
         else:
             publish(github, arguments.release_id, arguments.target, arguments.digest,

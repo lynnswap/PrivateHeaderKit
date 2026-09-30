@@ -296,11 +296,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(github.release["draft"])
         self.assertEqual(len(github.writes), 2)
 
-    def test_workflow_permission_failure_preserves_draft_and_can_resume_with_new_credentials(self):
+    def test_tag_permission_failure_preserves_draft_and_can_resume_after_fixing_rules(self):
         github = FakeGitHub(draft())
         digest = release.fingerprint(github.release)
         github.tag_error = True
-        with self.assertRaisesRegex(release.ReleaseError, "configure RELEASE_TOKEN"):
+        with self.assertRaisesRegex(release.ReleaseError, "GITHUB_TOKEN could not create the tested tag"):
             self.publish(github, digest)
         self.assertTrue(github.release["draft"])
         self.assertIsNone(github.tag)

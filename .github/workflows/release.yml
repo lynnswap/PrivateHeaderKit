@@ -35,6 +35,7 @@ jobs:
       contents: write
     outputs:
       version: ${{ steps.draft.outputs.version }}
+      release_url: ${{ steps.draft.outputs.release_url }}
     steps:
       - name: Require default branch
         env:
@@ -68,6 +69,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       checksums_sha256: ${{ steps.digest.outputs.checksums_sha256 }}
+      artifact_id: ${{ steps.assets.outputs.artifact-id }}
     steps:
       - name: Checkout workflow scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,9 +99,10 @@ jobs:
         run: echo "checksums_sha256=$(sha256sum release/SHA256SUMS.txt | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload source release assets
+        id: assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-assets
+          name: release-assets-${{ github.run_attempt }}
           path: release/*
           if-no-files-found: error
           compression-level: 0
@@ -130,8 +133,9 @@ jobs:
       - name: Download source release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-assets
+          artifact-ids: ${{ needs.package-source.outputs.artifact_id }}
           path: release
+          digest-mismatch: error
 
       - name: Verify transferred assets
         env:
@@ -144,11 +148,39 @@ jobs:
       - name: Build, bottle, reinstall and exercise all helpers
         run: scripts/test-homebrew.sh release --simulators
 
-  publish:
-    name: Publish verified source release
+  approval-summary:
+    name: Review tested release candidate
     needs: [prepare, package-source, package-tests, homebrew]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Summarize the candidate before publication approval
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          RELEASE_URL: ${{ needs.prepare.outputs.release_url }}
+          CONTENT_DIGEST: ${{ inputs.content_digest }}
+          CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
+          ARTIFACT_ID: ${{ needs.package-source.outputs.artifact_id }}
+        run: |
+          {
+            echo '## Tested release awaiting approval'
+            echo
+            printf 'Version: <code>%s</code>\n\n' "$VERSION"
+            printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
+            printf 'Approved content digest: <code>%s</code>\n\n' "$CONTENT_DIGEST"
+            printf 'Checksums file SHA-256: <code>%s</code>\n\n' "$CHECKSUMS_SHA256"
+            printf '[Draft release](%s)\n\n' "$RELEASE_URL"
+            printf '[Verified source and Formula artifact](https://github.com/%s/actions/runs/%s/artifacts/%s)\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$ARTIFACT_ID"
+            echo 'Package CI and the Homebrew source/bottle/helper checks passed. Approve the release-publish Environment to publish this candidate.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish verified source release
+    needs: [prepare, package-source, approval-summary]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: release-publish
     permissions:
       contents: write
     steps:
@@ -162,8 +194,9 @@ jobs:
       - name: Download release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-assets
+          artifact-ids: ${{ needs.package-source.outputs.artifact_id }}
           path: release
+          digest-mismatch: error
 
       - name: Verify transferred assets
         env:
@@ -175,7 +208,7 @@ jobs:
 
       - name: Upload assets and publish approved draft
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ inputs.release_id }}
           TARGET_SHA: ${{ inputs.target_sha }}
           CONTENT_DIGEST: ${{ inputs.content_digest }}
