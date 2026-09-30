@@ -178,8 +178,10 @@ The publication job downloads the packaging job's exact artifact ID and binds
 the transferred assets to its checksums digest. It never runs the source or
 Formula with publication credentials.
 After the first source release, copy its Formula into a pull request in
-`lynnswap/homebrew-tap`. Once that Formula is published, the tap's scheduled
-Renovate job proposes later release URL/checksum updates using its own
+`lynnswap/homebrew-tap`. For automatic later updates, first enable the tap's
+scheduled Renovate and protected bottle-publication workflows as documented in
+its maintenance guide. With those workflows enabled and the initial Formula
+published, Renovate proposes later release URL/checksum updates using its own
 `GITHUB_TOKEN`. Review the update PR and approve its workflows to start CI.
 Successful bottle CI prepares a candidate for the `homebrew-publish` Environment;
 approve the reviewed head and tested artifact to publish the bottles and merge
