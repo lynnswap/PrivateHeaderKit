@@ -177,10 +177,17 @@ workflow publishes exactly:
 The publication job downloads the packaging job's exact artifact ID and binds
 the transferred assets to its checksums digest. It never runs the source or
 Formula with publication credentials.
-After publication, copy the release Formula into a pull request in
-`lynnswap/homebrew-tap`. Its shared CI builds and publishes the distribution
-bottles. See [Homebrew packaging](Homebrew/README.md) for initial tap setup,
-local verification, and the future `homebrew/core` path.
+After the first source release, copy its Formula into a pull request in
+`lynnswap/homebrew-tap`. Once that Formula is published, the tap's scheduled
+Renovate job proposes later release URL/checksum updates using its own
+`GITHUB_TOKEN`. Review the update PR and approve its workflows to start CI.
+Successful bottle CI prepares a candidate for the `homebrew-publish` Environment;
+approve the reviewed head and tested artifact to publish the bottles and merge
+the Formula update. Formula installation steps and dependencies still need an
+explicit update when their requirements change. See the
+[tap maintenance guide](https://github.com/lynnswap/homebrew-tap#automated-maintenance)
+for these approvals and [Homebrew packaging](Homebrew/README.md) for initial
+setup, local verification, and the future `homebrew/core` path.
 
 For local source builds, use `scripts/build-release.sh --version dev`. Use
 `--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
