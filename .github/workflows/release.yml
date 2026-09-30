@@ -135,6 +135,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-source.outputs.artifact_id }}
           path: release
+          merge-multiple: true
           digest-mismatch: error
 
       - name: Verify transferred assets
@@ -196,6 +197,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-source.outputs.artifact_id }}
           path: release
+          merge-multiple: true
           digest-mismatch: error
 
       - name: Verify transferred assets
