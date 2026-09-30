@@ -24,17 +24,26 @@ Objective-C fixtures before publishing the source release.
 
 [lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap) owns the shared
 Formula and bottle workflows. Maintain those workflows in that repository.
-After publishing a source release, download its `privateheaderkit.rb`, verify it
+After publishing the first source release, download its `privateheaderkit.rb`, verify it
 against `SHA256SUMS.txt`, and submit it under the tap's `Formula/` directory in a
 pull request.
 
 The source formula works before a bottle is published, provided the build
-requirements are installed. The tap workflows follow `brew tap-new`: the test
-workflow creates bottle artifacts for formula pull requests, and the manually
-dispatched publish workflow uses `brew pr-pull` to publish them and merge the
-reviewed revision. Repository Actions settings must allow that workflow to
-write contents and merge pull requests. No cross-repository token is needed
-for this manual release-to-tap update process.
+requirements are installed. Enable the tap's scheduled Renovate and protected
+bottle-publication workflows as described in its
+[maintenance guide](https://github.com/lynnswap/homebrew-tap#automated-maintenance).
+With those workflows enabled, Renovate proposes later source URL/checksum updates
+using the tap's own `GITHUB_TOKEN`; formula installation requirements still need
+an explicit update when they change.
+
+Review each Formula PR and approve workflows requested by Renovate to start CI.
+The test workflow creates bottles and the publication workflow prepares a
+candidate from the successful CI run. Approve its reviewed PR head and tested
+artifact in the `homebrew-publish` Environment. The protected job verifies and
+publishes those local bottle files using `brew pr-upload`, updates the bottle
+metadata, and merges the Formula change. No cross-repository token or persistent
+credential is needed. The tap guide documents required Actions settings,
+manual dispatch and recovery operations.
 
 The tap builds on Apple Silicon macOS 26 with Xcode 26.6 and uses the normal
 Homebrew bottle tag for that host. No older-OS tag substitution is performed.

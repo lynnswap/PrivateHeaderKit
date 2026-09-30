@@ -147,6 +147,12 @@ brew install lynnswap/tap/privateheaderkit
 The command creates or reuses a matching Draft Release, then dispatches the
 `Release` workflow from the default branch. It prints the Draft and Actions URLs
 without waiting for publication. Do not create or push the release tag locally.
+After CI and Homebrew verification pass, review the candidate's version, target
+SHA, content digest, and checksums in the Actions summary. Approve the
+`release-publish` Environment through **Review deployments → Approve and deploy**.
+The protected job then publishes that candidate automatically.
+Source artifacts are retained for 35 days so the publication approval wait does
+not outlive them. Approve or reject the candidate within GitHub's approval limit.
 
 The workflow packages the approved Git commit as a source archive, preserving
 `Package.resolved` and the checked-in SwiftPM mirrors. It generates a Formula
@@ -161,18 +167,29 @@ from a small Objective-C fixture, and the installed CLI searches the result.
 Simulator smoke tests create and delete their own temporary devices; available
 iOS and watchOS runtimes are required for those release checks.
 
-After package and Homebrew checks succeed, the workflow publishes exactly:
+After package and Homebrew checks succeed and publication is approved, the
+workflow publishes exactly:
 
 - `privateheaderkit-<version>.tar.gz` (source; the filename version omits `v`)
 - `privateheaderkit.rb`
 - `SHA256SUMS.txt`
 
-The publication job binds the transferred assets to the checksums digest from
-the packaging job. It never runs the source or Formula with publication credentials.
-After publication, copy the release Formula into a pull request in
-`lynnswap/homebrew-tap`. Its shared CI builds and publishes the distribution
-bottles. See [Homebrew packaging](Homebrew/README.md) for initial tap setup,
-local verification, and the future `homebrew/core` path.
+The publication job downloads the packaging job's exact artifact ID and binds
+the transferred assets to its checksums digest. It never runs the source or
+Formula with publication credentials.
+After the first source release, copy its Formula into a pull request in
+`lynnswap/homebrew-tap`. For automatic later updates, first enable the tap's
+scheduled Renovate and protected bottle-publication workflows as documented in
+its maintenance guide. With those workflows enabled and the initial Formula
+published, Renovate proposes later release URL/checksum updates using its own
+`GITHUB_TOKEN`. Review the update PR and approve its workflows to start CI.
+Successful bottle CI prepares a candidate for the `homebrew-publish` Environment;
+approve the reviewed head and tested artifact to publish the bottles and merge
+the Formula update. Formula installation steps and dependencies still need an
+explicit update when their requirements change. See the
+[tap maintenance guide](https://github.com/lynnswap/homebrew-tap#automated-maintenance)
+for these approvals and [Homebrew packaging](Homebrew/README.md) for initial
+setup, local verification, and the future `homebrew/core` path.
 
 For local source builds, use `scripts/build-release.sh --version dev`. Use
 `--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
@@ -202,8 +219,24 @@ does not modify the published release. If dispatch fails or its response is
 uncertain, inspect Actions before repeating the start command to avoid a second
 run. Changed notes require a new start command matching the reviewed content.
 
-The publish job uses `GITHUB_TOKEN` by default. If GitHub rejects tag creation
-because the target needs Workflows permission, configure the optional
-`RELEASE_TOKEN` Actions secret with **Contents: write** and **Workflows: write**
-for this repository, then rerun the failed publish job. That credential is
-available only to the publication step; repository tag rules still apply.
+Publication uses only the repository's `GITHUB_TOKEN`. If GitHub rejects tag
+creation, inspect the tag rules and the target's workflow-file differences from
+the current default branch. GitHub requires Workflows write permission when
+the target changes those files relative to that branch; `GITHUB_TOKEN` cannot
+receive that permission. Publication remains stopped. Any different release
+target requires a new content approval and verification run.
+
+### One-time publication setup
+
+In **Settings → Environments → release-publish**, require the maintainer as a
+reviewer, allow only the `main` branch, and disable administrator bypass. Leave
+**Prevent self-review** off when the maintainer initiating the run is also its
+approver. No environment secrets or additional release token are required.
+Keep repository workflow permissions read-only by default; the workflow grants
+write access only to draft validation and the protected publishing job. Draft
+validation requires push access because GitHub treats unpublished releases as
+private information.
+
+Dependabot proposes weekly action and Swift dependency updates. Review those PRs
+and their CI results; they are not merged automatically. Workflow changes should
+remain reviewed changes to the publication policy.
