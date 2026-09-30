@@ -151,6 +151,8 @@ After CI and Homebrew verification pass, review the candidate's version, target
 SHA, content digest, and checksums in the Actions summary. Approve the
 `release-publish` Environment through **Review deployments → Approve and deploy**.
 The protected job then publishes that candidate automatically.
+Source artifacts are retained for 35 days so the publication approval wait does
+not outlive them. Approve or reject the candidate within GitHub's approval limit.
 
 The workflow packages the approved Git commit as a source archive, preserving
 `Package.resolved` and the checked-in SwiftPM mirrors. It generates a Formula
