@@ -95,8 +95,8 @@ class FakeGitHub:
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.tested_bottle = dict(bottle_sha256="b" * 64, bottle_url="https://example.test/verified.bottle.tar.gz")
-        readiness = patch("release.verify_homebrew_ready", return_value=self.tested_bottle.copy())
+        self.tested_delivery = dict(formula_sha256="a" * 64, bottle_sha256="b" * 64, bottle_url="https://example.test/verified.bottle.tar.gz")
+        readiness = patch("release.verify_homebrew_ready", return_value=self.tested_delivery.copy())
         self.readiness = readiness.start()
         self.addCleanup(readiness.stop)
         self.output = io.StringIO()
@@ -118,7 +118,7 @@ class ReleaseTests(unittest.TestCase):
         release.start(github, **values)
 
     def publish(self, github, digest):
-        release.publish(github, 42, SHA, digest, self.release_dir, self.tested_bottle)
+        release.publish(github, 42, SHA, digest, self.release_dir, self.tested_delivery)
 
     def test_start_keeps_notes_and_pins_dispatch_without_creating_tag(self):
         github = FakeGitHub()
@@ -352,10 +352,10 @@ class ReleaseTests(unittest.TestCase):
         self.readiness.assert_not_called()
 
     def test_changed_installed_bottle_identity_blocks_publication_until_reverified(self):
-        for key, value in (("bottle_sha256", "c" * 64), ("bottle_url", "https://example.test/rebuilt.bottle.tar.gz")):
+        for key, value in (("formula_sha256", "d" * 64), ("bottle_sha256", "c" * 64), ("bottle_url", "https://example.test/rebuilt.bottle.tar.gz")):
             with self.subTest(key=key):
                 github = FakeGitHub(draft())
-                current = dict(self.tested_bottle, **{key: value})
+                current = dict(self.tested_delivery, **{key: value})
                 self.readiness.return_value = current
                 digest = release.fingerprint(github.release)
                 with self.assertRaisesRegex(release.ReleaseError, "Re-run Verify published tap installation"):

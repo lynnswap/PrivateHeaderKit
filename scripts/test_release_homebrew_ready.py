@@ -62,6 +62,7 @@ class HomebrewReadinessTests(unittest.TestCase):
     def test_matching_public_source_and_bottle_have_read_only_pinned_evidence(self):
         evidence = self.ready()
         self.assertEqual(evidence["tap_sha"], self.tap.sha)
+        self.assertEqual(evidence["formula_sha256"], hashlib.sha256(self.formula.encode()).hexdigest())
         self.assertEqual(evidence["source_sha256"], self.digest)
         self.assertEqual(evidence["bottle_sha256"], "b" * 64)
         self.assertEqual(self.tap.calls, [
@@ -98,6 +99,21 @@ class HomebrewReadinessTests(unittest.TestCase):
         self.tap.published.update(body="Changed notes", download_count=20)
         self.tap.sha = "d" * 40
         self.assertEqual(self.ready()["tap_sha"], self.tap.sha)
+
+    def test_formula_code_identity_changes_independently_of_bottle_identity(self):
+        original = self.ready()
+        self.tap.formula += "\n  def post_install\n    system \"changed installation\"\n  end\n"
+        changed = self.ready()
+        self.assertNotEqual(changed["formula_sha256"], original["formula_sha256"])
+        self.assertEqual(changed["bottle_sha256"], original["bottle_sha256"])
+        self.assertEqual(changed["bottle_url"], original["bottle_url"])
+
+    def test_unrelated_tap_commit_does_not_change_tested_artifact_identity(self):
+        original = self.ready()
+        self.tap.sha = "e" * 40
+        changed = self.ready()
+        for key in ("formula_sha256", "bottle_sha256", "bottle_url"):
+            self.assertEqual(changed[key], original[key])
 
     def test_literal_comments_quotes_and_checksum_case_preserve_metadata_meaning(self):
         self.tap.formula = self.tap.formula.replace(self.digest, self.digest.upper())

@@ -162,8 +162,10 @@ stable publication. The verified artifact and checksums are shown in the later
 publication summary. For stable releases, a read-only job checks the matching
 public Formula/source checksum and macOS 26 Apple Silicon bottle asset, installs
 that published bottle, checks the CLI's version and runs the Formula test. The
-publisher rechecks public tap metadata after approval, immediately before making
-the core release public. Prereleases do not require stable tap delivery.
+publisher rechecks the tested Formula and bottle identities immediately before
+making the core release public. Changes to those artifacts require rerunning
+**Verify published tap installation** and its dependent jobs; unrelated tap
+changes do not invalidate the verified delivery. Prereleases do not require stable tap delivery.
 
 Source artifacts are retained for 35 days so the publication approval wait does
 not outlive them. Approve or reject the candidate within GitHub's approval limit.

@@ -212,6 +212,7 @@ jobs:
     outputs:
       required: ${{ steps.tap.outputs.required }}
       tap_sha: ${{ steps.tap.outputs.tap_sha }}
+      formula_sha256: ${{ steps.tap.outputs.formula_sha256 }}
       bottle_sha256: ${{ steps.tap.outputs.bottle_sha256 }}
       bottle_url: ${{ steps.tap.outputs.bottle_url }}
     steps:
@@ -338,11 +339,13 @@ jobs:
           RELEASE_ID: ${{ inputs.release_id }}
           TARGET_SHA: ${{ inputs.target_sha }}
           CONTENT_DIGEST: ${{ inputs.content_digest }}
+          TESTED_FORMULA_SHA256: ${{ needs.homebrew-ready.outputs.formula_sha256 }}
           TESTED_BOTTLE_SHA256: ${{ needs.homebrew-ready.outputs.bottle_sha256 }}
           TESTED_BOTTLE_URL: ${{ needs.homebrew-ready.outputs.bottle_url }}
         run: |
           python3 scripts/release.py publish \
             --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
-            --release-dir release --tested-bottle-sha256 "$TESTED_BOTTLE_SHA256" \
+            --release-dir release --tested-formula-sha256 "$TESTED_FORMULA_SHA256" \
+            --tested-bottle-sha256 "$TESTED_BOTTLE_SHA256" \
             --tested-bottle-url "$TESTED_BOTTLE_URL"

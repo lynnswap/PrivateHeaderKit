@@ -254,7 +254,8 @@ def verify_homebrew_ready(github, tag, release_dir):
         if (asset["state"] != "uploaded" or asset.get("digest") != "sha256:" + digests[0].lower()
                 or asset["browser_download_url"] != root_url + "/" + bottle_name):
             raise ReleaseError("The public bottle asset does not match the Formula's SHA-256 and URL.")
-        return dict(tap_sha=main_sha, source_sha256=source_digest,
+        return dict(tap_sha=main_sha, formula_sha256=hashlib.sha256(formula.encode()).hexdigest(),
+                    source_sha256=source_digest,
                     bottle_sha256=digests[0].lower(), bottle_url=asset["browser_download_url"])
     except (ReleaseError, KeyError, ValueError, UnicodeError, OSError) as error:
         raise ReleaseError(
@@ -264,7 +265,7 @@ def verify_homebrew_ready(github, tag, release_dir):
         ) from error
 
 
-def publish(github, release_id, sha, digest, release_dir, tested_bottle=None):
+def publish(github, release_id, sha, digest, release_dir, tested_delivery=None):
     release = verify(github, release_id, sha, digest)
     tag = release["tag_name"]
     if not release["draft"]:
@@ -272,8 +273,9 @@ def publish(github, release_id, sha, digest, release_dir, tested_bottle=None):
             raise ReleaseError("The published release no longer has its approved tag.")
         print(f"Already published: {release['html_url']}")
         return
-    if not release["prerelease"] and (not tested_bottle or not all(tested_bottle.values())):
-        raise ReleaseError("Supply the installed and verified bottle checksum and URL before stable publication.")
+    identity_fields = ("formula_sha256", "bottle_sha256", "bottle_url")
+    if not release["prerelease"] and (not tested_delivery or not all(tested_delivery.get(key) for key in identity_fields)):
+        raise ReleaseError("Supply the installed and verified Formula and bottle identity before stable publication.")
 
     names = asset_names(tag)
     unexpected = [asset["name"] for asset in release["assets"] if asset["name"] not in names]
@@ -292,9 +294,9 @@ def publish(github, release_id, sha, digest, release_dir, tested_bottle=None):
         verify_uploaded_assets(release, expected)
         if not release["prerelease"]:
             current = verify_homebrew_ready(GitHub(HOMEBREW_TAP), tag, release_dir)
-            if any(current[key] != tested_bottle[key] for key in ("bottle_sha256", "bottle_url")):
+            if any(current[key] != tested_delivery[key] for key in identity_fields):
                 raise ReleaseError(
-                    "The public bottle changed after installation verification. "
+                    "The public Formula or bottle changed after installation verification. "
                     "Re-run Verify published tap installation and its dependent jobs to test the current bottle."
                 )
         published = github.api(
@@ -336,6 +338,7 @@ def main():
             command.add_argument("--github-output", type=Path)
         else:
             command.add_argument("--release-dir", required=True, type=Path)
+            command.add_argument("--tested-formula-sha256")
             command.add_argument("--tested-bottle-sha256")
             command.add_argument("--tested-bottle-url")
     arguments = parser.parse_args()
@@ -368,7 +371,8 @@ def main():
         else:
             publish(github, arguments.release_id, arguments.target, arguments.digest,
                     arguments.release_dir,
-                    dict(bottle_sha256=arguments.tested_bottle_sha256,
+                    dict(formula_sha256=arguments.tested_formula_sha256,
+                         bottle_sha256=arguments.tested_bottle_sha256,
                          bottle_url=arguments.tested_bottle_url))
     except (ReleaseError, OSError, subprocess.CalledProcessError) as error:
         print(error, file=sys.stderr)
