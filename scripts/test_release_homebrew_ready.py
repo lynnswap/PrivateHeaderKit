@@ -90,7 +90,7 @@ class HomebrewReadinessTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.tap = FakeTap(self.formula)
                 mutation(self.tap)
-                with self.assertRaisesRegex(release.ReleaseError, "re-run the failed Release jobs"):
+                with self.assertRaises(release.ReleaseError):
                     self.ready()
                 self.assertTrue(all(method == "GET" for _, method in self.tap.calls))
 
@@ -160,6 +160,40 @@ class HomebrewReadinessTests(unittest.TestCase):
             self.assertEqual(release.main(), 0)
         client.assert_not_called()
         self.assertEqual(output.read_text(), "required=false\n")
+
+    def test_status_reports_an_older_formula_as_waiting_without_failure(self):
+        self.tap.formula = self.formula.replace("v1.2.3.tar.gz", "v1.2.2.tar.gz")
+        output = self.root / "pending-outputs"
+        args = ["release", "tap-status", "--version", "v1.2.3",
+                "--release-dir", str(self.root), "--github-output", str(output)]
+        messages = io.StringIO()
+        with patch("sys.argv", args), patch.object(release, "GitHub", return_value=self.tap), contextlib.redirect_stdout(messages):
+            self.assertEqual(release.main(), 0)
+        self.assertEqual(output.read_text(), "required=true\nready=false\n")
+        self.assertNotIn("re-run", json.loads(messages.getvalue())["pending"])
+        with self.assertRaises(release.HomebrewPending):
+            self.ready()
+
+    def test_status_does_not_hide_a_corrupt_same_version_source_or_api_failure(self):
+        args = ["release", "tap-status", "--version", "v1.2.3", "--release-dir", str(self.root)]
+        self.tap.formula = self.formula.replace(self.digest, "a" * 64)
+        with patch("sys.argv", args), patch.object(release, "GitHub", return_value=self.tap), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(release.main(), 1)
+        self.tap.formula = self.formula
+        with patch.object(self.tap, "api", side_effect=release.APIError(403, "Forbidden")):
+            with self.assertRaisesRegex(release.ReleaseError, "Forbidden") as error:
+                self.ready()
+        self.assertNotIsInstance(error.exception, release.HomebrewPending)
+
+    def test_missing_bottle_is_pending_but_changed_digest_is_a_failure(self):
+        self.tap.published["assets"] = []
+        with self.assertRaises(release.HomebrewPending):
+            self.ready()
+        self.tap.published = FakeTap(self.formula).published
+        self.tap.published["assets"][0]["digest"] = "sha256:" + "a" * 64
+        with self.assertRaises(release.ReleaseError) as error:
+            self.ready()
+        self.assertNotIsInstance(error.exception, release.HomebrewPending)
 
 
 if __name__ == "__main__":

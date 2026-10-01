@@ -35,6 +35,7 @@ jobs:
       contents: write
     outputs:
       version: ${{ steps.draft.outputs.version }}
+      prerelease: ${{ steps.draft.outputs.prerelease }}
       release_url: ${{ steps.draft.outputs.release_url }}
     steps:
       - name: Require default branch
@@ -170,9 +171,41 @@ jobs:
       revision: ${{ inputs.target_sha }}
       version: ${{ needs.prepare.outputs.version }}
 
+  record-plan:
+    name: Record prepared release
+    needs: [prepare, source-tag, package-source]
+    if: needs.prepare.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Record the approved run and prepared artifact identity
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          CONTENT_DIGEST: ${{ inputs.content_digest }}
+          ARTIFACT_ID: ${{ needs.package-source.outputs.artifact_id }}
+          CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
+        run: |
+          python3 scripts/release_sync.py record --release-id "$RELEASE_ID" \
+            --version "$VERSION" --target "$TARGET_SHA" --content-digest "$CONTENT_DIGEST" \
+            --source-artifact-id "$ARTIFACT_ID" --checksums-sha256 "$CHECKSUMS_SHA256" \
+            --output "$RUNNER_TEMP/release-plan.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-plan.json
+          if-no-files-found: error
+          retention-days: 35
+
   homebrew:
-    name: Test Formula and installed bottle
+    name: Test prerelease Formula and installed bottle
     needs: [prepare, package-source]
+    if: needs.prepare.outputs.prerelease == 'true'
     runs-on: macos-26
     timeout-minutes: 60
     env:
@@ -202,9 +235,49 @@ jobs:
       - name: Build, bottle, reinstall and exercise all helpers
         run: scripts/test-homebrew.sh release --simulators
 
+  tap-status:
+    name: Check stable tap delivery
+    needs: [prepare, package-source, package-tests, record-plan]
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.package-source.result == 'success' &&
+      needs.package-tests.result == 'success' &&
+      (needs.prepare.outputs.prerelease == 'true' || needs.record-plan.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.tap.outputs.ready }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.package-source.outputs.artifact_id }}
+          path: release
+          digest-mismatch: error
+      - name: Inspect prepared tap delivery
+        id: tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
+        run: |
+          python3 scripts/package_release.py verify --version "$VERSION" \
+            --release-dir release --checksums-sha256 "$CHECKSUMS_SHA256"
+          python3 scripts/release.py tap-status --version "$VERSION" \
+            --release-dir release --github-output "$GITHUB_OUTPUT"
+      - name: Report normal tap preparation wait
+        if: steps.tap.outputs.ready == 'false'
+        run: |
+          echo 'The approved release remains a Draft while the tap PR awaits CI and publication approvals. Resume prepared releases will retry this probe and its dependents after matching public delivery; completed SDK checks are reused.' >> "$GITHUB_STEP_SUMMARY"
+
   homebrew-ready:
     name: Verify published tap installation
-    needs: [prepare, package-source, package-tests, homebrew]
+    needs: [prepare, package-source, tap-status]
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.package-source.result == 'success' &&
+      needs.tap-status.result == 'success' && needs.tap-status.outputs.ready == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     env:
@@ -266,10 +339,15 @@ jobs:
           installed_binary="$(brew --prefix "$formula")/bin/privateheaderkit"
           test "$("$installed_binary" --tool-version)" = "$VERSION"
           brew test "$formula"
+          python3 scripts/smoke_release_binaries.py --cohort-dir "$(brew --prefix "$formula")/libexec"
 
   publication-summary:
     name: Review verified release outputs
     needs: [prepare, package-source, package-tests, homebrew, homebrew-ready]
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.package-source.result == 'success' &&
+      needs.package-tests.result == 'success' && needs.homebrew-ready.result == 'success' &&
+      (needs.prepare.outputs.prerelease == 'false' || needs.homebrew.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -306,6 +384,10 @@ jobs:
   publish:
     name: Publish verified source release
     needs: [prepare, source-tag, package-source, homebrew-ready, publication-summary]
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.source-tag.result == 'success' &&
+      needs.package-source.result == 'success' && needs.homebrew-ready.result == 'success' &&
+      needs.publication-summary.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
