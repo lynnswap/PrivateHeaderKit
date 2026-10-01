@@ -95,6 +95,10 @@ class FakeGitHub:
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
+        self.tested_delivery = dict(formula_sha256="a" * 64, bottle_sha256="b" * 64, bottle_url="https://example.test/verified.bottle.tar.gz")
+        readiness = patch("release.verify_homebrew_ready", return_value=self.tested_delivery.copy())
+        self.readiness = readiness.start()
+        self.addCleanup(readiness.stop)
         self.output = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.output)
         self.redirect.__enter__()
@@ -114,7 +118,7 @@ class ReleaseTests(unittest.TestCase):
         release.start(github, **values)
 
     def publish(self, github, digest):
-        release.publish(github, 42, SHA, digest, self.release_dir)
+        release.publish(github, 42, SHA, digest, self.release_dir, self.tested_delivery)
 
     def test_start_keeps_notes_and_pins_dispatch_without_creating_tag(self):
         github = FakeGitHub()
@@ -267,7 +271,7 @@ class ReleaseTests(unittest.TestCase):
         github = FakeGitHub(draft())
         github.upload_error = True
         digest = release.fingerprint(draft())
-        with self.assertRaisesRegex(release.ReleaseError, "rerun the failed publish job"):
+        with self.assertRaisesRegex(release.ReleaseError, "Draft/assets or tag"):
             self.publish(github, digest)
         self.assertTrue(github.release["draft"])
         self.assertIsNone(github.tag)
@@ -307,7 +311,7 @@ class ReleaseTests(unittest.TestCase):
         github = FakeGitHub(draft())
         digest = release.fingerprint(github.release)
         github.publish_error = True
-        with self.assertRaisesRegex(release.ReleaseError, "rerun the failed publish job"):
+        with self.assertRaisesRegex(release.ReleaseError, "Draft/assets or tag"):
             self.publish(github, digest)
         self.assertTrue(github.release["draft"])
         self.assertEqual(github.tag, SHA)
@@ -317,6 +321,54 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(sum(call[0] == "git/refs" for call in github.writes), 1)
         github.calls = []
         self.publish(github, digest)
+        self.assertEqual(github.writes, [])
+
+    def test_changed_tap_after_approval_blocks_stable_publication_and_can_resume(self):
+        github = FakeGitHub(draft())
+        digest = release.fingerprint(github.release)
+        self.readiness.side_effect = release.ReleaseError("Homebrew is not ready")
+        with self.assertRaisesRegex(release.ReleaseError, "Homebrew is not ready"):
+            self.publish(github, digest)
+        self.assertTrue(github.release["draft"])
+        self.assertFalse(any(call[1] == "PATCH" for call in github.writes))
+        self.readiness.side_effect = None
+        self.publish(github, digest)
+        self.assertFalse(github.release["draft"])
+        github.calls.clear()
+        self.readiness.reset_mock()
+        self.readiness.side_effect = release.ReleaseError("Tap now has a newer version")
+        self.publish(github, digest)
+        self.assertEqual(github.writes, [])
+        self.readiness.assert_not_called()
+
+    def test_prerelease_publication_does_not_require_a_stable_tap_update(self):
+        tag = "v0.1.0-rc.1"
+        for name in release.asset_names(tag):
+            (self.release_dir / name).write_text("verified " + name)
+        github = FakeGitHub(draft(tag_name=tag, prerelease=True))
+        self.readiness.side_effect = release.ReleaseError("Stable tap not updated")
+        self.publish(github, release.fingerprint(github.release))
+        self.assertFalse(github.release["draft"])
+        self.readiness.assert_not_called()
+
+    def test_changed_installed_bottle_identity_blocks_publication_until_reverified(self):
+        for key, value in (("formula_sha256", "d" * 64), ("bottle_sha256", "c" * 64), ("bottle_url", "https://example.test/rebuilt.bottle.tar.gz")):
+            with self.subTest(key=key):
+                github = FakeGitHub(draft())
+                current = dict(self.tested_delivery, **{key: value})
+                self.readiness.return_value = current
+                digest = release.fingerprint(github.release)
+                with self.assertRaisesRegex(release.ReleaseError, "Re-run Verify published tap installation"):
+                    self.publish(github, digest)
+                self.assertTrue(github.release["draft"])
+                self.assertFalse(any(call[1] == "PATCH" for call in github.writes))
+                release.publish(github, 42, SHA, digest, self.release_dir, current)
+                self.assertFalse(github.release["draft"])
+
+    def test_stable_publication_requires_installed_bottle_evidence_before_writes(self):
+        github = FakeGitHub(draft())
+        with self.assertRaisesRegex(release.ReleaseError, "installed and verified"):
+            release.publish(github, 42, SHA, release.fingerprint(github.release), self.release_dir)
         self.assertEqual(github.writes, [])
 
     def test_change_during_tag_creation_stops_publication(self):

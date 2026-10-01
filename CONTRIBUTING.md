@@ -150,16 +150,22 @@ without waiting for publication. Do not create or push the release tag locally.
 After package CI passes, review the version, target SHA, content digest, and Draft
 title/notes in the Actions summary. Approve the `release-publish` Environment
 through **Review deployments → Approve and deploy**. This authorizes public
-source-tag preparation. The protected tag job is the first public action. Final
-publication remains separately protected while the stable tap readiness gate is
-introduced.
+source-tag preparation and automatic publication of the unchanged candidate once
+verification and matching stable tap delivery succeed. The protected tag job is
+the first public action; its approval is inherited through required dependencies,
+so no second core publication approval is requested.
 
 The workflow creates the approved tag while the release stays a Draft. Its public
 tag archive lets the tap build before stable publication. When adopting tag
 archives, use the prepared Formula artifact for the tap update before core
 stable publication. The verified artifact and checksums are shown in the later
-publication summary. Complete the matching tap delivery before approving
-`release-publish` for final publication.
+publication summary. For stable releases, a read-only job checks the matching
+public Formula/source checksum and macOS 26 Apple Silicon bottle asset, installs
+that published bottle, checks the CLI's version and runs the Formula test. The
+publisher rechecks the tested Formula and bottle identities immediately before
+making the core release public. Changes to those artifacts require rerunning
+**Verify published tap installation** and its dependent jobs; unrelated tap
+changes do not invalidate the verified delivery. Prereleases do not require stable tap delivery.
 
 Source artifacts are retained for 35 days so the publication approval wait does
 not outlive them. Approve or reject the candidate within GitHub's approval limit.
@@ -218,6 +224,20 @@ while the workflow runs. Changed publication content stops the workflow;
 unrelated release metadata does not. GitHub does not provide a transaction
 covering tags, assets, and publication, so maintainers must serialize those
 operations.
+
+If the tap is not ready, the run stops before stable publication. Complete the
+tap PR checks and `homebrew-publish` approval, then choose **Re-run failed jobs**
+on the original source run, or use:
+
+```sh
+gh run rerun <run-id> --repo lynnswap/PrivateHeaderKit --failed
+```
+
+This reuses completed package/platform/Homebrew builds and the original immutable
+source artifact. Do not choose **Re-run all jobs** for a tap availability wait.
+GitHub permits reruns within 30 days; expired artifacts require a fresh workflow
+run. This flow uses public tap reads and repository-scoped `GITHUB_TOKEN`, with
+no cross-repository dispatch credential or write token held while waiting.
 
 If checks fail, the release stays a Draft; the public source tag may already
 remain. A failed upload or publication can leave some assets; use GitHub's re-run controls after fixing
