@@ -9,13 +9,14 @@ sibling directories. Each executable locates its libraries relative to itself,
 so it can run without the build host's Xcode installation.
 
 `privateheaderkit.rb.in` is the release formula template. `scripts/package_release.py`
-packages an approved Git commit as a source archive and fills the template with
-that release's version, source URL, and SHA-256. The archive includes
+verifies the public tag archive against the approved Git commit and fills the
+template with that version's public tag URL and the downloaded archive's SHA-256. The archive includes
 `Package.resolved` and the checked-in SwiftPM mirror configuration. Building it
 does not require `.git`.
 
-The source release workflow verifies the Formula against the unpublished source
-archive by placing it in Homebrew's download cache. Homebrew verifies the archive
+Package CI runs before the workflow creates the public source tag. The release
+stays a Draft while the Formula and tap are prepared. The source release workflow
+verifies the Formula by placing the verified archive in Homebrew's download cache. Homebrew verifies the archive
 against the Formula's checksum. The workflow builds a bottle, reinstalls it,
 runs the Formula's functional test, and exercises all three helpers with local
 Objective-C fixtures before publishing the source release.
@@ -24,15 +25,16 @@ Objective-C fixtures before publishing the source release.
 
 [lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap) owns the shared
 Formula and bottle workflows. Maintain those workflows in that repository.
-After publishing the first source release, download its `privateheaderkit.rb`, verify it
-against `SHA256SUMS.txt`, and submit it under the tap's `Formula/` directory in a
-pull request.
+For the first update to tag archives, download the prepared Actions artifact's
+`privateheaderkit.rb`, verify it against `SHA256SUMS.txt`, and submit it under the
+tap's `Formula/` directory in a PR before publishing the core stable release.
+The previous release-asset URL requires this initial recipe migration.
 
 The source formula works before a bottle is published, provided the build
 requirements are installed. Enable the tap's scheduled Renovate and protected
 bottle-publication workflows as described in its
-[maintenance guide](https://github.com/lynnswap/homebrew-tap#automated-maintenance).
-With those workflows enabled, Renovate proposes later source URL/checksum updates
+[maintenance guide](https://github.com/lynnswap/homebrew-tap/blob/main/CONTRIBUTING.md).
+With the tag-archive Formula published, Renovate proposes later tag URL/checksum updates
 using the tap's own `GITHUB_TOKEN`; formula installation requirements still need
 an explicit update when they change.
 
@@ -54,9 +56,11 @@ the executable deployment target, but older macOS versions are outside the
 supported distribution and verification range. A successful build alone does not
 establish compatibility with an older host.
 
-Do not install the draft release formula outside the release verification job:
-its canonical download URL becomes available only after publication. Never
-publish a local test formula or bottle as a stable release.
+The prepared Formula's source URL is public before core stable publication.
+Its tap PR still requires review, successful bottle CI and publication approval.
+Never publish a locally generated verification Formula or bottle as a stable release.
+GitHub may change archive compression with advance notice; a changed checksum
+requires a newly verified artifact and bottle build, rather than bypassing checks.
 
 ## Local verification
 
@@ -76,6 +80,10 @@ python3 scripts/package_release.py create \
   --output-dir .build/homebrew-release
 scripts/test-homebrew.sh .build/homebrew-release --simulators
 ```
+
+Without `--source-archive`, packaging creates a local archive for this cached
+verification only; it is not the canonical public tag archive. Release CI supplies
+that downloaded archive through `--source-archive` and verifies the approved tree.
 
 This uses a temporary `privateheaderkit/verification` tap. It requires that no
 Homebrew `privateheaderkit` installation already exists, and removes its own

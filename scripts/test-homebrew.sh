@@ -32,8 +32,8 @@ cleanup() {
 trap cleanup EXIT
 cp "$release_dir/privateheaderkit.rb" "$(brew --repository privateheaderkit/verification)/Formula/privateheaderkit.rb"
 brew trust --formula "$formula"
-# The approved draft is not public yet. Homebrew still validates this cached
-# source against the same checksum and URL that the published Formula will use.
+# Test the transferred candidate bytes against the canonical Formula checksum,
+# rather than downloading a separate copy during verification.
 cache="$(brew --cache --build-from-source "$formula")"
 mkdir -p "$(dirname "$cache")"
 source_archive="$(awk '$2 ~ /^privateheaderkit-.*\.tar\.gz$/ { print $2 }' "$release_dir/SHA256SUMS.txt")"

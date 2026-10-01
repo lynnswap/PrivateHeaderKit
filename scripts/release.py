@@ -97,6 +97,35 @@ def check_tag(github, tag, sha):
     return actual
 
 
+def ensure_tag(github, tag, sha):
+    if check_tag(github, tag, sha) is None:
+        try:
+            github.api("git/refs", "POST", dict(ref="refs/tags/" + tag, sha=sha))
+        except APIError as error:
+            if error.status != 422 or check_tag(github, tag, sha) is None:
+                raise ReleaseError(
+                    f"{error}\nGITHUB_TOKEN could not create the tested tag. Inspect tag rules "
+                    "and workflow-file differences from the default branch before retrying. "
+                    "Publication stopped; do not change the approved target without a new approval."
+                ) from error
+
+
+def prepare_source(github, release_id, sha, digest):
+    release = verify(github, release_id, sha, digest)
+    if not release["draft"] and tag_commit(github, release["tag_name"]) != sha:
+        raise ReleaseError("The published release no longer has its approved tag.")
+    try:
+        ensure_tag(github, release["tag_name"], sha)
+        release = verify(github, release_id, sha, digest)
+    except ReleaseError as error:
+        raise ReleaseError(
+            f"{error}\nSource tag {release['tag_name']} may remain. "
+            "Inspect the tag and rerun the failed job with the same approved target."
+        ) from error
+    print(f"Public source tag: {release['tag_name']} at {sha}")
+    return release
+
+
 def matching_releases(github, tag):
     matches = []
     page = 1
@@ -186,16 +215,7 @@ def publish(github, release_id, sha, digest, release_dir):
         github.upload(tag, paths)
         release = verify(github, release_id, sha, digest)
         verify_uploaded_assets(release, expected)
-        if tag_commit(github, tag) is None:
-            try:
-                github.api("git/refs", "POST", dict(ref="refs/tags/" + tag, sha=sha))
-            except APIError as error:
-                if error.status != 422 or check_tag(github, tag, sha) is None:
-                    raise ReleaseError(
-                        f"{error}\nGITHUB_TOKEN could not create the tested tag. Inspect tag rules "
-                        "and workflow-file differences from the default branch before retrying. "
-                        "Publication stopped; do not change the approved target without a new approval."
-                    ) from error
+        ensure_tag(github, tag, sha)
         # Tag creation and asset uploads are separate from publication on GitHub.
         release = verify(github, release_id, sha, digest)
         verify_uploaded_assets(release, expected)
@@ -224,13 +244,13 @@ def main():
     launch.add_argument("--notes-file", required=True, type=Path)
     launch.add_argument("--title", help="Defaults to the version")
     launch.add_argument("--repo", required=True)
-    for name in ("verify", "publish"):
+    for name in ("verify", "prepare-source", "publish"):
         command = commands.add_parser(name, help="Internal Actions entry point")
         command.add_argument("--repo", required=True)
         command.add_argument("--release-id", required=True, type=int)
         command.add_argument("--target", required=True)
         command.add_argument("--digest", required=True)
-        if name == "verify":
+        if name != "publish":
             command.add_argument("--github-output", type=Path)
         else:
             command.add_argument("--release-dir", required=True, type=Path)
@@ -241,12 +261,14 @@ def main():
             start(github, arguments.version, arguments.target,
                   arguments.title or arguments.version,
                   arguments.notes_file.read_text(encoding="utf-8"))
-        elif arguments.command == "verify":
-            release = verify(github, arguments.release_id, arguments.target, arguments.digest)
+        elif arguments.command != "publish":
+            operation = prepare_source if arguments.command == "prepare-source" else verify
+            release = operation(github, arguments.release_id, arguments.target, arguments.digest)
             if arguments.github_output:
                 with arguments.github_output.open("a", encoding="utf-8") as output:
                     output.write(f"version={release['tag_name']}\n")
                     output.write(f"release_url={release['html_url']}\n")
+                    output.write(f"source_url=https://github.com/{github.repository}/archive/refs/tags/{release['tag_name']}.tar.gz\n")
             print(f"Verified: {release['html_url']} at {arguments.target}")
         else:
             publish(github, arguments.release_id, arguments.target, arguments.digest,

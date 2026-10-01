@@ -147,20 +147,31 @@ brew install lynnswap/tap/privateheaderkit
 The command creates or reuses a matching Draft Release, then dispatches the
 `Release` workflow from the default branch. It prints the Draft and Actions URLs
 without waiting for publication. Do not create or push the release tag locally.
-After CI and Homebrew verification pass, review the candidate's version, target
-SHA, content digest, and checksums in the Actions summary. Approve the
-`release-publish` Environment through **Review deployments → Approve and deploy**.
-The protected job then publishes that candidate automatically.
+After package CI passes, review the version, target SHA, content digest, and Draft
+title/notes in the Actions summary. Approve the `release-publish` Environment
+through **Review deployments → Approve and deploy**. This authorizes public
+source-tag preparation. The protected tag job is the first public action. Final
+publication remains separately protected while the stable tap readiness gate is
+introduced.
+
+The workflow creates the approved tag while the release stays a Draft. Its public
+tag archive lets the tap build before stable publication. When adopting tag
+archives, use the prepared Formula artifact for the tap update before core
+stable publication. The verified artifact and checksums are shown in the later
+publication summary. Complete the matching tap delivery before approving
+`release-publish` for final publication.
+
 Source artifacts are retained for 35 days so the publication approval wait does
 not outlive them. Approve or reject the candidate within GitHub's approval limit.
 
-The workflow packages the approved Git commit as a source archive, preserving
-`Package.resolved` and the checked-in SwiftPM mirrors. It generates a Formula
-with that archive's canonical versioned URL and SHA-256. The source archive needs
+The workflow downloads the public tag archive and verifies its files, executable
+modes and symlinks against the approved Git commit, including `Package.resolved`
+and the checked-in SwiftPM mirrors. It preserves the downloaded archive bytes
+and generates a Formula with the public tag URL and SHA-256. The archive needs
 no `.git` directory to build. Publication tooling comes from the workflow
 revision; package tests run against the approved source revision.
 
-A separate Homebrew job seeds the unpublished archive into Homebrew's download
+A separate Homebrew job seeds the verified archive into Homebrew's download
 cache, builds the Formula, runs its functional test, creates a bottle, reinstalls
 that bottle and tests it again. Every helper also generates headers and symbols
 from a small Objective-C fixture, and the installed CLI searches the result.
@@ -177,32 +188,30 @@ workflow publishes exactly:
 The publication job downloads the packaging job's exact artifact ID and binds
 the transferred assets to its checksums digest. It never runs the source or
 Formula with publication credentials.
-After the first source release, copy its Formula into a pull request in
-`lynnswap/homebrew-tap`. For automatic later updates, first enable the tap's
-scheduled Renovate and protected bottle-publication workflows as documented in
-its maintenance guide. With those workflows enabled and the initial Formula
-published, Renovate proposes later release URL/checksum updates using its own
-`GITHUB_TOKEN`. Review the update PR and approve its workflows to start CI.
-Successful bottle CI prepares a candidate for the `homebrew-publish` Environment;
-approve the reviewed head and tested artifact to publish the bottles and merge
-the Formula update. Formula installation steps and dependencies still need an
-explicit update when their requirements change. See the
-[tap maintenance guide](https://github.com/lynnswap/homebrew-tap#automated-maintenance)
-for these approvals and [Homebrew packaging](Homebrew/README.md) for initial
-setup, local verification, and the future `homebrew/core` path.
+When adopting tag archives, copy `privateheaderkit.rb` from the prepared Actions
+artifact into a reviewed `lynnswap/homebrew-tap` PR. Do this before core stable
+publication; the previous release-asset URL cannot discover an unpublished
+release. Once the tag-archive Formula is published, the tap's Renovate job can
+propose later tag URL/checksum updates using its own `GITHUB_TOKEN`. Review the
+update PR and approve its workflows to start CI. Successful bottle CI prepares
+a candidate for the `homebrew-publish` Environment; approve the reviewed head and
+tested artifact to publish the bottles and merge the Formula update. Changes to
+installation, dependencies or tests still require an explicit recipe update.
+See the [tap maintenance guide](https://github.com/lynnswap/homebrew-tap/blob/main/CONTRIBUTING.md)
+and [Homebrew packaging](Homebrew/README.md) for setup and verification.
 
 For local source builds, use `scripts/build-release.sh --version dev`. Use
 `--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
 for one platform and `--output-dir <directory>` to select the output location.
 The caller owns installation; the script only builds and stages executables.
 
-The final job creates the tag at the tested SHA and automatically publishes the
-same Draft, preserving its title, notes, and prerelease state. Existing tags
+The protected tag preparation job creates the tag at the tested SHA. The final
+publisher depends on that approved job and automatically publishes the same Draft, preserving its title, notes, and prerelease state. Existing tags
 must resolve to that SHA, including annotated tags. Stable releases use GitHub's
 latest-release selection; prereleases are not marked latest. Draft verification
-requires push access, so both preparation and publication run trusted scripts
-from the workflow commit with `contents: write`. Tests and builds receive only
-read access.
+requires push access. Draft validation, tag creation and publication run trusted
+scripts from the workflow commit with `contents: write`; tests and builds receive
+only read access.
 
 Do not edit the Draft, modify its assets, move its tag, or publish it manually
 while the workflow runs. Changed publication content stops the workflow;
@@ -210,8 +219,8 @@ unrelated release metadata does not. GitHub does not provide a transaction
 covering tags, assets, and publication, so maintainers must serialize those
 operations.
 
-If checks fail, the release stays a Draft. A failed upload or publication can
-leave some assets or the correct tag; use GitHub's re-run controls after fixing
+If checks fail, the release stays a Draft; the public source tag may already
+remain. A failed upload or publication can leave some assets; use GitHub's re-run controls after fixing
 the failure. The publish job replaces the three expected assets, checks their
 uploaded digests, and resumes without moving an existing tag. Unexpected assets
 require maintainer review and removal. Rerunning after successful publication
@@ -233,7 +242,8 @@ reviewer, allow only the `main` branch, and disable administrator bypass. Leave
 **Prevent self-review** off when the maintainer initiating the run is also its
 approver. No environment secrets or additional release token are required.
 Keep repository workflow permissions read-only by default; the workflow grants
-write access only to draft validation and the protected publishing job. Draft
+write access only to draft validation, protected tested-tag preparation and the
+publisher that depends on it. Draft
 validation requires push access because GitHub treats unpublished releases as
 private information.
 

@@ -62,9 +62,61 @@ jobs:
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
 
+  source-approval-summary:
+    name: Review release plan before source publication
+    needs: [prepare, package-tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Summarize the candidate before release approval
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          RELEASE_URL: ${{ needs.prepare.outputs.release_url }}
+          CONTENT_DIGEST: ${{ inputs.content_digest }}
+        run: |
+          {
+            echo '## Release awaiting approval'
+            echo
+            printf 'Version: <code>%s</code>\n\n' "$VERSION"
+            printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
+            printf 'Approved content digest: <code>%s</code>\n\n' "$CONTENT_DIGEST"
+            printf '[Review draft title and notes](%s)\n\n' "$RELEASE_URL"
+            echo 'Package CI passed. Approve release-publish to prepare the approved public source tag. Final release publication remains separately protected until tap readiness is enforced.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  source-tag:
+    name: Prepare public approved source tag
+    needs: [prepare, package-tests, source-approval-summary]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-publish
+    permissions:
+      contents: write
+    outputs:
+      source_url: ${{ steps.source.outputs.source_url }}
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Create only the approved tested tag
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          CONTENT_DIGEST: ${{ inputs.content_digest }}
+        run: |
+          python3 scripts/release.py prepare-source \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
+            --github-output "$GITHUB_OUTPUT"
+
   package-source:
     name: Package approved source and Formula
-    needs: prepare
+    needs: [prepare, source-tag]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -88,10 +140,12 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           COMMIT: ${{ inputs.target_sha }}
+          SOURCE_URL: ${{ needs.source-tag.outputs.source_url }}
         run: |
+          curl --fail --location "$SOURCE_URL" --output source.tar.gz
           python3 scripts/package_release.py create \
             --source-root source --commit "$COMMIT" --version "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" --output-dir release
+            --repo "$GITHUB_REPOSITORY" --output-dir release --source-archive source.tar.gz
           python3 scripts/package_release.py verify --version "$VERSION" --release-dir release
 
       - name: Record release checksums digest
@@ -148,8 +202,8 @@ jobs:
       - name: Build, bottle, reinstall and exercise all helpers
         run: scripts/test-homebrew.sh release --simulators
 
-  approval-summary:
-    name: Review tested release candidate
+  publication-summary:
+    name: Review verified release outputs
     needs: [prepare, package-source, package-tests, homebrew]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -164,7 +218,7 @@ jobs:
           ARTIFACT_ID: ${{ needs.package-source.outputs.artifact_id }}
         run: |
           {
-            echo '## Tested release awaiting approval'
+            echo '## Approved release verification complete'
             echo
             printf 'Version: <code>%s</code>\n\n' "$VERSION"
             printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
@@ -172,12 +226,12 @@ jobs:
             printf 'Checksums file SHA-256: <code>%s</code>\n\n' "$CHECKSUMS_SHA256"
             printf '[Draft release](%s)\n\n' "$RELEASE_URL"
             printf '[Verified source and Formula artifact](https://github.com/%s/actions/runs/%s/artifacts/%s)\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$ARTIFACT_ID"
-            echo 'Package CI and the Homebrew source/bottle/helper checks passed. Approve the release-publish Environment to publish this candidate.'
+            echo 'The candidate passed package CI and Homebrew verification. Complete the matching tap delivery before approving release-publish for final publication.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: Publish verified source release
-    needs: [prepare, package-source, approval-summary]
+    needs: [prepare, source-tag, package-source, publication-summary]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-publish
