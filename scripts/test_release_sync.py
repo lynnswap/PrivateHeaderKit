@@ -35,10 +35,6 @@ class FakeCore:
         self.jobs = [dict(name=name, id=100 + n, run_attempt=1, status="completed", conclusion="success")
                      for n, name in enumerate(names)]
         self.calls = []
-        self.steps = [dict(name=name, conclusion=conclusion) for name, conclusion in (
-            ("Checkout workflow scripts", "success"), ("Download prepared release assets", "success"),
-            ("Verify transferred assets", "success"), ("Verify public Formula and bottle metadata", "failure"),
-            ("Install and test the published stable bottle", "skipped"))]
         digest = hashlib.sha256(b"prepared source").hexdigest()
         self.formula = package_release.render_formula("v1.2.3", self.repository, digest)
         sums = (f"{digest}  privateheaderkit-1.2.3.tar.gz\n"
@@ -68,7 +64,6 @@ class FakeCore:
         if path == "releases/42": return copy.deepcopy(self.draft)
         if path == "git/ref/tags/v1.2.3": return dict(object=dict(type="commit", sha="a" * 40))
         if path == "actions/runs/99": return copy.deepcopy(self.run)
-        if path == "actions/jobs/105": return dict(steps=copy.deepcopy(self.steps))
         if path == "actions/jobs/105/rerun" and method == "POST":
             self.run["status"] = "in_progress"
             return {}
@@ -178,44 +173,9 @@ class ReleaseResumptionTests(unittest.TestCase):
         self.assertEqual(self.result()["status"], "running")
         self.assert_no_writes()
 
-    def legacy(self):
+    def test_pre_receipt_runs_are_not_adopted_automatically(self):
         self.core.jobs = [job for job in self.core.jobs if job["name"] != sync.RECEIPT_JOB]
-        next(job for job in self.core.jobs if job["name"] == sync.PROBE_JOB).update(
-            name="Verify published tap installation", conclusion="failure")
-        self.core.jobs.append(dict(name="Test Formula and installed bottle", id=106, run_attempt=1,
-                                   status="completed", conclusion="success"))
-        migration = patch.object(sync, "LEGACY_PLAN", dict(self.core.receipt, run_id=99))
-        migration.start()
-        self.addCleanup(migration.stop)
-
-    def test_in_flight_migration_reuses_original_inputs_and_only_reruns_metadata_and_dependents(self):
-        self.legacy()
-        self.tap.formula = self.tap.formula.replace("v1.2.3.tar.gz", "v1.2.2.tar.gz")
         self.assertEqual(self.result()["status"], "waiting")
-        self.assert_no_writes()
-        self.tap.formula = self.tap.formula.replace("v1.2.2.tar.gz", "v1.2.3.tar.gz")
-        self.assertEqual(self.result()["status"], "resumed")
-        self.assertEqual([call for call in self.core.calls if call[1] == "POST"], [("actions/jobs/105/rerun", "POST")])
-
-    def test_migration_does_not_adopt_other_runs_changed_approval_or_installation_failures(self):
-        self.legacy()
-        self.core.run["head_sha"] = "b" * 40
-        self.assertEqual(self.result()["status"], "waiting")
-        self.core.run["head_sha"] = "a" * 40
-        self.core.draft["body"] = "Changed notes"
-        self.assertEqual(self.result()["status"], "blocked")
-        self.core.draft["body"] = "Approved notes"
-        self.core.steps[-1]["conclusion"] = "failure"
-        self.assertEqual(self.result()["status"], "blocked")
-        self.assert_no_writes()
-
-    def test_migration_keeps_original_checks_and_artifact_integrity_required(self):
-        self.legacy()
-        self.core.artifacts[1]["digest"] = "sha256:" + "0" * 64
-        self.assertEqual(self.result()["status"], "blocked")
-        self.core.refresh_archives()
-        self.core.jobs[-1]["conclusion"] = "failure"
-        self.assertEqual(self.result()["status"], "blocked")
         self.assert_no_writes()
 
 

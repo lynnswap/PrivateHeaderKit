@@ -263,10 +263,7 @@ requires push access to read unpublished Drafts. It never executes source or
 Formula code with these credentials and uses no cross-repository token.
 
 For exceptional recovery, inspect the failure and rerun only the affected job
-and dependents. The in-flight v0.7.1 run has a temporary migration record of its
-original approved inputs and artifacts, and resumes automatically only from its
-failed public-metadata check, before installation. Remove that record after
-v0.7.1 publishes. Other runs without receipts require inspected recovery.
+and dependents. Runs without preparation receipts require inspected recovery.
 Do not choose **Re-run all jobs** for a tap
 availability wait. GitHub permits reruns within 30 days; expired artifacts require
 a fresh preparation run.
