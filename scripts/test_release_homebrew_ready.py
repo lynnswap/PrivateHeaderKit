@@ -90,7 +90,7 @@ class HomebrewReadinessTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.tap = FakeTap(self.formula)
                 mutation(self.tap)
-                with self.assertRaisesRegex(release.ReleaseError, "re-run the failed Release jobs"):
+                with self.assertRaises(release.ReleaseError):
                     self.ready()
                 self.assertTrue(all(method == "GET" for _, method in self.tap.calls))
 
@@ -166,9 +166,11 @@ class HomebrewReadinessTests(unittest.TestCase):
         output = self.root / "pending-outputs"
         args = ["release", "tap-status", "--version", "v1.2.3",
                 "--release-dir", str(self.root), "--github-output", str(output)]
-        with patch("sys.argv", args), patch.object(release, "GitHub", return_value=self.tap), contextlib.redirect_stdout(io.StringIO()):
+        messages = io.StringIO()
+        with patch("sys.argv", args), patch.object(release, "GitHub", return_value=self.tap), contextlib.redirect_stdout(messages):
             self.assertEqual(release.main(), 0)
         self.assertEqual(output.read_text(), "required=true\nready=false\n")
+        self.assertNotIn("re-run", json.loads(messages.getvalue())["pending"])
         with self.assertRaises(release.HomebrewPending):
             self.ready()
 

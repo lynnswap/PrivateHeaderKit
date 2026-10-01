@@ -278,9 +278,10 @@ def verify_homebrew_ready(github, tag, release_dir):
         return dict(tap_sha=main_sha, formula_sha256=hashlib.sha256(formula.encode()).hexdigest(),
                     source_sha256=source_digest,
                     bottle_sha256=digests[0].lower(), bottle_url=asset["browser_download_url"])
+    except HomebrewPending:
+        raise
     except (ReleaseError, KeyError, ValueError, UnicodeError, OSError) as error:
-        failure = HomebrewPending if isinstance(error, HomebrewPending) else ReleaseError
-        raise failure(
+        raise ReleaseError(
             f"Homebrew is not ready for stable publication: {error}\n"
             "Complete the matching tap PR checks and homebrew-publish approval, "
             "then re-run the failed Release jobs to reuse the prepared assets and completed builds."
