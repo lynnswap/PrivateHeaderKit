@@ -50,6 +50,13 @@ manual dispatch and recovery operations.
 The tap builds on Apple Silicon macOS 26 with Xcode 26.6 and uses the normal
 Homebrew bottle tag for that host. No older-OS tag substitution is performed.
 The source release's Homebrew check uses the same builder environment.
+Before core stable publication, the release workflow checks the public Formula's
+source URL/SHA-256 and the matching released bottle. A separate read-only macOS
+job installs that bottle, verifies the CLI's version and runs the Formula test.
+Tap metadata is checked again immediately before publication. Missing or changed
+tap delivery keeps the core release a Draft; complete delivery and rerun only
+failed source jobs to reuse completed builds. Core release approval is requested
+once, before public tag preparation, and inherited by the verified publisher.
 
 Upstream CI owns CLI/helper execution tests on macOS 26 and 27. macOS 14 remains
 the executable deployment target, but older macOS versions are outside the

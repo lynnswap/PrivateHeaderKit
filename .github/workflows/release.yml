@@ -82,7 +82,7 @@ jobs:
             printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
             printf 'Approved content digest: <code>%s</code>\n\n' "$CONTENT_DIGEST"
             printf '[Review draft title and notes](%s)\n\n' "$RELEASE_URL"
-            echo 'Package CI passed. Approve release-publish to prepare the approved public source tag. Final release publication remains separately protected until tap readiness is enforced.'
+            echo 'Package CI passed. Approving release-publish authorizes public source-tag preparation and automatic publication of this unchanged draft after verification and matching stable tap delivery succeed.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   source-tag:
@@ -202,9 +202,69 @@ jobs:
       - name: Build, bottle, reinstall and exercise all helpers
         run: scripts/test-homebrew.sh release --simulators
 
+  homebrew-ready:
+    name: Verify published tap installation
+    needs: [prepare, package-source, package-tests, homebrew]
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    outputs:
+      required: ${{ steps.tap.outputs.required }}
+      tap_sha: ${{ steps.tap.outputs.tap_sha }}
+      bottle_sha256: ${{ steps.tap.outputs.bottle_sha256 }}
+      bottle_url: ${{ steps.tap.outputs.bottle_url }}
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Download prepared release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.package-source.outputs.artifact_id }}
+          path: release
+          digest-mismatch: error
+      - name: Verify transferred assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
+        run: |
+          python3 scripts/package_release.py verify --version "$VERSION" \
+            --release-dir release --checksums-sha256 "$CHECKSUMS_SHA256"
+      - name: Verify public Formula and bottle metadata
+        id: tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 scripts/release.py homebrew-ready --version "$VERSION" \
+            --release-dir release --github-output "$GITHUB_OUTPUT"
+      - name: Install and test the published stable bottle
+        if: steps.tap.outputs.required == 'true'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          formula=lynnswap/tap/privateheaderkit
+          brew tap lynnswap/tap
+          brew trust --formula "$formula"
+          brew install --force-bottle "$formula"
+          brew info --json=v2 "$formula" | python3 -c '
+          import json, sys
+          installed = json.load(sys.stdin)["formulae"][0]["installed"][0]
+          if not installed["poured_from_bottle"]:
+              sys.exit("Published tap verification expected a bottle installation.")
+          '
+          installed_binary="$(brew --prefix "$formula")/bin/privateheaderkit"
+          test "$("$installed_binary" --tool-version)" = "$VERSION"
+          brew test "$formula"
+
   publication-summary:
     name: Review verified release outputs
-    needs: [prepare, package-source, package-tests, homebrew]
+    needs: [prepare, package-source, package-tests, homebrew, homebrew-ready]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -216,6 +276,10 @@ jobs:
           CONTENT_DIGEST: ${{ inputs.content_digest }}
           CHECKSUMS_SHA256: ${{ needs.package-source.outputs.checksums_sha256 }}
           ARTIFACT_ID: ${{ needs.package-source.outputs.artifact_id }}
+          TAP_REQUIRED: ${{ needs.homebrew-ready.outputs.required }}
+          TAP_SHA: ${{ needs.homebrew-ready.outputs.tap_sha }}
+          BOTTLE_SHA256: ${{ needs.homebrew-ready.outputs.bottle_sha256 }}
+          BOTTLE_URL: ${{ needs.homebrew-ready.outputs.bottle_url }}
         run: |
           {
             echo '## Approved release verification complete'
@@ -226,7 +290,12 @@ jobs:
             printf 'Checksums file SHA-256: <code>%s</code>\n\n' "$CHECKSUMS_SHA256"
             printf '[Draft release](%s)\n\n' "$RELEASE_URL"
             printf '[Verified source and Formula artifact](https://github.com/%s/actions/runs/%s/artifacts/%s)\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$ARTIFACT_ID"
-            echo 'The candidate passed package CI and Homebrew verification. Complete the matching tap delivery before approving release-publish for final publication.'
+            if [[ "$TAP_REQUIRED" == true ]]; then
+              printf '[Published tap Formula](https://github.com/lynnswap/homebrew-tap/blob/%s/Formula/privateheaderkit.rb)\n\n' "$TAP_SHA"
+              printf '[Installed published bottle](%s), SHA-256: <code>%s</code>\n\n' "$BOTTLE_URL" "$BOTTLE_SHA256"
+              echo 'The matching public tap bottle was installed and tested successfully.'
+            fi
+            echo 'The approved candidate and matching published tap passed verification. The publisher will revalidate their identity and publish automatically.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
@@ -234,7 +303,6 @@ jobs:
     needs: [prepare, source-tag, package-source, publication-summary]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: release-publish
     permissions:
       contents: write
     steps:

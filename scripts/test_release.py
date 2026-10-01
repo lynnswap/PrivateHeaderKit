@@ -95,6 +95,9 @@ class FakeGitHub:
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
+        readiness = patch("release.verify_homebrew_ready", return_value={})
+        self.readiness = readiness.start()
+        self.addCleanup(readiness.stop)
         self.output = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.output)
         self.redirect.__enter__()
@@ -318,6 +321,34 @@ class ReleaseTests(unittest.TestCase):
         github.calls = []
         self.publish(github, digest)
         self.assertEqual(github.writes, [])
+
+    def test_changed_tap_after_approval_blocks_stable_publication_and_can_resume(self):
+        github = FakeGitHub(draft())
+        digest = release.fingerprint(github.release)
+        self.readiness.side_effect = release.ReleaseError("Homebrew is not ready")
+        with self.assertRaisesRegex(release.ReleaseError, "Homebrew is not ready"):
+            self.publish(github, digest)
+        self.assertTrue(github.release["draft"])
+        self.assertFalse(any(call[1] == "PATCH" for call in github.writes))
+        self.readiness.side_effect = None
+        self.publish(github, digest)
+        self.assertFalse(github.release["draft"])
+        github.calls.clear()
+        self.readiness.reset_mock()
+        self.readiness.side_effect = release.ReleaseError("Tap now has a newer version")
+        self.publish(github, digest)
+        self.assertEqual(github.writes, [])
+        self.readiness.assert_not_called()
+
+    def test_prerelease_publication_does_not_require_a_stable_tap_update(self):
+        tag = "v0.1.0-rc.1"
+        for name in release.asset_names(tag):
+            (self.release_dir / name).write_text("verified " + name)
+        github = FakeGitHub(draft(tag_name=tag, prerelease=True))
+        self.readiness.side_effect = release.ReleaseError("Stable tap not updated")
+        self.publish(github, release.fingerprint(github.release))
+        self.assertFalse(github.release["draft"])
+        self.readiness.assert_not_called()
 
     def test_change_during_tag_creation_stops_publication(self):
         github = FakeGitHub(draft())

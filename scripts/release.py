@@ -2,6 +2,7 @@
 """Create an approved draft and dispatch CI, or verify/publish it from Actions."""
 
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -12,6 +13,8 @@ from urllib.parse import quote
 
 
 from package_release import asset_names
+
+HOMEBREW_TAP = "lynnswap/homebrew-tap"
 
 
 class ReleaseError(Exception):
@@ -195,6 +198,72 @@ def verify_uploaded_assets(release, expected):
             raise ReleaseError(f"Uploaded asset does not match the verified file: {asset['name']}")
 
 
+def formula_string(formula, field, indent="  "):
+    declarations = re.findall(rf"^{indent}{re.escape(field)} (.*)$", formula, re.MULTILINE)
+    match = re.fullmatch(r'''(["'])([^"'\n]+)\1(?:\s+#.*)?''', declarations[0]) if len(declarations) == 1 else None
+    if match is None:
+        raise ReleaseError(f"Cannot verify Formula's literal {field} declaration.")
+    return match[2]
+
+
+def formula_number(formula, field, indent="  "):
+    declarations = re.findall(rf"^{indent}{re.escape(field)} (.*)$", formula, re.MULTILINE)
+    if not declarations:
+        return 0
+    match = re.fullmatch(r"([0-9]+)(?:\s+#.*)?", declarations[0]) if len(declarations) == 1 else None
+    if match is None:
+        raise ReleaseError(f"Cannot verify Formula's literal {field} declaration.")
+    return int(match[1])
+
+
+def verify_homebrew_ready(github, tag, release_dir):
+    try:
+        expected_formula = (release_dir / "privateheaderkit.rb").read_text()
+        source_digest = hashlib.sha256((release_dir / asset_names(tag)[0]).read_bytes()).hexdigest()
+        main_sha = github.api("commits/main")["sha"]
+        entry = github.api(f"contents/Formula/privateheaderkit.rb?ref={main_sha}")
+        formula = base64.b64decode(entry["content"]).decode("utf-8")
+        if (formula_string(formula, "url") != formula_string(expected_formula, "url")
+                or formula_string(formula, "sha256").lower() != source_digest):
+            raise ReleaseError("The public Formula does not match the prepared source URL and SHA-256.")
+        version = tag.removeprefix("v")
+        if re.search(r"^  version\b", formula, re.MULTILINE) and formula_string(formula, "version") != version:
+            raise ReleaseError("The public Formula declares a different version.")
+        blocks = re.findall(r"^  bottle do\n(.*?)^  end$", formula, re.MULTILINE | re.DOTALL)
+        if len(blocks) != 1:
+            raise ReleaseError("The public Formula has no unique bottle specification.")
+        bottle = blocks[0]
+        root_url = formula_string(bottle, "root_url", "    ")
+        revision = formula_number(formula, "revision")
+        package_version = f"{version}_{revision}" if revision else version
+        bottle_tag = f"privateheaderkit-{package_version}"
+        if root_url != f"https://github.com/{github.repository}/releases/download/{bottle_tag}":
+            raise ReleaseError("The bottle URL does not name this version in the approved tap.")
+        digests = re.findall(r'''^    sha256 [^\n]*\barm64_tahoe: ["']([0-9a-fA-F]{64})["'](?:\s+#.*)?$''',
+                             bottle, re.MULTILINE)
+        if len(digests) != 1:
+            raise ReleaseError("The public Formula has no unique macOS 26 Apple Silicon bottle checksum.")
+        rebuild = formula_number(bottle, "rebuild", "    ")
+        suffix = f".{rebuild}" if rebuild else ""
+        bottle_name = f"{bottle_tag}.arm64_tahoe.bottle{suffix}.tar.gz"
+        published = github.api("releases/tags/" + quote(bottle_tag, safe=""))
+        assets = [asset for asset in published["assets"] if asset["name"] == bottle_name]
+        if published["draft"] or len(assets) != 1:
+            raise ReleaseError("The matching bottle release/asset is not public.")
+        asset = assets[0]
+        if (asset["state"] != "uploaded" or asset.get("digest") != "sha256:" + digests[0].lower()
+                or asset["browser_download_url"] != root_url + "/" + bottle_name):
+            raise ReleaseError("The public bottle asset does not match the Formula's SHA-256 and URL.")
+        return dict(tap_sha=main_sha, source_sha256=source_digest,
+                    bottle_sha256=digests[0].lower(), bottle_url=asset["browser_download_url"])
+    except (ReleaseError, KeyError, ValueError, UnicodeError, OSError) as error:
+        raise ReleaseError(
+            f"Homebrew is not ready for stable publication: {error}\n"
+            "Complete the matching tap PR checks and homebrew-publish approval, "
+            "then re-run the failed Release jobs to reuse the prepared assets and completed builds."
+        ) from error
+
+
 def publish(github, release_id, sha, digest, release_dir):
     release = verify(github, release_id, sha, digest)
     tag = release["tag_name"]
@@ -219,6 +288,8 @@ def publish(github, release_id, sha, digest, release_dir):
         # Tag creation and asset uploads are separate from publication on GitHub.
         release = verify(github, release_id, sha, digest)
         verify_uploaded_assets(release, expected)
+        if not release["prerelease"]:
+            verify_homebrew_ready(GitHub(HOMEBREW_TAP), tag, release_dir)
         published = github.api(
             f"releases/{release_id}", "PATCH",
             dict(publication_fields(release), draft=False,
@@ -244,6 +315,10 @@ def main():
     launch.add_argument("--notes-file", required=True, type=Path)
     launch.add_argument("--title", help="Defaults to the version")
     launch.add_argument("--repo", required=True)
+    homebrew = commands.add_parser("homebrew-ready", help="Verify public Formula and bottle delivery")
+    homebrew.add_argument("--version", required=True)
+    homebrew.add_argument("--release-dir", required=True, type=Path)
+    homebrew.add_argument("--github-output", type=Path)
     for name in ("verify", "prepare-source", "publish"):
         command = commands.add_parser(name, help="Internal Actions entry point")
         command.add_argument("--repo", required=True)
@@ -256,6 +331,17 @@ def main():
             command.add_argument("--release-dir", required=True, type=Path)
     arguments = parser.parse_args()
     try:
+        if arguments.command == "homebrew-ready":
+            required = not is_prerelease(arguments.version)
+            evidence = verify_homebrew_ready(GitHub(HOMEBREW_TAP), arguments.version,
+                                            arguments.release_dir) if required else {}
+            if arguments.github_output:
+                with arguments.github_output.open("a", encoding="utf-8") as output:
+                    output.write(f"required={'true' if required else 'false'}\n")
+                    for key, value in evidence.items():
+                        output.write(f"{key}={value}\n")
+            print(json.dumps(evidence) if required else "Prereleases do not require stable tap publication.")
+            return 0
         github = GitHub(arguments.repo)
         if arguments.command == "start":
             start(github, arguments.version, arguments.target,
