@@ -147,14 +147,20 @@ brew install lynnswap/tap/privateheaderkit
 The command creates or reuses a matching Draft Release, then dispatches the
 `Release` workflow from the default branch. It prints the Draft and Actions URLs
 without waiting for publication. Do not create or push the release tag locally.
-After package CI passes, the workflow creates the approved tag while the release
-stays a Draft. Its public tag archive lets the tap build before stable publication.
-After Homebrew verification passes, use the prepared Formula artifact for the tap
-update and complete its bottle publication before approving the stable release.
-Review the candidate's version, target SHA, content digest and checksums in the
-Actions summary. Approve the
-`release-publish` Environment through **Review deployments → Approve and deploy**.
-The protected job then publishes that candidate automatically.
+After package CI passes, review the version, target SHA, content digest, and Draft
+title/notes in the Actions summary. Approve the `release-publish` Environment
+through **Review deployments → Approve and deploy**. This authorizes public
+source-tag preparation and automatic publication of the unchanged candidate once
+the remaining checks succeed. The protected tag job is the first public action;
+its approval is inherited through required job dependencies, so no second core
+publication approval is requested.
+
+The workflow creates the approved tag while the release stays a Draft. Its public
+tag archive lets the tap build before stable publication. When adopting tag
+archives, use the prepared Formula artifact for the tap update before core
+stable publication. The verified artifact and checksums are shown in the later
+publication summary.
+
 Source artifacts are retained for 35 days so the publication approval wait does
 not outlive them. Approve or reject the candidate within GitHub's approval limit.
 
@@ -199,8 +205,8 @@ For local source builds, use `scripts/build-release.sh --version dev`. Use
 for one platform and `--output-dir <directory>` to select the output location.
 The caller owns installation; the script only builds and stages executables.
 
-The tag preparation job creates the tag at the tested SHA. The final protected
-job automatically publishes the same Draft, preserving its title, notes, and prerelease state. Existing tags
+The protected tag preparation job creates the tag at the tested SHA. The final
+publisher depends on that approved job and automatically publishes the same Draft, preserving its title, notes, and prerelease state. Existing tags
 must resolve to that SHA, including annotated tags. Stable releases use GitHub's
 latest-release selection; prereleases are not marked latest. Draft verification
 requires push access. Draft validation, tag creation and publication run trusted
@@ -236,8 +242,8 @@ reviewer, allow only the `main` branch, and disable administrator bypass. Leave
 **Prevent self-review** off when the maintainer initiating the run is also its
 approver. No environment secrets or additional release token are required.
 Keep repository workflow permissions read-only by default; the workflow grants
-write access only to draft validation, tested-tag preparation and the protected
-publishing job. Draft
+write access only to draft validation, protected tested-tag preparation and the
+publisher that depends on it. Draft
 validation requires push access because GitHub treats unpublished releases as
 private information.
 
