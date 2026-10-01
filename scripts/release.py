@@ -119,7 +119,7 @@ def prepare_source(github, release_id, sha, digest):
         release = verify(github, release_id, sha, digest)
     except ReleaseError as error:
         raise ReleaseError(
-            f"{error}\nSource tag {release['tag_name']} may remain; the release stays unpublished. "
+            f"{error}\nSource tag {release['tag_name']} may remain. "
             "Inspect the tag and rerun the failed job with the same approved target."
         ) from error
     print(f"Public source tag: {release['tag_name']} at {sha}")

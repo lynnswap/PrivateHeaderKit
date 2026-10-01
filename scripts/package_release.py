@@ -41,7 +41,8 @@ def archive_contents(data):
         for entry in entries:
             if entry.name != root and not entry.name.startswith(root + "/"):
                 raise ValueError("Source archive must have one root directory.")
-            contents.append((entry.name[len(root):].lstrip("/"), entry.mode,
+            contents.append((entry.name[len(root):].lstrip("/"),
+                             entry.mode & 0o111 if entry.isfile() else 0,
                              entry.type, entry.linkname,
                              archive.extractfile(entry).read() if entry.isfile() else b""))
         return sorted(contents)
