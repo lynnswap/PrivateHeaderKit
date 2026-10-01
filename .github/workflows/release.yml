@@ -82,7 +82,7 @@ jobs:
             printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
             printf 'Approved content digest: <code>%s</code>\n\n' "$CONTENT_DIGEST"
             printf '[Review draft title and notes](%s)\n\n' "$RELEASE_URL"
-            echo 'Package CI passed. Approve release-publish to prepare this candidate's public source tag. Final release publication remains separately protected until tap readiness is enforced.'
+            echo 'Package CI passed. Approve release-publish to prepare the approved public source tag. Final release publication remains separately protected until tap readiness is enforced.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   source-tag:
