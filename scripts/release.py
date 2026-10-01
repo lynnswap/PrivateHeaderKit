@@ -21,6 +21,10 @@ class ReleaseError(Exception):
     pass
 
 
+class HomebrewPending(ReleaseError):
+    pass
+
+
 class APIError(ReleaseError):
     def __init__(self, status, message):
         super().__init__(message)
@@ -223,13 +227,21 @@ def verify_homebrew_ready(github, tag, release_dir):
         main_sha = github.api("commits/main")["sha"]
         entry = github.api(f"contents/Formula/privateheaderkit.rb?ref={main_sha}")
         formula = base64.b64decode(entry["content"]).decode("utf-8")
-        if (formula_string(formula, "url") != formula_string(expected_formula, "url")
-                or formula_string(formula, "sha256").lower() != source_digest):
+        actual_url = formula_string(formula, "url")
+        expected_url = formula_string(expected_formula, "url")
+        if actual_url != expected_url:
+            prefix = expected_url.rsplit("/", 1)[0] + "/"
+            if actual_url.startswith(prefix) and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz", actual_url[len(prefix):]):
+                raise HomebrewPending("The public Formula still names a different stable source tag.")
+            raise ReleaseError("The public Formula does not match the prepared source URL.")
+        if formula_string(formula, "sha256").lower() != source_digest:
             raise ReleaseError("The public Formula does not match the prepared source URL and SHA-256.")
         version = tag.removeprefix("v")
         if re.search(r"^  version\b", formula, re.MULTILINE) and formula_string(formula, "version") != version:
             raise ReleaseError("The public Formula declares a different version.")
         blocks = re.findall(r"^  bottle do\n(.*?)^  end$", formula, re.MULTILINE | re.DOTALL)
+        if not blocks:
+            raise HomebrewPending("The matching source Formula has no published bottle yet.")
         if len(blocks) != 1:
             raise ReleaseError("The public Formula has no unique bottle specification.")
         bottle = blocks[0]
@@ -246,19 +258,29 @@ def verify_homebrew_ready(github, tag, release_dir):
         rebuild = formula_number(bottle, "rebuild", "    ")
         suffix = f".{rebuild}" if rebuild else ""
         bottle_name = f"{bottle_tag}.arm64_tahoe.bottle{suffix}.tar.gz"
-        published = github.api("releases/tags/" + quote(bottle_tag, safe=""))
+        try:
+            published = github.api("releases/tags/" + quote(bottle_tag, safe=""))
+        except APIError as error:
+            if error.status != 404:
+                raise
+            raise HomebrewPending("The matching bottle release is not public yet.") from error
         assets = [asset for asset in published["assets"] if asset["name"] == bottle_name]
-        if published["draft"] or len(assets) != 1:
-            raise ReleaseError("The matching bottle release/asset is not public.")
+        if published["draft"] or not assets:
+            raise HomebrewPending("The matching bottle release/asset is not public yet.")
+        if len(assets) != 1:
+            raise ReleaseError("The matching bottle asset is ambiguous.")
         asset = assets[0]
-        if (asset["state"] != "uploaded" or asset.get("digest") != "sha256:" + digests[0].lower()
+        if asset["state"] != "uploaded":
+            raise HomebrewPending("The matching bottle upload is incomplete.")
+        if (asset.get("digest") != "sha256:" + digests[0].lower()
                 or asset["browser_download_url"] != root_url + "/" + bottle_name):
             raise ReleaseError("The public bottle asset does not match the Formula's SHA-256 and URL.")
         return dict(tap_sha=main_sha, formula_sha256=hashlib.sha256(formula.encode()).hexdigest(),
                     source_sha256=source_digest,
                     bottle_sha256=digests[0].lower(), bottle_url=asset["browser_download_url"])
     except (ReleaseError, KeyError, ValueError, UnicodeError, OSError) as error:
-        raise ReleaseError(
+        failure = HomebrewPending if isinstance(error, HomebrewPending) else ReleaseError
+        raise failure(
             f"Homebrew is not ready for stable publication: {error}\n"
             "Complete the matching tap PR checks and homebrew-publish approval, "
             "then re-run the failed Release jobs to reuse the prepared assets and completed builds."
@@ -324,10 +346,11 @@ def main():
     launch.add_argument("--notes-file", required=True, type=Path)
     launch.add_argument("--title", help="Defaults to the version")
     launch.add_argument("--repo", required=True)
-    homebrew = commands.add_parser("homebrew-ready", help="Verify public Formula and bottle delivery")
-    homebrew.add_argument("--version", required=True)
-    homebrew.add_argument("--release-dir", required=True, type=Path)
-    homebrew.add_argument("--github-output", type=Path)
+    for name in ("homebrew-ready", "tap-status"):
+        homebrew = commands.add_parser(name, help="Verify public delivery or report normal preparation waits")
+        homebrew.add_argument("--version", required=True)
+        homebrew.add_argument("--release-dir", required=True, type=Path)
+        homebrew.add_argument("--github-output", type=Path)
     for name in ("verify", "prepare-source", "publish"):
         command = commands.add_parser(name, help="Internal Actions entry point")
         command.add_argument("--repo", required=True)
@@ -343,16 +366,27 @@ def main():
             command.add_argument("--tested-bottle-url")
     arguments = parser.parse_args()
     try:
-        if arguments.command == "homebrew-ready":
+        if arguments.command in ("homebrew-ready", "tap-status"):
             required = not is_prerelease(arguments.version)
-            evidence = verify_homebrew_ready(GitHub(HOMEBREW_TAP), arguments.version,
-                                            arguments.release_dir) if required else {}
+            pending = None
+            try:
+                evidence = verify_homebrew_ready(GitHub(HOMEBREW_TAP), arguments.version,
+                                                arguments.release_dir) if required else {}
+            except HomebrewPending as error:
+                if arguments.command == "homebrew-ready":
+                    raise
+                evidence, pending = {}, str(error)
             if arguments.github_output:
                 with arguments.github_output.open("a", encoding="utf-8") as output:
                     output.write(f"required={'true' if required else 'false'}\n")
+                    if arguments.command == "tap-status":
+                        output.write(f"ready={'false' if pending else 'true'}\n")
                     for key, value in evidence.items():
                         output.write(f"{key}={value}\n")
-            print(json.dumps(evidence) if required else "Prereleases do not require stable tap publication.")
+            if pending:
+                print(json.dumps(dict(ready=False, pending=pending)))
+            else:
+                print(json.dumps(evidence) if required else "Prereleases do not require stable tap publication.")
             return 0
         github = GitHub(arguments.repo)
         if arguments.command == "start":
@@ -365,6 +399,7 @@ def main():
             if arguments.github_output:
                 with arguments.github_output.open("a", encoding="utf-8") as output:
                     output.write(f"version={release['tag_name']}\n")
+                    output.write(f"prerelease={'true' if release['prerelease'] else 'false'}\n")
                     output.write(f"release_url={release['html_url']}\n")
                     output.write(f"source_url=https://github.com/{github.repository}/archive/refs/tags/{release['tag_name']}.tar.gz\n")
             print(f"Verified: {release['html_url']} at {arguments.target}")
