@@ -150,16 +150,16 @@ without waiting for publication. Do not create or push the release tag locally.
 After package CI passes, review the version, target SHA, content digest, and Draft
 title/notes in the Actions summary. Approve the `release-publish` Environment
 through **Review deployments → Approve and deploy**. This authorizes public
-source-tag preparation and automatic publication of the unchanged candidate once
-the remaining checks succeed. The protected tag job is the first public action;
-its approval is inherited through required job dependencies, so no second core
-publication approval is requested.
+source-tag preparation. The protected tag job is the first public action. Final
+publication remains separately protected while the stable tap readiness gate is
+introduced.
 
 The workflow creates the approved tag while the release stays a Draft. Its public
 tag archive lets the tap build before stable publication. When adopting tag
 archives, use the prepared Formula artifact for the tap update before core
 stable publication. The verified artifact and checksums are shown in the later
-publication summary.
+publication summary. Complete the matching tap delivery before approving
+`release-publish` for final publication.
 
 Source artifacts are retained for 35 days so the publication approval wait does
 not outlive them. Approve or reject the candidate within GitHub's approval limit.

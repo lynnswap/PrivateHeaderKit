@@ -82,7 +82,7 @@ jobs:
             printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
             printf 'Approved content digest: <code>%s</code>\n\n' "$CONTENT_DIGEST"
             printf '[Review draft title and notes](%s)\n\n' "$RELEASE_URL"
-            echo 'Package CI passed. Approving release-publish authorizes public source-tag preparation and automatic publication of this unchanged draft after the remaining verification succeeds.'
+            echo 'Package CI passed. Approve release-publish to prepare this candidate's public source tag. Final release publication remains separately protected until tap readiness is enforced.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   source-tag:
@@ -226,7 +226,7 @@ jobs:
             printf 'Checksums file SHA-256: <code>%s</code>\n\n' "$CHECKSUMS_SHA256"
             printf '[Draft release](%s)\n\n' "$RELEASE_URL"
             printf '[Verified source and Formula artifact](https://github.com/%s/actions/runs/%s/artifacts/%s)\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$ARTIFACT_ID"
-            echo 'The approved candidate passed package CI and Homebrew source/bottle/helper checks. The publisher will verify its identity and publish automatically.'
+            echo 'The candidate passed package CI and Homebrew verification. Complete the matching tap delivery before approving release-publish for final publication.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
@@ -234,6 +234,7 @@ jobs:
     needs: [prepare, source-tag, package-source, publication-summary]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: release-publish
     permissions:
       contents: write
     steps:
