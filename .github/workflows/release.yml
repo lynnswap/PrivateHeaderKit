@@ -275,7 +275,9 @@ jobs:
   homebrew-ready:
     name: Verify published tap installation
     needs: [prepare, package-source, tap-status]
-    if: needs.tap-status.outputs.ready == 'true'
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.package-source.result == 'success' &&
+      needs.tap-status.result == 'success' && needs.tap-status.outputs.ready == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     env:
