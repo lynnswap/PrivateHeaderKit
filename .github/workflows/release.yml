@@ -245,11 +245,15 @@ jobs:
         if: steps.tap.outputs.required == 'true'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          TAP_SHA: ${{ steps.tap.outputs.tap_sha }}
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
           formula=lynnswap/tap/privateheaderkit
           brew tap lynnswap/tap
+          tap_root="$(brew --repository lynnswap/tap)"
+          git -C "$tap_root" fetch origin "$TAP_SHA"
+          git -C "$tap_root" checkout --detach "$TAP_SHA"
           brew trust --formula "$formula"
           brew install --force-bottle "$formula"
           brew info --json=v2 "$formula" | python3 -c '
@@ -300,7 +304,7 @@ jobs:
 
   publish:
     name: Publish verified source release
-    needs: [prepare, source-tag, package-source, publication-summary]
+    needs: [prepare, source-tag, package-source, homebrew-ready, publication-summary]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -334,8 +338,11 @@ jobs:
           RELEASE_ID: ${{ inputs.release_id }}
           TARGET_SHA: ${{ inputs.target_sha }}
           CONTENT_DIGEST: ${{ inputs.content_digest }}
+          TESTED_BOTTLE_SHA256: ${{ needs.homebrew-ready.outputs.bottle_sha256 }}
+          TESTED_BOTTLE_URL: ${{ needs.homebrew-ready.outputs.bottle_url }}
         run: |
           python3 scripts/release.py publish \
             --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
-            --release-dir release
+            --release-dir release --tested-bottle-sha256 "$TESTED_BOTTLE_SHA256" \
+            --tested-bottle-url "$TESTED_BOTTLE_URL"

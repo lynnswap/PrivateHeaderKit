@@ -264,7 +264,7 @@ def verify_homebrew_ready(github, tag, release_dir):
         ) from error
 
 
-def publish(github, release_id, sha, digest, release_dir):
+def publish(github, release_id, sha, digest, release_dir, tested_bottle=None):
     release = verify(github, release_id, sha, digest)
     tag = release["tag_name"]
     if not release["draft"]:
@@ -272,6 +272,8 @@ def publish(github, release_id, sha, digest, release_dir):
             raise ReleaseError("The published release no longer has its approved tag.")
         print(f"Already published: {release['html_url']}")
         return
+    if not release["prerelease"] and (not tested_bottle or not all(tested_bottle.values())):
+        raise ReleaseError("Supply the installed and verified bottle checksum and URL before stable publication.")
 
     names = asset_names(tag)
     unexpected = [asset["name"] for asset in release["assets"] if asset["name"] not in names]
@@ -289,7 +291,12 @@ def publish(github, release_id, sha, digest, release_dir):
         release = verify(github, release_id, sha, digest)
         verify_uploaded_assets(release, expected)
         if not release["prerelease"]:
-            verify_homebrew_ready(GitHub(HOMEBREW_TAP), tag, release_dir)
+            current = verify_homebrew_ready(GitHub(HOMEBREW_TAP), tag, release_dir)
+            if any(current[key] != tested_bottle[key] for key in ("bottle_sha256", "bottle_url")):
+                raise ReleaseError(
+                    "The public bottle changed after installation verification. "
+                    "Re-run Verify published tap installation and its dependent jobs to test the current bottle."
+                )
         published = github.api(
             f"releases/{release_id}", "PATCH",
             dict(publication_fields(release), draft=False,
@@ -298,7 +305,7 @@ def publish(github, release_id, sha, digest, release_dir):
     except (ReleaseError, subprocess.CalledProcessError) as error:
         raise ReleaseError(
             f"{error}\nDraft/assets or tag {tag} may remain; publication may be uncertain. "
-            "Inspect the release and rerun the failed publish job to resume."
+            "Inspect the release and address the reported failure before retrying."
         ) from error
     if published["draft"] or fingerprint(published) != digest:
         raise ReleaseError("GitHub's publication response did not preserve the approved release.")
@@ -329,6 +336,8 @@ def main():
             command.add_argument("--github-output", type=Path)
         else:
             command.add_argument("--release-dir", required=True, type=Path)
+            command.add_argument("--tested-bottle-sha256")
+            command.add_argument("--tested-bottle-url")
     arguments = parser.parse_args()
     try:
         if arguments.command == "homebrew-ready":
@@ -358,7 +367,9 @@ def main():
             print(f"Verified: {release['html_url']} at {arguments.target}")
         else:
             publish(github, arguments.release_id, arguments.target, arguments.digest,
-                    arguments.release_dir)
+                    arguments.release_dir,
+                    dict(bottle_sha256=arguments.tested_bottle_sha256,
+                         bottle_url=arguments.tested_bottle_url))
     except (ReleaseError, OSError, subprocess.CalledProcessError) as error:
         print(error, file=sys.stderr)
         return 1
