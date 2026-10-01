@@ -19,16 +19,6 @@ PROBE_JOB = "Check stable tap delivery"
 RECEIPT_JOB = "Record prepared release"
 APPROVAL_JOB = "Prepare public approved source tag"
 
-# Remove this migration record after v0.7.1 publishes. Its approved run predates
-# receipts; these values were recovered from its protected approval/package logs.
-LEGACY_PLAN = dict(
-    run_id=36849170456, release_id=400858853, version="v0.7.1",
-    target="8a72fd6f535ea7f44ba8a3ac0823c55493f26c96",
-    content_digest="a8a8dfa2472b8a5d4fbb6b0b8bcd25fde6fb08f1d7cc706c0a29854038a0dce7",
-    source_artifact_id=11155740965,
-    checksums_sha256="8034bb01ac75d9d9d907cf5e7f0f78abf590f60929ec29fb96f6f4bd481af967",
-)
-
 
 def pages(github, path, field=None):
     items, page = [], 1
@@ -75,43 +65,26 @@ def latest_jobs(github, run_id):
 def prepared_candidate(github, draft, run):
     jobs = latest_jobs(github, run["id"])
     required = (APPROVAL_JOB, "Check approved draft", "Package approved source and Formula",
-                "Test approved source / Package Checks")
-    legacy = RECEIPT_JOB not in jobs
-    probe_name = "Verify published tap installation" if legacy else PROBE_JOB
-    if legacy:
-        if run["id"] != LEGACY_PLAN["run_id"] or run["head_sha"] != LEGACY_PLAN["target"]:
-            return None, "This earlier preparation has no immutable release receipt."
-        required += ("Test Formula and installed bottle",)
-    else:
-        required += (RECEIPT_JOB,)
+                "Test approved source / Package Checks", RECEIPT_JOB)
+    if RECEIPT_JOB not in jobs:
+        return None, "This earlier preparation has no immutable release receipt."
     if jobs.get("Publish verified source release", {}).get("conclusion") == "success":
         return None, "The original run already completed publication."
-    failed = [name for name, job in jobs.items() if name != probe_name
+    failed = [name for name, job in jobs.items() if name != PROBE_JOB
               and job["conclusion"] in ("failure", "cancelled", "timed_out", "action_required")]
     if failed:
         raise release.ReleaseError("Verification or publication needs attention: " + ", ".join(failed))
     if any(jobs.get(name, {}).get("conclusion") != "success" for name in required):
         return None, "Source approval or preparation checks have not succeeded."
-    probe = jobs.get(probe_name)
+    probe = jobs.get(PROBE_JOB)
     if probe is None or probe["status"] != "completed":
         return None, "The delivery probe has not completed."
     artifacts = pages(github, f"actions/runs/{run['id']}/artifacts", "artifacts")
-    if legacy:
-        detail = github.api(f"actions/jobs/{probe['id']}")
-        steps = {step["name"]: step["conclusion"] for step in detail["steps"]}
-        if (probe["conclusion"] != "failure"
-                or steps.get("Verify public Formula and bottle metadata") != "failure"
-                or steps.get("Install and test the published stable bottle") != "skipped"
-                or any(steps.get(name) != "success" for name in (
-                    "Checkout workflow scripts", "Download prepared release assets", "Verify transferred assets"))):
-            raise release.ReleaseError("The earlier release failed beyond its tap-availability check; inspect that failure.")
-        receipt = LEGACY_PLAN
-    else:
-        receipts = [item for item in artifacts if re.fullmatch(r"release-plan-[0-9]+", item["name"])]
-        if not receipts:
-            raise release.ReleaseError("The successful preparation job has no immutable release receipt.")
-        receipt_artifact = max(receipts, key=lambda item: (item["created_at"], item["id"]))
-        receipt = json.loads(artifact_files(github, receipt_artifact, ["release-plan.json"])["release-plan.json"])
+    receipts = [item for item in artifacts if re.fullmatch(r"release-plan-[0-9]+", item["name"])]
+    if not receipts:
+        raise release.ReleaseError("The successful preparation job has no immutable release receipt.")
+    receipt_artifact = max(receipts, key=lambda item: (item["created_at"], item["id"]))
+    receipt = json.loads(artifact_files(github, receipt_artifact, ["release-plan.json"])["release-plan.json"])
     if receipt["release_id"] != draft["id"] or receipt["version"] != draft["tag_name"]:
         raise release.ReleaseError("The receipt describes a different release.")
     release.verify(github, draft["id"], receipt["target"], receipt["content_digest"])
