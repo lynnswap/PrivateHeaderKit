@@ -62,9 +62,37 @@ jobs:
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
 
+  source-tag:
+    name: Prepare public tested source tag
+    needs: [prepare, package-tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_url: ${{ steps.source.outputs.source_url }}
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Create only the approved tested tag
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          CONTENT_DIGEST: ${{ inputs.content_digest }}
+        run: |
+          python3 scripts/release.py prepare-source \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
+            --github-output "$GITHUB_OUTPUT"
+
   package-source:
     name: Package approved source and Formula
-    needs: prepare
+    needs: [prepare, source-tag]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -88,10 +116,12 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           COMMIT: ${{ inputs.target_sha }}
+          SOURCE_URL: ${{ needs.source-tag.outputs.source_url }}
         run: |
+          curl --fail --location "$SOURCE_URL" --output source.tar.gz
           python3 scripts/package_release.py create \
             --source-root source --commit "$COMMIT" --version "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" --output-dir release
+            --repo "$GITHUB_REPOSITORY" --output-dir release --source-archive source.tar.gz
           python3 scripts/package_release.py verify --version "$VERSION" --release-dir release
 
       - name: Record release checksums digest

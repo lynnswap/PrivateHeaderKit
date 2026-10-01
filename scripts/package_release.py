@@ -4,10 +4,12 @@
 import argparse
 import gzip
 import hashlib
+import io
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 
 
 def asset_names(tag):
@@ -27,7 +29,25 @@ def render_formula(tag, repository, source_digest):
             .replace("__REPOSITORY__", repository).replace("__SHA256__", source_digest))
 
 
-def package(source, commit, tag, repository, output):
+def archive_contents(data):
+    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+        entries = archive.getmembers()
+        if not entries:
+            return []
+        root = entries[0].name.rstrip("/")
+        if root in ("", ".", "..") or "/" in root:
+            raise ValueError("Source archive must have one root directory.")
+        contents = []
+        for entry in entries:
+            if entry.name != root and not entry.name.startswith(root + "/"):
+                raise ValueError("Source archive must have one root directory.")
+            contents.append((entry.name[len(root):].lstrip("/"), entry.mode,
+                             entry.type, entry.linkname,
+                             archive.extractfile(entry).read() if entry.isfile() else b""))
+        return sorted(contents)
+
+
+def package(source, commit, tag, repository, output, source_archive=None):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Use the full lowercase 40-character source commit SHA.")
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
@@ -39,7 +59,13 @@ def package(source, commit, tag, repository, output):
         "git", "-C", str(source), "archive", "--format=tar", f"--prefix={prefix}", commit,
     ])
     archive = output / archive_name
-    archive.write_bytes(gzip.compress(source_tar, mtime=0))
+    if source_archive is None:
+        data = gzip.compress(source_tar, mtime=0)
+    else:
+        data = source_archive.read_bytes()
+        if archive_contents(data) != archive_contents(source_tar):
+            raise ValueError("Public source archive differs from the approved Git commit.")
+    archive.write_bytes(data)
     (output / formula_name).write_text(render_formula(tag, repository, sha256(archive)))
     (output / checksums_name).write_text("".join(
         f"{sha256(output / name)}  {name}\n" for name in (archive_name, formula_name)
@@ -72,6 +98,8 @@ def main():
     create.add_argument("--commit", required=True)
     create.add_argument("--repo", required=True)
     create.add_argument("--output-dir", type=Path, required=True)
+    create.add_argument("--source-archive", type=Path,
+                        help="Use the public tag archive after verifying its approved Git contents")
     check = commands.add_parser("verify")
     check.add_argument("--release-dir", type=Path, required=True)
     check.add_argument("--checksums-sha256")
@@ -82,10 +110,11 @@ def main():
         subprocess.run([str(Path(__file__).with_name("release-version-is-prerelease.sh")),
                         args.version], check=True, stdout=subprocess.DEVNULL)
         if args.command == "create":
-            package(args.source_root, args.commit, args.version, args.repo, args.output_dir)
+            package(args.source_root, args.commit, args.version, args.repo, args.output_dir,
+                    args.source_archive)
         else:
             verify(args.release_dir, args.version, args.checksums_sha256)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, tarfile.TarError, subprocess.CalledProcessError) as error:
         print(error, file=sys.stderr)
         return 1
     return 0

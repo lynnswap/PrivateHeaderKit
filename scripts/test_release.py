@@ -197,6 +197,37 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(github.writes, [])
         self.assertTrue(github.release["draft"])
 
+    def test_source_preparation_creates_only_the_approved_tag_and_keeps_release_draft(self):
+        github = FakeGitHub(draft())
+        digest = release.fingerprint(github.release)
+        prepared = release.prepare_source(github, 42, SHA, digest)
+        self.assertTrue(prepared["draft"])
+        self.assertEqual(github.tag, SHA)
+        self.assertEqual(github.writes, [("git/refs", "POST", dict(ref="refs/tags/v0.1.0", sha=SHA))])
+        github.calls.clear()
+        release.prepare_source(github, 42, SHA, digest)
+        self.assertEqual(github.writes, [])
+
+    def test_source_preparation_stops_for_changed_draft_tag_or_tag_permissions(self):
+        for mutation in (lambda g: g.release.update(body="unapproved"),
+                         lambda g: setattr(g, "tag", OTHER),
+                         lambda g: setattr(g, "tag_error", True)):
+            with self.subTest(mutation=mutation):
+                github = FakeGitHub(draft())
+                mutation(github)
+                with self.assertRaises(release.ReleaseError):
+                    release.prepare_source(github, 42, SHA, release.fingerprint(draft()))
+                self.assertTrue(github.release["draft"])
+                self.assertFalse(any(call[0] == "upload" or call[1] == "PATCH" for call in github.writes))
+
+    def test_draft_change_during_source_tag_creation_stops_preparation(self):
+        github = FakeGitHub(draft())
+        github.after_tag = lambda g: g.release.update(body="edited")
+        with self.assertRaises(release.ReleaseError):
+            release.prepare_source(github, 42, SHA, release.fingerprint(draft()))
+        self.assertTrue(github.release["draft"])
+        self.assertEqual(github.tag, SHA)
+
     def test_publish_creates_exact_tag_and_preserves_stable_or_prerelease_content(self):
         for prerelease in (False, True):
             tag = "v0.1.0-rc.1" if prerelease else "v0.1.0"
