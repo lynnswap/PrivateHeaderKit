@@ -234,8 +234,13 @@ operations.
 
 If the tap is not ready, **Check stable tap delivery** succeeds with a preparation
 wait summary. The source run can finish successfully while the release remains a
-Draft; installation and publication jobs are skipped. Complete the tap PR review,
-approve its CI, and approve `homebrew-publish` after successful bottle checks.
+Draft; installation and publication jobs are skipped. The tap automatically
+proposes the update and starts read-only CI. Its `homebrew-publish` Environment
+sends the required maintainer a deployment-review request after successful bottle
+checks. Review the Formula and tested artifacts, then approve publication.
+Enable deployment-review push notifications in GitHub Mobile to receive these
+requests on a phone. The initial `release.py start` command is the only start
+trigger; normal delivery needs no agent monitoring or manual CI/rerun actions.
 
 **Resume prepared releases** checks every 15 minutes. Its short trusted job
 validates the unchanged Draft, original protected source approval, successful
@@ -258,8 +263,11 @@ requires push access to read unpublished Drafts. It never executes source or
 Formula code with these credentials and uses no cross-repository token.
 
 For exceptional recovery, inspect the failure and rerun only the affected job
-and dependents. Earlier runs without a preparation receipt use **Re-run failed
-jobs** after matching tap delivery. Do not choose **Re-run all jobs** for a tap
+and dependents. The in-flight v0.7.1 run has a temporary migration record of its
+original approved inputs and artifacts, and resumes automatically only from its
+failed public-metadata check, before installation. Remove that record after
+v0.7.1 publishes. Other runs without receipts require inspected recovery.
+Do not choose **Re-run all jobs** for a tap
 availability wait. GitHub permits reruns within 30 days; expired artifacts require
 a fresh preparation run.
 
