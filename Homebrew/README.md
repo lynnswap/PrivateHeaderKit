@@ -16,10 +16,10 @@ does not require `.git`.
 
 Package CI runs before the workflow creates the public source tag. The release
 stays a Draft while the Formula and tap are prepared. The source release workflow
-verifies the Formula by placing the verified archive in Homebrew's download cache. Homebrew verifies the archive
-against the Formula's checksum. The workflow builds a bottle, reinstalls it,
-runs the Formula's functional test, and exercises all three helpers with local
-Objective-C fixtures before publishing the source release.
+uses tap CI for stable Formula builds and bottles. Core verification installs the
+public bottle, runs the Formula's functional test and exercises all three helpers
+with local Objective-C fixtures before publishing the source release. Prereleases
+retain isolated local Formula/bottle checks without requiring a stable tap update.
 
 ## Update the shared tap
 
@@ -49,13 +49,16 @@ manual dispatch and recovery operations.
 
 The tap builds on Apple Silicon macOS 26 with Xcode 26.6 and uses the normal
 Homebrew bottle tag for that host. No older-OS tag substitution is performed.
-The source release's Homebrew check uses the same builder environment.
+The source release's published-bottle check uses the same host environment.
 Before core stable publication, the release workflow checks the public Formula's
 source URL/SHA-256 and the matching released bottle. A separate read-only macOS
-job installs that bottle, verifies the CLI's version and runs the Formula test.
+job installs that bottle, verifies the CLI's version and runs the Formula test and
+all macOS/iOS/watchOS helper smoke tests.
 Tap metadata is checked again immediately before publication. Missing or changed
-tap delivery keeps the core release a Draft; complete delivery and rerun only
-failed source jobs to reuse completed builds. Core release approval is requested
+tap delivery keeps the core release a Draft. Normal preparation waits do not fail
+the source workflow: short scheduled checks resume only delivery verification and
+its dependents after matching tap publication, reusing SDK checks and immutable
+prepared assets. Core release approval is requested
 once, before public tag preparation, and inherited by the verified publisher.
 
 Upstream CI owns CLI/helper execution tests on macOS 26 and 27. macOS 14 remains

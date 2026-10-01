@@ -161,7 +161,8 @@ archives, use the prepared Formula artifact for the tap update before core
 stable publication. The verified artifact and checksums are shown in the later
 publication summary. For stable releases, a read-only job checks the matching
 public Formula/source checksum and macOS 26 Apple Silicon bottle asset, installs
-that published bottle, checks the CLI's version and runs the Formula test. The
+that published bottle, checks the CLI's version and runs the Formula test and all
+macOS/iOS/watchOS helper smoke tests. The
 publisher rechecks the tested Formula and bottle identities immediately before
 making the core release public. Changes to those artifacts require rerunning
 **Verify published tap installation** and its dependent jobs; unrelated tap
@@ -177,10 +178,11 @@ and generates a Formula with the public tag URL and SHA-256. The archive needs
 no `.git` directory to build. Publication tooling comes from the workflow
 revision; package tests run against the approved source revision.
 
-A separate Homebrew job seeds the verified archive into Homebrew's download
-cache, builds the Formula, runs its functional test, creates a bottle, reinstalls
-that bottle and tests it again. Every helper also generates headers and symbols
-from a small Objective-C fixture, and the installed CLI searches the result.
+For stable releases, tap CI owns the Homebrew source build and bottle generation.
+Core verification installs the published bottle without rebuilding it. Every
+helper generates headers and symbols from a small Objective-C fixture, and the
+installed CLI searches the result. Prereleases keep isolated local Formula/bottle
+verification because they do not require stable tap delivery.
 Simulator smoke tests create and delete their own temporary devices; available
 iOS and watchOS runtimes are required for those release checks.
 
@@ -206,6 +208,11 @@ installation, dependencies or tests still require an explicit recipe update.
 See the [tap maintenance guide](https://github.com/lynnswap/homebrew-tap/blob/main/CONTRIBUTING.md)
 and [Homebrew packaging](Homebrew/README.md) for setup and verification.
 
+The tap checks for an unproposed stable source tag every 15 minutes, alongside its
+daily/manual maintenance. Existing update PRs wait for review and approval rather
+than repeatedly starting Renovate. The public tag lets tap CI start independently
+of core publication.
+
 For local source builds, use `scripts/build-release.sh --version dev`. Use
 `--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
 for one platform and `--output-dir <directory>` to select the output location.
@@ -225,19 +232,36 @@ unrelated release metadata does not. GitHub does not provide a transaction
 covering tags, assets, and publication, so maintainers must serialize those
 operations.
 
-If the tap is not ready, the run stops before stable publication. Complete the
-tap PR checks and `homebrew-publish` approval, then choose **Re-run failed jobs**
-on the original source run, or use:
+If the tap is not ready, **Check stable tap delivery** succeeds with a preparation
+wait summary. The source run can finish successfully while the release remains a
+Draft; installation and publication jobs are skipped. Complete the tap PR review,
+approve its CI, and approve `homebrew-publish` after successful bottle checks.
+
+**Resume prepared releases** checks every 15 minutes. Its short trusted job
+validates the unchanged Draft, original protected source approval, successful
+checks and immutable preparation receipt/assets against matching public tap
+delivery. It reruns only **Check stable tap delivery** and its dependent jobs in
+the original run. SDK checks and completed preparation jobs are reused. No runner
+or write token remains allocated during the intervening approval/delivery wait.
+To request an immediate check after tap publication:
 
 ```sh
-gh run rerun <run-id> --repo lynnswap/PrivateHeaderKit --failed
+gh workflow run resume-release.yml --repo lynnswap/PrivateHeaderKit --ref main
 ```
 
-This reuses completed package/platform/Homebrew builds and the original immutable
-source artifact. Do not choose **Re-run all jobs** for a tap availability wait.
-GitHub permits reruns within 30 days; expired artifacts require a fresh workflow
-run. This flow uses public tap reads and repository-scoped `GITHUB_TOKEN`, with
-no cross-repository dispatch credential or write token held while waiting.
+The preparation receipt is derived run/artifact metadata, not a separate source
+of approved release content. Changing Draft notes, target, tag or prepared bytes
+blocks resumption; real verification/API failures remain errors. Source and tap
+publication approvals are preserved. The resumption job uses own-repository
+Actions write permission to rerun that job, and Contents write because GitHub
+requires push access to read unpublished Drafts. It never executes source or
+Formula code with these credentials and uses no cross-repository token.
+
+For exceptional recovery, inspect the failure and rerun only the affected job
+and dependents. Earlier runs without a preparation receipt use **Re-run failed
+jobs** after matching tap delivery. Do not choose **Re-run all jobs** for a tap
+availability wait. GitHub permits reruns within 30 days; expired artifacts require
+a fresh preparation run.
 
 If checks fail, the release stays a Draft; the public source tag may already
 remain. A failed upload or publication can leave some assets; use GitHub's re-run controls after fixing
@@ -262,8 +286,8 @@ reviewer, allow only the `main` branch, and disable administrator bypass. Leave
 **Prevent self-review** off when the maintainer initiating the run is also its
 approver. No environment secrets or additional release token are required.
 Keep repository workflow permissions read-only by default; the workflow grants
-write access only to draft validation, protected tested-tag preparation and the
-publisher that depends on it. Draft
+write access only to draft validation, protected tested-tag preparation, the
+publisher that depends on it and the short trusted resumption job. Draft
 validation requires push access because GitHub treats unpublished releases as
 private information.
 
