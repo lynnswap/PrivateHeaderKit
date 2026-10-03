@@ -28,6 +28,7 @@ extension PrivateHeaderGeneration {
     package enum ImageVariant: Hashable, Sendable {
       case local
       case iPhoneOS(architecture: String, cacheUUID: UUID)
+      case iPhoneOSApplication(ApplicationIdentity)
     }
 
     private struct NormalizedIdentity {
@@ -59,7 +60,7 @@ extension PrivateHeaderGeneration {
       if case .iPhoneOS(let architecture, _) = imageVariant, architecture.isEmpty {
         throw ValidationError.emptyComponent(field: "architecture")
       }
-      if case .iPhoneOS = imageVariant, storageIdentifier.utf8.count > Int(NAME_MAX) {
+      if imageVariant != .local, storageIdentifier.utf8.count > Int(NAME_MAX) {
         throw ValidationError.storageIdentifierTooLong(
           actualUTF8Count: storageIdentifier.utf8.count, maximumUTF8Count: Int(NAME_MAX)
         )
@@ -119,11 +120,13 @@ extension PrivateHeaderGeneration {
       case .iPhoneOS(let architecture, let cacheUUID):
         return base + "-iphoneos-" + Self.encodeStorageField(architecture)
           + "-" + cacheUUID.uuidString.lowercased()
+      case .iPhoneOSApplication(let identity):
+        return base + "-iphoneos-app-" + identity.storageIdentifier
       }
     }
 
     package var artifactPlatformDirectoryName: String {
-      if case .iPhoneOS = imageVariant { return "iPhoneOS" }
+      if imageVariant != .local { return "iPhoneOS" }
       return platform.directoryName
     }
 
@@ -138,6 +141,8 @@ extension PrivateHeaderGeneration {
       case .iPhoneOS(let architecture, let cacheUUID):
         return base + "_" + Self.encodeArtifactField(architecture)
           + "_" + cacheUUID.uuidString.lowercased()
+      case .iPhoneOSApplication(let identity):
+        return base + "_app_" + identity.storageIdentifier
       }
     }
 
@@ -491,6 +496,8 @@ extension PrivateHeaderGeneration {
     package var executionOptions: ExecutionOptions
     package var producerVersion: String
     package var deviceSource: DeviceSourceSnapshot?
+    package var applicationSource: ApplicationSourceSnapshot?
+    package var includesAnalysisBinary: Bool
 
     package init(
       layout: Layout = .headers,
@@ -502,7 +509,9 @@ extension PrivateHeaderGeneration {
       includeNestedChildren: Bool = true,
       executionOptions: ExecutionOptions = .init(),
       producerVersion: String = PrivateHeaderKitBuildInfo.version,
-      deviceSource: DeviceSourceSnapshot? = nil
+      deviceSource: DeviceSourceSnapshot? = nil,
+      applicationSource: ApplicationSourceSnapshot? = nil,
+      includesAnalysisBinary: Bool = false
     ) {
       self.layout = layout
       self.targetRequest = targetRequest
@@ -514,6 +523,8 @@ extension PrivateHeaderGeneration {
       self.executionOptions = executionOptions
       self.producerVersion = producerVersion
       self.deviceSource = deviceSource
+      self.applicationSource = applicationSource
+      self.includesAnalysisBinary = includesAnalysisBinary
     }
   }
 

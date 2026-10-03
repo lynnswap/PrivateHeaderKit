@@ -40,20 +40,10 @@ func runPrivateHeaderKitSSHRawDumpAttempt(
   let failures = await Task.detached {
     var failures: [String] = []
     let q = PrivateHeaderGeneration.RawDumping.shellQuote
-    let pidFile = q(remoteAttempt + "/pid")
-    // The invocation UUID is in the owned helper's argv. A stale PID file must
-    // not terminate another process that reused that PID.
-    let termination = "if [ -f " + pidFile + " ]; then pid=$(cat " + pidFile + "); "
-      + "case \"$pid\" in ''|*[!0-9]*) echo 'invalid owned helper PID' >&2; exit 1;; esac; "
-      + "args=$(ps -ww -p \"$pid\" -o command=); "
-      + "case \"$args\" in *" + q(invocation.processHandshakeID.uuidString.lowercased())
-      + "*) kill -KILL \"$pid\"; while ps -ww -p \"$pid\" -o command= | grep -F "
-      + q(invocation.processHandshakeID.uuidString.lowercased())
-      + " >/dev/null; do sleep 0.1; done;; '') :;; *) echo 'owned helper PID no longer matches invocation' >&2; exit 1;; esac; fi"
     do {
-      try await processRunner.runSimple(
-        PrivateHeaderGeneration.RawDumping.sshCommand(destination: destination, script: termination, controlPath: controlPath),
-        env: nil, cwd: nil
+      try await terminatePrivateHeaderKitOwnedSSHProcess(
+        destination: destination, controlPath: controlPath, pidFile: remoteAttempt + "/pid",
+        identifier: invocation.processHandshakeID.uuidString.lowercased(), processRunner: processRunner
       )
     } catch {
       failures.append("owned helper termination failed: \(error)")

@@ -1010,7 +1010,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         inputPath: Self.inputPath(for: target, executionMode: executionMode),
         stagingOutputDirectory: stagingDirectory,
         options: plan.options.rawDumpingOptions,
-        expectedCacheUUID: expectedCacheUUID
+        expectedCacheUUID: expectedCacheUUID,
+        logicalImagePath: plan.options.applicationSource?.logicalImagePath
       )
     )
 
@@ -1057,13 +1058,24 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let artifactRoot = try Self.artifactRoot(for: target, layout: plan.options.layout)
     let staged: StagedArtifacts
     do {
+      if plan.options.includesAnalysisBinary, let application = plan.options.applicationSource {
+        guard let binary = application.localBinaryURL else {
+          throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("application analysis binary")
+        }
+        let directory = Self.stagedSourceDirectoryCandidates(
+          for: target, in: stagingDirectory, runtimeRoot: plan.options.systemRoot?.path ?? ""
+        )[0].appendingPathComponent("Analysis", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: binary, to: directory.appendingPathComponent("Executable.macho"))
+      }
       staged = try Self.collectStagedArtifacts(
         for: target,
         in: stagingDirectory,
         runtimeRoot: plan.options.systemRoot?.path ?? "",
-        artifactRoot: artifactRoot
+        artifactRoot: artifactRoot,
+        includesAnalysisBinary: plan.options.includesAnalysisBinary
       )
-      guard !staged.files.isEmpty else {
+      guard staged.files.values.contains(where: { ["h", "swiftinterface", "tsv"].contains($0.pathExtension) }) else {
         return Self.failedExecution(
           target: target,
           status: .failed,
@@ -1076,7 +1088,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       }
       try publisher.validateRawStaging(
         root: stagingDirectory,
-        expectedSourceFiles: Set(staged.files.values)
+        expectedSourceFiles: Set(staged.files.values),
+        includesAnalysisBinary: plan.options.includesAnalysisBinary
       )
     } catch {
       return Self.failedExecution(
@@ -1521,7 +1534,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
 
     let catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
-    if case .ssh = executionMode {
+    if let application = plan.options.applicationSource {
+      catalog = try application.catalog()
+    } else if case .ssh = executionMode {
       guard let deviceSource = plan.options.deviceSource else {
         throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("deviceSource")
       }
@@ -1783,7 +1798,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
     in targetStagingDirectory: URL,
     runtimeRoot: String,
-    artifactRoot: PrivateHeaderGeneration.ArtifactPath
+    artifactRoot: PrivateHeaderGeneration.ArtifactPath,
+    includesAnalysisBinary: Bool = false
   ) throws -> StagedArtifacts {
     let candidates = stagedSourceDirectoryCandidates(
       for: target,
@@ -1791,7 +1807,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       runtimeRoot: runtimeRoot
     )
     for candidate in candidates where try directoryExists(candidate) {
-      let files = try artifactFiles(under: candidate, artifactRoot: artifactRoot)
+      let files = try artifactFiles(under: candidate, artifactRoot: artifactRoot, includesAnalysisBinary: includesAnalysisBinary)
       if !files.isEmpty {
         return StagedArtifacts(files: files, sourceDirectory: candidate)
       }
@@ -1801,7 +1817,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
   fileprivate static func artifactFiles(
     under sourceDirectory: URL,
-    artifactRoot: PrivateHeaderGeneration.ArtifactPath
+    artifactRoot: PrivateHeaderGeneration.ArtifactPath,
+    includesAnalysisBinary: Bool = false
   ) throws -> [PrivateHeaderGeneration.ArtifactPath: URL] {
     var enumerationFailure: (URL, any Error)?
     guard
@@ -1825,16 +1842,15 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     for case let url as URL in enumerator {
       let kind = try publisherItemKind(at: url)
       if kind == .directory { continue }
-      guard kind == .regular,
-        url.pathExtension == "h" || url.pathExtension == "swiftinterface" || url.pathExtension == "tsv"
-      else {
-        continue
-      }
       let path = url.standardizedFileURL.path
       guard path.hasPrefix(sourcePath + "/") else {
         throw ArtifactPublisher.PublisherError.invalidManagedPath(path)
       }
       let relative = String(path.dropFirst(sourcePath.count + 1))
+      guard kind == .regular,
+        url.pathExtension == "h" || url.pathExtension == "swiftinterface" || url.pathExtension == "tsv"
+          || (includesAnalysisBinary && relative == "Analysis/Executable.macho")
+      else { continue }
       let artifact = try PrivateHeaderGeneration.ArtifactPath(
         artifactRoot.rawValue + "/" + relative
       )
@@ -1866,6 +1882,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     runtimeRoot: String
   ) -> [URL] {
     let runtimeInputPath = target.runtimeInputPath
+    if case .application(let logicalImagePath) = target.source {
+      let bundlePath = URL(fileURLWithPath: logicalImagePath).deletingLastPathComponent().path
+      return [appendRelativePath(String(bundlePath.dropFirst()) + "/Headers", to: targetStagingDirectory)]
+    }
     let trimmed = runtimeInputPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     if runtimeInputPath.hasPrefix("/usr/lib/") {
       let name = URL(fileURLWithPath: runtimeInputPath).lastPathComponent
@@ -1905,6 +1925,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       )
     case .usrLibDylib(let dylib):
       try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(dylib.name)")
+    case .application(let logicalImagePath):
+      try PrivateHeaderGeneration.ArtifactPath(String(URL(fileURLWithPath: logicalImagePath).deletingLastPathComponent().path.dropFirst()))
     }
   }
 
@@ -1990,6 +2012,9 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       String(plan.options.rawDumpingOptions.verbose),
       String(plan.options.rawDumpingOptions.preferRuntimeMetadata),
     ]
+    if plan.options.applicationSource != nil {
+      components += ["recovered-application", "include-analysis-binary", String(plan.options.includesAnalysisBinary)]
+    }
     if let sharedCacheCohort {
       components += [
         "loaded-shared-cache",
@@ -2027,7 +2052,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     return digest.map { String(format: "%02x", $0) }.joined()
   }
 
-  private static func canonicalFingerprintPayload(_ components: [String]) -> Data {
+  static func canonicalFingerprintPayload(_ components: [String]) -> Data {
     var payload = Data()
     for component in components {
       let length = UInt64(component.utf8.count)

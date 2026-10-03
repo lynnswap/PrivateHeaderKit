@@ -6,6 +6,7 @@ package enum PrivateHeaderKitHelperCommand: String, Sendable {
     case deviceSource = "__device-source"
     case processImages = "__process-images"
     case recoverProcessImage = "__recover-process-image"
+    case runningApplication = "__running-application"
 }
 
 package enum PrivateHeaderKitProducerVersion {

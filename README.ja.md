@@ -30,6 +30,14 @@ privateheaderkit --ssh iphone-se --out ~/PrivateHeaderKit --target SpringBoard,S
 OS バージョンとビルド番号は接続先から取得します。
 認証と USB 経由の接続は、[SSH の設定・生成手順](Docs/generation.md#iphoneos-over-ssh)を参照してください。
 
+起動中のインストール済みアプリは、bundle identifier を指定して生成します。
+
+```sh
+privateheaderkit --ssh iphone-se --app com.example.Sample --out ~/PrivateHeaderKit
+```
+
+PID の指定と解析用 Mach-O の保存は、[アプリからの生成手順](Docs/generation.md#running-applications-over-ssh)を参照してください。
+
 ## 更新する
 
 ```sh

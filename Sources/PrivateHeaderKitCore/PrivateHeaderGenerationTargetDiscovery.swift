@@ -92,6 +92,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         case framework(FrameworkSource)
         case systemLibraryBundle(SystemLibraryBundleSource)
         case usrLibDylib(UsrLibDylibSource)
+        case application(logicalImagePath: String)
 
         var runtimeInputPath: String {
             switch self {
@@ -101,6 +102,8 @@ extension PrivateHeaderGeneration.TargetDiscovery {
                 "/System/Library/\(source.relativePath)"
             case .usrLibDylib(let source):
                 "/usr/lib/\(source.name)"
+            case .application(let logicalImagePath):
+                logicalImagePath
             }
         }
     }
@@ -593,7 +596,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         switch source {
         case .framework(let framework): framework.systemLibraryRelativePath
         case .systemLibraryBundle(let bundle): bundle.relativePath
-        case .usrLibDylib: nil
+        case .usrLibDylib, .application: nil
         }
     }
 

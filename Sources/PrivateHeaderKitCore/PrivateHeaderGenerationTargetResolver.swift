@@ -8,6 +8,7 @@ extension PrivateHeaderGeneration {
         case usrLibDylib
         case nestedBundle
         case other
+        case application
     }
 
     package struct TargetCandidate: Codable, Hashable, Sendable {

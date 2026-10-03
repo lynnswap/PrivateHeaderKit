@@ -18,40 +18,18 @@ extension PrivateHeaderGeneration {
       architecture: String,
       inventory: PrivateHeaderKitSharedCacheInventory
     ) throws -> Self {
-      struct SystemVersion: Decodable {
-        let ProductVersion: String
-        let ProductBuildVersion: String
-      }
-      struct RestoreVersion: Decodable { let IsSeed: Bool? }
-      let decoder = PropertyListDecoder()
-      let systemVersion = try decoder.decode(
-        SystemVersion.self,
-        from: Data(contentsOf: systemRoot.appendingPathComponent(
-          "System/Library/CoreServices/SystemVersion.plist"
-        ))
-      )
-      let restoreURL = systemRoot.appendingPathComponent(
-        "System/Library/CoreServices/RestoreVersion.plist"
-      )
-      let metadataIsSeed: Bool
-      do {
-        metadataIsSeed = try decoder.decode(
-          RestoreVersion.self, from: Data(contentsOf: restoreURL)
-        ).IsSeed ?? false
-      } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-        metadataIsSeed = false
-      }
+      let systemVersion = try PrivateHeaderKitOperatingSystemVersion.collect(systemRoot: systemRoot)
       let catalog = try TargetDiscovery.discover(
         in: systemRoot, sharedCacheImagePaths: inventory.imagePaths
       )
       return Self(
         schemaVersion: 1,
         producerVersion: PrivateHeaderKitBuildInfo.version,
-        version: systemVersion.ProductVersion,
-        build: systemVersion.ProductBuildVersion,
+        version: systemVersion.version,
+        build: systemVersion.build,
         architecture: architecture,
         cacheUUID: inventory.cacheUUID,
-        metadataIsSeed: metadataIsSeed,
+        metadataIsSeed: systemVersion.metadataIsSeed,
         catalogData: try JSONEncoder().encode(catalog)
       )
     }

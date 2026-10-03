@@ -35,6 +35,15 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("ssh"), help: "SSH destination for an iPhoneOS source (alias or ssh:// URI).")
     var sshDestination: String?
 
+    @Option(name: .customLong("app"), help: "Bundle identifier of an already-running application on the SSH peer.")
+    var applicationBundleIdentifier: String?
+
+    @Option(name: .customLong("pid"), help: "Process identifier of an already-running application on the SSH peer.")
+    var applicationProcessIdentifier: Int32?
+
+    @Flag(name: .customLong("include-binary"), help: "Publish the recovered application Mach-O for local analysis alongside headers.")
+    var includesAnalysisBinary = false
+
     @Option(help: "Simulator name or UDID for iOS or watchOS generation.")
     var device: String?
 
@@ -55,6 +64,9 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             && targetQuery == nil
             && device == nil
             && sshDestination == nil
+            && applicationBundleIdentifier == nil
+            && applicationProcessIdentifier == nil
+            && !includesAnalysisBinary
             && simulatorHelperPath == nil
             && !preferRuntimeMetadata
             && continuationMode == nil
@@ -81,6 +93,29 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             guard let outputBaseDirectory else {
                 throw ValidationError("Missing expected argument '--out <out>'")
             }
+            if applicationBundleIdentifier != nil || applicationProcessIdentifier != nil {
+                guard targetQuery == nil else { throw ValidationError("--app and --pid select an application; omit --target") }
+                guard applicationBundleIdentifier == nil || applicationProcessIdentifier == nil else {
+                    throw ValidationError("Specify either --app or --pid")
+                }
+                guard !preferRuntimeMetadata else {
+                    throw ValidationError("--runtime-metadata cannot be used with --app or --pid; recovered applications are parsed statically")
+                }
+                let selection: PrivateHeaderKitSSHGenerateCommand.ApplicationSelection
+                if let identifier = applicationBundleIdentifier {
+                    guard !identifier.isEmpty, !identifier.contains("\0") else { throw ValidationError("--app must not be empty or contain NUL") }
+                    selection = .bundleIdentifier(identifier)
+                } else {
+                    guard let identifier = applicationProcessIdentifier, identifier > 0 else { throw ValidationError("--pid must be greater than zero") }
+                    selection = .processIdentifier(identifier)
+                }
+                return .generateSSH(.init(
+                    destination: sshDestination, outputBaseDirectory: outputBaseDirectory,
+                    targetQuery: "all", continuationMode: continuationMode,
+                    application: selection, includesAnalysisBinary: includesAnalysisBinary
+                ))
+            }
+            guard !includesAnalysisBinary else { throw ValidationError("--include-binary requires --app or --pid") }
             guard let targetQuery, !targetQuery.isEmpty else {
                 throw ValidationError("Missing expected argument '--target <target>'")
             }
@@ -90,6 +125,9 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
                 targetQuery: targetQuery, continuationMode: continuationMode,
                 preferRuntimeMetadata: preferRuntimeMetadata
             ))
+        }
+        guard applicationBundleIdentifier == nil, applicationProcessIdentifier == nil, !includesAnalysisBinary else {
+            throw ValidationError("--app, --pid, and --include-binary require --ssh")
         }
         guard let platform else {
             throw ValidationError("Missing expected argument '--platform <platform>'")
