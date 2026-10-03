@@ -42,6 +42,30 @@ wall-clock timing, generated `swiftc` binaries, network access, or stress
 loops. Gate a necessary integration smoke test behind an explicit opt-in such
 as `PHK_RUN_INTEGRATION_TESTS=1`.
 
+## Native Process-Image Recovery Verification
+
+The iPhoneOS device helper provides `__process-images --pid <pid>` and
+`__recover-process-image --pid <pid> --image-address <decimal-address>
+--expected-uuid <uuid> --output <file>`. Use a running, attachable process on an
+SSH-connected iPhoneOS or vphone peer for an opt-in native check. The standard
+release build signs only that helper with `task_for_pid-allow`; task-port access
+can still fail under the peer's security policy, and the operation reports the
+native Mach error.
+
+Select the image from the returned inventory and pass its UUID with its address.
+Recovery copies the matching active Mach-O slice into a thin analysis file,
+replaces declared encrypted ranges with corresponding loaded bytes, and clears
+their encryption identifiers. The installed executable is preserved. This is an
+analysis artifact; its original code signature does not authenticate the changed
+bytes.
+
+Confirm the recovered UUID and architecture, the bytes outside the declared
+encrypted ranges and encryption identifiers, and the existing raw helper's
+output. Keep any real application names, identifiers, device paths, executable
+UUIDs, generated declarations, and raw logs out of public test records and
+fixtures. A nonencrypted fixture validates task access and recovery, but does not
+establish decryption of a distribution application.
+
 ## Optional Objective-C Bind Integration Test
 
 Run file-backed dumps against an installed iOS 27.x Simulator runtime:
