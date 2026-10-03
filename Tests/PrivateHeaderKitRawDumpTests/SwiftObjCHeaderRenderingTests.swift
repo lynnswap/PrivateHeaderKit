@@ -142,7 +142,7 @@ struct SwiftObjCClassSelectionTests {
         let runtimeOnly = makeClassInfo(name: "_TtC4Demo3Bar")
         var classInfos = [staticInfo.name: staticInfo]
 
-        supplementMissingRuntimeClassInfos(
+        let inserted = supplementMissingRuntimeClassInfos(
             [runtimeInfo, runtimeOnly],
             into: &classInfos
         )
@@ -150,6 +150,7 @@ struct SwiftObjCClassSelectionTests {
         #expect(classInfos.count == 2)
         #expect(classInfos[sharedRawName] == staticInfo)
         #expect(classInfos[runtimeOnly.name] == runtimeOnly)
+        #expect(inserted == [runtimeOnly.name])
     }
 
     @Test func qualifiedRuntimeOriginMatchesStaticMangledIdentity() {

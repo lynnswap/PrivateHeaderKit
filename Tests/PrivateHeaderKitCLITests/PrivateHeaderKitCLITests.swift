@@ -107,6 +107,28 @@ struct PrivateHeaderKitCLIArgumentTests {
         )
     }
 
+    @Test(arguments: [false, true], [false, true])
+    func runtimeMetadataIsOptIn(_ usesAlias: Bool, _ requestsRuntimeMetadata: Bool) throws {
+        let arguments = ["privateheaderkit"] + (usesAlias ? ["generate"] : []) + [
+            "--platform", "iOS",
+            "--version", "27.0",
+            "--out", "/tmp/headers",
+            "--target", "SpringBoard",
+        ] + (requestsRuntimeMetadata ? ["--runtime-metadata"] : [])
+        guard case .generate(let command) = try parsePrivateHeaderKitCommand(arguments) else {
+            Issue.record("expected generation command")
+            return
+        }
+
+        #expect(command.preferRuntimeMetadata == requestsRuntimeMetadata)
+        let request = try makePrivateHeaderGenerationRequest(
+            from: command,
+            helperURLs: testPrivateHeaderKitHelperURLs,
+            simulatorResolution: testPrivateHeaderKitSimulatorResolution
+        )
+        #expect(request.options.rawDumpingOptions.preferRuntimeMetadata == requestsRuntimeMetadata)
+    }
+
     @Test func rootAcceptsWatchOSGenerationOptions() throws {
         let parsed = try parsePrivateHeaderKitCommand([
             "privateheaderkit",

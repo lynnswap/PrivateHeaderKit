@@ -164,11 +164,20 @@ published targets remain available.
 | `--ssh <destination>` | iPhoneOS source reached through an OpenSSH destination or `ssh://` URI; source metadata is read from the peer. |
 | `--device <name-or-udid>` | Preferred compatible iOS or watchOS Simulator device. |
 | `--sim-helper <path>` | Explicit helper for the selected Simulator platform. |
+| `--runtime-metadata` | Load each target image to supplement Objective-C classes missing from its static metadata. |
 | `--resume` | Continue the latest compatible all-target run. |
 | `--fresh` | Restart all-target generation and permit legacy artifact migration. |
 
 `--resume` and `--fresh` are mutually exclusive. Run `privateheaderkit --help`
 for the command's generated reference.
+
+Generation reads metadata from Mach-O files or the process's mapped dyld shared
+cache by default, without loading the target image or running its initializers.
+Use `--runtime-metadata` when you need to supplement Objective-C classes missing
+from the decoded metadata. This option loads each target image in the helper
+process and runs its initializers; some system frameworks reject that process
+and can terminate it. Classes already recovered from the image keep their
+decoded metadata. The option applies to both macOS and Simulator generation.
 
 ## Symbol Search
 

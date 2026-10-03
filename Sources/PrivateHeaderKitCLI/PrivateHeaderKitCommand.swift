@@ -71,6 +71,7 @@ struct PrivateHeaderKitGenerateCommand: Equatable, Sendable {
     let continuationMode: PrivateHeaderKitContinuationMode?
     let device: String?
     let simulatorHelperPath: String?
+    var preferRuntimeMetadata = false
 
     var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
         switch continuationMode {
@@ -530,7 +531,7 @@ private func makePrivateHeaderGenerationRequest(
         executionMode: executionMode,
         rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
             useSharedCache: effectiveSource.useSharedCache,
-            preferRuntimeMetadata: true,
+            preferRuntimeMetadata: command.preferRuntimeMetadata,
             helperEnvironment: ["PH_RUNTIME_ROOT": effectiveSource.systemRoot.path]
         ),
         executionOptions: command.executionOptions,

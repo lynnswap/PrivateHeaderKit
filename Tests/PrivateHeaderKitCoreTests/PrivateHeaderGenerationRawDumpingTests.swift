@@ -75,7 +75,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
     #expect(
       invocation.command == [
         "xcrun", "simctl", "spawn", "SIM-001", "/opt/privateheaderkit/bin/privateheaderkit-sim",
-        "__raw-dump", "-o", stageDirectory.path, "-b", "-h",
+        "__raw-dump", "-o", stageDirectory.path, "-b", "-h", "-R",
         "--process-handshake-id", invocation.processHandshakeID.uuidString.lowercased(),
         "--process-handshake-report", invocation.processHandshakeReportURL.path,
         "--diagnostics-report", invocation.diagnosticsReportURL.path,
@@ -87,6 +87,25 @@ struct PrivateHeaderGenerationRawDumpingTests {
         "SIMCTL_CHILD_PH_PROFILE": "1",
         "SIMCTL_CHILD_PH_RUNTIME_ROOT": runtimeRoot,
       ])
+  }
+
+  @Test(arguments: [false, true])
+  func runtimeMetadataSelectionAppliesToEveryExecutionMode(_ prefersRuntimeMetadata: Bool) throws {
+    for executionMode in [
+      PrivateHeaderGeneration.RawDumping.ExecutionMode.host,
+      simulatorExecutionMode(runtimeRoot: "/RuntimeRoot"),
+    ] {
+      let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
+        try .init(
+          helperURLs: helperURLs,
+          executionMode: executionMode,
+          inputPath: "/System/Library/Frameworks/Foundation.framework",
+          stagingOutputDirectory: stageDirectory,
+          options: .init(preferRuntimeMetadata: prefersRuntimeMetadata)
+        )
+      )
+      #expect(invocation.command.contains("-R") == prefersRuntimeMetadata)
+    }
   }
 
   @Test func sharedCacheInventoryInvocationUsesSelectedHostHelper() {

@@ -263,11 +263,6 @@ extension PrivateHeaderGeneration.RawDumping {
     )
     case ssh(destination: String, directory: String, controlPath: String? = nil)
 
-    fileprivate var isHost: Bool {
-      if case .host = self { return true }
-      return false
-    }
-
     fileprivate func helperURL(from helperURLs: HelperURLs) -> URL {
       switch self {
       case .host: helperURLs.host
