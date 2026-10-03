@@ -283,18 +283,18 @@ package final class LoadedProcessImages {
             throw CocoaError(.fileWriteUnknown)
         }
         let output = try FileHandle(forWritingTo: destination)
-        defer { try? output.close() }
-        try input.seek(toOffset: offset)
-        var copied: UInt64 = 0
-        while copied < length {
-            let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
-            guard let bytes = try input.read(upToCount: count), bytes.count == count else {
-                throw ProcessImageRecoveryError.invalidMetadata("original Mach-O changed or was truncated during copy")
+        try withWritingFile(output) {
+            try input.seek(toOffset: offset)
+            var copied: UInt64 = 0
+            while copied < length {
+                let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
+                guard let bytes = try input.read(upToCount: count), bytes.count == count else {
+                    throw ProcessImageRecoveryError.invalidMetadata("original Mach-O changed or was truncated during copy")
+                }
+                try output.write(contentsOf: bytes)
+                copied += UInt64(count)
             }
-            try output.write(contentsOf: bytes)
-            copied += UInt64(count)
         }
-        try output.close()
         try input.close()
     }
 
@@ -322,59 +322,61 @@ package final class LoadedProcessImages {
             throw ProcessImageRecoveryError.invalidMetadata("64-bit Mach-O has no 64-bit encryption command")
         }
         let output = try FileHandle(forWritingTo: file.url)
-        defer { try? output.close() }
-        var recovered: UInt64 = 0
-        for command in commands where command.isEncrypted {
-            let offset = UInt64(command.layout.cryptoff)
-            let length = UInt64(command.layout.cryptsize)
-            guard offset <= fileSize, length <= fileSize - offset else {
-                throw ProcessImageRecoveryError.invalidMetadata("encrypted range exceeds original Mach-O slice")
-            }
-            if length > 0 {
-                guard let segment = file.segments64.first(where: {
-                    offset >= $0.layout.fileoff && offset - $0.layout.fileoff <= $0.layout.filesize
-                        && length <= $0.layout.filesize - (offset - $0.layout.fileoff)
-                        && offset - $0.layout.fileoff <= $0.layout.vmsize
-                        && length <= $0.layout.vmsize - (offset - $0.layout.fileoff)
-                }) else {
-                    throw ProcessImageRecoveryError.invalidMetadata("encrypted range has no complete file-backed VM mapping")
+        return try withWritingFile(output) {
+            var recovered: UInt64 = 0
+            for command in commands where command.isEncrypted {
+                let offset = UInt64(command.layout.cryptoff)
+                let length = UInt64(command.layout.cryptsize)
+                guard offset <= fileSize, length <= fileSize - offset else {
+                    throw ProcessImageRecoveryError.invalidMetadata("encrypted range exceeds original Mach-O slice")
                 }
-                let preferred = try adding(segment.layout.vmaddr, offset - segment.layout.fileoff)
-                let base = headerSegment.layout.vmaddr
-                let address: UInt64
-                if preferred >= base {
-                    address = try adding(loadAddress, preferred - base)
-                } else {
-                    guard loadAddress >= base - preferred else {
-                        throw ProcessImageRecoveryError.invalidMetadata("encrypted VM address underflows")
+                if length > 0 {
+                    guard let segment = file.segments64.first(where: {
+                        offset >= $0.layout.fileoff && offset - $0.layout.fileoff <= $0.layout.filesize
+                            && length <= $0.layout.filesize - (offset - $0.layout.fileoff)
+                            && offset - $0.layout.fileoff <= $0.layout.vmsize
+                            && length <= $0.layout.vmsize - (offset - $0.layout.fileoff)
+                    }) else {
+                        throw ProcessImageRecoveryError.invalidMetadata("encrypted range has no complete file-backed VM mapping")
                     }
-                    address = loadAddress - (base - preferred)
+                    let preferred = try adding(segment.layout.vmaddr, offset - segment.layout.fileoff)
+                    let base = headerSegment.layout.vmaddr
+                    let address: UInt64
+                    if preferred >= base {
+                        address = try adding(loadAddress, preferred - base)
+                    } else {
+                        guard loadAddress >= base - preferred else {
+                            throw ProcessImageRecoveryError.invalidMetadata("encrypted VM address underflows")
+                        }
+                        address = loadAddress - (base - preferred)
+                    }
+                    _ = try adding(address, length)
+                    try output.seek(toOffset: offset)
+                    var copied: UInt64 = 0
+                    while copied < length {
+                        let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
+                        let bytes = try memory.read(address: try adding(address, copied), byteCount: count)
+                        try requireByteCount(bytes, count)
+                        try output.write(contentsOf: bytes)
+                        copied += UInt64(count)
+                    }
+                    recovered = try adding(recovered, length)
                 }
-                _ = try adding(address, length)
-                try output.seek(toOffset: offset)
-                var copied: UInt64 = 0
-                while copied < length {
-                    let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
-                    let bytes = try memory.read(address: try adding(address, copied), byteCount: count)
-                    try requireByteCount(bytes, count)
-                    try output.write(contentsOf: bytes)
-                    copied += UInt64(count)
-                }
-                recovered = try adding(recovered, length)
+                let cryptIDOffset = file.headerSize + command.offset
+                    + MemoryLayout<encryption_info_command_64>.offset(of: \.cryptid)!
+                try output.seek(toOffset: UInt64(cryptIDOffset))
+                try output.write(contentsOf: Data(repeating: 0, count: MemoryLayout<UInt32>.size))
             }
-            let cryptIDOffset = file.headerSize + command.offset
-                + MemoryLayout<encryption_info_command_64>.offset(of: \.cryptid)!
-            try output.seek(toOffset: UInt64(cryptIDOffset))
-            try output.write(contentsOf: Data(repeating: 0, count: MemoryLayout<UInt32>.size))
+            return recovered
         }
-        try output.close()
-        return recovered
     }
 
     // Chunking bounds transient storage without limiting a valid image's declared size.
     private static let copyChunkSize = 1_024 * 1_024
 }
 
+// MachOKit's file loadCommands uses try! for the byte read and its iterator dereferences
+// command layouts without checking cmdsize. Validate that byte envelope before decoding.
 private func validateFileCommands(at url: URL, offset: UInt64, size: UInt64) throws {
     let input = try FileHandle(forReadingFrom: url)
     defer { try? input.close() }
@@ -414,14 +416,36 @@ private func validateFileCommands(at url: URL, offset: UInt64, size: UInt64) thr
 }
 
 private func requireDistinctFile(_ source: URL, _ destination: URL) throws {
-    if FileManager.default.fileExists(atPath: destination.path) {
-        let sourceIdentity = try source.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        let destinationIdentity = try destination.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        if let sourceIdentity, let destinationIdentity,
-           sourceIdentity.isEqual(destinationIdentity) {
-            throw ProcessImageRecoveryError.outputIsOriginalFile
-        }
+    let destinationEntry = try directoryEntry(of: destination, allowingMissing: true)
+    let sourceEntry = try directoryEntry(of: source)
+    let sourceTarget = try directoryEntry(of: source.resolvingSymlinksInPath())
+    guard destinationEntry != sourceEntry, destinationEntry != sourceTarget else {
+        throw ProcessImageRecoveryError.outputIsOriginalFile
     }
+}
+
+private func directoryEntry(of url: URL, allowingMissing: Bool = false) throws -> URL {
+    let name: String
+    do {
+        name = try url.resourceValues(forKeys: [.nameKey]).name ?? url.lastPathComponent
+    } catch let error as CocoaError where allowingMissing && error.code == .fileReadNoSuchFile {
+        name = url.lastPathComponent
+    }
+    // rename replaces this directory entry, rather than following its final symlink.
+    return url.deletingLastPathComponent().resolvingSymlinksInPath().appending(path: name)
+}
+
+private func withWritingFile<Value>(_ file: FileHandle, body: () throws -> Value) throws -> Value {
+    let outcome = Result { try body() }
+    do {
+        try file.close()
+    } catch {
+        if case .failure(let operationError) = outcome {
+            throw ProcessImageCleanupError(operationError: operationError, cleanupError: error, remainingPath: nil)
+        }
+        throw error
+    }
+    return try outcome.get()
 }
 
 private func size(of url: URL) throws -> UInt64 {

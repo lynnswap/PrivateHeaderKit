@@ -141,16 +141,39 @@ import MachO
         #expect(report.encryptedBytesRecovered == 64)
     }
 
-    @Test func originalFileCannotBeUsedAsDestinationIncludingHardLink() throws {
+    @Test func originalFileAndParentDirectoryAliasCannotBeUsedAsDestination() throws {
         let fixture = try ProcessImageFixture()
         defer { fixture.remove() }
         #expect(throws: ProcessImageRecoveryError.outputIsOriginalFile) {
             try fixture.process.recover(image: fixture.image(), to: fixture.source)
         }
-        try FileManager.default.linkItem(at: fixture.source, to: fixture.destination)
+        let parentAlias = fixture.directory.appending(path: "ParentAlias")
+        try FileManager.default.createSymbolicLink(at: parentAlias, withDestinationURL: fixture.directory)
         #expect(throws: ProcessImageRecoveryError.outputIsOriginalFile) {
-            try fixture.process.recover(image: fixture.image(), to: fixture.destination)
+            try fixture.process.recover(image: fixture.image(), to: parentAlias.appending(path: fixture.source.lastPathComponent))
         }
+    }
+
+    @Test func otherHardLinkDestinationIsReplacedWithoutChangingOriginal() throws {
+        let fixture = try ProcessImageFixture()
+        defer { fixture.remove() }
+        let original = try Data(contentsOf: fixture.source)
+        try FileManager.default.linkItem(at: fixture.source, to: fixture.destination)
+        let report = try fixture.process.recover(image: fixture.image(), to: fixture.destination)
+        #expect(report.encryptedBytesRecovered == 64)
+        #expect(try Data(contentsOf: fixture.source) == original)
+        #expect(!(try MachOFile(url: fixture.destination)).isEncrypted)
+    }
+
+    @Test func otherSymlinkDestinationIsReplacedWithoutChangingItsTarget() throws {
+        let fixture = try ProcessImageFixture()
+        defer { fixture.remove() }
+        let original = try Data(contentsOf: fixture.source)
+        try FileManager.default.createSymbolicLink(at: fixture.destination, withDestinationURL: fixture.source)
+        let report = try fixture.process.recover(image: fixture.image(), to: fixture.destination)
+        #expect(report.encryptedBytesRecovered == 64)
+        #expect(try Data(contentsOf: fixture.source) == original)
+        #expect(try FileManager.default.attributesOfItem(atPath: fixture.destination.path)[.type] as? FileAttributeType == .typeRegular)
     }
 
     @Test func changingDyldTimestampDoesNotReturnAStaleInventory() throws {
