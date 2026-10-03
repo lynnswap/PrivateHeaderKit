@@ -133,7 +133,7 @@ For vphone, use the SSH alias or URI configured for that environment. Transport
 setup, including USB forwarding or starting the virtual device, remains under
 your control.
 
-SSH generation requires `--ssh`, `--out`, and `--target`. PrivateHeaderKit reads
+System-target SSH generation requires `--ssh`, `--out`, and `--target`. PrivateHeaderKit reads
 the OS version, build, release-channel metadata, architecture, shared-cache
 UUID, and target catalog from the peer. Omit `--platform`, `--version`, `--build`,
 `--system-root`, `--device`, and `--sim-helper`; these options select local
@@ -155,6 +155,46 @@ recovery or cleanup fails, the error reports the failure and any recovery
 locations, including a remote attempt, local archive, or SSH control socket.
 Preserve reported attempts and archives until recovery is complete. Previously
 published targets remain available.
+
+### Running applications over SSH
+
+Open the application on the peer, then select its installed bundle identifier:
+
+```bash
+privateheaderkit --ssh iphone-se --app com.example.Sample --out ~/PrivateHeaderKit
+```
+
+Use the same SSH destination for vphone. The peer must permit inspection of the
+selected process and reading its executable. SSH authentication alone does not
+grant those permissions. If several running processes match the bundle
+identifier, use the reported PID to select one:
+
+```bash
+privateheaderkit --ssh vphone --pid 1234 --out ~/PrivateHeaderKit --include-binary
+```
+
+Application generation requires `--ssh`, `--out`, and either `--app` or `--pid`.
+Omit `--target` and the local source options. The command recovers the loaded
+main executable into its own workspace and parses that file to generate
+Objective-C headers, Swift declarations, and searchable symbol lists. It reads
+the application's bundle metadata to identify its version. Embedded frameworks
+and extensions are outside this selection. Keep the application running until
+recovery finishes; PrivateHeaderKit does not launch or install applications.
+`--runtime-metadata` is unavailable for application generation.
+
+Add `--include-binary` to publish `Analysis/Executable.macho` alongside the
+application's headers. This file is the active architecture's Mach-O slice for
+analysis, with its declared encrypted ranges recovered from the running
+process. It can be passed to `privateheaderkit decompile --binary`. The command
+copies executable bytes and the selected bundle's identifying metadata; it
+does not copy application user data or recursively scan application resources.
+
+Published application output and continuation state use the bundle identifier,
+application version and build when present, executable UUID, architecture, and
+source OS identity. Reconnecting with another SSH alias or a different PID does
+not change this identity. Use `--resume` or `--fresh` with the same continuation
+behavior as other sources. An application update with a new identity gets a
+separate output directory.
 
 | Option | Meaning |
 | --- | --- |

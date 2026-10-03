@@ -101,6 +101,7 @@ struct DumpOptions {
     var processHandshakeID: UUID?
     var processHandshakeReportURL: URL?
     var diagnosticsReportURL: URL?
+    var logicalImagePath: String?
     let objcDiagnostics = RawDumpObjCDiagnosticsAccumulator()
 }
 
@@ -183,6 +184,11 @@ func parseArguments(
             index += 1
         case "-r":
             options.recursive = true
+        case "--image-path":
+            let nextIndex = index + 1
+            guard nextIndex < args.count, args[nextIndex].hasPrefix("/"), !args[nextIndex].contains("\0") else { return nil }
+            options.logicalImagePath = args[nextIndex]
+            index += 1
         case "-b":
             options.buildOriginalDirs = true
         case "-h":
@@ -235,6 +241,7 @@ func parseArguments(
     }
 
     guard let inputPath else { return nil }
+    guard options.logicalImagePath == nil || !options.recursive else { return nil }
     guard options.useSharedCache == (options.expectedCacheUUID != nil) else {
         return nil
     }
@@ -511,7 +518,7 @@ private func dumpImage(
     fileManager: FileManager,
     machOLoader: RawMachOLoader
 ) async throws {
-    let imagePath = stripRuntimeRoot(from: executable.loadURL.path)
+    let imagePath = options.logicalImagePath ?? stripRuntimeRoot(from: executable.loadURL.path)
     let placement = outputPlacement(
         for: executable,
         outputRoot: options.outputDir,
@@ -706,7 +713,7 @@ func outputPlacement(
     options: DumpOptions,
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> DumpOutputPlacement {
-    let identity = logicalOutputIdentity(
+    let identity = options.logicalImagePath.map { ExecutableResolution.OutputIdentity.image(URL(fileURLWithPath: $0)) } ?? logicalOutputIdentity(
         executable.outputIdentity,
         environment: environment
     )

@@ -7,6 +7,26 @@ import PrivateHeaderKitRawDumpCore
 struct PrivateHeaderKitDeviceHelperMain {
   static func main() async {
     var arguments = Array(CommandLine.arguments.dropFirst())
+    if arguments.first == PrivateHeaderKitHelperCommand.runningApplication.rawValue {
+      do {
+        let report = try PrivateHeaderGeneration.RunningApplicationResolver.resolve(
+          arguments: arguments,
+          imageInventory: { pid in
+            try LoadedProcessImages.withProcess(processIdentifier: pid) { try $0.images() }
+          }
+        )
+        let sourceReport = try PrivateHeaderKitRunningApplicationReport(
+          application: report.application, systemVersion: .collect()
+        )
+        let data = try JSONEncoder().encode(sourceReport)
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data([10]))
+      } catch {
+        fputs("privateheaderkit running application: error: \(error)\n", stderr)
+        exit(EXIT_FAILURE)
+      }
+      return
+    }
     if arguments.first == PrivateHeaderKitHelperCommand.processImages.rawValue
       || arguments.first == PrivateHeaderKitHelperCommand.recoverProcessImage.rawValue
     {

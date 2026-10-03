@@ -126,6 +126,9 @@ extension PrivateHeaderGeneration {
       if request.options.preferRuntimeMetadata {
         command.append("-R")
       }
+      if let logicalImagePath = request.logicalImagePath {
+        command += ["--image-path", logicalImagePath]
+      }
       command += [
         "--process-handshake-id",
         processHandshakeID.uuidString.lowercased(),
@@ -305,6 +308,7 @@ extension PrivateHeaderGeneration.RawDumping {
     package let inputPath: String
     package let stagingOutputDirectory: URL
     package let options: Options
+    package let logicalImagePath: String?
     fileprivate let cacheSelection: CacheSelection
 
     package var expectedCacheUUID: UUID? {
@@ -318,7 +322,8 @@ extension PrivateHeaderGeneration.RawDumping {
       inputPath: String,
       stagingOutputDirectory: URL,
       options: Options = Options(),
-      expectedCacheUUID: UUID? = nil
+      expectedCacheUUID: UUID? = nil,
+      logicalImagePath: String? = nil
     ) throws {
       let cacheSelection: CacheSelection
       switch (options.useSharedCache, expectedCacheUUID) {
@@ -336,6 +341,7 @@ extension PrivateHeaderGeneration.RawDumping {
       self.inputPath = inputPath
       self.stagingOutputDirectory = stagingOutputDirectory
       self.options = options
+      self.logicalImagePath = logicalImagePath
       self.cacheSelection = cacheSelection
     }
 

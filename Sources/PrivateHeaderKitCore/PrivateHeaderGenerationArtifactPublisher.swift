@@ -724,12 +724,13 @@ package struct ArtifactPublisher: Sendable {
 
   package func validateRawStaging(
     root: URL,
-    expectedSourceFiles: Set<URL>
+    expectedSourceFiles: Set<URL>,
+    includesAnalysisBinary: Bool = false
   ) throws {
     let actualFiles = try inventoryRegularFiles(
       at: root,
       allowHidden: false,
-      allowedExtensions: ["h", "swiftinterface", "tsv"]
+      allowedExtensions: includesAnalysisBinary ? ["h", "swiftinterface", "tsv", "macho"] : ["h", "swiftinterface", "tsv"]
     )
     let expected = Set(expectedSourceFiles.map { $0.standardizedFileURL.path })
     let actual = Set(actualFiles.map { $0.url.standardizedFileURL.path })

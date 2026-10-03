@@ -34,6 +34,15 @@ PrivateHeaderKit reads the OS version and build from the peer. See the
 [SSH setup and generation guide](Docs/generation.md#iphoneos-over-ssh) for
 authentication and USB forwarding.
 
+For an already-running installed application, select its bundle identifier:
+
+```sh
+privateheaderkit --ssh iphone-se --app com.example.Sample --out ~/PrivateHeaderKit
+```
+
+See [application generation](Docs/generation.md#running-applications-over-ssh) for
+PID selection and saving a Mach-O file for local analysis.
+
 ## Update
 
 ```sh

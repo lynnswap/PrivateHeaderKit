@@ -4,11 +4,17 @@ import PrivateHeaderKitHelperProtocol
 import PrivateHeaderKitTooling
 
 struct PrivateHeaderKitSSHGenerateCommand: Equatable, Sendable {
+  enum ApplicationSelection: Equatable, Sendable {
+    case bundleIdentifier(String)
+    case processIdentifier(Int32)
+  }
   let destination: String
   let outputBaseDirectory: String
   let targetQuery: String
   let continuationMode: PrivateHeaderKitContinuationMode?
   var preferRuntimeMetadata = false
+  var application: ApplicationSelection? = nil
+  var includesAnalysisBinary = false
 
   var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
     switch continuationMode {
@@ -89,6 +95,7 @@ struct PrivateHeaderKitSSHSession: Sendable {
     if removeRemoteWorkspace {
       let script = "for attempt in " + q(directory + "/runs") + "/*; do "
         + "if [ -d \"$attempt\" ]; then echo 'uncollected helper attempt remains' >&2; exit 1; fi; done; "
+        + "if [ -f " + q(directory + "/application-input/helper.pid") + " ]; then echo 'unconfirmed application recovery helper remains' >&2; exit 1; fi; "
         + "rm -rf " + q(directory)
       do { try await processRunner.runSimple(command(script), env: nil, cwd: nil) }
       catch { failures.append(String(describing: error)) }
@@ -155,9 +162,26 @@ func runPrivateHeaderKitSSHGenerateCommand(
     try await session.connect()
     deploymentStarted = true
     try await session.deploy(bundle: bundle)
-    let snapshot = try await session.snapshot()
+    let snapshot: PrivateHeaderGeneration.DeviceSourceSnapshot?
+    let application: PrivateHeaderGeneration.ApplicationSourceSnapshot?
+    let source: PrivateHeaderGeneration.Source
+    if let selection = command.application {
+      let recovered = try await session.recoverApplication(selection, localDirectory: local, includesBinary: command.includesAnalysisBinary)
+      application = recovered.snapshot
+      snapshot = nil
+      source = try .init(
+        platform: .iOS, version: recovered.systemVersion.version, build: recovered.systemVersion.build,
+        metadataIsSeed: recovered.systemVersion.metadataIsSeed,
+        imageVariant: .iPhoneOSApplication(recovered.snapshot.identity)
+      )
+    } else {
+      let collected = try await session.snapshot()
+      snapshot = collected
+      application = nil
+      source = try collected.source()
+    }
     let request = PrivateHeaderKitGenerationRequest(
-      source: try snapshot.source(),
+      source: source,
       output: .init(baseDirectory: URL(fileURLWithPath: command.outputBaseDirectory, isDirectory: true)),
       options: .init(
         targetRequest: command.targetQuery == "all" ? .allAvailable : .query(command.targetQuery),
@@ -168,14 +192,14 @@ func runPrivateHeaderKitSSHGenerateCommand(
           device: helper
         ),
         executionMode: .ssh(destination: command.destination, directory: session.directory, controlPath: session.controlPath),
-        rawDumpingOptions: .init(useSharedCache: true, preferRuntimeMetadata: command.preferRuntimeMetadata),
+        rawDumpingOptions: .init(useSharedCache: application == nil, preferRuntimeMetadata: command.preferRuntimeMetadata),
         executionOptions: command.executionOptions,
-        deviceSource: snapshot
+        deviceSource: snapshot, applicationSource: application, includesAnalysisBinary: command.includesAnalysisBinary
       )
     )
     let prepared = try await generationClient.prepare(request)
     let result = try await runPrivateHeaderKitPreparedGeneration(
-      prepared, request: request, targetQuery: command.targetQuery,
+      prepared, request: request, targetQuery: application?.identity.bundleIdentifier ?? command.targetQuery,
       executionOptions: command.executionOptions, resultScreenClearer: nil,
       outputLogger: outputLogger, errorLogger: errorLogger
     )
