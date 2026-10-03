@@ -49,7 +49,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/lynnswap/MachOSwiftSection.git",
-            revision: "294eda919373cffbc7bd08d1add9165bfe3426f6"
+            revision: "eecc87d7144c0573deee679c5d9211bd507cb6e2"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
