@@ -335,7 +335,9 @@ struct PrivateHeaderKitSSHGenerationTests {
     #expect(commands.count == 3)
     #expect(commands.last?.last?.contains("rm -rf") == true)
     #expect(commands.last?.last?.contains(try #require(invocation.remoteAttemptDirectory)) == true)
-    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).allSatisfy { !$0.hasPrefix(".ssh-recovery-") })
+    let extraction = try #require(commands.first { $0.first == "tar" })
+    let recoveryDirectory = URL(fileURLWithPath: extraction[2]).deletingLastPathComponent()
+    #expect(!FileManager.default.fileExists(atPath: recoveryDirectory.path))
   }
 
   @Test func disconnectedRecoveryKeepsTheRemoteAttemptAndLocalArchive() async throws {
@@ -351,19 +353,121 @@ struct PrivateHeaderKitSSHGenerationTests {
       throw ToolingError.message("archive transfer disconnected")
     }
 
+    let archive: URL
     do {
       _ = try await runPrivateHeaderKitSSHRawDumpAttempt(invocation, processRunner: runner)
       Issue.record("failed recovery unexpectedly succeeded")
+      return
     } catch {
       let message = String(describing: error)
       #expect(message.contains("SSH helper finished with status 255"))
       #expect(message.contains("archive transfer disconnected"))
       #expect(message.contains(try #require(invocation.remoteAttemptDirectory)))
+      archive = try retainedSSHRecoveryArchive(in: message)
     }
-    let archive = fixture.root.appendingPathComponent(".ssh-recovery-" + invocation.processHandshakeID.uuidString + ".tar")
+    defer { try? FileManager.default.removeItem(at: archive.deletingLastPathComponent()) }
     #expect(try Data(contentsOf: archive) == Data("partial archive".utf8))
+    #expect(!archive.path.hasPrefix(fixture.root.path + "/"))
     #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.command.last?.contains("rm -rf") != true })
   }
+
+  @Test(arguments: [false, true])
+  func recoveryFailureSurvivesRunCleanupAndCancellation(cancelled: Bool) async throws {
+    let fixture = try SSHGenerationFixture()
+    defer { fixture.cleanup() }
+    let snapshot = try JSONDecoder().decode(
+      PrivateHeaderGeneration.DeviceSourceSnapshot.self, from: fixture.snapshotData
+    )
+    let helper = fixture.root.appendingPathComponent("privateheaderkit-device-helper")
+    let request = PrivateHeaderKitGenerationRequest(
+      source: try snapshot.source(), output: .init(baseDirectory: fixture.output),
+      options: .init(
+        targetRequest: .query("libobjc.A.dylib"), systemRoot: URL(fileURLWithPath: "/"),
+        helperURLs: .init(host: helper, simulator: helper, device: helper),
+        executionMode: .ssh(destination: "iphone-se", directory: "/tmp/phk-fixture"),
+        rawDumpingOptions: .init(useSharedCache: true), deviceSource: snapshot
+      )
+    )
+    let plan = PrivateHeaderGeneration.makePlan(
+      source: request.source, output: request.output, options: request.options
+    )
+    let inventory = try JSONEncoder().encode(PrivateHeaderKitSharedCacheInventory(
+      cacheUUID: fixture.cacheUUID, imagePaths: ["/usr/lib/libobjc.A.dylib"]
+    ))
+    let runner = RecordingCommandRunner()
+    await runner.setCaptureHandler { command, _, _ in
+      #expect(command.last?.contains("__shared-cache-inventory") == true)
+      return String(decoding: inventory, as: UTF8.self)
+    }
+    await runner.setStreamingHandler { _, _, _ in
+      if cancelled {
+        withUnsafeCurrentTask { $0?.cancel() }
+        throw CancellationError()
+      }
+      return .init(status: 255, wasKilled: false, lastLines: ["connection lost"])
+    }
+    await runner.setSimpleHandler { _, _, _ in
+      throw ToolingError.message("fixture termination failed")
+    }
+    await runner.setCaptureChunksHandler { _, _, _, consume in
+      try await consume(Data("retained partial archive".utf8))
+      throw ToolingError.message("fixture archive transfer failed")
+    }
+    let prepared = try await PrivateHeaderKitGenerationClient.live(
+      processRunner: runner, recoveryReporter: { _ in }
+    ).prepare(request)
+    let progressDetails = SSHTestMessages()
+    let errors = SSHTestMessages()
+    let output = SSHTestMessages()
+    let observedPrepared = PrivateHeaderKitPreparedGeneration(
+      summary: prepared.summary,
+      run: { options, report in
+        try await prepared.run(options) { event in
+          if case .targetFinished(_, _, _, _, let failure) = event, let failure {
+            progressDetails.append(failure)
+          }
+          report(event)
+        }
+      }
+    )
+    let child = Task {
+      try await runPrivateHeaderKitPreparedGeneration(
+        observedPrepared, request: request, targetQuery: "libobjc.A.dylib",
+        executionOptions: .init(), resultScreenClearer: nil,
+        outputLogger: output.append, errorLogger: errors.append
+      )
+    }
+    let outcome = try await child.value
+    #expect(outcome.exitCode == (cancelled ? 130 : 2))
+    #expect(outcome.runStatus == (cancelled ? .interrupted : .failed))
+    let store = try GenerationStore(databaseURL: plan.databaseURL)
+    let run = try #require(try await store.latestRunSnapshot())
+    let target = try #require(run.targets.first)
+    let failure = try #require(target.failureSummary)
+    #expect(target.status == (cancelled ? .interrupted : .failed))
+    #expect(failure.contains(cancelled ? "CancellationError" : "SSH helper finished with status 255"))
+    #expect(failure.contains("fixture termination failed"))
+    #expect(failure.contains("fixture archive transfer failed"))
+    #expect(progressDetails.text.contains(failure))
+    #expect(errors.text.contains("fixture termination failed"))
+    #expect(errors.text.contains("fixture archive transfer failed"))
+    #expect(errors.text.contains("local recovery archive:"))
+    let archive = try retainedSSHRecoveryArchive(in: failure)
+    defer { try? FileManager.default.removeItem(at: archive.deletingLastPathComponent()) }
+    #expect(errors.text.contains(archive.path))
+    #expect(try Data(contentsOf: archive) == Data("retained partial archive".utf8))
+    #expect(!archive.path.hasPrefix(request.output.baseDirectory.path + "/"))
+    #expect(!FileManager.default.fileExists(atPath: plan.stateDirectory.appendingPathComponent("staging/" + run.id.rawValue).path))
+    #expect(run.counts.completed == 0)
+    #expect(run.publishedArtifactCounts == .init(artifacts: []))
+    #expect(target.artifacts.isEmpty)
+    #expect(await runner.simpleCommandSnapshot().allSatisfy { $0.command.last?.contains("rm -rf") != true })
+  }
+}
+
+private func retainedSSHRecoveryArchive(in message: String) throws -> URL {
+  let marker = try #require(message.range(of: "; local recovery archive: ", options: .backwards))
+  return URL(fileURLWithPath: String(message[marker.upperBound...]))
 }
 
 private struct SSHGenerationFixture: Sendable {

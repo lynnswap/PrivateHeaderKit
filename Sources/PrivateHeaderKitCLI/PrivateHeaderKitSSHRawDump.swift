@@ -22,8 +22,13 @@ func runPrivateHeaderKitSSHRawDumpAttempt(
         let remoteAttempt = invocation.remoteAttemptDirectory else {
     throw ToolingError.invalidArgument("SSH raw dump requires an SSH execution mode")
   }
-  let archive = invocation.stagingOutputDirectory.deletingLastPathComponent()
-    .appendingPathComponent(".ssh-recovery-" + invocation.processHandshakeID.uuidString + ".tar")
+  let recoveryDirectory = URL.temporaryDirectory.appendingPathComponent(
+    "privateheaderkit-ssh-recovery-" + UUID().uuidString.lowercased(), isDirectory: true
+  )
+  try FileManager.default.createDirectory(
+    at: recoveryDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+  )
+  let archive = recoveryDirectory.appendingPathComponent("partial-output.tar")
   let outcome: Result<StreamingCommandResult, any Error>
   do {
     outcome = .success(try await processRunner.runBuffered(
@@ -71,6 +76,10 @@ func runPrivateHeaderKitSSHRawDumpAttempt(
         failures.append("remote attempt cleanup failed: \(error)")
       }
     }
+    if failures.isEmpty {
+      do { try FileManager.default.removeItem(at: recoveryDirectory) }
+      catch { failures.append("local recovery cleanup failed at \(recoveryDirectory.path): \(error)") }
+    }
     return failures
   }.value
   if !failures.isEmpty {
@@ -117,7 +126,7 @@ private func receivePrivateHeaderKitSSHAttempt(
   }
   try handle.close()
   let recovery = archive.deletingLastPathComponent()
-    .appendingPathComponent(".ssh-recovery-" + UUID().uuidString, isDirectory: true)
+    .appendingPathComponent("extracted", isDirectory: true)
   try manager.createDirectory(at: recovery, withIntermediateDirectories: false)
   try await processRunner.runSimple(["tar", "-xf", archive.path, "-C", recovery.path], env: nil, cwd: nil)
   for destinationURL in [
@@ -133,6 +142,4 @@ private func receivePrivateHeaderKitSSHAttempt(
       try manager.moveItem(at: source, to: destinationURL)
     }
   }
-  try manager.removeItem(at: recovery)
-  try manager.removeItem(at: archive)
 }
