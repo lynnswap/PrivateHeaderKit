@@ -110,7 +110,7 @@ extension PrivateHeaderGeneration {
         ]
       }
       if request.options.verbose { command.append("-D") }
-      if request.executionMode.isHost, request.options.preferRuntimeMetadata {
+      if request.options.preferRuntimeMetadata {
         command.append("-R")
       }
       command += [
@@ -223,11 +223,6 @@ extension PrivateHeaderGeneration.RawDumping {
       sourceRuntimeRoot: String,
       runtime: SimulatorRuntimeIdentity
     )
-
-    fileprivate var isHost: Bool {
-      if case .host = self { return true }
-      return false
-    }
 
     fileprivate func helperURL(from helperURLs: HelperURLs) -> URL {
       switch self {

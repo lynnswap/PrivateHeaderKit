@@ -232,9 +232,6 @@ func parseArguments(
     else {
         return nil
     }
-    if !options.useRuntimeFallback {
-        options.useRuntimeFallback = shouldUseRuntimeFallback(environment: environment)
-    }
     options.logSkippedClasses = shouldLogSkippedClasses(environment: environment)
     options.profile = shouldProfile(environment: environment)
     options.logSwiftEvents = shouldLogSwiftEvents(environment: environment)
@@ -257,7 +254,7 @@ private func printUsage() {
         --expected-cache-uuid <uuid>
              Require the helper process to use the expected dyld shared cache
         -D   Verbose logging
-        -R   Prefer Objective-C runtime metadata (auto-enabled in simulator)
+        -R   Supplement missing Objective-C classes by loading the target image
         --diagnostics-report <path>
              Write the versioned Objective-C metadata diagnostics report
         --process-handshake-id <uuid>
@@ -324,10 +321,6 @@ func currentRealtimeUnixMicroseconds() throws -> Int64 {
 private func writeDiagnosticsReportIfRequested(_ options: DumpOptions) throws {
     guard let reportURL = options.diagnosticsReportURL else { return }
     try writeRawDumpDiagnosticsReport(options.objcDiagnostics.report, to: reportURL)
-}
-
-func shouldUseRuntimeFallback(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-    environment["PH_RUNTIME_ROOT"] != nil || environment["SIMCTL_CHILD_PH_RUNTIME_ROOT"] != nil
 }
 
 func shouldLogSkippedClasses(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
@@ -1182,16 +1175,16 @@ private func dumpObjC(
             onlyOneClass: options.onlyOneClass,
             verbose: options.verbose
         )
-        if options.verbose, !runtimeInfos.isEmpty {
-            fputs(
-                "privateheaderkit __raw-dump: runtime fallback added \(runtimeInfos.count) classes for \(imagePath)\n",
-                stderr
-            )
-        }
         metadata.runtimeOriginClassNames = supplementMissingRuntimeClassInfos(
             runtimeInfos,
             into: &metadata.classInfos
         )
+        if options.verbose {
+            fputs(
+                "privateheaderkit __raw-dump: runtime fallback added \(metadata.runtimeOriginClassNames.count) classes for \(imagePath)\n",
+                stderr
+            )
+        }
     }
 #endif
 
