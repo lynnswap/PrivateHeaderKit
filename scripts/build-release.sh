@@ -38,6 +38,7 @@ case "$platform" in
 esac
 
 cd "$source_root"
+source_root="$PWD"
 output_dir="${output_dir:-$PWD/.build/distribution}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
