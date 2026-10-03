@@ -94,12 +94,13 @@ public actor RecordingCommandRunner: CommandRunning {
         inputCommands
     }
 
-    public func runWithInput(
+    public func runWithInputFile(
         _ command: [String],
-        input: Data,
+        inputFile: URL,
         env: [String: String]?,
         cwd: URL?
     ) async throws {
+        let input = try Data(contentsOf: inputFile)
         inputCommands.append(RecordedInputCommand(command: command, input: input, env: env, cwd: cwd))
         try await inputHandler?(command, input, env, cwd)
     }

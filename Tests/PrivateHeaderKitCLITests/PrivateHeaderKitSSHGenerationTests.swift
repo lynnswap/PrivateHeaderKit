@@ -36,6 +36,22 @@ struct PrivateHeaderKitSSHGenerationTests {
     #expect(command.preferRuntimeMetadata)
   }
 
+  @Test func sshBootstrapSetsPATHBeforeLaunchingTheQuotedShellPayload() async throws {
+    let payload = "root literal $PHK_LITERAL_MARKER $(printf substituted)"
+    let command = PrivateHeaderGeneration.RawDumping.sshCommand(
+      destination: "iphone-se", script: "printf '%s' '" + payload + "'"
+    )
+    let remoteCommand = try #require(command.last)
+    #expect(remoteCommand.hasPrefix("export PATH="))
+    #expect(remoteCommand.contains("; exec sh -c '"))
+
+    let output = try await ProcessRunner().runCapture(
+      ["/bin/sh", "-c", remoteCommand],
+      env: ["PATH": "/unavailable", "PHK_LITERAL_MARKER": "expanded"], cwd: nil
+    )
+    #expect(output == payload)
+  }
+
   @Test(arguments: [
     ["--platform", "iOS"], ["--version", "26.0.1"], ["--build", "23A355"],
     ["--system-root", "/"], ["--device", "Simulator"], ["--sim-helper", "/tmp/helper"],
@@ -237,6 +253,54 @@ struct PrivateHeaderKitSSHGenerationTests {
       #expect(error.description.contains("SSH unavailable during cleanup"))
       #expect(error.description.contains(error.remoteDirectory))
     }
+  }
+
+  @Test func receiverRejectingFileInputReportsItsFailureAndStillCleansUpTheSSHSession() async throws {
+    let fixture = try SSHGenerationFixture()
+    defer { fixture.cleanup() }
+    let receiverInput = fixture.root.appendingPathComponent("receiver-input.bin")
+    try Data(repeating: 0xa5, count: 2 * 1_024 * 1_024).write(to: receiverInput)
+    let runner = RecordingCommandRunner()
+    await fixture.stubDeployment(using: runner)
+    await runner.setInteractiveHandler { command, _, _ in
+      let index = try #require(command.firstIndex(of: "-S"))
+      try Data().write(to: URL(fileURLWithPath: command[index + 1]))
+    }
+    await runner.setInputHandler { _, _, _, _ in
+      try await ProcessRunner().runWithInputFile(
+        ["/bin/sh", "-c", "printf 'receiver rejected' >&2; exit 17"],
+        inputFile: receiverInput, env: nil, cwd: nil
+      )
+    }
+    await runner.setCaptureHandler { command, _, _ in
+      #expect(command.contains("-O"))
+      #expect(command.contains("exit"))
+      return ""
+    }
+    let errors = SSHTestMessages()
+
+    let status = await runPrivateHeaderKitCommand(
+      ["privateheaderkit", "--ssh", "iphone-se", "--out", fixture.output.path, "--target", "SpringBoard"],
+      currentExecutableURL: fixture.executable,
+      generationClient: .init(prepare: { _ in
+        Issue.record("rejected deployment unexpectedly prepared generation")
+        throw ToolingError.message("unexpected generation")
+      }),
+      sshProcessRunner: runner, outputLogger: { _ in }, errorLogger: errors.append
+    )
+
+    #expect(status == 2)
+    #expect(errors.text.contains("status=17"))
+    #expect(errors.text.contains("receiver rejected"))
+    let cleanupCommands = await runner.simpleCommandSnapshot().filter { $0.command.first == "ssh" }
+    #expect(cleanupCommands.count == 1)
+    #expect(cleanupCommands.first?.command.last?.contains("rm -rf") == true)
+    #expect(await runner.captureCommandSnapshot().count == 1)
+    let authentication = try #require(await runner.interactiveCommandSnapshot().first)
+    let index = try #require(authentication.command.firstIndex(of: "-S"))
+    let controlDirectory = URL(fileURLWithPath: authentication.command[index + 1]).deletingLastPathComponent()
+    defer { try? FileManager.default.removeItem(at: controlDirectory) }
+    #expect(!FileManager.default.fileExists(atPath: controlDirectory.path))
   }
 
   @Test(arguments: [Int32(0), Int32(1)])

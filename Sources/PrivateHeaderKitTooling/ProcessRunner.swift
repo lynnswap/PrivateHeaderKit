@@ -421,7 +421,7 @@ public typealias CommandStandardOutputConsumer = @Sendable (Data) async throws -
 
 public protocol CommandRunning: Sendable {
     func runInteractive(_ command: [String], env: [String: String]?, cwd: URL?) async throws
-    func runWithInput(_ command: [String], input: Data, env: [String: String]?, cwd: URL?) async throws
+    func runWithInputFile(_ command: [String], inputFile: URL, env: [String: String]?, cwd: URL?) async throws
     func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) async throws -> String
     func runCaptureChunks(
         _ command: [String],
@@ -447,8 +447,8 @@ public extension CommandRunning {
         throw ToolingError.unsupported("this command runner does not support interactive standard IO")
     }
 
-    func runWithInput(
-        _ command: [String], input: Data, env: [String: String]? = nil, cwd: URL? = nil
+    func runWithInputFile(
+        _ command: [String], inputFile: URL, env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
         throw ToolingError.unsupported("this command runner does not support binary input")
     }
@@ -528,8 +528,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
 #endif
     }
 
-    public func runWithInput(
-        _ command: [String], input: Data, env: [String: String]? = nil, cwd: URL? = nil
+    public func runWithInputFile(
+        _ command: [String], inputFile: URL, env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
 #if os(macOS)
         try Task.checkCancellation()
@@ -537,9 +537,14 @@ public struct ProcessRunner: CommandRunning, Sendable {
         guard let configuration = configurations.first else {
             throw ToolingError.invalidArgument("process command must include an executable")
         }
+        let handle = try FileHandle(forReadingFrom: inputFile)
+        let outcome: Result<Void, any Error>
         do {
+            // The child reads this file directly. A rejected remote command can
+            // then close stdin without a pipe writer delivering SIGPIPE to us.
             let result = try await Subprocess.run(
-                configuration, input: .array(Array(input)),
+                configuration,
+                input: .fileDescriptor(.init(rawValue: handle.fileDescriptor), closeAfterSpawningProcess: false),
                 output: .bytes(limit: .max), error: .bytes(limit: .max)
             ) { execution in
                 try await withOwnedProcessGroup(execution: execution) {}
@@ -552,12 +557,24 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     stderr: String(decoding: result.standardError, as: UTF8.self)
                 )
             }
+            outcome = .success(())
         } catch let error as ProcessGroupTeardownError {
-            throw mapProcessGroupTeardownError(error, command: command)
+            outcome = .failure(mapProcessGroupTeardownError(error, command: command))
         } catch let error as SubprocessError {
-            if Task.isCancelled { throw CancellationError() }
-            throw mapSubprocessError(error, command: command)
+            outcome = .failure(Task.isCancelled ? CancellationError() : mapSubprocessError(error, command: command))
+        } catch {
+            outcome = .failure(error)
         }
+        do { try handle.close() }
+        catch {
+            let primary: String
+            switch outcome {
+            case .success: primary = "input command completed"
+            case .failure(let failure): primary = String(describing: failure)
+            }
+            throw ToolingError.message(primary + "; input file close also failed: \(error)")
+        }
+        return try outcome.get()
 #else
         throw ToolingError.unsupported("process execution is not available on this platform")
 #endif

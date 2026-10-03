@@ -59,9 +59,9 @@ struct PrivateHeaderKitSSHSession: Sendable {
 
   func deploy(bundle: URL) async throws {
     let q = PrivateHeaderGeneration.RawDumping.shellQuote
-    try await processRunner.runWithInput(
+    try await processRunner.runWithInputFile(
       command("mkdir -m 700 " + q(directory) + " && tar -xf - -C " + q(directory)),
-      input: Data(contentsOf: bundle), env: nil, cwd: nil
+      inputFile: bundle, env: nil, cwd: nil
     )
   }
 

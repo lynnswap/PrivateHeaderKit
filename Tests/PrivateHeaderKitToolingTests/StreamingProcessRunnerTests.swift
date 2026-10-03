@@ -776,6 +776,23 @@ struct StreamingProcessRunnerTests {
         }
     }
 
+    @Test func fileInputReceiverCanExitWithoutReadingAndKeepsItsFailure() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let input = directory.appendingPathComponent("input.bin")
+        try Data(repeating: 0x63, count: 2 * 1024 * 1024).write(to: input)
+        let command = ["/bin/sh", "-c", "printf 'receiver rejected input' >&2; exit 17"]
+        do {
+            try await ProcessRunner().runWithInputFile(command, inputFile: input, env: nil, cwd: nil)
+            Issue.record("a rejecting input receiver unexpectedly succeeded")
+        } catch ToolingError.commandFailed(let actualCommand, let status, let stderr) {
+            #expect(actualCommand == command)
+            #expect(status == 17)
+            #expect(stderr == "receiver rejected input")
+        }
+        #expect(FileManager.default.fileExists(atPath: input.path))
+    }
+
     @Test func nonzeroCaptureExitMapsToTypedCommandFailure() async throws {
         let command = ["/bin/sh", "-c", "printf capture-error >&2; exit 23"]
 

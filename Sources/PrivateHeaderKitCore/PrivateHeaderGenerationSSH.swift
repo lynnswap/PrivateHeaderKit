@@ -11,7 +11,7 @@ extension PrivateHeaderGeneration.RawDumping {
     var command = ["ssh", "-T"]
     if let controlPath { command += ["-S", controlPath, "-o", "ControlMaster=no", "-o", "BatchMode=yes"] }
     return command + ["--", destination,
-      "sh -c " + shellQuote("export PATH=" + shellQuote(path) + "; " + script)]
+      "export PATH=" + shellQuote(path) + "; exec sh -c " + shellQuote(script)]
   }
 }
 
