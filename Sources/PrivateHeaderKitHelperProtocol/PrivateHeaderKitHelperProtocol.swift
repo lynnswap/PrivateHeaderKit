@@ -4,6 +4,8 @@ package enum PrivateHeaderKitHelperCommand: String, Sendable {
     case rawDump = "__raw-dump"
     case sharedCacheInventory = "__shared-cache-inventory"
     case deviceSource = "__device-source"
+    case processImages = "__process-images"
+    case recoverProcessImage = "__recover-process-image"
 }
 
 package enum PrivateHeaderKitProducerVersion {
