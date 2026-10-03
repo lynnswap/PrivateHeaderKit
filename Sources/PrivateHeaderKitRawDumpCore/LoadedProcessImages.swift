@@ -54,17 +54,17 @@ package final class LoadedProcessImages {
         }
         let before = try imageArrayState(information)
         let entrySize = MemoryLayout<dyld_image_info>.size
-        let (arraySize, overflow) = Int(before.count).multipliedReportingOverflow(by: entrySize)
-        guard !overflow, before.address != 0 else {
+        guard before.address != 0 else {
             throw ProcessImageRecoveryError.invalidMetadata("dyld image array is unavailable")
         }
-        let array = try memory.read(address: before.address, byteCount: arraySize)
-        try requireByteCount(array, arraySize)
         var images: [PrivateHeaderKitProcessImage] = []
         var failures: [PrivateHeaderKitProcessImageFailure] = []
         for index in 0..<Int(before.count) {
+            let entryAddress = try adding(before.address, UInt64(index) * UInt64(entrySize))
+            let array = try memory.read(address: entryAddress, byteCount: entrySize)
+            try requireByteCount(array, entrySize)
             let entry: dyld_image_info = array.withUnsafeBytes {
-                $0.loadUnaligned(fromByteOffset: index * entrySize, as: dyld_image_info.self)
+                $0.loadUnaligned(as: dyld_image_info.self)
             }
             let address = UInt64(UInt(bitPattern: entry.imageLoadAddress))
             var path: String?
@@ -257,15 +257,16 @@ package final class LoadedProcessImages {
                 throw ProcessImageRecoveryError.invalidMetadata("truncated universal architecture table")
             }
             var matches: [(offset: UInt64, size: UInt64)] = []
-            for arch in fat.arches where arch.layout.cputype == image.header.cputype
-                && arch.layout.cpusubtype == image.header.cpusubtype {
-                let sliceOffset = UInt64(arch.offset)
-                let sliceSize = UInt64(arch.size)
+            try forEachUniversalSlice(in: fat) { arch in
+                guard arch.cpuType == image.header.cputype,
+                      arch.cpuSubtype == image.header.cpusubtype else { return }
+                let sliceOffset = arch.offset
+                let sliceSize = arch.size
                 guard sliceOffset <= fileSize, sliceSize <= fileSize - sliceOffset else {
                     throw ProcessImageRecoveryError.invalidMetadata("universal slice exceeds original file")
                 }
                 try validateFileCommands(at: source, offset: sliceOffset, size: sliceSize)
-                let file = try MachOFile(url: source, headerStartOffset: Int(arch.offset))
+                let file = try MachOFile(url: source, headerStartOffset: Int(sliceOffset))
                 if file.loadCommands.info(of: LoadCommand.uuid)?.uuid == image.uuid {
                     try requireMatch(file, image)
                     matches.append((sliceOffset, sliceSize))
@@ -283,18 +284,18 @@ package final class LoadedProcessImages {
             throw CocoaError(.fileWriteUnknown)
         }
         let output = try FileHandle(forWritingTo: destination)
-        defer { try? output.close() }
-        try input.seek(toOffset: offset)
-        var copied: UInt64 = 0
-        while copied < length {
-            let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
-            guard let bytes = try input.read(upToCount: count), bytes.count == count else {
-                throw ProcessImageRecoveryError.invalidMetadata("original Mach-O changed or was truncated during copy")
+        try withWritingFile(output) {
+            try input.seek(toOffset: offset)
+            var copied: UInt64 = 0
+            while copied < length {
+                let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
+                guard let bytes = try input.read(upToCount: count), bytes.count == count else {
+                    throw ProcessImageRecoveryError.invalidMetadata("original Mach-O changed or was truncated during copy")
+                }
+                try output.write(contentsOf: bytes)
+                copied += UInt64(count)
             }
-            try output.write(contentsOf: bytes)
-            copied += UInt64(count)
         }
-        try output.close()
         try input.close()
     }
 
@@ -322,59 +323,96 @@ package final class LoadedProcessImages {
             throw ProcessImageRecoveryError.invalidMetadata("64-bit Mach-O has no 64-bit encryption command")
         }
         let output = try FileHandle(forWritingTo: file.url)
-        defer { try? output.close() }
-        var recovered: UInt64 = 0
-        for command in commands where command.isEncrypted {
-            let offset = UInt64(command.layout.cryptoff)
-            let length = UInt64(command.layout.cryptsize)
-            guard offset <= fileSize, length <= fileSize - offset else {
-                throw ProcessImageRecoveryError.invalidMetadata("encrypted range exceeds original Mach-O slice")
-            }
-            if length > 0 {
-                guard let segment = file.segments64.first(where: {
-                    offset >= $0.layout.fileoff && offset - $0.layout.fileoff <= $0.layout.filesize
-                        && length <= $0.layout.filesize - (offset - $0.layout.fileoff)
-                        && offset - $0.layout.fileoff <= $0.layout.vmsize
-                        && length <= $0.layout.vmsize - (offset - $0.layout.fileoff)
-                }) else {
-                    throw ProcessImageRecoveryError.invalidMetadata("encrypted range has no complete file-backed VM mapping")
+        return try withWritingFile(output) {
+            var recovered: UInt64 = 0
+            for command in commands where command.isEncrypted {
+                let offset = UInt64(command.layout.cryptoff)
+                let length = UInt64(command.layout.cryptsize)
+                guard offset <= fileSize, length <= fileSize - offset else {
+                    throw ProcessImageRecoveryError.invalidMetadata("encrypted range exceeds original Mach-O slice")
                 }
-                let preferred = try adding(segment.layout.vmaddr, offset - segment.layout.fileoff)
-                let base = headerSegment.layout.vmaddr
-                let address: UInt64
-                if preferred >= base {
-                    address = try adding(loadAddress, preferred - base)
-                } else {
-                    guard loadAddress >= base - preferred else {
-                        throw ProcessImageRecoveryError.invalidMetadata("encrypted VM address underflows")
+                if length > 0 {
+                    guard let segment = file.segments64.first(where: {
+                        offset >= $0.layout.fileoff && offset - $0.layout.fileoff <= $0.layout.filesize
+                            && length <= $0.layout.filesize - (offset - $0.layout.fileoff)
+                            && offset - $0.layout.fileoff <= $0.layout.vmsize
+                            && length <= $0.layout.vmsize - (offset - $0.layout.fileoff)
+                    }) else {
+                        throw ProcessImageRecoveryError.invalidMetadata("encrypted range has no complete file-backed VM mapping")
                     }
-                    address = loadAddress - (base - preferred)
+                    let preferred = try adding(segment.layout.vmaddr, offset - segment.layout.fileoff)
+                    let base = headerSegment.layout.vmaddr
+                    let address: UInt64
+                    if preferred >= base {
+                        address = try adding(loadAddress, preferred - base)
+                    } else {
+                        guard loadAddress >= base - preferred else {
+                            throw ProcessImageRecoveryError.invalidMetadata("encrypted VM address underflows")
+                        }
+                        address = loadAddress - (base - preferred)
+                    }
+                    _ = try adding(address, length)
+                    try output.seek(toOffset: offset)
+                    var copied: UInt64 = 0
+                    while copied < length {
+                        let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
+                        let bytes = try memory.read(address: try adding(address, copied), byteCount: count)
+                        try requireByteCount(bytes, count)
+                        try output.write(contentsOf: bytes)
+                        copied += UInt64(count)
+                    }
+                    recovered = try adding(recovered, length)
                 }
-                _ = try adding(address, length)
-                try output.seek(toOffset: offset)
-                var copied: UInt64 = 0
-                while copied < length {
-                    let count = Int(min(length - copied, UInt64(Self.copyChunkSize)))
-                    let bytes = try memory.read(address: try adding(address, copied), byteCount: count)
-                    try requireByteCount(bytes, count)
-                    try output.write(contentsOf: bytes)
-                    copied += UInt64(count)
-                }
-                recovered = try adding(recovered, length)
+                let cryptIDOffset = file.headerSize + command.offset
+                    + MemoryLayout<encryption_info_command_64>.offset(of: \.cryptid)!
+                try output.seek(toOffset: UInt64(cryptIDOffset))
+                try output.write(contentsOf: Data(repeating: 0, count: MemoryLayout<UInt32>.size))
             }
-            let cryptIDOffset = file.headerSize + command.offset
-                + MemoryLayout<encryption_info_command_64>.offset(of: \.cryptid)!
-            try output.seek(toOffset: UInt64(cryptIDOffset))
-            try output.write(contentsOf: Data(repeating: 0, count: MemoryLayout<UInt32>.size))
+            return recovered
         }
-        try output.close()
-        return recovered
     }
 
     // Chunking bounds transient storage without limiting a valid image's declared size.
     private static let copyChunkSize = 1_024 * 1_024
 }
 
+private struct UniversalSlice {
+    let cpuType: Int32
+    let cpuSubtype: Int32
+    let offset: UInt64
+    let size: UInt64
+}
+
+private func forEachUniversalSlice(in file: FatFile, body: (UniversalSlice) throws -> Void) throws {
+    guard file.is64bit else {
+        for arch in file.arches {
+            try body(.init(cpuType: arch.layout.cputype, cpuSubtype: arch.layout.cpusubtype,
+                           offset: UInt64(arch.offset), size: UInt64(arch.size)))
+        }
+        return
+    }
+    // MachOKit's FAT64 arches currently reinterpret fat_arch_64 as fat_arch,
+    // which loses the 64-bit offsets and sizes. Read that SDK layout directly.
+    let input = try FileHandle(forReadingFrom: file.url)
+    defer { try? input.close() }
+    try input.seek(toOffset: UInt64(file.archesStartOffset))
+    for _ in 0..<file.header.layout.nfat_arch {
+        let size = MemoryLayout<fat_arch_64>.size
+        guard let bytes = try input.read(upToCount: size), bytes.count == size else {
+            throw ProcessImageRecoveryError.invalidMetadata("truncated universal architecture record")
+        }
+        let arch: fat_arch_64 = load(bytes, at: 0)
+        try body(.init(
+            cpuType: file.isSwapped ? arch.cputype.byteSwapped : arch.cputype,
+            cpuSubtype: file.isSwapped ? arch.cpusubtype.byteSwapped : arch.cpusubtype,
+            offset: file.isSwapped ? arch.offset.byteSwapped : arch.offset,
+            size: file.isSwapped ? arch.size.byteSwapped : arch.size
+        ))
+    }
+}
+
+// MachOKit's file loadCommands uses try! for the byte read and its iterator dereferences
+// command layouts without checking cmdsize. Validate that byte envelope before decoding.
 private func validateFileCommands(at url: URL, offset: UInt64, size: UInt64) throws {
     let input = try FileHandle(forReadingFrom: url)
     defer { try? input.close() }
@@ -399,13 +437,7 @@ private func validateFileCommands(at url: URL, offset: UInt64, size: UInt64) thr
             throw ProcessImageRecoveryError.invalidMetadata("truncated original Mach-O command")
         }
         let command: load_command = load(bytes, at: 0)
-        let minimumSize: Int
-        switch command.cmd {
-        case UInt32(LC_SEGMENT_64): minimumSize = MemoryLayout<segment_command_64>.size
-        case UInt32(LC_UUID): minimumSize = MemoryLayout<uuid_command>.size
-        case UInt32(LC_ENCRYPTION_INFO_64): minimumSize = MemoryLayout<encryption_info_command_64>.size
-        default: minimumSize = MemoryLayout<load_command>.size
-        }
+        let minimumSize = try minimumCommandSize(command.cmd)
         guard command.cmdsize >= minimumSize, UInt64(command.cmdsize) <= end - position else {
             throw ProcessImageRecoveryError.invalidMetadata("invalid original Mach-O command size")
         }
@@ -413,15 +445,88 @@ private func validateFileCommands(at url: URL, offset: UInt64, size: UInt64) thr
     }
 }
 
-private func requireDistinctFile(_ source: URL, _ destination: URL) throws {
-    if FileManager.default.fileExists(atPath: destination.path) {
-        let sourceIdentity = try source.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        let destinationIdentity = try destination.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        if let sourceIdentity, let destinationIdentity,
-           sourceIdentity.isEqual(destinationIdentity) {
-            throw ProcessImageRecoveryError.outputIsOriginalFile
-        }
+private func minimumCommandSize(_ rawValue: UInt32) throws -> Int {
+    guard let type = LoadCommandType(rawValue: rawValue) ?? LoadCommandType(rawValue: rawValue.byteSwapped) else {
+        return MemoryLayout<load_command>.size
     }
+    switch type {
+    case .segment: return MemoryLayout<segment_command>.size
+    case .segment64: return MemoryLayout<segment_command_64>.size
+    case .symtab: return MemoryLayout<symtab_command>.size
+    case .symseg: return MemoryLayout<symseg_command>.size
+    case .thread, .unixthread: return MemoryLayout<thread_command>.size
+    case .loadfvmlib, .idfvmlib: return MemoryLayout<fvmlib_command>.size
+    case .ident: return MemoryLayout<ident_command>.size
+    case .fvmfile: return MemoryLayout<fvmfile_command>.size
+    case .prepage: return MemoryLayout<load_command>.size
+    case .dysymtab: return MemoryLayout<dysymtab_command>.size
+    case .loadDylib, .idDylib, .loadWeakDylib, .reexportDylib, .lazyLoadDylib, .loadUpwardDylib:
+        return MemoryLayout<dylib_command>.size
+    case .loadDylinker, .idDylinker, .dyldEnvironment: return MemoryLayout<dylinker_command>.size
+    case .preboundDylib: return MemoryLayout<prebound_dylib_command>.size
+    case .routines: return MemoryLayout<routines_command>.size
+    case .routines64: return MemoryLayout<routines_command_64>.size
+    case .subFramework: return MemoryLayout<sub_framework_command>.size
+    case .subUmbrella: return MemoryLayout<sub_umbrella_command>.size
+    case .subClient: return MemoryLayout<sub_client_command>.size
+    case .subLibrary: return MemoryLayout<sub_library_command>.size
+    case .twolevelHints: return MemoryLayout<twolevel_hints_command>.size
+    case .prebindCksum: return MemoryLayout<prebind_cksum_command>.size
+    case .uuid: return MemoryLayout<uuid_command>.size
+    case .rpath: return MemoryLayout<rpath_command>.size
+    case .codeSignature, .segmentSplitInfo, .functionStarts, .dataInCode, .dylibCodeSignDrs,
+         .linkerOptimizationHint, .dyldExportsTrie, .dyldChainedFixups, .atomInfo,
+         .functionVariants, .functionVariantFixups, .lazyLoadDylibInfo:
+        return MemoryLayout<linkedit_data_command>.size
+    case .encryptionInfo: return MemoryLayout<encryption_info_command>.size
+    case .encryptionInfo64: return MemoryLayout<encryption_info_command_64>.size
+    case .dyldInfo, .dyldInfoOnly: return MemoryLayout<dyld_info_command>.size
+    case .versionMinMacosx, .versionMinIphoneos, .versionMinTvos, .versionMinWatchos:
+        return MemoryLayout<version_min_command>.size
+    case .main: return MemoryLayout<entry_point_command>.size
+    case .sourceVersion: return MemoryLayout<source_version_command>.size
+    case .linkerOption: return MemoryLayout<linker_option_command>.size
+    case .note: return MemoryLayout<note_command>.size
+    case .buildVersion: return MemoryLayout<build_version_command>.size
+    case .filesetEntry: return MemoryLayout<fileset_entry_command>.size
+    case .targetTriple: return MemoryLayout<TargetTripleCommand.Layout>.size
+    case .aotMetadata: return MemoryLayout<AotMetadataCommand.Layout>.size
+    @unknown default:
+        throw ProcessImageRecoveryError.invalidMetadata("unsupported MachOKit load command layout")
+    }
+}
+
+private func requireDistinctFile(_ source: URL, _ destination: URL) throws {
+    let destinationEntry = try directoryEntry(of: destination, allowingMissing: true)
+    let sourceEntry = try directoryEntry(of: source)
+    let sourceTarget = try directoryEntry(of: source.resolvingSymlinksInPath())
+    guard destinationEntry != sourceEntry, destinationEntry != sourceTarget else {
+        throw ProcessImageRecoveryError.outputIsOriginalFile
+    }
+}
+
+private func directoryEntry(of url: URL, allowingMissing: Bool = false) throws -> URL {
+    let name: String
+    do {
+        name = try url.resourceValues(forKeys: [.nameKey]).name ?? url.lastPathComponent
+    } catch let error as CocoaError where allowingMissing && error.code == .fileReadNoSuchFile {
+        name = url.lastPathComponent
+    }
+    // rename replaces this directory entry, rather than following its final symlink.
+    return url.deletingLastPathComponent().resolvingSymlinksInPath().appending(path: name)
+}
+
+private func withWritingFile<Value>(_ file: FileHandle, body: () throws -> Value) throws -> Value {
+    let outcome = Result { try body() }
+    do {
+        try file.close()
+    } catch {
+        if case .failure(let operationError) = outcome {
+            throw ProcessImageCleanupError(operationError: operationError, cleanupError: error, remainingPath: nil)
+        }
+        throw error
+    }
+    return try outcome.get()
 }
 
 private func size(of url: URL) throws -> UInt64 {
