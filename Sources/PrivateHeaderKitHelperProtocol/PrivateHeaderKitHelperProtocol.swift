@@ -3,6 +3,7 @@ import Foundation
 package enum PrivateHeaderKitHelperCommand: String, Sendable {
     case rawDump = "__raw-dump"
     case sharedCacheInventory = "__shared-cache-inventory"
+    case deviceSource = "__device-source"
 }
 
 package enum PrivateHeaderKitProducerVersion {

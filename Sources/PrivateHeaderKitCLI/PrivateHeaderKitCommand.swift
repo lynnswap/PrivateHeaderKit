@@ -145,6 +145,7 @@ typealias PrivateHeaderKitOutputLogger = @Sendable (String) -> Void
 struct PrivateHeaderKitCommandOutcome: Equatable, Sendable {
     let exitCode: Int32
     let runStatus: PrivateHeaderGeneration.RunStatus?
+    var failureSummary: String? = nil
 }
 
 func resolvePrivateHeaderKitReleaseMetadata(
@@ -200,6 +201,7 @@ func runPrivateHeaderKitCommand(
     _ args: [String],
     currentExecutableURL: URL? = Bundle.main.executableURL,
     generationClient: PrivateHeaderKitGenerationClient = .live,
+    sshProcessRunner: any CommandRunning = ProcessRunner(),
     simulatorResolver: @escaping PrivateHeaderKitSimulatorResolver = resolvePrivateHeaderKitSimulator,
     simulatorCleaner: @escaping PrivateHeaderKitSimulatorCleaner = cleanupPrivateHeaderKitSimulator,
     helperResolver: @escaping PrivateHeaderKitHelperResolver = resolvePrivateHeaderKitHelperURLs,
@@ -273,6 +275,12 @@ func runPrivateHeaderKitCommand(
                 inputFinalizer: inputFinalizer,
                 outputLogger: outputLogger,
                 errorLogger: errorLogger
+            )
+        case .generateSSH(let generate):
+            exitCode = try await runPrivateHeaderKitSSHGenerateCommand(
+                generate, currentExecutableURL: currentExecutableURL,
+                processRunner: sshProcessRunner, generationClient: generationClient,
+                outputLogger: outputLogger, errorLogger: errorLogger
             )
         case .generate(let generate):
             exitCode = try await runPrivateHeaderKitGenerateCommand(
@@ -452,13 +460,14 @@ func runPrivateHeaderKitPreparedGeneration(
         )
         return PrivateHeaderKitCommandOutcome(
             exitCode: cancellationRequested ? 130 : 2,
-            runStatus: runStatus
+            runStatus: runStatus,
+            failureSummary: String(describing: error)
         )
     } catch is CancellationError {
         throw CancellationError()
     } catch {
         errorLogger("error: \(error)")
-        return PrivateHeaderKitCommandOutcome(exitCode: 2, runStatus: nil)
+        return PrivateHeaderKitCommandOutcome(exitCode: 2, runStatus: nil, failureSummary: String(describing: error))
     }
 }
 

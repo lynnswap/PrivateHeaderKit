@@ -50,6 +50,16 @@ extension PrivateHeaderGeneration {
       switch executionMode {
       case .host:
         commandPrefix = [helperURL.path]
+      case .ssh(let destination, let directory, let controlPath):
+        let remoteHelper = directory + "/privateheaderkit-device-helper"
+        return SharedCacheInventoryInvocation(
+          phaseLabel: "shared-cache-inventory", executionMode: executionMode,
+          helperURL: helperURL,
+          command: sshCommand(destination: destination, script:
+            shellQuote(remoteHelper) + " " + PrivateHeaderKitHelperCommand.sharedCacheInventory.rawValue,
+            controlPath: controlPath),
+          environment: [:]
+        )
       case .simulator(let deviceUDID, _, _):
         commandPrefix = [
           "xcrun",
@@ -87,6 +97,9 @@ extension PrivateHeaderGeneration {
           "-o",
           request.stagingOutputDirectory.path,
         ]
+      case .ssh:
+        command = [helperURL.path, PrivateHeaderKitHelperCommand.rawDump.rawValue,
+          "-o", request.stagingOutputDirectory.path]
       case .simulator(let deviceUDID, _, _):
         command = [
           "xcrun",
@@ -110,7 +123,7 @@ extension PrivateHeaderGeneration {
         ]
       }
       if request.options.verbose { command.append("-D") }
-      if request.executionMode.isHost, request.options.preferRuntimeMetadata {
+      if request.options.preferRuntimeMetadata {
         command.append("-R")
       }
       command += [
@@ -121,6 +134,28 @@ extension PrivateHeaderGeneration {
       ]
       command += ["--diagnostics-report", diagnosticsReportURL.path]
       command.append(request.inputPath)
+      if case .ssh(let destination, let directory, let controlPath) = request.executionMode {
+        let attempt = directory + "/runs/" + processHandshakeID.uuidString.lowercased()
+        let substitutions = [
+          helperURL.path: directory + "/privateheaderkit-device-helper",
+          request.stagingOutputDirectory.path: attempt + "/" + request.stagingOutputDirectory.lastPathComponent,
+          processHandshakeReportURL.path: attempt + "/" + processHandshakeReportURL.lastPathComponent,
+          diagnosticsReportURL.path: attempt + "/" + diagnosticsReportURL.lastPathComponent,
+        ]
+        var remoteArguments = command.map { shellQuote(substitutions[$0] ?? $0) }.joined(separator: " ")
+        if !request.options.helperEnvironment.isEmpty {
+          let assignments = request.options.helperEnvironment.keys.sorted().map {
+            shellQuote($0 + "=" + (request.options.helperEnvironment[$0] ?? ""))
+          }
+          remoteArguments = "env " + assignments.joined(separator: " ") + " " + remoteArguments
+        }
+        let pidFile = shellQuote(attempt + "/pid")
+        let script = "mkdir -p " + shellQuote(attempt) + "; "
+          + remoteArguments + " & pid=$!; printf '%s\\n' \"$pid\" > " + pidFile + "; "
+          + "trap 'kill \"$pid\" 2>/dev/null; wait \"$pid\"; exit 130' HUP INT TERM; "
+          + "wait \"$pid\"; status=$?; rm -f " + pidFile + "; trap - HUP INT TERM; exit \"$status\""
+        return sshCommand(destination: destination, script: script, controlPath: controlPath)
+      }
       return command
     }
 
@@ -195,10 +230,13 @@ extension PrivateHeaderGeneration.RawDumping {
   package struct HelperURLs: Hashable, Sendable {
     package let host: URL
     package let simulator: URL
+    package let device: URL
 
-    package init(host: URL, simulator: URL) {
+    package init(host: URL, simulator: URL, device: URL? = nil) {
       self.host = host
       self.simulator = simulator
+      self.device = device ?? host.deletingLastPathComponent()
+        .appendingPathComponent("privateheaderkit-device-helper")
     }
   }
 
@@ -223,6 +261,7 @@ extension PrivateHeaderGeneration.RawDumping {
       sourceRuntimeRoot: String,
       runtime: SimulatorRuntimeIdentity
     )
+    case ssh(destination: String, directory: String, controlPath: String? = nil)
 
     fileprivate var isHost: Bool {
       if case .host = self { return true }
@@ -233,6 +272,7 @@ extension PrivateHeaderGeneration.RawDumping {
       switch self {
       case .host: helperURLs.host
       case .simulator: helperURLs.simulator
+      case .ssh: helperURLs.device
       }
     }
   }

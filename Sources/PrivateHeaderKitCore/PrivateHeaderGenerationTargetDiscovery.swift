@@ -54,7 +54,7 @@ extension PrivateHeaderGeneration {
 }
 
 extension PrivateHeaderGeneration.TargetDiscovery {
-    struct Catalog: Hashable, Sendable {
+    struct Catalog: Codable, Hashable, Sendable {
         let groups: [DiscoveredTargetGroup]
 
         var resolverCandidates: [PrivateHeaderGeneration.TargetCandidate] {
@@ -70,7 +70,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct DiscoveredTargetGroup: Hashable, Sendable {
+    struct DiscoveredTargetGroup: Codable, Hashable, Sendable {
         let selectionCandidate: PrivateHeaderGeneration.TargetCandidate
         let primaryTarget: DiscoveredTarget?
         let childTargets: [DiscoveredTarget]
@@ -80,7 +80,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct DiscoveredTarget: Hashable, Sendable {
+    struct DiscoveredTarget: Codable, Hashable, Sendable {
         let candidate: PrivateHeaderGeneration.TargetCandidate
         let source: SourceMetadata
         let artifactRoot: PrivateHeaderGeneration.ArtifactPath
@@ -88,7 +88,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         let runtimeInputPath: String
     }
 
-    enum SourceMetadata: Hashable, Sendable {
+    enum SourceMetadata: Codable, Hashable, Sendable {
         case framework(FrameworkSource)
         case systemLibraryBundle(SystemLibraryBundleSource)
         case usrLibDylib(UsrLibDylibSource)
@@ -105,7 +105,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct FrameworkSource: Hashable, Sendable {
+    struct FrameworkSource: Codable, Hashable, Sendable {
         let location: FrameworkLocation
         let bundleName: String
 
@@ -118,7 +118,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    enum FrameworkLocation: Hashable, Sendable {
+    enum FrameworkLocation: Codable, Hashable, Sendable {
         case publicFramework
         case privateFramework
 
@@ -150,18 +150,18 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct SystemLibraryBundleSource: Hashable, Sendable {
+    struct SystemLibraryBundleSource: Codable, Hashable, Sendable {
         let relativePath: String
         let bundleKind: BundleKind
         let role: BundleRole
     }
 
-    enum BundleRole: Hashable, Sendable {
+    enum BundleRole: Codable, Hashable, Sendable {
         case topLevel
         case nestedChild(parentRelativePath: String)
     }
 
-    enum BundleKind: String, Hashable, Sendable {
+    enum BundleKind: String, Codable, Hashable, Sendable {
         case app
         case bundle
         case xpc
@@ -172,7 +172,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct UsrLibDylibSource: Hashable, Sendable {
+    struct UsrLibDylibSource: Codable, Hashable, Sendable {
         let name: String
     }
 

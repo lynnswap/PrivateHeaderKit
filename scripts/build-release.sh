@@ -6,11 +6,11 @@ usage() {
 Usage: scripts/build-release.sh --version <version> [options]
 
   --output-dir <dir>      Stage binaries here (default: .build/distribution).
-  --platform <platform>  Build macos, ios-simulator, or watchos-simulator only.
+  --platform <platform>  Build macos, ios-simulator, watchos-simulator, or iphoneos only.
   --source-root <dir>    Source directory (default: this script's repo).
   --test                 Run macOS tests or compile Simulator test targets.
 
-Builds all four executables by default. No Git checkout or installed runtime
+Builds all five executables by default. No Git checkout or installed runtime
 is needed to build. The caller owns installation and version management.
 USAGE
 }
@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$version" ]] || { echo "--version is required." >&2; exit 1; }
 case "$platform" in
-  all|macos|ios-simulator|watchos-simulator) ;;
+  all|macos|ios-simulator|watchos-simulator|iphoneos) ;;
   *) echo "Unknown platform: $platform" >&2; exit 1 ;;
 esac
 
@@ -85,13 +85,20 @@ if [[ "$platform" == all || "$platform" == macos ]]; then
   done
 fi
 
-for simulator in ios-simulator watchos-simulator; do
+for simulator in ios-simulator watchos-simulator iphoneos; do
   [[ "$platform" == all || "$platform" == "$simulator" ]] || continue
+  product=privateheaderkit-sim-helper
   case "$simulator" in
     ios-simulator)
       sdk=iphonesimulator
       triple=arm64-apple-ios17.0-simulator
       name=privateheaderkit-sim-helper
+      ;;
+    iphoneos)
+      sdk=iphoneos
+      triple=arm64-apple-ios17.0
+      name=privateheaderkit-device-helper
+      product=privateheaderkit-device-helper
       ;;
     watchos-simulator)
       sdk=watchsimulator
@@ -102,12 +109,12 @@ for simulator in ios-simulator watchos-simulator; do
   arguments=("${common[@]}" --scratch-path "$PWD/.build/$simulator" \
     --sdk "$(xcrun --sdk "$sdk" --show-sdk-path)" --triple "$triple")
   if [[ "$run_tests" == 1 ]]; then arguments+=(-Xswiftc -enable-testing); fi
-  swift build "${arguments[@]}" --product privateheaderkit-sim-helper
+  swift build "${arguments[@]}" --product "$product"
   if [[ "$run_tests" == 1 ]]; then
     swift build "${arguments[@]}" --target PrivateHeaderKitCoreTests
   fi
   simulator_bin="$(swift build "${arguments[@]}" --show-bin-path)"
-  stage "$simulator_bin/privateheaderkit-sim-helper" "$name" "$sdk"
+  stage "$simulator_bin/$product" "$name" "$sdk"
 done
 
 if ! cp -Rp "$staging_dir/." "$output_dir/"; then

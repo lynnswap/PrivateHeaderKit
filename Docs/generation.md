@@ -40,8 +40,8 @@ in the completion summary.
 macOS generation works from the host system. iOS and watchOS generation require
 Xcode, `xcrun`, `simctl`, and the selected Simulator runtime. PrivateHeaderKit
 creates and boots one dedicated simulator device for the run, then deletes that
-exact device after generation, failure, or interruption. It does not use a
-connected iPhone or Apple Watch as a generation source. An explicit `--device`
+exact device after generation, failure, or interruption. The wizard uses the
+installed Simulator runtimes; use `--ssh` to select an iPhoneOS peer. An explicit `--device`
 selects an existing borrowed simulator instead; PrivateHeaderKit never deletes
 that device. When generation has produced a typed terminal outcome, its final
 `Finished` block is rendered after successful cleanup of a dedicated device. If
@@ -95,9 +95,62 @@ privateheaderkit \
 ```
 
 `--platform`, `--version`, `--out`, and `--target` are required in automation
-mode. `--system-root` is also required for macOS. For iOS and watchOS,
+mode when generating from a local source. `--system-root` is also required for macOS. For iOS and watchOS,
 PrivateHeaderKit resolves the runtime root; supply `--build` when more than one
 runtime for the selected platform matches a version.
+
+### iPhoneOS over SSH
+
+Use an SSH destination to generate from a jailbroken iPhone or a vphone
+environment that permits execution of the bundled iPhoneOS helper. The peer
+must have an SSH server and `tar`. Configure authentication and confirm that a
+normal SSH command succeeds before running PrivateHeaderKit:
+
+```bash
+ssh iphone-se true
+privateheaderkit --ssh iphone-se --out ~/PrivateHeaderKit \
+  --target SpringBoard,SpringBoardUI
+```
+
+`iphone-se` can be a host alias in `~/.ssh/config`. OpenSSH user/host destinations
+and `ssh://` URIs are also accepted. PrivateHeaderKit uses the Mac's OpenSSH
+configuration for ports, host verification, identities, and authentication.
+At the start of a run, OpenSSH performs its normal password, key, or SSH agent
+authentication. The helper operations then share that authenticated connection.
+PrivateHeaderKit does not save credentials or record the authentication dialog.
+For unattended generation, configure key or agent authentication in OpenSSH.
+
+For USB forwarding, keep `iproxy` running in another terminal, then use its
+local destination:
+
+```bash
+iproxy -u <device-udid> 2222:22
+privateheaderkit --ssh ssh://mobile@127.0.0.1:2222 \
+  --out ~/PrivateHeaderKit --target SpringBoard,SpringBoardUI
+```
+
+For vphone, use the SSH alias or URI configured for that environment. Transport
+setup, including USB forwarding or starting the virtual device, remains under
+your control.
+
+SSH generation requires `--ssh`, `--out`, and `--target`. PrivateHeaderKit reads
+the OS version, build, release-channel metadata, architecture, shared-cache
+UUID, and target catalog from the peer. Omit `--platform`, `--version`, `--build`,
+`--system-root`, `--device`, and `--sim-helper`; these options select local
+sources and cannot be combined with `--ssh`. Named targets and `--target all`
+use the same generation, publication, and continuation behavior as local
+sources.
+
+The command uploads its helper and required Swift libraries to a dedicated
+temporary workspace, runs the helper there, and recovers each target's files
+and diagnostic reports to the Mac. Transfer uses SSH streams and `tar`; the
+peer does not need SFTP. SQLite state and published headers are
+stored on the Mac. The remote workspace is removed after its attempts have
+been recovered, and the command closes its dedicated SSH connection. If
+recovery or cleanup fails, the error reports the failure and any recovery
+locations, including a remote attempt, local archive, or SSH control socket.
+Preserve reported attempts and archives until recovery is complete. Previously
+published targets remain available.
 
 | Option | Meaning |
 | --- | --- |
@@ -108,6 +161,7 @@ runtime for the selected platform matches a version.
 | `--system-root <path>` | Runtime root; required for macOS and optional as a Simulator override. |
 | `--out <path>` | Output base for generated headers and state. Used alone, starts the wizard. |
 | `--target all\|<query>` | All targets or comma-separated target names. |
+| `--ssh <destination>` | iPhoneOS source reached through an OpenSSH destination or `ssh://` URI; source metadata is read from the peer. |
 | `--device <name-or-udid>` | Preferred compatible iOS or watchOS Simulator device. |
 | `--sim-helper <path>` | Explicit helper for the selected Simulator platform. |
 | `--resume` | Continue the latest compatible all-target run. |
@@ -180,22 +234,33 @@ some targets complete, their published files are included. A successful
 symbol-only target shows zero Objective-C headers; this is not a generation
 failure. The target counts and terminal status are reported separately.
 
-Platform directories use the displayed Apple platform name: `iOS`, `watchOS`,
-or `macOS`. Release directories include the exact build when it is available:
+Local platform directories use the displayed Apple platform name: `iOS`,
+`watchOS`, or `macOS`. SSH output uses a separate `iPhoneOS` directory.
+Release directories include the exact build when it is available:
 
 ```text
 iOS/26.4_23E244/
 iOS/27.0_beta_24A5390f/
+iPhoneOS/<version_build>_<encoded-architecture>_<cache-uuid>/
 ```
 
 Release directory fields use underscores so paths do not require shell quoting.
-PrivateHeaderKit derives the `beta` field from the source runtime's seed
+PrivateHeaderKit derives the `beta` field from the source's seed
 metadata, not from the build suffix; this keeps lowercase-suffixed public
 releases out of the beta namespace. Installed metadata does not provide a beta
 number, so the build disambiguates beta sources. Older Simulator runtimes that
 omit `RestoreVersion.plist` are treated as non-seed releases. An unreadable or
 malformed metadata file, or missing macOS metadata, stops generation instead of
 publishing under a guessed name.
+
+For Simulator and SSH sources, a `RestoreVersion.plist` without an `IsSeed` key
+also represents a non-seed release.
+
+For SSH sources, the architecture and shared-cache UUID also distinguish the
+published directory and internal state. An iPhoneOS dump cannot replace an iOS
+Simulator dump with the same version and build. Devices with the same source
+metadata, architecture, and cache cohort can reuse the same Mac state even
+when their SSH alias or forwarding port changes.
 
 The complete output base is:
 
@@ -304,7 +369,9 @@ replacements remain reusable when the all-target run resumes.
 Resume compatibility is bound to the PrivateHeaderKit producer version, the
 selected source and Simulator runtime, generation options, and the loaded
 shared-cache cohort. A simulator device UDID is only a temporary execution
-address and does not affect compatibility. Older databases did not record whether
+address and does not affect compatibility. For SSH generation, the alias, port,
+temporary remote workspace, and SSH control socket are also execution addresses and do not affect
+compatibility. Older databases did not record whether
 a run selected all targets, so their artifacts are preserved but their runs are
 not adopted as all-target resume checkpoints. The next all-target command starts
 a new run.

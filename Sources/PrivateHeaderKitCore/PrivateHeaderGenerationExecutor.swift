@@ -1520,11 +1520,24 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       sharedCacheCohort = nil
     }
 
-    let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
-      in: systemRoot,
-      includeNestedChildren: plan.options.includeNestedChildren,
-      sharedCacheImagePaths: sharedCacheCohort?.imagePaths ?? []
-    )
+    let catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
+    if case .ssh = executionMode {
+      guard let deviceSource = plan.options.deviceSource else {
+        throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("deviceSource")
+      }
+      if let sharedCacheCohort, sharedCacheCohort.cacheUUID != deviceSource.cacheUUID {
+        throw PrivateHeaderGeneration.GenerationError.deviceCacheChanged(
+          expected: deviceSource.cacheUUID, actual: sharedCacheCohort.cacheUUID
+        )
+      }
+      catalog = try deviceSource.catalog(includeNestedChildren: plan.options.includeNestedChildren)
+    } else {
+      catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        in: systemRoot,
+        includeNestedChildren: plan.options.includeNestedChildren,
+        sharedCacheImagePaths: sharedCacheCohort?.imagePaths ?? []
+      )
+    }
     let selectedTargets = try selectedExecutionTargets(
       request: plan.options.targetRequest,
       catalog: catalog
@@ -1907,7 +1920,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   ) -> String {
     switch executionMode {
     case .host: target.inputPath
-    case .simulator: target.runtimeInputPath
+    case .simulator, .ssh: target.runtimeInputPath
     }
   }
 
@@ -1999,7 +2012,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         runtime.identifier,
         runtime.runtimeRoot,
       ]
+    case .ssh:
+      break
     }
+    if case .ssh = executionMode { components.append("iphoneos") }
     for key in plan.options.rawDumpingOptions.helperEnvironment.keys.sorted() {
       components += [
         "environment",

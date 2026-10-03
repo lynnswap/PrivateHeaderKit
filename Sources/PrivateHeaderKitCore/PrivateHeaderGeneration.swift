@@ -23,6 +23,12 @@ extension PrivateHeaderGeneration {
     package let version: String
     package let build: String?
     package let releaseChannel: ReleaseChannel
+    package let imageVariant: ImageVariant
+
+    package enum ImageVariant: Hashable, Sendable {
+      case local
+      case iPhoneOS(architecture: String, cacheUUID: UUID)
+    }
 
     private struct NormalizedIdentity {
       let version: String
@@ -33,7 +39,8 @@ extension PrivateHeaderGeneration {
       platform: Platform,
       version: String,
       build: String? = nil,
-      metadataIsSeed: Bool
+      metadataIsSeed: Bool,
+      imageVariant: ImageVariant = .local
     ) throws {
       let identity = try Self.normalizedIdentity(
         platform: platform,
@@ -44,21 +51,24 @@ extension PrivateHeaderGeneration {
       guard releaseChannel != .beta || identity.build != nil else {
         throw ValidationError.seedBuildMissing
       }
-      let artifactDirectoryName = Self.makeArtifactDirectoryName(
-        version: identity.version,
-        build: identity.build,
-        releaseChannel: releaseChannel
-      )
-      guard artifactDirectoryName.utf8.count <= Int(NAME_MAX) else {
-        throw ValidationError.artifactDirectoryNameTooLong(
-          actualUTF8Count: artifactDirectoryName.utf8.count,
-          maximumUTF8Count: Int(NAME_MAX)
-        )
-      }
       self.platform = platform
       self.version = identity.version
       self.build = identity.build
       self.releaseChannel = releaseChannel
+      self.imageVariant = imageVariant
+      if case .iPhoneOS(let architecture, _) = imageVariant, architecture.isEmpty {
+        throw ValidationError.emptyComponent(field: "architecture")
+      }
+      if case .iPhoneOS = imageVariant, storageIdentifier.utf8.count > Int(NAME_MAX) {
+        throw ValidationError.storageIdentifierTooLong(
+          actualUTF8Count: storageIdentifier.utf8.count, maximumUTF8Count: Int(NAME_MAX)
+        )
+      }
+      guard self.artifactDirectoryName.utf8.count <= Int(NAME_MAX) else {
+        throw ValidationError.artifactDirectoryNameTooLong(
+          actualUTF8Count: self.artifactDirectoryName.utf8.count, maximumUTF8Count: Int(NAME_MAX)
+        )
+      }
     }
 
     package static func validateIdentity(
@@ -103,15 +113,32 @@ extension PrivateHeaderGeneration {
     }
 
     package var storageIdentifier: String {
-      Self.makeStorageIdentifier(platform: platform, version: version, build: build)
+      let base = Self.makeStorageIdentifier(platform: platform, version: version, build: build)
+      switch imageVariant {
+      case .local: return base
+      case .iPhoneOS(let architecture, let cacheUUID):
+        return base + "-iphoneos-" + Self.encodeStorageField(architecture)
+          + "-" + cacheUUID.uuidString.lowercased()
+      }
+    }
+
+    package var artifactPlatformDirectoryName: String {
+      if case .iPhoneOS = imageVariant { return "iPhoneOS" }
+      return platform.directoryName
     }
 
     package var artifactDirectoryName: String {
-      Self.makeArtifactDirectoryName(
+      let base = Self.makeArtifactDirectoryName(
         version: version,
         build: build,
         releaseChannel: releaseChannel
       )
+      switch imageVariant {
+      case .local: return base
+      case .iPhoneOS(let architecture, let cacheUUID):
+        return base + "_" + Self.encodeArtifactField(architecture)
+          + "_" + cacheUUID.uuidString.lowercased()
+      }
     }
 
     private static func normalizedIdentity(
@@ -463,6 +490,7 @@ extension PrivateHeaderGeneration {
     package var includeNestedChildren: Bool
     package var executionOptions: ExecutionOptions
     package var producerVersion: String
+    package var deviceSource: DeviceSourceSnapshot?
 
     package init(
       layout: Layout = .headers,
@@ -473,7 +501,8 @@ extension PrivateHeaderGeneration {
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
       includeNestedChildren: Bool = true,
       executionOptions: ExecutionOptions = .init(),
-      producerVersion: String = PrivateHeaderKitBuildInfo.version
+      producerVersion: String = PrivateHeaderKitBuildInfo.version,
+      deviceSource: DeviceSourceSnapshot? = nil
     ) {
       self.layout = layout
       self.targetRequest = targetRequest
@@ -484,6 +513,7 @@ extension PrivateHeaderGeneration {
       self.includeNestedChildren = includeNestedChildren
       self.executionOptions = executionOptions
       self.producerVersion = producerVersion
+      self.deviceSource = deviceSource
     }
   }
 
@@ -503,7 +533,7 @@ extension PrivateHeaderGeneration {
 
     package func artifactDirectory(for source: Source) -> URL {
       artifactBaseDirectory
-        .appendingPathComponent(source.platform.directoryName, isDirectory: true)
+        .appendingPathComponent(source.artifactPlatformDirectoryName, isDirectory: true)
         .appendingPathComponent(source.artifactDirectoryName, isDirectory: true)
     }
 
@@ -588,6 +618,7 @@ extension PrivateHeaderGeneration {
     case missingExecutionConfiguration(String)
     case producerVersionMismatch(expected: String, actual: String)
     case emptySharedCacheInventory(cacheUUID: UUID)
+    case deviceCacheChanged(expected: UUID, actual: UUID)
     case sharedCacheCohortChanged(
       expectedUUID: UUID,
       expectedImagePathDigest: String,
@@ -611,6 +642,8 @@ extension PrivateHeaderGeneration {
         "private header generation requires \(field)"
       case .producerVersionMismatch(let expected, let actual):
         "private header helper version mismatch (expected \(expected), actual \(actual))"
+      case .deviceCacheChanged(let expected, let actual):
+        "device shared cache changed after source discovery (expected \(expected.uuidString.lowercased()), actual \(actual.uuidString.lowercased()))"
       case .emptySharedCacheInventory(let cacheUUID):
         "loaded shared cache \(cacheUUID.uuidString.lowercased()) contains no images"
       case .sharedCacheCohortChanged(

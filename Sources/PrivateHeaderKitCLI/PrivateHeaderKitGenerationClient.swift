@@ -152,11 +152,15 @@ private func runPrivateHeaderKitRawDumpAttempt(
 ) async throws -> PrivateHeaderGeneration.RawDumping.Result {
     let processResult: StreamingCommandResult
     do {
-        processResult = try await processRunner.runBuffered(
-            invocation.command,
-            env: invocation.environment,
-            cwd: nil
-        )
+        if case .ssh = invocation.executionMode {
+            processResult = try await runPrivateHeaderKitSSHRawDumpAttempt(
+                invocation, processRunner: processRunner
+            )
+        } else {
+            processResult = try await processRunner.runBuffered(
+                invocation.command, env: invocation.environment, cwd: nil
+            )
+        }
     } catch {
         try? FileManager.default.removeItem(at: invocation.processHandshakeReportURL)
         try? FileManager.default.removeItem(at: invocation.diagnosticsReportURL)

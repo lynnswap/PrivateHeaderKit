@@ -1,7 +1,7 @@
 # Contributing
 
-PrivateHeaderKit uses Swift 6.3 as its baseline. Source builds require Xcode with `xcrun`, the iOS Simulator SDK, and the watchOS
-Simulator SDK.
+PrivateHeaderKit uses Swift 6.3 as its baseline. Source builds require Xcode with
+`xcrun`, the iOS Simulator SDK, the watchOS Simulator SDK, and the iPhoneOS SDK.
 
 ## Tests
 
@@ -19,9 +19,11 @@ scripts/test-release-scripts.sh
 ```
 
 CI uses the macOS 27 [`xcode-27` runner](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
-with Xcode 27.1 to check macOS, iOS Simulator, and watchOS Simulator in parallel.
+with Xcode 27.1 to check macOS, iOS Simulator, watchOS Simulator, and iPhoneOS in parallel.
 The macOS job runs `swift test --build-system swiftbuild` in Release configuration;
-Simulator jobs compile CoreTests and the helper with testable imports. CI then
+Simulator and iPhoneOS jobs compile CoreTests and the corresponding helper with
+testable imports. The iPhoneOS job is a compile check; it does not connect to a
+physical device or vphone. CI then
 transfers the same macOS executables to Apple Silicon runners for macOS 26 and
 27 and runs the CLI, header generation, and symbol search without rebuilding.
 The host smoke test also generates a fixture through the public CLI so helper
@@ -122,6 +124,25 @@ The SwiftPM product keeps the name `privateheaderkit-sim-helper` for both
 Simulator platforms. Release staging installs the watchOS build as
 `privateheaderkit-watch-sim-helper` so each Mach-O platform remains explicit.
 
+## iPhoneOS Compile Check
+
+Compile the iPhoneOS helper and Core test surface without connecting to a device:
+
+```bash
+scripts/build-release.sh --version dev --platform iphoneos --test
+```
+
+This uses `arm64-apple-ios17.0` and the selected Xcode's iPhoneOS SDK. Staging
+produces `privateheaderkit-device-helper` and its
+`privateheaderkit-runtime-iphoneos` directory. The peer's bootstrap and code
+signing policy must permit the helper to run. The build uses ad hoc signing;
+it does not install a bootstrap or provision a physical device.
+
+SSH generation tests use fixture filesystem metadata, an injected command
+runner, and binary archive chunks. They do not need an SSH server or a connected
+device. Test the public CLI against a configured SSH peer separately when
+changing deployment or device execution.
+
 ## Releases
 
 Maintainers approve the version, title, release notes, full target commit SHA,
@@ -214,7 +235,7 @@ than repeatedly starting Renovate. The public tag lets tap CI start independentl
 of core publication.
 
 For local source builds, use `scripts/build-release.sh --version dev`. Use
-`--platform macos`, `--platform ios-simulator`, or `--platform watchos-simulator`
+`--platform macos`, `--platform ios-simulator`, `--platform watchos-simulator`, or `--platform iphoneos`
 for one platform and `--output-dir <directory>` to select the output location.
 The caller owns installation; the script only builds and stages executables.
 

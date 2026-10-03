@@ -14,6 +14,27 @@ public typealias TestCaptureHandler = @Sendable (
     URL?
 ) async throws -> String
 
+public typealias TestInputHandler = @Sendable (
+    [String],
+    Data,
+    [String: String]?,
+    URL?
+) async throws -> Void
+
+public struct RecordedInputCommand: Equatable, Sendable {
+    public let command: [String]
+    public let input: Data
+    public let env: [String: String]?
+    public let cwd: URL?
+
+    public init(command: [String], input: Data, env: [String: String]?, cwd: URL?) {
+        self.command = command
+        self.input = input
+        self.env = env
+        self.cwd = cwd
+    }
+}
+
 public struct RecordedCommand: Equatable, Sendable {
     public let command: [String]
     public let env: [String: String]?
@@ -27,6 +48,8 @@ public struct RecordedCommand: Equatable, Sendable {
 }
 
 public actor RecordingCommandRunner: CommandRunning {
+    private var interactiveCommands: [RecordedCommand] = []
+    private var inputCommands: [RecordedInputCommand] = []
     private var captureCommands: [RecordedCommand] = []
     private var simpleCommands: [RecordedCommand] = []
     private var streamingCommands: [RecordedCommand] = []
@@ -35,12 +58,51 @@ public actor RecordingCommandRunner: CommandRunning {
     private var captureOutputQueues: [String: [String]] = [:]
     private var captureChunks: [String: [Data]] = [:]
     private var captureHandler: TestCaptureHandler?
+    private var inputHandler: TestInputHandler?
+    private var interactiveHandler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
     private var captureChunksHandler: TestCaptureChunksHandler?
     private var simpleHandler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
     private var streamingHandler:
         (@Sendable ([String], [String: String]?, URL?) async throws -> StreamingCommandResult)?
 
     public init() {}
+
+    public func setInteractiveHandler(
+        _ handler: (@Sendable ([String], [String: String]?, URL?) async throws -> Void)?
+    ) {
+        interactiveHandler = handler
+    }
+
+    public func interactiveCommandSnapshot() -> [RecordedCommand] {
+        interactiveCommands
+    }
+
+    public func runInteractive(
+        _ command: [String],
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws {
+        interactiveCommands.append(RecordedCommand(command: command, env: env, cwd: cwd))
+        try await interactiveHandler?(command, env, cwd)
+    }
+
+    public func setInputHandler(_ handler: TestInputHandler?) {
+        inputHandler = handler
+    }
+
+    public func inputCommandSnapshot() -> [RecordedInputCommand] {
+        inputCommands
+    }
+
+    public func runWithInput(
+        _ command: [String],
+        input: Data,
+        env: [String: String]?,
+        cwd: URL?
+    ) async throws {
+        inputCommands.append(RecordedInputCommand(command: command, input: input, env: env, cwd: cwd))
+        try await inputHandler?(command, input, env, cwd)
+    }
 
     public func setCaptureOutput(_ output: String, for command: [String]) {
         captureOutputs[key(for: command)] = output

@@ -83,23 +83,33 @@ class ReleaseBuildTests(unittest.TestCase):
                                str(self.output), *map(str, args)], cwd=self.root,
                               env=dict(self.environment, **env), capture_output=True, text=True)
 
-    def test_source_archive_builds_all_four_executables_without_git(self):
+    def test_source_archive_builds_all_five_executables_without_git(self):
         result = self.build()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(p.name for p in self.output.iterdir()), [
-            "privateheaderkit", "privateheaderkit-raw-helper",
-            "privateheaderkit-runtime-iphonesimulator", "privateheaderkit-runtime-macosx",
+            "privateheaderkit", "privateheaderkit-device-helper", "privateheaderkit-raw-helper",
+            "privateheaderkit-runtime-iphoneos", "privateheaderkit-runtime-iphonesimulator", "privateheaderkit-runtime-macosx",
             "privateheaderkit-runtime-watchsimulator", "privateheaderkit-sim-helper",
             "privateheaderkit-watch-sim-helper",
         ])
-        for sdk in ("macosx", "iphonesimulator", "watchsimulator"):
+        for sdk in ("macosx", "iphonesimulator", "watchsimulator", "iphoneos"):
             runtime = self.output / f"privateheaderkit-runtime-{sdk}/libswiftCompatibilitySpan.dylib"
             self.assertEqual(runtime.read_text(), sdk + " runtime")
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)
         self.assertTrue(all(call["version"] == "v1.2.3" for call in calls))
         self.assertTrue(all("--force-resolved-versions" in call["args"] for call in calls))
         self.assertIn("watchos10.0-simulator", (self.output / "privateheaderkit-watch-sim-helper").read_text())
+
+    def test_device_helper_uses_iphoneos_sdk_and_shared_runtime_staging(self):
+        result = self.build("--platform", "iphoneos", "--test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call["triple"] == "arm64-apple-ios17.0" for call in calls))
+        self.assertIn("privateheaderkit-device-helper", calls[0]["args"])
+        self.assertIn("PrivateHeaderKitCoreTests", calls[1]["args"])
+        self.assertEqual((self.output / "privateheaderkit-runtime-iphoneos/libswiftCompatibilitySpan.dylib").read_text(), "iphoneos runtime")
 
     def test_ci_can_build_a_separate_source_directory(self):
         other = self.root / "other"

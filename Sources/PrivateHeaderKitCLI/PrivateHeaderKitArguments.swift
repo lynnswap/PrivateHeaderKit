@@ -32,6 +32,9 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("target"), help: "Target query, or 'all'.")
     var targetQuery: String?
 
+    @Option(name: .customLong("ssh"), help: "SSH destination for an iPhoneOS source (alias or ssh:// URI).")
+    var sshDestination: String?
+
     @Option(help: "Simulator name or UDID for iOS or watchOS generation.")
     var device: String?
 
@@ -48,6 +51,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             && systemRoot == nil
             && targetQuery == nil
             && device == nil
+            && sshDestination == nil
             && simulatorHelperPath == nil
             && continuationMode == nil
     }
@@ -61,6 +65,26 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
         }
         if usesInteractiveSelection {
             return .interactiveGenerate(outputBaseDirectory: outputBaseDirectory)
+        }
+        if let sshDestination {
+            guard !sshDestination.isEmpty else {
+                throw ValidationError("Argument '--ssh <destination>' must not be empty")
+            }
+            guard platform == nil, sourceVersion == nil, build == nil, systemRoot == nil,
+                  device == nil, simulatorHelperPath == nil else {
+                throw ValidationError("--ssh reads the source OS from the peer; omit --platform, --version, --build, --system-root, --device, and --sim-helper")
+            }
+            guard let outputBaseDirectory else {
+                throw ValidationError("Missing expected argument '--out <out>'")
+            }
+            guard let targetQuery, !targetQuery.isEmpty else {
+                throw ValidationError("Missing expected argument '--target <target>'")
+            }
+            try validatePrivateHeaderKitTargetQuery(targetQuery)
+            return .generateSSH(.init(
+                destination: sshDestination, outputBaseDirectory: outputBaseDirectory,
+                targetQuery: targetQuery, continuationMode: continuationMode
+            ))
         }
         guard let platform else {
             throw ValidationError("Missing expected argument '--platform <platform>'")
@@ -142,6 +166,7 @@ struct PrivateHeaderKitGenerateAlias: ParsableCommand {
 enum PrivateHeaderKitCommand: Equatable {
     case interactiveGenerate(outputBaseDirectory: String?)
     case generate(PrivateHeaderKitGenerateCommand)
+    case generateSSH(PrivateHeaderKitSSHGenerateCommand)
     case decompile(PrivateHeaderKitDecompileCommand)
     case search(PrivateHeaderKitSearchCommand)
 }
