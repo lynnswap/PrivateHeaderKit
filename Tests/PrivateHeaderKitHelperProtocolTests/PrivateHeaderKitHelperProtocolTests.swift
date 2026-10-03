@@ -276,7 +276,7 @@ struct PrivateHeaderKitHelperProtocolTests {
         #expect(report.omittedDiagnosticCount == UInt.max)
     }
 
-    @Test func resolvedGraphPinsReaderForksExactly() throws {
+    @Test func resolvedGraphPinsReaderAndLoggingFixes() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -327,6 +327,16 @@ struct PrivateHeaderKitHelperProtocolTests {
         )
         #expect(machOKitState["version"] == nil)
 
+        let loggingPin = try #require(
+            pins.first { $0["identity"] as? String == "frameworktoolbox" }
+        )
+        let loggingState = try #require(loggingPin["state"] as? [String: Any])
+        #expect(
+            loggingState["revision"] as? String
+                == "6572dd01f5bd0d825317bdb1ae88bc37cee9d5d8"
+        )
+        #expect(loggingState["version"] == nil)
+
         let mirrorData = try Data(
             contentsOf: packageRoot
                 .appendingPathComponent(".swiftpm/configuration/mirrors.json")
@@ -337,14 +347,14 @@ struct PrivateHeaderKitHelperProtocolTests {
         let mirrors = try #require(
             mirrorDocument["object"] as? [[String: String]]
         )
-        let expectedMirror = "https://github.com/lynnswap/MachOKit.git"
-        #expect(Set(mirrors.compactMap { $0["mirror"] }) == [expectedMirror])
-        #expect(
-            Set(mirrors.compactMap { $0["original"] }) == [
-                "https://github.com/MxIris-Reverse-Engineering/MachOKit",
-                "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            ]
-        )
+        for (original, mirror) in [
+            ("https://github.com/MxIris-Reverse-Engineering/MachOKit", "https://github.com/lynnswap/MachOKit.git"),
+            ("https://github.com/MxIris-Reverse-Engineering/MachOKit.git", "https://github.com/lynnswap/MachOKit.git"),
+            ("https://github.com/Mx-Iris/FrameworkToolbox", "https://github.com/lynnswap/FrameworkToolbox.git"),
+            ("https://github.com/Mx-Iris/FrameworkToolbox.git", "https://github.com/lynnswap/FrameworkToolbox.git"),
+        ] {
+            #expect(mirrors.contains { $0["original"] == original && $0["mirror"] == mirror })
+        }
     }
 
     @Test func inventoryNormalizesImagePathMembershipAndRoundTrips() throws {

@@ -31,6 +31,10 @@ let package = Package(
             from: "7.11.1"
         ),
         .package(
+            url: "https://github.com/Mx-Iris/FrameworkToolbox.git",
+            revision: "6572dd01f5bd0d825317bdb1ae88bc37cee9d5d8"
+        ),
+        .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
             revision: "8d451ca2e9d108f0a2024758b33b25e8faa2adbb"
         ),
