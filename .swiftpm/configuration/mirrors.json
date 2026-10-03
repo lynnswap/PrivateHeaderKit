@@ -1,6 +1,14 @@
 {
   "object" : [
     {
+      "mirror" : "https://github.com/lynnswap/FrameworkToolbox.git",
+      "original" : "https://github.com/Mx-Iris/FrameworkToolbox"
+    },
+    {
+      "mirror" : "https://github.com/lynnswap/FrameworkToolbox.git",
+      "original" : "https://github.com/Mx-Iris/FrameworkToolbox.git"
+    },
+    {
       "mirror" : "https://github.com/lynnswap/MachOKit.git",
       "original" : "https://github.com/MxIris-Reverse-Engineering/MachOKit"
     },
