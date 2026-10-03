@@ -38,6 +38,7 @@ case "$platform" in
 esac
 
 cd "$source_root"
+source_root="$PWD"
 output_dir="${output_dir:-$PWD/.build/distribution}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -66,7 +67,11 @@ stage() {
     codesign --force --sign - "$library"
   done
   xcrun install_name_tool -add_rpath "@loader_path/privateheaderkit-runtime-$sdk" "$staging_dir/$name"
-  codesign --force --sign - "$staging_dir/$name"
+  local signing_arguments=(--force --sign -)
+  if [[ "$sdk" == iphoneos ]]; then
+    signing_arguments+=(--entitlements "$source_root/scripts/device-helper.entitlements")
+  fi
+  codesign "${signing_arguments[@]}" "$staging_dir/$name"
 }
 
 if [[ "$platform" == all || "$platform" == macos ]]; then

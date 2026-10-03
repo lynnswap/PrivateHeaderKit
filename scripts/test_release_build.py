@@ -53,6 +53,14 @@ elif name == "codesign":
         sys.exit("binary is not executable")
     if os.environ.get("PHK_TEST_FAIL_SIGN") == Path(args[-1]).name:
         sys.exit(24)
+    if "--entitlements" in args:
+        import plistlib
+        profile = Path(args[args.index("--entitlements") + 1])
+        entitlements = plistlib.loads(profile.read_bytes())
+    else:
+        entitlements = {}
+    with open(os.environ["PHK_TEST_SIGN_LOG"], "a") as log:
+        log.write(json.dumps({"name": Path(args[-1]).name, "entitlements": entitlements}) + "\\n")
 else:
     sys.exit("unexpected tool: " + name)
 '''
@@ -67,6 +75,7 @@ class ReleaseBuildTests(unittest.TestCase):
         (self.source / "scripts").mkdir(parents=True)
         self.script = self.source / "scripts/build-release.sh"
         shutil.copy2(Path(__file__).with_name("build-release.sh"), self.script)
+        shutil.copy2(Path(__file__).with_name("device-helper.entitlements"), self.source / "scripts/device-helper.entitlements")
         stubs = self.root / "stubs"
         stubs.mkdir()
         for name in ("swift", "xcrun", "codesign"):
@@ -74,9 +83,10 @@ class ReleaseBuildTests(unittest.TestCase):
             path.write_text(TOOL)
             path.chmod(0o755)
         self.log = self.root / "builds.jsonl"
+        self.sign_log = self.root / "signatures.jsonl"
         self.output = self.root / "products"
         self.environment = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}",
-                                PHK_TEST_LOG=str(self.log))
+                                PHK_TEST_LOG=str(self.log), PHK_TEST_SIGN_LOG=str(self.sign_log))
 
     def build(self, *args, **env):
         return subprocess.run([str(self.script), "--version", "v1.2.3", "--output-dir",
@@ -100,6 +110,10 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertTrue(all(call["version"] == "v1.2.3" for call in calls))
         self.assertTrue(all("--force-resolved-versions" in call["args"] for call in calls))
         self.assertIn("watchos10.0-simulator", (self.output / "privateheaderkit-watch-sim-helper").read_text())
+        signatures = [json.loads(line) for line in self.sign_log.read_text().splitlines()]
+        privileged = [item for item in signatures if item["entitlements"]]
+        self.assertEqual(privileged, [{"name": "privateheaderkit-device-helper",
+                                      "entitlements": {"task_for_pid-allow": True}}])
 
     def test_device_helper_uses_iphoneos_sdk_and_shared_runtime_staging(self):
         result = self.build("--platform", "iphoneos", "--test")
@@ -110,6 +124,15 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("privateheaderkit-device-helper", calls[0]["args"])
         self.assertIn("PrivateHeaderKitCoreTests", calls[1]["args"])
         self.assertEqual((self.output / "privateheaderkit-runtime-iphoneos/libswiftCompatibilitySpan.dylib").read_text(), "iphoneos runtime")
+
+    def test_relative_source_root_resolves_device_signing_profile_after_chdir(self):
+        result = self.build("--source-root", self.source.name, "--platform", "iphoneos")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(calls[0]["source"], str(self.source.resolve()))
+        signatures = [json.loads(line) for line in self.sign_log.read_text().splitlines()]
+        helper = next(item for item in signatures if item["name"] == "privateheaderkit-device-helper")
+        self.assertEqual(helper["entitlements"], {"task_for_pid-allow": True})
 
     def test_ci_can_build_a_separate_source_directory(self):
         other = self.root / "other"

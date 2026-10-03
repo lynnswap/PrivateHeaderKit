@@ -7,6 +7,19 @@ import PrivateHeaderKitRawDumpCore
 struct PrivateHeaderKitDeviceHelperMain {
   static func main() async {
     var arguments = Array(CommandLine.arguments.dropFirst())
+    if arguments.first == PrivateHeaderKitHelperCommand.processImages.rawValue
+      || arguments.first == PrivateHeaderKitHelperCommand.recoverProcessImage.rawValue
+    {
+      do {
+        let data = try LoadedProcessImageCommand.run(arguments: arguments)
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data([10]))
+      } catch {
+        fputs("privateheaderkit process image: error: \(error)\n", stderr)
+        exit(EXIT_FAILURE)
+      }
+      return
+    }
     if arguments == [PrivateHeaderKitHelperCommand.deviceSource.rawValue] {
       do {
         let inventory = try PrivateHeaderKitRawDumpCLI.deviceSharedCacheInventory()
