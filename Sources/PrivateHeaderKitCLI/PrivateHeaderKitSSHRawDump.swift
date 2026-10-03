@@ -107,11 +107,15 @@ private func receivePrivateHeaderKitSSHAttempt(
       env: nil, cwd: nil,
       consumeStandardOutput: { data in try handle.write(contentsOf: data) }
     )
-    try handle.close()
   } catch {
-    try handle.close()
-    throw error
+    let primary = error
+    do { try handle.close() }
+    catch {
+      throw ToolingError.message("\(primary); recovery archive close also failed: \(error)")
+    }
+    throw primary
   }
+  try handle.close()
   let recovery = archive.deletingLastPathComponent()
     .appendingPathComponent(".ssh-recovery-" + UUID().uuidString, isDirectory: true)
   try manager.createDirectory(at: recovery, withIntermediateDirectories: false)
