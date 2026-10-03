@@ -20,8 +20,8 @@ struct PrivateHeaderKitHelperExecution: Sendable {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                try Task.checkCancellation()
                 guard case .commandFailed = error as? ToolingError else { throw error }
+                try Task.checkCancellation()
                 outcome = .failure(error)
             }
             try Task.checkCancellation()

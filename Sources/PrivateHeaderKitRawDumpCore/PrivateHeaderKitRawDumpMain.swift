@@ -105,6 +105,17 @@ struct DumpOptions {
 }
 
 public struct PrivateHeaderKitRawDumpCLI {
+    package static func deviceSharedCacheInventory() throws -> PrivateHeaderKitSharedCacheInventory {
+        try makeSharedCacheInventory()
+    }
+
+    package static func deviceCacheArchitecture() throws -> String {
+        guard let cache = DyldCacheLoaded.current else {
+            throw DyldSharedCacheAccessError.unavailable
+        }
+        return "cpu\(cache.cpu.typeRawValue)-sub\(cache.cpu.subtypeRawValue)"
+    }
+
     public static func main() async {
         await main(arguments: Array(CommandLine.arguments.dropFirst()))
     }

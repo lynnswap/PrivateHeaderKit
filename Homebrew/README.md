@@ -2,7 +2,7 @@
 
 PrivateHeaderKit is packaged as a source-based Formula. Homebrew owns its
 installation, upgrade, version selection, and removal. The public command and
-three private helpers are installed together in the formula's `libexec`;
+four private helpers are installed together in the formula's `libexec`;
 only `privateheaderkit` is linked into Homebrew's `bin`. Required Swift compatibility
 libraries are collected with `swift-stdlib-tool` and installed in platform-specific
 sibling directories. Each executable locates its libraries relative to itself,
@@ -17,8 +17,8 @@ does not require `.git`.
 Package CI runs before the workflow creates the public source tag. The release
 stays a Draft while the Formula and tap are prepared. The source release workflow
 uses tap CI for stable Formula builds and bottles. Core verification installs the
-public bottle, runs the Formula's functional test and exercises all three helpers
-with local Objective-C fixtures before publishing the source release. Prereleases
+public bottle, runs the Formula's functional test and exercises the macOS and
+iOS/watchOS Simulator helpers with local Objective-C fixtures before publishing the source release. Prereleases
 retain isolated local Formula/bottle checks without requiring a stable tap update.
 
 ## Update the shared tap
@@ -53,7 +53,7 @@ The source release's published-bottle check uses the same host environment.
 Before core stable publication, the release workflow checks the public Formula's
 source URL/SHA-256 and the matching released bottle. A separate read-only macOS
 job installs that bottle, verifies the CLI's version and runs the Formula test and
-all macOS/iOS/watchOS helper smoke tests.
+all macOS and iOS/watchOS Simulator helper smoke tests.
 Tap metadata is checked again immediately before publication. Missing or changed
 tap delivery keeps the core release a Draft. Normal preparation waits do not fail
 the source workflow: short scheduled checks resume only delivery verification and
@@ -80,7 +80,8 @@ Run the package/release contract tests first:
 scripts/test-release-scripts.sh
 ```
 
-On an Apple Silicon Mac with Swift 6.3 or later and both Simulator SDKs, create
+On an Apple Silicon Mac with Swift 6.3 or later, the iPhoneOS SDK, and both
+Simulator SDKs, create
 source assets from a committed revision using a version chosen for local testing:
 
 ```sh

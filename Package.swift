@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "privateheaderkit", targets: ["PrivateHeaderKitCLI"]),
         .executable(name: "privateheaderkit-raw-helper", targets: ["PrivateHeaderKitRawDumpHelper"]),
         .executable(name: "privateheaderkit-sim-helper", targets: ["PrivateHeaderKitSimulatorHelper"]),
+        .executable(name: "privateheaderkit-device-helper", targets: ["PrivateHeaderKitDeviceHelper"]),
     ],
     dependencies: [
         .package(
@@ -138,6 +139,12 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitRawDumpCore",
+            ]
+        ),
+        .executableTarget(
+            name: "PrivateHeaderKitDeviceHelper",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol", "PrivateHeaderKitRawDumpCore", "PrivateHeaderKitCore",
             ]
         ),
         .executableTarget(

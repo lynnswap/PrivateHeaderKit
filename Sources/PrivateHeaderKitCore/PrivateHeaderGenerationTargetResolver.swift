@@ -1,7 +1,7 @@
 import Foundation
 
 extension PrivateHeaderGeneration {
-    enum TargetKind: String, CaseIterable, Hashable, Sendable {
+    enum TargetKind: String, Codable, CaseIterable, Hashable, Sendable {
         case framework
         case privateFramework
         case systemBundle
@@ -10,7 +10,7 @@ extension PrivateHeaderGeneration {
         case other
     }
 
-    package struct TargetCandidate: Hashable, Sendable {
+    package struct TargetCandidate: Codable, Hashable, Sendable {
         let identifier: String
         let displayName: String
         let kind: TargetKind

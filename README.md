@@ -3,12 +3,14 @@
 [日本語](README.ja.md)
 
 A CLI for generating private headers and searching symbol names on macOS, iOS,
-and watchOS. Sources are this Mac's macOS installation or installed Simulator
-runtimes.
+and watchOS. Sources are this Mac's macOS installation, installed Simulator
+runtimes, or an iPhoneOS environment reachable over SSH, such as a jailbroken
+iPhone or vphone.
 
 Homebrew distribution and CI verification target Apple Silicon Macs running
-macOS 26 or later. iOS and watchOS generation also requires Xcode and the matching
-Simulator runtime.
+macOS 26 or later. Simulator generation also requires Xcode and the matching
+runtime. SSH generation requires an SSH server, `tar`, and permission to run the
+bundled iPhoneOS helper on the peer.
 
 ## Install and Run
 
@@ -21,6 +23,16 @@ Follow the prompts to choose a source and targets. Generated files are saved
 under `~/PrivateHeaderKit`; the command prints the header directory.
 For an existing standalone installation, follow the
 [migration instructions](Docs/installation.md#move-from-the-standalone-installer).
+
+To generate from a configured SSH destination:
+
+```sh
+privateheaderkit --ssh iphone-se --out ~/PrivateHeaderKit --target SpringBoard,SpringBoardUI
+```
+
+PrivateHeaderKit reads the OS version and build from the peer. See the
+[SSH setup and generation guide](Docs/generation.md#iphoneos-over-ssh) for
+authentication and USB forwarding.
 
 ## Update
 

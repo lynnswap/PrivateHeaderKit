@@ -2,7 +2,7 @@
 
 PrivateHeaderKit is distributed through the `lynnswap/tap` Homebrew Formula.
 Homebrew installs the public `privateheaderkit` command together with the
-private macOS, iOS Simulator, and watchOS Simulator helpers and their required
+private macOS, iOS Simulator, watchOS Simulator, and iPhoneOS helpers and their required
 Swift compatibility libraries.
 
 ## Requirements
@@ -12,10 +12,12 @@ Swift compatibility libraries.
   macOS 14; older systems are outside that support range rather than explicitly
   rejected by the executable.
 - Homebrew.
-- To build from source: Swift 6.3 or later and Xcode with the iOS Simulator and
-  watchOS Simulator SDKs.
-- To generate iOS or watchOS headers: Xcode and the corresponding installed
-  Simulator runtime. Connected physical devices are not generation sources.
+- To build from source: Swift 6.3 or later and Xcode with the iOS Simulator,
+  watchOS Simulator, and iPhoneOS SDKs.
+- To generate from an iOS or watchOS Simulator: Xcode and the corresponding
+  installed Simulator runtime.
+- To generate from an iPhoneOS SSH peer: an SSH server, `tar`, and permission
+  to execute the bundled helper on the peer. See [SSH generation](generation.md#iphoneos-over-ssh).
 
 The Formula requires Xcode 26.4 or later when building from source; Xcode 26.4
 includes Swift 6.3. Xcode's own [host macOS requirements](https://developer.apple.com/xcode/system-requirements)
@@ -52,7 +54,7 @@ do not run a separate updater over a Homebrew-managed installation.
 
 ## Build from Source
 
-Build all four executables from a checkout or extracted source archive:
+Build all five executables from a checkout or extracted source archive:
 
 ```sh
 scripts/build-release.sh --version dev
@@ -62,9 +64,21 @@ scripts/build-release.sh --version dev
 For a released source archive, pass its release version instead of `dev`.
 The build uses the revisions in `Package.resolved` and does not require an
 installed Simulator runtime or a Git checkout. The output directory contains
-all four executables; keep them together when running the built command.
+the public command, four helpers, and their Swift compatibility library
+directories; keep them together when running the built command.
 Use `--output-dir <directory>` to select another build output directory.
 This build command does not install or change `PATH`.
+
+To build only the iPhoneOS helper:
+
+```sh
+scripts/build-release.sh --version dev --platform iphoneos
+```
+
+The staged helper is `privateheaderkit-device-helper`; its Swift libraries are
+in `privateheaderkit-runtime-iphoneos`. When running the CLI from a source
+checkout, SSH generation builds this helper automatically. Installed
+distributions use the bundled helper.
 
 To build the published Formula from source under Homebrew:
 
