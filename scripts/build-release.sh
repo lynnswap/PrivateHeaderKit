@@ -8,7 +8,7 @@ Usage: scripts/build-release.sh --version <version> [options]
   --output-dir <dir>      Stage binaries here (default: .build/distribution).
   --platform <platform>  Build macos, ios-simulator, watchos-simulator, or iphoneos only.
   --source-root <dir>    Source directory (default: this script's repo).
-  --test                 Run macOS tests or compile Simulator test targets.
+  --test                 Run macOS tests or compile platform test targets.
 
 Builds all five executables by default. No Git checkout or installed runtime
 is needed to build. The caller owns installation and version management.

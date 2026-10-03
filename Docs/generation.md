@@ -37,7 +37,7 @@ privateheaderkit --out ~/CustomHeaders
 The command prints the concrete header directory when a run starts and again
 in the completion summary.
 
-macOS generation works from the host system. iOS and watchOS generation require
+macOS generation works from the host system. iOS and watchOS Simulator generation require
 Xcode, `xcrun`, `simctl`, and the selected Simulator runtime. PrivateHeaderKit
 creates and boots one dedicated simulator device for the run, then deletes that
 exact device after generation, failure, or interruption. The wizard uses the

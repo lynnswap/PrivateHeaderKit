@@ -77,8 +77,8 @@ scripts/build-release.sh --version dev --platform iphoneos
 
 The staged helper is `privateheaderkit-device-helper`; its Swift libraries are
 in `privateheaderkit-runtime-iphoneos`. When running the CLI from a source
-checkout, SSH generation builds this helper automatically if no staged helper
-is beside the CLI. Installed distributions use the bundled helper.
+checkout, SSH generation builds this helper automatically. Installed
+distributions use the bundled helper.
 
 To build the published Formula from source under Homebrew:
 
