@@ -141,6 +141,67 @@ import MachO
         #expect(report.encryptedBytesRecovered == 64)
     }
 
+    @Test func matching64BitUniversalSliceUses64BitArchitectureOffsetsAndSizes() throws {
+        let fixture = try ProcessImageFixture()
+        defer { fixture.remove() }
+        let first = fixture.binary(uuid: fixture.otherUUID)
+        let active = fixture.binary()
+        var universal = Data(repeating: 0, count: 0xb000)
+        write(fat_header(magic: FAT_MAGIC_64.byteSwapped, nfat_arch: UInt32(2).byteSwapped), to: &universal, at: 0)
+        for (index, offset) in [UInt64(0x4000), UInt64(0x8000)].enumerated() {
+            write(fat_arch_64(cputype: CPU_TYPE_ARM64.byteSwapped,
+                              cpusubtype: CPU_SUBTYPE_ARM64_ALL.byteSwapped,
+                              offset: offset.byteSwapped, size: UInt64(active.count).byteSwapped,
+                              align: UInt32(14).byteSwapped, reserved: 0),
+                  to: &universal, at: 8 + index * MemoryLayout<fat_arch_64>.size)
+        }
+        universal.replaceSubrange(0x4000..<0x4000 + first.count, with: first)
+        universal.replaceSubrange(0x8000..<0x8000 + active.count, with: active)
+        try universal.write(to: fixture.source)
+        let report = try fixture.process.recover(image: fixture.image(), to: fixture.destination)
+        let output = try MachOFile(url: fixture.destination)
+        #expect(output.loadCommands.info(of: LoadCommand.uuid)?.uuid == fixture.uuid)
+        #expect(!output.isEncrypted)
+        #expect(try Data(contentsOf: fixture.destination).count == active.count)
+        #expect(report.encryptedBytesRecovered == 64)
+    }
+
+    @Test func truncatedTypedLoadCommandIsRejectedBeforeMachOKitAndKeepsPreviousOutput() throws {
+        let fixture = try ProcessImageFixture()
+        defer { fixture.remove() }
+        var malformed = fixture.binary()
+        let header = malformed.withUnsafeBytes { $0.loadUnaligned(as: mach_header_64.self) }
+        let commandOffset = MemoryLayout<mach_header_64>.size + Int(header.sizeofcmds)
+        write(load_command(cmd: UInt32(LC_DYSYMTAB), cmdsize: UInt32(MemoryLayout<load_command>.size)),
+              to: &malformed, at: commandOffset)
+        write(header.ncmds + 1, to: &malformed, at: MemoryLayout<mach_header_64>.offset(of: \.ncmds)!)
+        write(header.sizeofcmds + UInt32(MemoryLayout<load_command>.size),
+              to: &malformed, at: MemoryLayout<mach_header_64>.offset(of: \.sizeofcmds)!)
+        try malformed.write(to: fixture.source)
+        let previous = Data("previous result".utf8)
+        try previous.write(to: fixture.destination)
+        #expect(throws: ProcessImageRecoveryError.invalidMetadata("invalid original Mach-O command size")) {
+            try fixture.process.recover(image: fixture.image(), to: fixture.destination)
+        }
+        #expect(try Data(contentsOf: fixture.destination) == previous)
+        #expect(try fixture.stagingNames().isEmpty)
+    }
+
+    @Test func hugeDyldCountReadsMappedRecordsWithoutAllocatingTheClaimedArray() throws {
+        let fixture = try ProcessImageFixture()
+        defer { fixture.remove() }
+        fixture.configureInventory([(fixture.loadAddress, fixture.pathAddress)])
+        var information = try #require(fixture.memory.regions[fixture.memory.dyldAddress])
+        write(UInt32.max, to: &information, at: 4)
+        fixture.memory.regions[fixture.memory.dyldAddress] = information
+        #expect(throws: FakeProcessMemory.Failure.unavailable) {
+            try fixture.process.images()
+        }
+        #expect(fixture.memory.reads.contains { $0.address == fixture.loadAddress })
+        #expect(fixture.memory.reads.allSatisfy { $0.count <= Int(PATH_MAX) })
+        #expect(fixture.memory.reads.contains { $0.address == 0xb0000 + UInt64(MemoryLayout<dyld_image_info>.size) })
+    }
+
     @Test func originalFileAndParentDirectoryAliasCannotBeUsedAsDestination() throws {
         let fixture = try ProcessImageFixture()
         defer { fixture.remove() }
