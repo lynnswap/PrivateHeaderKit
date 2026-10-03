@@ -125,6 +125,15 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("PrivateHeaderKitCoreTests", calls[1]["args"])
         self.assertEqual((self.output / "privateheaderkit-runtime-iphoneos/libswiftCompatibilitySpan.dylib").read_text(), "iphoneos runtime")
 
+    def test_relative_source_root_resolves_device_signing_profile_after_chdir(self):
+        result = self.build("--source-root", self.source.name, "--platform", "iphoneos")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(calls[0]["source"], str(self.source.resolve()))
+        signatures = [json.loads(line) for line in self.sign_log.read_text().splitlines()]
+        helper = next(item for item in signatures if item["name"] == "privateheaderkit-device-helper")
+        self.assertEqual(helper["entitlements"], {"task_for_pid-allow": True})
+
     def test_ci_can_build_a_separate_source_directory(self):
         other = self.root / "other"
         other.mkdir()
