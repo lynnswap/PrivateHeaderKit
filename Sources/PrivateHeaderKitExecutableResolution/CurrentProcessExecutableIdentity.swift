@@ -2,6 +2,7 @@ import Foundation
 
 #if canImport(Darwin)
 import Darwin
+import Darwin.crt_externs
 import MachO
 #endif
 
@@ -66,7 +67,17 @@ package func currentProcessExecutableName() throws -> String {
 
 package func currentProcessMachOUUID() throws -> UUID {
 #if canImport(Darwin)
-    guard let header = _dyld_get_image_header(0),
+    try currentProcessMachOUUID(executableHeader: _NSGetMachExecuteHeader())
+#else
+    throw CurrentProcessExecutableIdentityError.imageInspectionFailed
+#endif
+}
+
+#if canImport(Darwin)
+package func currentProcessMachOUUID(
+    executableHeader header: UnsafePointer<mach_header_64>?
+) throws -> UUID {
+    guard let header,
           header.pointee.magic == MH_MAGIC_64
     else {
         throw CurrentProcessExecutableIdentityError.imageInspectionFailed
@@ -94,7 +105,5 @@ package func currentProcessMachOUUID() throws -> UUID {
         remainingBytes -= commandSize
     }
     throw CurrentProcessExecutableIdentityError.missingMachOUUID
-#else
-    throw CurrentProcessExecutableIdentityError.imageInspectionFailed
-#endif
 }
+#endif
