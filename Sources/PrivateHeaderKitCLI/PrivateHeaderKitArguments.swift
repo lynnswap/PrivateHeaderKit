@@ -38,6 +38,9 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Option(name: .customLong("sim-helper"), help: "Explicit simulator helper path.")
     var simulatorHelperPath: String?
 
+    @Flag(name: .customLong("runtime-metadata"), help: "Supplement missing Objective-C classes using runtime metadata. Loads the target image and runs its initializers.")
+    var preferRuntimeMetadata = false
+
     @Flag(exclusivity: .exclusive, help: "Continue or restart all-target generation. --fresh also permits legacy migration.")
     var continuationMode: PrivateHeaderKitContinuationMode?
 
@@ -49,6 +52,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             && targetQuery == nil
             && device == nil
             && simulatorHelperPath == nil
+            && !preferRuntimeMetadata
             && continuationMode == nil
     }
 
@@ -105,7 +109,8 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             targetQuery: targetQuery,
             continuationMode: continuationMode,
             device: device,
-            simulatorHelperPath: simulatorHelperPath
+            simulatorHelperPath: simulatorHelperPath,
+            preferRuntimeMetadata: preferRuntimeMetadata
         ))
     }
 }

@@ -382,10 +382,12 @@ private extension Data {
 
 @Suite
 struct PrivateHeaderKitRawDumpEnvironmentTests {
-    @Test func resolvesRuntimeFallbackFromInjectedEnvironment() {
-        #expect(shouldUseRuntimeFallback(environment: ["PH_RUNTIME_ROOT": "/tmp/runtime"]) == true)
-        #expect(shouldUseRuntimeFallback(environment: ["SIMCTL_CHILD_PH_RUNTIME_ROOT": "/tmp/runtime"]) == true)
-        #expect(shouldUseRuntimeFallback(environment: [:]) == false)
+    @Test(arguments: ["PH_RUNTIME_ROOT", "SIMCTL_CHILD_PH_RUNTIME_ROOT"], [false, true])
+    func runtimeMetadataRequiresExplicitFlag(_ rootVariable: String, _ requestsRuntimeMetadata: Bool) throws {
+        let args = (requestsRuntimeMetadata ? ["-R"] : []) + ["/tmp/input"]
+        let parsed = try #require(parseArguments(args, environment: [rootVariable: "/tmp/runtime"]))
+
+        #expect(parsed.options.useRuntimeFallback == requestsRuntimeMetadata)
     }
 
     @Test func resolvesLoggingAndProfilingFromInjectedEnvironment() {
