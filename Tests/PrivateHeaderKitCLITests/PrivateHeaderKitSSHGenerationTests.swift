@@ -22,6 +22,18 @@ struct PrivateHeaderKitSSHGenerationTests {
     #expect(command.outputBaseDirectory == "/tmp/Headers")
     #expect(command.targetQuery == "SpringBoard,SpringBoardUI")
     #expect(command.executionOptions.continuation == .resume)
+    #expect(!command.preferRuntimeMetadata)
+  }
+
+  @Test func sshRuntimeMetadataRequiresAnExplicitOption() throws {
+    guard case .generateSSH(let command) = try parsePrivateHeaderKitCommand([
+      "privateheaderkit", "--ssh", "iphone-se", "--runtime-metadata",
+      "--out", "/tmp/Headers", "--target", "SpringBoard",
+    ]) else {
+      Issue.record("SSH runtime metadata did not produce an SSH command")
+      return
+    }
+    #expect(command.preferRuntimeMetadata)
   }
 
   @Test(arguments: [

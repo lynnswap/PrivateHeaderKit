@@ -87,7 +87,8 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             try validatePrivateHeaderKitTargetQuery(targetQuery)
             return .generateSSH(.init(
                 destination: sshDestination, outputBaseDirectory: outputBaseDirectory,
-                targetQuery: targetQuery, continuationMode: continuationMode
+                targetQuery: targetQuery, continuationMode: continuationMode,
+                preferRuntimeMetadata: preferRuntimeMetadata
             ))
         }
         guard let platform else {

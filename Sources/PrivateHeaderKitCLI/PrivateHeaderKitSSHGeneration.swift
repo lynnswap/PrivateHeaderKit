@@ -8,6 +8,7 @@ struct PrivateHeaderKitSSHGenerateCommand: Equatable, Sendable {
   let outputBaseDirectory: String
   let targetQuery: String
   let continuationMode: PrivateHeaderKitContinuationMode?
+  var preferRuntimeMetadata = false
 
   var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
     switch continuationMode {
@@ -167,7 +168,7 @@ func runPrivateHeaderKitSSHGenerateCommand(
           device: helper
         ),
         executionMode: .ssh(destination: command.destination, directory: session.directory, controlPath: session.controlPath),
-        rawDumpingOptions: .init(useSharedCache: true),
+        rawDumpingOptions: .init(useSharedCache: true, preferRuntimeMetadata: command.preferRuntimeMetadata),
         executionOptions: command.executionOptions,
         deviceSource: snapshot
       )
