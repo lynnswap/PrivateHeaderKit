@@ -38,14 +38,11 @@ With the tag-archive Formula published, Renovate proposes later tag URL/checksum
 using the tap's own `GITHUB_TOKEN`; formula installation requirements still need
 an explicit update when they change.
 
-Review each Formula PR and approve workflows requested by Renovate to start CI.
-The test workflow creates bottles and the publication workflow prepares a
-candidate from the successful CI run. Approve its reviewed PR head and tested
-artifact in the `homebrew-publish` Environment. The protected job verifies and
-publishes those local bottle files using `brew pr-upload`, updates the bottle
-metadata, and merges the Formula change. No cross-repository token or persistent
-credential is needed. The tap guide documents required Actions settings,
-manual dispatch and recovery operations.
+The tap starts read-only bottle CI for its native Renovate proposals automatically.
+Successful CI prepares a candidate from the exact PR head and immutable tested
+artifact. The publisher revalidates that candidate, uploads the local bottles,
+updates bottle metadata, and merges the Formula change automatically. It uses
+the tap's own `GITHUB_TOKEN`. The tap guide documents Actions settings and recovery.
 
 The tap builds on Apple Silicon macOS 26 with Xcode 26.6 and uses the normal
 Homebrew bottle tag for that host. No older-OS tag substitution is performed.
@@ -58,8 +55,9 @@ Tap metadata is checked again immediately before publication. Missing or changed
 tap delivery keeps the core release a Draft. Normal preparation waits do not fail
 the source workflow: short scheduled checks resume only delivery verification and
 its dependents after matching tap publication, reusing SDK checks and immutable
-prepared assets. Core release approval is requested
-once, before public tag preparation, and inherited by the verified publisher.
+prepared assets. App-key approval is requested once, after the source tag and
+assets are prepared and before immediate tap dispatch. It is inherited by the
+source publisher; bottle publication has no second deployment approval.
 
 Upstream CI owns CLI/helper execution tests on macOS 26 and 27. macOS 14 remains
 the executable deployment target, but older macOS versions are outside the
@@ -67,7 +65,7 @@ supported distribution and verification range. A successful build alone does not
 establish compatibility with an older host.
 
 The prepared Formula's source URL is public before core stable publication.
-Its tap PR still requires review, successful bottle CI and publication approval.
+Its tap PR requires successful bottle CI and candidate verification before automatic publication.
 Never publish a locally generated verification Formula or bottle as a stable release.
 GitHub may change archive compression with advance notice; a changed checksum
 requires a newly verified artifact and bottle build, rather than bypassing checks.

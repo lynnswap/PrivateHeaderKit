@@ -173,6 +173,18 @@ class ReleaseResumptionTests(unittest.TestCase):
         self.assertEqual(self.result()["status"], "running")
         self.assert_no_writes()
 
+    def test_new_preparations_require_successful_tap_key_approval(self):
+        self.core.jobs.append(dict(name=sync.TAP_APPROVAL_JOB, id=110, run_attempt=1,
+                                   status="completed", conclusion="skipped"))
+        self.assertEqual(self.result()["status"], "waiting")
+        self.assert_no_writes()
+        self.core.jobs[-1]["conclusion"] = "failure"
+        self.assertEqual(self.result()["status"], "blocked")
+        self.assert_no_writes()
+        self.core.jobs[-1]["conclusion"] = "success"
+        self.assertEqual(self.result(dry_run=True)["status"], "ready")
+        self.assert_no_writes()
+
     def test_pre_receipt_runs_are_not_adopted_automatically(self):
         self.core.jobs = [job for job in self.core.jobs if job["name"] != sync.RECEIPT_JOB]
         self.assertEqual(self.result()["status"], "waiting")

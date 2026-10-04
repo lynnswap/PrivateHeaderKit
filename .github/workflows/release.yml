@@ -64,8 +64,9 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
   source-approval-summary:
-    name: Review release plan before source publication
-    needs: [prepare, package-tests]
+    name: Review prepared source before tap dispatch
+    needs: [prepare, package-tests, source-tag, package-source]
+    if: needs.prepare.outputs.prerelease == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -75,23 +76,26 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           RELEASE_URL: ${{ needs.prepare.outputs.release_url }}
           CONTENT_DIGEST: ${{ inputs.content_digest }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ARTIFACT_ID: ${{ needs.package-source.outputs.artifact_id }}
         run: |
           {
-            echo '## Release awaiting approval'
+            echo '## Prepared source awaiting tap dispatch approval'
             echo
             printf 'Version: <code>%s</code>\n\n' "$VERSION"
             printf 'Source commit: <code>%s</code>\n\n' "$TARGET_SHA"
             printf 'Approved content digest: <code>%s</code>\n\n' "$CONTENT_DIGEST"
             printf '[Review draft title and notes](%s)\n\n' "$RELEASE_URL"
-            echo 'Package CI passed. Approving release-publish authorizes public source-tag preparation and automatic publication of this unchanged draft after verification and matching stable tap delivery succeed.'
+            printf '[Review code receiving the private key](https://github.com/%s/blob/%s/.github/workflows/release.yml)\n\n' "$GITHUB_REPOSITORY" "$WORKFLOW_SHA"
+            printf '[Prepared source and Formula](https://github.com/%s/actions/runs/%s/artifacts/%s)\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$ARTIFACT_ID"
+            echo 'The approved source tag and assets are prepared. Approving release-publish permits the GitHub App private key to start the tap update. Matching bottle CI, publication, and source release verification then proceed automatically.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   source-tag:
     name: Prepare public approved source tag
-    needs: [prepare, package-tests, source-approval-summary]
+    needs: [prepare, package-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: release-publish
     permissions:
       contents: write
     outputs:
@@ -114,6 +118,48 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
             --target "$TARGET_SHA" --digest "$CONTENT_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
+
+  dispatch-tap:
+    name: Start approved stable tap update
+    needs: [prepare, source-tag, package-source, source-approval-summary]
+    if: needs.prepare.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-publish
+    permissions:
+      # Reading the approved Draft requires Contents write.
+      contents: write
+    steps:
+      - name: Checkout trusted notification code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Revalidate approved content before using the App key
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          CONTENT_DIGEST: ${{ inputs.content_digest }}
+        run: |
+          python3 scripts/release.py verify --repo "$GITHUB_REPOSITORY" \
+            --release-id "$RELEASE_ID" --target "$TARGET_SHA" --digest "$CONTENT_DIGEST"
+      - name: Create a token scoped to tap workflow dispatch
+        id: tap-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.TAP_DISPATCH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_DISPATCH_APP_PRIVATE_KEY }}
+          owner: lynnswap
+          repositories: homebrew-tap
+          permission-actions: write
+      - name: Start the matching stable tap update
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 scripts/release.py dispatch-tap \
+            --source-repository "$GITHUB_REPOSITORY" --version "$VERSION"
 
   package-source:
     name: Package approved source and Formula
@@ -237,11 +283,12 @@ jobs:
 
   tap-status:
     name: Check stable tap delivery
-    needs: [prepare, package-source, package-tests, record-plan]
+    needs: [prepare, package-source, package-tests, record-plan, dispatch-tap]
     if: >-
       always() && needs.prepare.result == 'success' && needs.package-source.result == 'success' &&
       needs.package-tests.result == 'success' &&
-      (needs.prepare.outputs.prerelease == 'true' || needs.record-plan.result == 'success')
+      (needs.prepare.outputs.prerelease == 'true' ||
+       (needs.record-plan.result == 'success' && needs.dispatch-tap.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

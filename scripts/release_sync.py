@@ -18,6 +18,7 @@ import release
 PROBE_JOB = "Check stable tap delivery"
 RECEIPT_JOB = "Record prepared release"
 APPROVAL_JOB = "Prepare public approved source tag"
+TAP_APPROVAL_JOB = "Start approved stable tap update"
 
 
 def pages(github, path, field=None):
@@ -66,6 +67,10 @@ def prepared_candidate(github, draft, run):
     jobs = latest_jobs(github, run["id"])
     required = (APPROVAL_JOB, "Check approved draft", "Package approved source and Formula",
                 "Test approved source / Package Checks", RECEIPT_JOB)
+    # Existing prepared runs approved tag creation before the key job was split.
+    # New workflow runs include the separate tap-key approval job.
+    if TAP_APPROVAL_JOB in jobs:
+        required += (TAP_APPROVAL_JOB,)
     if RECEIPT_JOB not in jobs:
         return None, "This earlier preparation has no immutable release receipt."
     if jobs.get("Publish verified source release", {}).get("conclusion") == "success":

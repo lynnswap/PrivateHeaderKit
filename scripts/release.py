@@ -144,6 +144,24 @@ def matching_releases(github, tag):
         page += 1
 
 
+def dispatch_tap(github, source_repository, tag):
+    if is_prerelease(tag):
+        print("Prereleases do not start stable tap updates.")
+        return
+    try:
+        result = github.api("actions/workflows/renovate.yml/dispatches", "POST",
+                            dict(ref="main", inputs=dict(source_repository=source_repository,
+                                                         source_tag=tag)))
+    except ReleaseError as error:
+        raise ReleaseError(
+            f"{error}\nPublic source tag {tag} remains. Tap dispatch acceptance may be uncertain; "
+            "inspect the tap's Actions runs before retrying the notification."
+        ) from error
+    print(f"Tap update dispatch accepted for {source_repository} {tag}.")
+    url = result.get("html_url") if isinstance(result, dict) else None
+    print(f"Actions: {url or f'https://github.com/{github.repository}/actions/workflows/renovate.yml'}")
+
+
 def start(github, tag, sha, title, notes):
     check_sha(sha)
     prerelease = is_prerelease(tag)
@@ -347,6 +365,9 @@ def main():
     launch.add_argument("--notes-file", required=True, type=Path)
     launch.add_argument("--title", help="Defaults to the version")
     launch.add_argument("--repo", required=True)
+    notify = commands.add_parser("dispatch-tap", help="Start the tap update after approved stable tag creation")
+    notify.add_argument("--source-repository", required=True)
+    notify.add_argument("--version", required=True)
     for name in ("homebrew-ready", "tap-status"):
         homebrew = commands.add_parser(name, help="Verify public delivery or report normal preparation waits")
         homebrew.add_argument("--version", required=True)
@@ -367,6 +388,9 @@ def main():
             command.add_argument("--tested-bottle-url")
     arguments = parser.parse_args()
     try:
+        if arguments.command == "dispatch-tap":
+            dispatch_tap(GitHub(HOMEBREW_TAP), arguments.source_repository, arguments.version)
+            return 0
         if arguments.command in ("homebrew-ready", "tap-status"):
             required = not is_prerelease(arguments.version)
             pending = None

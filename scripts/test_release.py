@@ -71,7 +71,7 @@ class FakeGitHub:
         if path == "releases" and method == "POST":
             self.release = dict(data, id=42, assets=[], html_url="https://github.com/example/project/releases/42")
             return copy.deepcopy(self.release)
-        if path == "actions/workflows/release.yml/dispatches":
+        if path in ("actions/workflows/release.yml/dispatches", "actions/workflows/renovate.yml/dispatches"):
             if self.dispatch_error:
                 raise release.APIError(503, "Dispatch response unavailable")
             return None
@@ -119,6 +119,29 @@ class ReleaseTests(unittest.TestCase):
 
     def publish(self, github, digest):
         release.publish(github, 42, SHA, digest, self.release_dir, self.tested_delivery)
+
+    def test_stable_tag_notification_starts_only_the_main_tap_workflow(self):
+        github = FakeGitHub()
+        release.dispatch_tap(github, "lynnswap/swift-build", "v0.3.4")
+        self.assertEqual(github.writes, [("actions/workflows/renovate.yml/dispatches", "POST",
+            dict(ref="main", inputs=dict(source_repository="lynnswap/swift-build", source_tag="v0.3.4")))])
+        self.assertIsNone(github.tag)
+        self.assertIsNone(github.release)
+
+    def test_prereleases_and_invalid_tags_do_not_notify_the_stable_tap(self):
+        github = FakeGitHub()
+        release.dispatch_tap(github, "lynnswap/swift-build", "v0.3.5-rc.1")
+        for tag in ("custom-v0.3.4", "main", "v0.3.4\n", "v0.3.4; command"):
+            with self.subTest(tag=tag), self.assertRaises((release.ReleaseError, subprocess.CalledProcessError)):
+                release.dispatch_tap(github, "lynnswap/swift-build", tag)
+        self.assertEqual(github.calls, [])
+
+    def test_failed_notification_reports_the_remaining_tag_without_retrying(self):
+        github = FakeGitHub()
+        github.dispatch_error = True
+        with self.assertRaisesRegex(release.ReleaseError, "Public source tag v0.3.4 remains"):
+            release.dispatch_tap(github, "lynnswap/swift-build", "v0.3.4")
+        self.assertEqual(len(github.writes), 1)
 
     def test_start_keeps_notes_and_pins_dispatch_without_creating_tag(self):
         github = FakeGitHub()

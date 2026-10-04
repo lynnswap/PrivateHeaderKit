@@ -192,13 +192,13 @@ brew install lynnswap/tap/privateheaderkit
 The command creates or reuses a matching Draft Release, then dispatches the
 `Release` workflow from the default branch. It prints the Draft and Actions URLs
 without waiting for publication. Do not create or push the release tag locally.
-After package CI passes, review the version, target SHA, content digest, and Draft
-title/notes in the Actions summary. Approve the `release-publish` Environment
-through **Review deployments → Approve and deploy**. This authorizes public
-source-tag preparation and automatic publication of the unchanged candidate once
-verification and matching stable tap delivery succeed. The protected tag job is
-the first public action; its approval is inherited through required dependencies,
-so no second core publication approval is requested.
+After package CI passes, the workflow prepares the public source tag and assets
+automatically while the Release remains a Draft. Review the approved content,
+prepared assets, and pinned workflow code in the Actions summary, then approve
+`release-publish` through **Review deployments → Approve and deploy**. This gates
+only the job that receives the GitHub App private key and dispatches the tap
+update. The tap's bottle CI/publication and the source Release's remaining
+installation checks and publication then proceed automatically.
 
 The workflow creates the approved tag while the release stays a Draft. Its public
 tag archive lets the tap build before stable publication. When adopting tag
@@ -245,10 +245,9 @@ When adopting tag archives, copy `privateheaderkit.rb` from the prepared Actions
 artifact into a reviewed `lynnswap/homebrew-tap` PR. Do this before core stable
 publication; the previous release-asset URL cannot discover an unpublished
 release. Once the tag-archive Formula is published, the tap's Renovate job can
-propose later tag URL/checksum updates using its own `GITHUB_TOKEN`. Review the
-update PR and approve its workflows to start CI. Successful bottle CI prepares
-a candidate for the `homebrew-publish` Environment; approve the reviewed head and
-tested artifact to publish the bottles and merge the Formula update. Changes to
+propose later tag URL/checksum updates using its own `GITHUB_TOKEN`. Native update PRs start pinned read-only CI automatically. Successful bottle CI prepares
+a candidate for automatic publication; the publisher revalidates the head and
+exact tested artifact before publishing bottles and merging the Formula update. Changes to
 installation, dependencies or tests still require an explicit recipe update.
 See the [tap maintenance guide](https://github.com/lynnswap/homebrew-tap/blob/main/CONTRIBUTING.md)
 and [Homebrew packaging](Homebrew/README.md) for setup and verification.
@@ -263,8 +262,8 @@ For local source builds, use `scripts/build-release.sh --version dev`. Use
 for one platform and `--output-dir <directory>` to select the output location.
 The caller owns installation; the script only builds and stages executables.
 
-The protected tag preparation job creates the tag at the tested SHA. The final
-publisher depends on that approved job and automatically publishes the same Draft, preserving its title, notes, and prerelease state. Existing tags
+The automatic tag preparation job creates the tag at the tested SHA. The final
+publisher depends on the approved tap-dispatch job and automatically publishes the same Draft, preserving its title, notes, and prerelease state. Existing tags
 must resolve to that SHA, including annotated tags. Stable releases use GitHub's
 latest-release selection; prereleases are not marked latest. Draft verification
 requires push access. Draft validation, tag creation and publication run trusted
@@ -277,18 +276,15 @@ unrelated release metadata does not. GitHub does not provide a transaction
 covering tags, assets, and publication, so maintainers must serialize those
 operations.
 
-If the tap is not ready, **Check stable tap delivery** succeeds with a preparation
-wait summary. The source run can finish successfully while the release remains a
-Draft; installation and publication jobs are skipped. The tap automatically
-proposes the update and starts read-only CI. Its `homebrew-publish` Environment
-sends the required maintainer a deployment-review request after successful bottle
-checks. Review the Formula and tested artifacts, then approve publication.
-Enable deployment-review push notifications in GitHub Mobile to receive these
-requests on a phone. The initial `release.py start` command is the only start
-trigger; normal delivery needs no agent monitoring or manual CI/rerun actions.
+Stable releases dispatch the tap update immediately after `release-publish`
+approval. If delivery is still pending, **Check stable tap delivery** succeeds with
+a wait summary and the Release remains a Draft. Tap CI builds the bottle and
+publication runs automatically after its exact tested candidate is verified.
+Periodic tap discovery remains available for recovery; normal release updates
+need no manual PR creation or CI dispatch.
 
 **Resume prepared releases** checks every 15 minutes. Its short trusted job
-validates the unchanged Draft, original protected source approval, successful
+validates the unchanged Draft, original tap-dispatch approval, successful
 checks and immutable preparation receipt/assets against matching public tap
 delivery. It reruns only **Check stable tap delivery** and its dependent jobs in
 the original run. SDK checks and completed preparation jobs are reused. No runner
@@ -301,11 +297,10 @@ gh workflow run resume-release.yml --repo lynnswap/PrivateHeaderKit --ref main
 
 The preparation receipt is derived run/artifact metadata, not a separate source
 of approved release content. Changing Draft notes, target, tag or prepared bytes
-blocks resumption; real verification/API failures remain errors. Source and tap
-publication approvals are preserved. The resumption job uses own-repository
+blocks resumption; real verification/API failures remain errors. Approval of prepared runs is preserved. The resumption job uses own-repository
 Actions write permission to rerun that job, and Contents write because GitHub
 requires push access to read unpublished Drafts. It never executes source or
-Formula code with these credentials and uses no cross-repository token.
+Formula code with these credentials and uses no cross-repository token; the separate approved tap-dispatch job uses a scoped App token.
 
 For exceptional recovery, inspect the failure and rerun only the affected job
 and dependents. Runs without preparation receipts require inspected recovery.
@@ -334,13 +329,24 @@ target requires a new content approval and verification run.
 In **Settings → Environments → release-publish**, require the maintainer as a
 reviewer, allow only the `main` branch, and disable administrator bypass. Leave
 **Prevent self-review** off when the maintainer initiating the run is also its
-approver. No environment secrets or additional release token are required.
+approver. Store the tap-dispatch App Client ID and private key as described below;
+only the approved tap-dispatch job receives those credentials.
 Keep repository workflow permissions read-only by default; the workflow grants
-write access only to draft validation, protected tested-tag preparation, the
-publisher that depends on it and the short trusted resumption job. Draft
+write access only to Draft validation, tested-tag preparation, approved tap
+notification, the publisher, and the short trusted resumption job. Draft
 validation requires push access because GitHub treats unpublished releases as
 private information.
 
 Dependabot proposes weekly action and Swift dependency updates. Review those PRs
 and their CI results; they are not merged automatically. Workflow changes should
 remain reviewed changes to the publication policy.
+
+### Tap dispatch App setup
+
+Register a private GitHub App with **Actions: read and write** and install it on
+`lynnswap/homebrew-tap` only. In this repository's `release-publish` Environment,
+set `TAP_DISPATCH_APP_CLIENT_ID` as a variable and `TAP_DISPATCH_APP_PRIVATE_KEY`
+as a secret containing the App's PEM private key. No webhook or user OAuth flow
+is required. Only the approved tap-dispatch job receives the key; it runs trusted
+workflow code, verifies unchanged approved content, and issues a token scoped to
+that tap and `Actions: write`. The token is revoked when the job ends.
