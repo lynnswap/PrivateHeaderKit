@@ -88,30 +88,26 @@ brew install --build-from-source lynnswap/tap/privateheaderkit
 
 ## Move from the Standalone Installer
 
-New releases no longer provide the standalone installer or the
-`privateheaderkit-install` executable. Existing installations and already
-published release assets remain available until you choose to remove them.
+Run the familiar installer once to install the Homebrew Formula and switch the
+old command path to it:
 
-1. Install the Formula and check the new command directly:
+```sh
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+```
 
-   ```sh
-   brew install lynnswap/tap/privateheaderkit
-   "$(brew --prefix privateheaderkit)/bin/privateheaderkit" --help
-   ```
+The installer checks the new command, backs up the recognized old entry point,
+and makes that path follow Homebrew upgrades. Existing absolute command paths
+continue to work. Use the original `--prefix` or `--bindir` for a custom old
+installation; piped invocations can pass these as `sh -s -- --prefix /path`.
+`PREFIX` and `BINDIR` remain supported. `--dry-run` reports the locations without
+running Homebrew or changing files.
 
-2. Inspect the commands selected by your shell:
+The old `~/.local/libexec/privateheaderkit` payloads remain available to processes
+that are still running. Generated headers under `~/PrivateHeaderKit` and custom
+output directories are preserved. The installer reports its backup directory and
+restores old entry points if migration fails. Restart running commands to use the
+new installation. Future updates use `brew upgrade privateheaderkit`.
 
-   ```sh
-   type -a privateheaderkit
-   ls -l ~/.local/bin/privateheaderkit
-   ```
-
-3. If that path is the old standalone command, remove that command link. After
-   confirming the Homebrew installation works, you may also remove the old
-   `~/.local/libexec/privateheaderkit` installation directory. If you used a
-   custom prefix or bindir, inspect and remove only the corresponding old
-   installation paths instead.
-
-Keep `~/PrivateHeaderKit` and any custom output directory: they contain your
-results, not the old executable installation. The Formula does not scan or
-remove standalone installations and does not edit shell profiles.
+The Formula itself does not scan standalone installations or change shell
+profiles. The release `install.sh` performs this one-time handoff; the old
+`privateheaderkit-install` executable is no longer distributed.

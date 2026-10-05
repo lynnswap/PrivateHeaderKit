@@ -236,6 +236,7 @@ workflow publishes exactly:
 
 - `privateheaderkit-<version>.tar.gz` (source; the filename version omits `v`)
 - `privateheaderkit.rb`
+- `install.sh` (Homebrew installation and standalone migration)
 - `SHA256SUMS.txt`
 
 The publication job downloads the packaging job's exact artifact ID and binds
@@ -310,7 +311,7 @@ a fresh preparation run.
 
 If checks fail, the release stays a Draft; the public source tag may already
 remain. A failed upload or publication can leave some assets; use GitHub's re-run controls after fixing
-the failure. The publish job replaces the three expected assets, checks their
+the failure. The publish job replaces the four expected assets, checks their
 uploaded digests, and resumes without moving an existing tag. Unexpected assets
 require maintainer review and removal. Rerunning after successful publication
 does not modify the published release. If dispatch fails or its response is
@@ -350,3 +351,10 @@ as a secret containing the App's PEM private key. No webhook or user OAuth flow
 is required. Only the approved tap-dispatch job receives the key; it runs trusted
 workflow code, verifies unchanged approved content, and issues a token scoped to
 that tap and `Actions: write`. The token is revoked when the job ends.
+
+The release packager reads `Homebrew/installer.json` from the approved source
+commit, downloads the shared installer from that immutable homebrew-tap revision,
+and verifies its SHA-256 before embedding it in `install.sh`. Update the pin
+deliberately when adopting shared installer changes. The generated installer is
+covered by the release checksums and downloads no additional migration code at
+execution time.
