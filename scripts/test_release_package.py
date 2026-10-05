@@ -161,10 +161,12 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertFalse((self.output / "SHA256SUMS.txt").exists())
 
     def test_prerelease_does_not_offer_a_stable_tap_installer(self):
-        packaging.package(self.source, self.commit, "v1.2.3-rc.1", "example/core", self.output)
-        packaging.verify(self.output, "v1.2.3-rc.1")
-        self.assertNotIn("install.sh", packaging.asset_names("v1.2.3-rc.1"))
-        self.assertFalse((self.output / "install.sh").exists())
+        for tag in ("v1.2.3-rc.1", "v1.2.3.rc.1"):
+            with self.subTest(tag=tag):
+                packaging.package(self.source, self.commit, tag, "example/core", self.output)
+                packaging.verify(self.output, tag)
+                self.assertNotIn("install.sh", packaging.asset_names(tag))
+                self.assertFalse((self.output / "install.sh").exists())
         self.download.assert_not_called()
 
     def test_version_classification(self):

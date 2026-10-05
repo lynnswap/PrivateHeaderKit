@@ -15,9 +15,15 @@ import sys
 import tarfile
 
 
+def is_prerelease(tag):
+    return subprocess.check_output([
+        str(Path(__file__).with_name("release-version-is-prerelease.sh")), tag,
+    ], text=True).strip() == "true"
+
+
 def asset_names(tag):
     return (f"privateheaderkit-{tag.removeprefix('v')}.tar.gz", "privateheaderkit.rb",
-            *(("install.sh",) if "-" not in tag else ()), "SHA256SUMS.txt")
+            *(("install.sh",) if not is_prerelease(tag) else ()), "SHA256SUMS.txt")
 
 
 def sha256(path):
@@ -134,8 +140,6 @@ def main():
         command.add_argument("--version", required=True)
     args = parser.parse_args()
     try:
-        subprocess.run([str(Path(__file__).with_name("release-version-is-prerelease.sh")),
-                        args.version], check=True, stdout=subprocess.DEVNULL)
         if args.command == "create":
             package(args.source_root, args.commit, args.version, args.repo, args.output_dir,
                     args.source_archive)
