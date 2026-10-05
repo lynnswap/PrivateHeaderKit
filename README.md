@@ -12,17 +12,38 @@ macOS 26 or later. Simulator generation also requires Xcode and the matching
 runtime. SSH generation requires an SSH server, `tar`, and permission to run the
 bundled iPhoneOS helper on the peer.
 
-## Install and Run
+## Quick start
+
+### Install
+
+For a new installation, use [Homebrew](https://brew.sh/):
 
 ```sh
 brew install lynnswap/tap/privateheaderkit
+```
+
+> [!NOTE]
+> If you previously used the shell installer or `privateheaderkit-install`, run
+> this command once to migrate to Homebrew, even if you have already run `brew install`:
+>
+> ```sh
+> curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+> ```
+>
+> Restart any running commands afterward. Generated headers are preserved.
+> For an old custom installation directory, see the
+> [migration options](Docs/installation.md#custom-installation-directories).
+
+### Generate headers
+
+```sh
 privateheaderkit
 ```
 
 Follow the prompts to choose a source and targets. Generated files are saved
 under `~/PrivateHeaderKit`; the command prints the header directory.
-For an existing standalone installation, follow the
-[migration instructions](Docs/installation.md#move-from-the-standalone-installer).
+
+## Generate over SSH
 
 To generate from a configured SSH destination:
 
@@ -43,11 +64,12 @@ privateheaderkit --ssh iphone-se --app com.example.Sample --out ~/PrivateHeaderK
 See [application generation](Docs/generation.md#running-applications-over-ssh) for
 PID selection and saving a Mach-O file for local analysis.
 
-## Update
+## Update a Homebrew installation
 
 ```sh
 brew update
-brew upgrade privateheaderkit
+brew upgrade lynnswap/tap/privateheaderkit
+privateheaderkit --tool-version
 ```
 
 ## Guides

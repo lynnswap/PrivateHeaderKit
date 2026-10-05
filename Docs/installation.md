@@ -28,18 +28,22 @@ matching bottle is available, Homebrew attempts a source build, which still need
 a host OS supported by the required Xcode. Retaining the macOS 14 deployment
 target does not promise Homebrew installation on older systems.
 
-## Install, Update, and Remove
+## Install, update, and remove
+
+For a new installation:
 
 ```sh
 brew install lynnswap/tap/privateheaderkit
 privateheaderkit
 ```
 
-Update through Homebrew:
+If you used the standalone installer, complete the
+[one-time migration](#move-from-the-standalone-installer) before using these update commands:
 
 ```sh
 brew update
-brew upgrade privateheaderkit
+brew upgrade lynnswap/tap/privateheaderkit
+privateheaderkit --tool-version
 ```
 
 Remove the installed tool:
@@ -52,7 +56,65 @@ Uninstalling the Formula does not remove generated headers or the data under
 `~/PrivateHeaderKit`. Homebrew manages the command's location and version links;
 do not run a separate updater over a Homebrew-managed installation.
 
-## Build from Source
+## Move from the standalone installer
+
+If you previously used the shell installer or `privateheaderkit-install`, run
+the migration installer once. This is also needed if you have already installed
+the Homebrew Formula: `brew install` alone leaves the old command path in place.
+
+```sh
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+```
+
+The installer installs or updates the Formula, checks its command, and switches
+recognized old entry points in `~/.local/bin` to Homebrew links. Existing absolute
+command paths then follow Homebrew upgrades. The old entry points are backed up;
+the installer prints the backup directory and attempts to restore them if the
+switch fails.
+
+Generated headers under `~/PrivateHeaderKit` and custom output directories are
+preserved. Old payloads under `~/.local/libexec/privateheaderkit` also remain
+available to processes that are still running. Restart those commands after
+migration to use the Homebrew installation.
+
+### Custom installation directories
+
+Pass the directory used by the old installer. For example, if the command was
+installed in `~/bin`:
+
+```sh
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --bindir "$HOME/bin"
+```
+
+You can also pass the original `--prefix /path/to/prefix`, which selects its
+`bin` subdirectory. `PREFIX` and `BINDIR` remain supported. Only the selected
+directory is migrated; repeat the command with each old `--bindir` if you keep
+installations in multiple locations.
+
+### Preview and verify the migration
+
+Preview the affected paths without running Homebrew or changing files:
+
+```sh
+curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh -s -- --dry-run
+```
+
+Add the same `--bindir` or `--prefix` when previewing a custom installation.
+After migration, check the running version and command paths:
+
+```sh
+privateheaderkit --tool-version
+type -a privateheaderkit
+```
+
+Use `--tool-version` to check the CLI version. The separate `--version` option
+selects the source OS version for header generation.
+
+Future updates use `brew upgrade lynnswap/tap/privateheaderkit`. The release
+`install.sh` performs the one-time migration; the old `privateheaderkit-install`
+executable is no longer distributed.
+
+## Build from source
 
 Build all five executables from a checkout or extracted source archive:
 
@@ -85,29 +147,3 @@ To build the published Formula from source under Homebrew:
 ```sh
 brew install --build-from-source lynnswap/tap/privateheaderkit
 ```
-
-## Move from the Standalone Installer
-
-Run the familiar installer once to install the Homebrew Formula and switch the
-old command path to it:
-
-```sh
-curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
-```
-
-The installer checks the new command, backs up the recognized old entry point,
-and makes that path follow Homebrew upgrades. Existing absolute command paths
-continue to work. Use the original `--prefix` or `--bindir` for a custom old
-installation; piped invocations can pass these as `sh -s -- --prefix /path`.
-`PREFIX` and `BINDIR` remain supported. `--dry-run` reports the locations without
-running Homebrew or changing files.
-
-The old `~/.local/libexec/privateheaderkit` payloads remain available to processes
-that are still running. Generated headers under `~/PrivateHeaderKit` and custom
-output directories are preserved. The installer reports its backup directory and
-restores old entry points if migration fails. Restart running commands to use the
-new installation. Future updates use `brew upgrade privateheaderkit`.
-
-The Formula itself does not scan standalone installations or change shell
-profiles. The release `install.sh` performs this one-time handoff; the old
-`privateheaderkit-install` executable is no longer distributed.

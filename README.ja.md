@@ -10,16 +10,37 @@ Homebrew での配布・動作確認は、macOS 26 以降の Apple Silicon 搭�
 シミュレータからの生成には、Xcode と対応するランタイムも必要です。
 SSH での生成には、接続先の SSH サーバーと `tar`、同梱の iPhoneOS helper を実行できる環境が必要です。
 
-## インストールして使う
+## クイックスタート
+
+### インストール
+
+新しくインストールする場合は、[Homebrew](https://brew.sh/) を使います。
 
 ```sh
 brew install lynnswap/tap/privateheaderkit
+```
+
+> [!NOTE]
+> 以前のシェルインストーラーや `privateheaderkit-install` を使っていた場合は、
+> 次のコマンドを一度実行して Homebrew に移行してください。`brew install` を実行済みでも必要です。
+>
+> ```sh
+> curl -fsSL https://github.com/lynnswap/PrivateHeaderKit/releases/latest/download/install.sh | sh
+> ```
+>
+> 移行後は実行中のコマンドを起動し直してください。生成済みのヘッダーは保持されます。
+> 標準以外の場所にインストールしていた場合は、[移行オプション](Docs/installation.md#custom-installation-directories)を参照してください。
+
+### ヘッダーを生成する
+
+```sh
 privateheaderkit
 ```
 
 起動後は画面の案内に沿って、生成元と対象を選びます。
 生成物は `~/PrivateHeaderKit` 以下に保存します。ヘッダーの保存先は実行時の表示で確認できます。
-従来のインストーラーを使っている場合は、[移行手順](Docs/installation.md#move-from-the-standalone-installer)を参照してください。
+
+## SSH 経由で生成する
 
 SSH の接続先を設定済みなら、次のコマンドで生成できます。
 
@@ -38,11 +59,12 @@ privateheaderkit --ssh iphone-se --app com.example.Sample --out ~/PrivateHeaderK
 
 PID の指定と解析用 Mach-O の保存は、[アプリからの生成手順](Docs/generation.md#running-applications-over-ssh)を参照してください。
 
-## 更新する
+## Homebrew 版を更新する
 
 ```sh
 brew update
-brew upgrade privateheaderkit
+brew upgrade lynnswap/tap/privateheaderkit
+privateheaderkit --tool-version
 ```
 
 ## 詳しい使い方
