@@ -253,10 +253,9 @@ installation, dependencies or tests still require an explicit recipe update.
 See the [tap maintenance guide](https://github.com/lynnswap/homebrew-tap/blob/main/CONTRIBUTING.md)
 and [Homebrew packaging](Homebrew/README.md) for setup and verification.
 
-The tap checks for an unproposed stable source tag every 15 minutes, alongside its
-daily/manual maintenance. Existing update PRs wait for review and approval rather
-than repeatedly starting Renovate. The public tag lets tap CI start independently
-of core publication.
+Stable releases notify the tap when the approved public source is ready. The tap
+also retains daily/manual Renovate maintenance. Existing update PRs are reused.
+The public tag lets tap CI start independently of core publication.
 
 For local source builds, use `scripts/build-release.sh --version dev`. Use
 `--platform macos`, `--platform ios-simulator`, `--platform watchos-simulator`, or `--platform iphoneos`
@@ -281,10 +280,14 @@ Stable releases dispatch the tap update immediately after `release-publish`
 approval. If delivery is still pending, **Check stable tap delivery** succeeds with
 a wait summary and the Release remains a Draft. Tap CI builds the bottle and
 publication runs automatically after its exact tested candidate is verified.
-Periodic tap discovery remains available for recovery; normal release updates
+Daily or manual tap maintenance remains available for recovery; normal release updates
 need no manual PR creation or CI dispatch.
 
-**Resume prepared releases** checks every 15 minutes. Its short trusted job
+After publishing the bottle and updating its Formula on `main`, the tap's
+notification job waits for `source-notification` approval before using its
+dedicated App key to dispatch **Resume prepared releases**. Successful source-release completion also triggers
+the check, so a notification that arrives before source preparation finishes is
+not lost. There is no scheduled polling. The trusted job
 validates the unchanged Draft, original tap-dispatch approval, successful
 checks and immutable preparation receipt/assets against matching public tap
 delivery. It reruns only **Check stable tap delivery** and its dependent jobs in
