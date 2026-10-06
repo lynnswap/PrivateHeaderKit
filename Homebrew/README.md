@@ -53,8 +53,9 @@ job installs that bottle, verifies the CLI's version and runs the Formula test a
 all macOS and iOS/watchOS Simulator helper smoke tests.
 Tap metadata is checked again immediately before publication. Missing or changed
 tap delivery keeps the core release a Draft. Normal preparation waits do not fail
-the source workflow: short scheduled checks resume only delivery verification and
-its dependents after matching tap publication, reusing SDK checks and immutable
+the source workflow: the tap's publication notification and successful source-run
+completion trigger delivery verification and its dependents after matching tap
+publication, reusing SDK checks and immutable
 prepared assets. App-key approval is requested once, after the source tag and
 assets are prepared and before immediate tap dispatch. It is inherited by the
 source publisher; bottle publication has no second deployment approval.
