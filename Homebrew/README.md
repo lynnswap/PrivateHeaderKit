@@ -56,9 +56,10 @@ tap delivery keeps the core release a Draft. Normal preparation waits do not fai
 the source workflow: the tap's publication notification and successful source-run
 completion trigger delivery verification and its dependents after matching tap
 publication, reusing SDK checks and immutable
-prepared assets. App-key approval is requested once, after the source tag and
+prepared assets. Source-to-tap App-key approval is requested once, after the source tag and
 assets are prepared and before immediate tap dispatch. It is inherited by the
-source publisher; bottle publication has no second deployment approval.
+source publisher; bottle publication has no second deployment approval. The tap's
+separate notification key requires `source-notification` approval before use.
 
 Upstream CI owns CLI/helper execution tests on macOS 26 and 27. macOS 14 remains
 the executable deployment target, but older macOS versions are outside the

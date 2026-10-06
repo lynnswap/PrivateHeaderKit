@@ -283,8 +283,9 @@ publication runs automatically after its exact tested candidate is verified.
 Daily or manual tap maintenance remains available for recovery; normal release updates
 need no manual PR creation or CI dispatch.
 
-The tap dispatches **Resume prepared releases** after publishing the bottle and
-updating its Formula on `main`. Successful source-release completion also triggers
+After publishing the bottle and updating its Formula on `main`, the tap's
+notification job waits for `source-notification` approval before using its
+dedicated App key to dispatch **Resume prepared releases**. Successful source-release completion also triggers
 the check, so a notification that arrives before source preparation finishes is
 not lost. There is no scheduled polling. The trusted job
 validates the unchanged Draft, original tap-dispatch approval, successful
