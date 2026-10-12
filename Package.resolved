@@ -22,7 +22,7 @@
     {
       "identity" : "frameworktoolbox",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Mx-Iris/FrameworkToolbox",
+      "location" : "https://github.com/Mx-Iris/FrameworkToolbox.git",
       "state" : {
         "revision" : "6572dd01f5bd0d825317bdb1ae88bc37cee9d5d8"
       }
@@ -85,6 +85,15 @@
       "state" : {
         "revision" : "96d782a576273b73b277b577943a2a25b00b919e",
         "version" : "0.5.0"
+      }
+    },
+    {
+      "identity" : "opencombine",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/OpenCombine/OpenCombine.git",
+      "state" : {
+        "revision" : "8576f0d579b27020beccbccc3ea6844f3ddfc2c2",
+        "version" : "0.14.0"
       }
     },
     {
@@ -280,8 +289,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/swift-service-lifecycle.git",
       "state" : {
-        "revision" : "7f9326b0326ff86e3646295ea6e891f68c471c5e",
-        "version" : "2.12.0"
+        "revision" : "c55297914e26ce3085b73ca88c521ef99136f6ad",
+        "version" : "2.12.1"
       }
     },
     {
