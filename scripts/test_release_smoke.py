@@ -47,6 +47,8 @@ class ReleaseSmokeTests(unittest.TestCase):
         elif "--show-sdk-path" in args:
             return "/sdk\n"
         elif "clang" in args:
+            if "clang" in self.failures:
+                raise subprocess.CalledProcessError(1, args)
             Path(args[-1]).write_bytes(b"fixture dylib")
         elif "--system-root" in args:
             self.dump(["-o", str(Path(args[args.index("--out") + 1]) / "generated-headers")])
@@ -76,6 +78,18 @@ class ReleaseSmokeTests(unittest.TestCase):
         ])
         deletes = [args for args in self.calls if args[:3] == ["xcrun", "simctl", "delete"]]
         self.assertEqual(deletes, [["xcrun", "simctl", "delete", "owned-device"]] * 2)
+        events = []
+        for args in self.calls:
+            if args[:2] == ["xcrun", "simctl"] and args[2] in ("boot", "bootstatus", "spawn", "delete"):
+                events.append((args[2], args[3]))
+            elif "clang" in args and args[2] != "macosx":
+                events.append(("compile", args[2]))
+        self.assertEqual(events, [
+            ("boot", "owned-device"), ("compile", "iphonesimulator"),
+            ("bootstatus", "owned-device"), ("spawn", "owned-device"), ("delete", "owned-device"),
+            ("boot", "owned-device"), ("compile", "watchsimulator"),
+            ("bootstatus", "owned-device"), ("spawn", "owned-device"), ("delete", "owned-device"),
+        ])
 
     def test_selects_available_runtime_for_the_requested_platform(self):
         selected, device = smoke.select_runtime([
@@ -96,19 +110,30 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(sdk_calls, [["xcrun", "--sdk", "macosx", "--show-sdk-path"]])
         self.assertEqual(len([args for args in self.calls if "search" in args]), 2)
 
-    def test_failed_boot_or_helper_still_deletes_only_its_device(self):
-        for operation in ("bootstatus", "spawn"):
+    def test_failed_boot_compile_or_helper_still_deletes_only_its_device(self):
+        for operation in ("boot", "clang", "bootstatus", "spawn"):
             with self.subTest(operation=operation):
                 self.calls.clear()
                 self.failures = {operation}
                 with self.assertRaises(subprocess.CalledProcessError):
-                    smoke.run_simulator_helper("watchOS", [self.cohort / "helper"])
+                    smoke.smoke(self.cohort, platforms=smoke.PLATFORMS[2:])
                 self.assertEqual(self.calls[-1], ["xcrun", "simctl", "delete", "owned-device"])
+
+    def test_interrupted_compilation_deletes_its_device(self):
+        def interrupt_compile(arguments):
+            if "clang" in arguments:
+                raise KeyboardInterrupt
+            return self.run_command(arguments)
+
+        with patch.object(smoke, "run", side_effect=interrupt_compile):
+            with self.assertRaises(KeyboardInterrupt):
+                smoke.smoke(self.cohort, platforms=smoke.PLATFORMS[1:2])
+        self.assertEqual(self.calls[-1], ["xcrun", "simctl", "delete", "owned-device"])
 
     def test_reports_original_failure_and_cleanup_failure(self):
         self.failures = {"spawn", "delete"}
         with self.assertRaisesRegex(RuntimeError, "spawn.*Failed to delete.*delete"):
-            smoke.run_simulator_helper("iOS", [self.cohort / "helper"])
+            smoke.smoke(self.cohort, platforms=smoke.PLATFORMS[1:2])
 
     def test_bad_generated_output_fails_the_smoke_test(self):
         self.invalid_header = True
