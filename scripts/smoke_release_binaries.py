@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import plistlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -136,11 +137,18 @@ def main():
     arguments = parser.parse_args()
     platforms = [platform for platform in PLATFORMS
                  if arguments.platform is None or platform[0] in arguments.platform]
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    previous_handler = signal.signal(signal.SIGTERM, interrupt)
     try:
         smoke(arguments.cohort_dir, platforms=platforms)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(error, file=sys.stderr)
         return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
     return 0
 
 

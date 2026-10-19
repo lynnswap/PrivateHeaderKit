@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import subprocess
+import signal
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -129,6 +130,22 @@ class ReleaseSmokeTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 smoke.smoke(self.cohort, platforms=smoke.PLATFORMS[1:2])
         self.assertEqual(self.calls[-1], ["xcrun", "simctl", "delete", "owned-device"])
+
+    def test_termination_during_compilation_deletes_device_and_restores_handler(self):
+        previous_handler = signal.getsignal(signal.SIGTERM)
+
+        def terminate_compile(arguments):
+            if "clang" in arguments:
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            return self.run_command(arguments)
+
+        with patch.object(smoke, "run", side_effect=terminate_compile), \
+                patch("sys.argv", ["smoke_release_binaries.py", "--cohort-dir",
+                                   str(self.cohort), "--platform", "watchOS"]):
+            with self.assertRaises(KeyboardInterrupt):
+                smoke.main()
+        self.assertEqual(self.calls[-1], ["xcrun", "simctl", "delete", "owned-device"])
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous_handler)
 
     def test_reports_original_failure_and_cleanup_failure(self):
         self.failures = {"spawn", "delete"}
