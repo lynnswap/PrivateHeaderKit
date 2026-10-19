@@ -2,10 +2,12 @@
 """Run the installed release binaries against a small, local Objective-C fixture."""
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import json
 from pathlib import Path
 import plistlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -47,15 +49,16 @@ def select_runtime(runtimes, platform):
     return max(candidates, key=lambda pair: tuple(map(int, pair[0]["version"].split("."))))
 
 
-def run_simulator_helper(platform, arguments):
+@contextmanager
+def simulator_device(platform):
     runtimes = json.loads(run(["xcrun", "simctl", "list", "runtimes", "--json"]))["runtimes"]
     runtime, device_type = select_runtime(runtimes, platform)
     device = run(["xcrun", "simctl", "create", f"PHK Release Smoke {uuid.uuid4()}",
                   device_type, runtime["bundlePath"]]).strip()
     failure = None
     try:
-        run(["xcrun", "simctl", "bootstatus", device, "-b"])
-        run(["xcrun", "simctl", "spawn", device, *arguments])
+        run(["xcrun", "simctl", "boot", device])
+        yield device
     except BaseException as error:
         failure = error
         raise
@@ -102,16 +105,19 @@ def smoke(cohort, platforms=PLATFORMS):
             directory = root / platform
             directory.mkdir()
             fixture = directory / "libReleaseSmoke.dylib"
-            sdk_path = run(["xcrun", "--sdk", sdk, "--show-sdk-path"]).strip()
-            run(["xcrun", "--sdk", sdk, "clang", "-target", triple,
-                 "-isysroot", sdk_path, "-dynamiclib", "-fobjc-arc",
-                 "-framework", "Foundation", source, "-o", fixture])
             headers = directory / "headers"
             arguments = [cohort / helper, "-o", headers, fixture]
-            if platform == "macOS":
-                run(arguments)
-            else:
-                run_simulator_helper(platform, arguments)
+            device_context = nullcontext() if platform == "macOS" else simulator_device(platform)
+            with device_context as device:
+                sdk_path = run(["xcrun", "--sdk", sdk, "--show-sdk-path"]).strip()
+                run(["xcrun", "--sdk", sdk, "clang", "-target", triple,
+                     "-isysroot", sdk_path, "-dynamiclib", "-fobjc-arc",
+                     "-framework", "Foundation", source, "-o", fixture])
+                if device is None:
+                    run(arguments)
+                else:
+                    run(["xcrun", "simctl", "bootstatus", device, "-b"])
+                    run(["xcrun", "simctl", "spawn", device, *arguments])
             header = (headers / "PHKReleaseSmoke.h").read_text()
             if "@interface PHKReleaseSmoke" not in header:
                 raise RuntimeError(f"{helper} did not generate the fixture's Objective-C interface.")
@@ -131,11 +137,18 @@ def main():
     arguments = parser.parse_args()
     platforms = [platform for platform in PLATFORMS
                  if arguments.platform is None or platform[0] in arguments.platform]
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    previous_handler = signal.signal(signal.SIGTERM, interrupt)
     try:
         smoke(arguments.cohort_dir, platforms=platforms)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(error, file=sys.stderr)
         return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
     return 0
 
 
