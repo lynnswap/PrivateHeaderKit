@@ -1,5 +1,5 @@
 {
-  "originHash" : "7d26180af728ea75a0b632a08874d5153579c303bca5fee699416592c6f29c6f",
+  "originHash" : "35ef37e98f36b91b356d5111ccb5acea80872a2b9126e3982e6a4ed8bf6fcc6b",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -289,8 +289,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/swift-service-lifecycle.git",
       "state" : {
-        "revision" : "c55297914e26ce3085b73ca88c521ef99136f6ad",
-        "version" : "2.12.1"
+        "revision" : "a18ee16b8039866fd919bdb4e8e906882d4ecc75",
+        "version" : "2.13.0"
       }
     },
     {
@@ -298,8 +298,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-subprocess.git",
       "state" : {
-        "revision" : "b3937ab85dd32f6e9435914599c1519074769c1a",
-        "version" : "1.0.0"
+        "revision" : "dbe21bd7dfd4ffef8c32588918542a8abfa1b54c",
+        "version" : "1.0.2"
       }
     },
     {
