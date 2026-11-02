@@ -1,5 +1,5 @@
 {
-  "originHash" : "7d26180af728ea75a0b632a08874d5153579c303bca5fee699416592c6f29c6f",
+  "originHash" : "cd7fd891dd2d92c76f588ff6dfb1663b1717492446369f9314260358b641a259",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -260,10 +260,10 @@
     {
       "identity" : "swift-objc-dump",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
       "state" : {
-        "revision" : "641d257d60385b231a608ab8c4ecdf31348c779e",
-        "version" : "0.8.101"
+        "revision" : "255c8cca86479b093f7a1b083c73bfb82a111382",
+        "version" : "0.8.102"
       }
     },
     {
@@ -289,8 +289,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/swift-service-lifecycle.git",
       "state" : {
-        "revision" : "c55297914e26ce3085b73ca88c521ef99136f6ad",
-        "version" : "2.12.1"
+        "revision" : "a18ee16b8039866fd919bdb4e8e906882d4ecc75",
+        "version" : "2.13.0"
       }
     },
     {
@@ -298,8 +298,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-subprocess.git",
       "state" : {
-        "revision" : "b3937ab85dd32f6e9435914599c1519074769c1a",
-        "version" : "1.0.0"
+        "revision" : "dbe21bd7dfd4ffef8c32588918542a8abfa1b54c",
+        "version" : "1.0.2"
       }
     },
     {
