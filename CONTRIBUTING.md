@@ -189,10 +189,11 @@ release notes once the tap is available:
 brew install lynnswap/tap/privateheaderkit
 ```
 
-The command creates or reuses a matching Draft Release, then dispatches the
-`Release` workflow from the default branch. It prints the Draft and Actions URLs
-without waiting for publication. Do not create or push the release tag locally.
-After package CI passes, the workflow prepares the public source tag and assets
+The command creates or reuses a matching Draft Release and approved source tag,
+then dispatches the `Release` workflow from the default branch. The version is
+available to package consumers immediately. Tag creation uses the caller's
+GitHub CLI credentials. It prints the tag, Draft, and Actions URLs without waiting
+for publication. After package CI passes, the workflow prepares the source assets
 automatically while the Release remains a Draft. Review the approved content,
 prepared assets, and pinned workflow code in the Actions summary, then approve
 `release-publish` through **Review deployments → Approve and deploy**. This gates
@@ -200,7 +201,11 @@ only the job that receives the GitHub App private key and dispatches the tap
 update. The tap's bottle CI/publication and the source Release's remaining
 installation checks and publication then proceed automatically.
 
-The workflow creates the approved tag while the release stays a Draft. Its public
+Tag creation uses the caller's GitHub CLI credentials. If GitHub rejects it,
+check tag rules and the caller's Contents and Workflows write permissions, then
+repeat the same start command. The matching Draft is reused.
+
+The approved tag remains available while the release stays a Draft. Its public
 tag archive lets the tap build before stable publication. When adopting tag
 archives, use the prepared Formula artifact for the tap update before core
 stable publication. The verified artifact and checksums are shown in the later
@@ -262,11 +267,11 @@ For local source builds, use `scripts/build-release.sh --version dev`. Use
 for one platform and `--output-dir <directory>` to select the output location.
 The caller owns installation; the script only builds and stages executables.
 
-The automatic tag preparation job creates the tag at the tested SHA. The final
+The source preparation job verifies the existing tag at the approved SHA. The final
 publisher depends on the approved tap-dispatch job and automatically publishes the same Draft, preserving its title, notes, and prerelease state. Existing tags
 must resolve to that SHA, including annotated tags. Stable releases use GitHub's
 latest-release selection; prereleases are not marked latest. Draft verification
-requires push access. Draft validation, tag creation and publication run trusted
+requires push access. Draft validation and publication run trusted
 scripts from the workflow commit with `contents: write`; tests and builds receive
 only read access.
 
@@ -321,12 +326,12 @@ does not modify the published release. If dispatch fails or its response is
 uncertain, inspect Actions before repeating the start command to avoid a second
 run. Changed notes require a new start command matching the reviewed content.
 
-Publication uses only the repository's `GITHUB_TOKEN`. If GitHub rejects tag
-creation, inspect the tag rules and the target's workflow-file differences from
-the current default branch. GitHub requires Workflows write permission when
-the target changes those files relative to that branch; `GITHUB_TOKEN` cannot
-receive that permission. Publication remains stopped. Any different release
-target requires a new content approval and verification run.
+Publication uses only the repository's `GITHUB_TOKEN` and verifies the tag
+created by the start command. If GitHub rejects tag creation during start,
+inspect the caller's credentials, tag rules, and the target's workflow-file
+differences from the current default branch. GitHub requires Workflows write
+permission when the target changes those files relative to that branch.
+Any different release target requires a new content approval and verification run.
 
 ### One-time publication setup
 

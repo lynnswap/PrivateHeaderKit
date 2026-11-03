@@ -14,8 +14,8 @@ template with that version's public tag URL and the downloaded archive's SHA-256
 `Package.resolved` and the checked-in SwiftPM mirror configuration. Building it
 does not require `.git`.
 
-Package CI runs before the workflow creates the public source tag. The release
-stays a Draft while the Formula and tap are prepared. The source release workflow
+The start command creates the approved public source tag before package CI. The
+release stays a Draft while validation, the Formula, and the tap are prepared. The source release workflow
 uses tap CI for stable Formula builds and bottles. Core verification installs the
 public bottle, runs the Formula's functional test and exercises the macOS and
 iOS/watchOS Simulator helpers with local Objective-C fixtures before publishing the source release. Prereleases
