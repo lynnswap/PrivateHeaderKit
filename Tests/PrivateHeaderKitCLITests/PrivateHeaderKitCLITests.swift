@@ -1541,10 +1541,7 @@ struct PrivateHeaderKitCLIExecutionTests {
 
         let result = try await prepared.run(.init(continuation: .restart), { _ in })
         #expect(result.targetCounts.completed == 1)
-        #expect(await runner.captureCommandSnapshot().map(\.command) == [
-            inventoryCommand,
-            inventoryCommand,
-        ])
+        #expect(await runner.captureCommandSnapshot().map(\.command) == [inventoryCommand])
         #expect(await runner.streamingCommandSnapshot().count == 1)
     }
 
@@ -1634,7 +1631,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
-    @Test func successfulRawDumpRejectsMissingMalformedOrNonRegularDiagnosticsReport() async throws {
+    @Test func successfulRawDumpRejectsMissingOrUnreadableDiagnosticsReport() async throws {
         enum FixtureKind: CaseIterable, Sendable {
             case missing
             case malformed
@@ -1686,20 +1683,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                         processRunner: runner
                     )
                 }
-            case .directory:
-                await #expect(
-                    throws: PrivateHeaderGeneration.RawDumping.ContractError
-                        .invalidDiagnosticsReport(
-                            path: invocation.diagnosticsReportURL.path,
-                            reason: "report is not a regular file"
-                        )
-                ) {
-                    _ = try await runPrivateHeaderKitRawDump(
-                        invocation,
-                        processRunner: runner
-                    )
-                }
-            case .malformed:
+            case .directory, .malformed:
                 await #expect(throws: PrivateHeaderGeneration.RawDumping.ContractError.self) {
                     _ = try await runPrivateHeaderKitRawDump(
                         invocation,
@@ -1714,46 +1698,6 @@ struct PrivateHeaderKitCLIExecutionTests {
             )
             #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
         }
-    }
-
-    @Test func successfulRawDumpRejectsOversizedDiagnosticsBeforeDecode() async throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stage = root.appendingPathComponent("stage", isDirectory: true)
-        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-        let invocation = PrivateHeaderGeneration.RawDumping.makeInvocation(
-            try .init(
-                helperURLs: .init(host: root.appendingPathComponent("helper"), simulator: root),
-                executionMode: .host,
-                inputPath: "/System/Library/Frameworks/AppKit.framework",
-                stagingOutputDirectory: stage
-            )
-        )
-        let runner = RecordingCommandRunner()
-        await runner.setStreamingHandler { command, _, _ in
-            try writeRawDumpProcessHandshake(for: command)
-            try Data(
-                count: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount + 1
-            ).write(to: invocation.diagnosticsReportURL)
-            return StreamingCommandResult(status: 0, wasKilled: false, lastLines: [])
-        }
-
-        await #expect(
-            throws: PrivateHeaderGeneration.RawDumping.ContractError
-                .diagnosticsReportTooLarge(
-                    path: invocation.diagnosticsReportURL.path,
-                    actual: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount + 1,
-                    maximum: PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount
-                )
-        ) {
-            _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner)
-        }
-        #expect(
-            !FileManager.default.fileExists(
-                atPath: invocation.processHandshakeReportURL.path
-            )
-        )
-        #expect(!FileManager.default.fileExists(atPath: invocation.diagnosticsReportURL.path))
     }
 
     @Test func signalCoordinatorWaitsForOperationCleanupBeforeReturningSignalStatus() async {
@@ -3217,7 +3161,7 @@ private func writeRawDumpProcessHandshake(
     else {
         throw ToolingError.message("raw dump command is missing its process handshake")
     }
-    let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+    let handshake = PrivateHeaderKitRawDumpProcessHandshake(
         invocationID: invocationID,
         processIdentifier: processIdentifier,
         helperStartedAtUnixMicroseconds: helperStartedAtUnixMicroseconds,

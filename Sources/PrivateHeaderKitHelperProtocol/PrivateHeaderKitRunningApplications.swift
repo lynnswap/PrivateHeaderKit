@@ -44,9 +44,9 @@ package struct PrivateHeaderKitRunningApplicationReport: Codable, Equatable, Sen
         application: PrivateHeaderKitRunningApplication,
         systemVersion: PrivateHeaderKitOperatingSystemVersion? = nil,
         producerVersion: String = PrivateHeaderKitBuildInfo.version
-    ) throws {
+    ) {
         schemaVersion = Self.currentSchemaVersion
-        self.producerVersion = try PrivateHeaderKitProducerVersion.validated(producerVersion)
+        self.producerVersion = producerVersion
         self.application = application
         self.systemVersion = systemVersion
     }
@@ -57,9 +57,7 @@ package struct PrivateHeaderKitRunningApplicationReport: Codable, Equatable, Sen
         guard schemaVersion == Self.currentSchemaVersion else {
             throw PrivateHeaderKitProcessImageReportError.unsupportedSchemaVersion(schemaVersion)
         }
-        producerVersion = try PrivateHeaderKitProducerVersion.validated(
-            container.decode(String.self, forKey: .producerVersion)
-        )
+        producerVersion = try container.decode(String.self, forKey: .producerVersion)
         application = try container.decode(PrivateHeaderKitRunningApplication.self, forKey: .application)
         systemVersion = try container.decodeIfPresent(PrivateHeaderKitOperatingSystemVersion.self, forKey: .systemVersion)
     }

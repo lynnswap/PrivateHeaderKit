@@ -80,7 +80,7 @@ package final class LoadedProcessImages {
         guard try imageArrayState(information) == before else {
             throw ProcessImageRecoveryError.imageArrayChanged
         }
-        return try .init(processIdentifier: processIdentifier, images: images, failures: failures)
+        return .init(processIdentifier: processIdentifier, images: images, failures: failures)
     }
 
     /// Produces a thin analysis copy, retaining file-backed fixups and replacing only encrypted ranges.
@@ -104,7 +104,7 @@ package final class LoadedProcessImages {
             try requireMatch(file, current)
             let recovered = try recoverEncryptedRanges(in: file, fileSize: fileSize, loadAddress: image.loadAddress)
             try readIdentity(at: image.loadAddress).requireMatch(image)
-            let report = try PrivateHeaderKitRecoveredProcessImage(
+            let report = PrivateHeaderKitRecoveredProcessImage(
                 processIdentifier: processIdentifier, image: image, outputPath: destination.path,
                 encryptedBytesRecovered: recovered
             )

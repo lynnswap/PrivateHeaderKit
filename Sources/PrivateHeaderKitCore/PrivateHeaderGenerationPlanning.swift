@@ -2,34 +2,6 @@ import Foundation
 import PrivateHeaderKitHelperProtocol
 
 extension PrivateHeaderGeneration.GenerationExecutor {
-  func validatePreparedCohort(_ preparedPlan: PreparedPlan) async throws {
-    guard let expectedCohort = preparedPlan.sharedCacheCohort else { return }
-    guard let helperURLs = preparedPlan.plan.options.helperURLs else {
-      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("helperURLs")
-    }
-    guard let executionMode = preparedPlan.plan.options.executionMode else {
-      throw PrivateHeaderGeneration.GenerationError.missingExecutionConfiguration("executionMode")
-    }
-    let actualCohort = try await Self.loadSharedCacheCohort(
-      helperURLs: helperURLs,
-      executionMode: executionMode,
-      expectedProducerVersion: preparedPlan.plan.options.producerVersion,
-      helperEnvironment: preparedPlan.plan.options.rawDumpingOptions.helperEnvironment,
-      sharedCacheInventoryRunner: sharedCacheInventoryRunner
-    )
-    guard
-      expectedCohort.cacheUUID == actualCohort.cacheUUID,
-      expectedCohort.imagePathDigest == actualCohort.imagePathDigest
-    else {
-      throw PrivateHeaderGeneration.GenerationError.sharedCacheCohortChanged(
-        expectedUUID: expectedCohort.cacheUUID,
-        expectedImagePathDigest: expectedCohort.imagePathDigest,
-        actualUUID: actualCohort.cacheUUID,
-        actualImagePathDigest: actualCohort.imagePathDigest
-      )
-    }
-  }
-
   static func preparePlan(
     _ plan: PrivateHeaderGeneration.Plan,
     sharedCacheInventoryRunner: SharedCacheInventoryRunner

@@ -201,12 +201,8 @@ extension PrivateHeaderGeneration.RawDumping {
   package enum ContractError: Error, Equatable, CustomStringConvertible, Sendable {
     case missingProcessHandshake(String)
     case invalidProcessHandshake(path: String, reason: String)
-    case processHandshakeTooLarge(path: String, actual: Int, maximum: Int)
-    case processHandshakeCleanupFailed(path: String, reason: String)
     case missingDiagnosticsReport(String)
     case invalidDiagnosticsReport(path: String, reason: String)
-    case diagnosticsReportTooLarge(path: String, actual: Int, maximum: Int)
-    case diagnosticsReportCleanupFailed(path: String, reason: String)
 
     package var description: String {
       switch self {
@@ -214,18 +210,10 @@ extension PrivateHeaderGeneration.RawDumping {
         "raw helper contract failure: successful helper did not write process handshake at \(path)"
       case .invalidProcessHandshake(let path, let reason):
         "raw helper contract failure: invalid process handshake at \(path): \(reason)"
-      case .processHandshakeTooLarge(let path, let actual, let maximum):
-        "raw helper contract failure: process handshake at \(path) is \(actual) bytes; maximum is \(maximum)"
-      case .processHandshakeCleanupFailed(let path, let reason):
-        "raw helper contract failure: could not remove process handshake at \(path): \(reason)"
       case .missingDiagnosticsReport(let path):
         "raw helper contract failure: successful helper did not write diagnostics report at \(path)"
       case .invalidDiagnosticsReport(let path, let reason):
         "raw helper contract failure: invalid diagnostics report at \(path): \(reason)"
-      case .diagnosticsReportTooLarge(let path, let actual, let maximum):
-        "raw helper contract failure: diagnostics report at \(path) is \(actual) bytes; maximum is \(maximum)"
-      case .diagnosticsReportCleanupFailed(let path, let reason):
-        "raw helper contract failure: could not remove diagnostics report at \(path): \(reason)"
       }
     }
   }

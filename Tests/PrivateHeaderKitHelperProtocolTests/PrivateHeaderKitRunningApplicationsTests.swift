@@ -8,7 +8,7 @@ import Testing
             loadAddress: 0x10000, path: "/synthetic/Sample.app/Sample",
             uuid: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!, cpuType: 0x0100_000c, cpuSubtype: 0, fileType: 2
         )
-        let report = try PrivateHeaderKitRunningApplicationReport(application: .init(
+        let report = PrivateHeaderKitRunningApplicationReport(application: .init(
             processIdentifier: 100, bundleIdentifier: "com.example.Sample", version: "1.2.3", build: "45",
             executableName: "Sample", mainImage: image
         ), systemVersion: .init(version: "26.0", build: "23A100", metadataIsSeed: false))
@@ -21,7 +21,7 @@ import Testing
             loadAddress: 0x10000, path: "/synthetic/Sample.app/Sample",
             uuid: UUID(), cpuType: 0x0100_000c, cpuSubtype: 0, fileType: 2
         )
-        let report = try PrivateHeaderKitRunningApplicationReport(application: .init(
+        let report = PrivateHeaderKitRunningApplicationReport(application: .init(
             processIdentifier: 100, bundleIdentifier: "com.example.Sample", version: nil, build: nil,
             executableName: "Sample", mainImage: image
         ))

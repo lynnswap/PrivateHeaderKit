@@ -153,11 +153,7 @@ func writeRawDumpDiagnosticsReport(
 ) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let data = try encoder.encode(report)
-    guard data.count <= PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount else {
-        throw CocoaError(.fileWriteOutOfSpace)
-    }
-    try data.write(to: reportURL, options: .atomic)
+    try encoder.encode(report).write(to: reportURL, options: .atomic)
 }
 
 private func privateHeaderKitDiagnostic(

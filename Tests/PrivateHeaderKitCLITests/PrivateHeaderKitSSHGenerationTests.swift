@@ -521,7 +521,7 @@ private struct SSHGenerationFixture: Sendable {
     let stage = recovery.appendingPathComponent(invocation.stagingOutputDirectory.lastPathComponent)
     try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
     try Data("// device fixture\n".utf8).write(to: stage.appendingPathComponent("Generated.h"))
-    let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+    let handshake = PrivateHeaderKitRawDumpProcessHandshake(
       invocationID: invocation.processHandshakeID, processIdentifier: 4242,
       helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
       executableName: "privateheaderkit-device-helper",

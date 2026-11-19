@@ -208,7 +208,7 @@ private final class RunningApplicationFixture {
                     loadAddress: 0x30000, path: "/synthetic/Hook.dylib", uuid: UUID(),
                     cpuType: 0x0100_000c, cpuSubtype: 0, fileType: 6
                 )
-                return try .init(processIdentifier: self.returnedPID ?? pid,
+                return .init(processIdentifier: self.returnedPID ?? pid,
                                  images: self.prependDylib ? [hook, image] : [image], failures: [])
             }
         )
