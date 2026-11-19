@@ -132,15 +132,11 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     sharedCacheCohort: SharedCacheCohort?
   ) -> String {
     var components = [
-      "privateheaderkit-plan-fingerprint-v4",
+      "privateheaderkit-plan-fingerprint-v5",
       plan.source.storageIdentifier,
-      plan.options.layout.rawValue,
       plan.options.systemRoot?.standardizedFileURL.path ?? "",
       plan.options.producerVersion,
-      String(plan.options.includeNestedChildren),
-      String(plan.options.rawDumpingOptions.skipExisting),
       String(plan.options.rawDumpingOptions.useSharedCache),
-      String(plan.options.rawDumpingOptions.verbose),
       String(plan.options.rawDumpingOptions.preferRuntimeMetadata),
     ]
     if plan.options.applicationSource != nil {

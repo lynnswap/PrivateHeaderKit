@@ -114,7 +114,6 @@ extension PrivateHeaderGeneration {
       }
 
       command += ["-b", "-h"]
-      if request.options.skipExisting { command.append("-s") }
       if case .expected(let expectedCacheUUID) = request.cacheSelection {
         command += [
           "-c",
@@ -122,7 +121,6 @@ extension PrivateHeaderGeneration {
           expectedCacheUUID.uuidString.lowercased(),
         ]
       }
-      if request.options.verbose { command.append("-D") }
       if request.options.preferRuntimeMetadata {
         command.append("-R")
       }
@@ -264,22 +262,16 @@ extension PrivateHeaderGeneration.RawDumping {
   }
 
   package struct Options: Hashable, Sendable {
-    package var skipExisting: Bool
     package var useSharedCache: Bool
-    package var verbose: Bool
     package var preferRuntimeMetadata: Bool
     package var helperEnvironment: [String: String]
 
     package init(
-      skipExisting: Bool = false,
       useSharedCache: Bool = false,
-      verbose: Bool = false,
       preferRuntimeMetadata: Bool = false,
       helperEnvironment: [String: String] = [:]
     ) {
-      self.skipExisting = skipExisting
       self.useSharedCache = useSharedCache
-      self.verbose = verbose
       self.preferRuntimeMetadata = preferRuntimeMetadata
       self.helperEnvironment = helperEnvironment
     }

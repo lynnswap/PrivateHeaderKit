@@ -174,7 +174,7 @@ struct PrivateHeaderGenerationExecutorTests {
       runner: runner, runID: "run-next"
     )
     let prepared = try await executor.prepare(fixture.plan(
-      .allAvailable, rawDumpingOptions: .init(verbose: change == "options"),
+      .allAvailable, rawDumpingOptions: .init(preferRuntimeMetadata: change == "options"),
       producerVersion: version
     ))
     #expect(try await executor.availableResumeSummary(for: prepared) == nil)
@@ -702,21 +702,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: crashed.path))
   }
 
-  @Test func bundleLayoutPublishesFrameworkBundlePath() async throws {
-    let fixture = try ExecutorFixture()
-    defer { fixture.cleanup() }
-    try fixture.createFramework("Foo.framework")
-    _ = try await fixture.executor(
-      runner: RecordingRunner(contents: "bundle"),
-      runID: "run-bundle"
-    ).run(plan: try fixture.plan(.query("Foo"), layout: .bundle))
-
-    let url = fixture.liveURL.appendingPathComponent(
-      "Frameworks/Foo.framework/Headers/Generated.h")
-    #expect(try String(contentsOf: url, encoding: .utf8) == "bundle")
-  }
-
-  @Test func headersLayoutKeepsSiblingBundleNamespacesDistinct() async throws {
+  @Test func siblingBundlesWithTheSameNameKeepDistinctDirectories() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createSystemBundle("CoreServices/Siri.app")
@@ -1664,7 +1650,6 @@ private struct ExecutorFixture {
 
   func plan(
     _ targetRequest: PrivateHeaderGeneration.TargetRequest,
-    layout: PrivateHeaderGeneration.Layout = .headers,
     executionOptions: PrivateHeaderGeneration.ExecutionOptions = .init(),
     outputBase: URL? = nil,
     rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options = .init(),
@@ -1674,7 +1659,6 @@ private struct ExecutorFixture {
       source: source,
       output: .init(baseDirectory: outputBase ?? self.outputBase),
       options: .init(
-        layout: layout,
         targetRequest: targetRequest,
         systemRoot: systemRoot,
         helperURLs: helperURLs,

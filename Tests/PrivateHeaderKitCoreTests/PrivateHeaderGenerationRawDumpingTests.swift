@@ -14,9 +14,7 @@ struct PrivateHeaderGenerationRawDumpingTests {
         inputPath: "/System/Library/PrivateFrameworks/Foo.framework",
         stagingOutputDirectory: stageDirectory,
         options: .init(
-          skipExisting: true,
           useSharedCache: true,
-          verbose: true,
           preferRuntimeMetadata: true,
           helperEnvironment: ["PH_PROFILE": "1"]
         ),
@@ -43,8 +41,8 @@ struct PrivateHeaderGenerationRawDumpingTests {
     #expect(
       invocation.command == [
         "/opt/privateheaderkit/bin/privateheaderkit", "__raw-dump", "-o", stageDirectory.path,
-        "-b", "-h", "-s", "-c", "--expected-cache-uuid",
-        cacheUUID.uuidString.lowercased(), "-D", "-R", "--process-handshake-id",
+        "-b", "-h", "-c", "--expected-cache-uuid",
+        cacheUUID.uuidString.lowercased(), "-R", "--process-handshake-id",
         invocation.processHandshakeID.uuidString.lowercased(), "--process-handshake-report",
         invocation.processHandshakeReportURL.path, "--diagnostics-report",
         invocation.diagnosticsReportURL.path,
