@@ -897,15 +897,16 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try String(contentsOf: nestedHeader, encoding: .utf8) == "first")
   }
 
-  @Test func generationRemovesFilesLeftByAnAttemptThatStoppedWhilePublishing() async throws {
+  @Test func resumeRegeneratesTargetWhosePublicationStoppedPartway() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
+    _ = try await fixture.executor(runner: RecordingRunner(contents: "first"), runID: "run-first")
+      .run(plan: plan)
+    // A later run stopped after it had moved one of its files into place.
     let leftover = try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Headers/Leftover.h")
     let leftoverURL = fixture.liveURL.appendingPathComponent(leftover.rawValue)
-    try FileManager.default.createDirectory(
-      at: leftoverURL.deletingLastPathComponent(), withIntermediateDirectories: true
-    )
     try Data("leftover".utf8).write(to: leftoverURL)
     let terminatedRunID = PrivateHeaderGeneration.RunID(rawValue: "run-terminated")
     let store = try fixture.store()
@@ -917,15 +918,45 @@ struct PrivateHeaderGenerationExecutorTests {
       ),
       at: Date(timeIntervalSinceReferenceDate: 50)
     )
-    try await store.recordArtifactsBeingPublished(
+    try await store.beginPublishing(
       [leftover], targetID: "framework:Foo.framework", in: terminatedRunID
     )
+    let runner = RecordingRunner(contents: "regenerated")
 
-    _ = try await fixture.executor(runner: RecordingRunner(contents: "generated"), runID: "run-next")
-      .run(plan: try fixture.plan(.query("Foo")))
+    let result = try await fixture.executor(runner: runner, runID: "run-resumed").run(plan: plan)
 
+    #expect(await runner.invocationCount == 1)
+    #expect(result.targetCounts.completed == 1)
     #expect(!FileManager.default.fileExists(atPath: leftoverURL.path))
-    #expect(try fixture.readLiveHeader() == "generated")
+    #expect(try fixture.readLiveHeader() == "regenerated")
+  }
+
+  @Test func repeatedResumeKeepsTargetsCarriedOverFromTheFirstRun() async throws {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Alpha.framework")
+    try fixture.createFramework("Zulu.framework")
+    let plan = try fixture.plan(.allAvailable, executionOptions: .init(continuation: .resume))
+    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "first", failingFramework: "Alpha.framework"),
+        runID: "run-first"
+      ).run(plan: plan)
+    }
+    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
+      _ = try await fixture.executor(
+        runner: RecordingRunner(contents: "second", cancelsForFramework: "Alpha.framework"),
+        runID: "run-interrupted"
+      ).run(plan: plan)
+    }
+    let runner = RecordingRunner(contents: "third")
+
+    let result = try await fixture.executor(runner: runner, runID: "run-third").run(plan: plan)
+
+    #expect(await runner.invocations.map { $0.inputPath.hasSuffix("/Alpha.framework") } == [true])
+    #expect(result.targetCounts.skipped == 1)
+    #expect(try fixture.readLiveHeader(framework: "Zulu") == "first")
+    #expect(try fixture.readLiveHeader(framework: "Alpha") == "third")
   }
 
   @Test func generationOverwritesHeadersThatOutlivedTheStateDatabase() async throws {

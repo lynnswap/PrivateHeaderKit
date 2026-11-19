@@ -200,9 +200,10 @@ package actor GenerationStore {
     }
   }
 
-  /// Records the files a running attempt is about to publish, so that a later attempt can
-  /// remove them if this one stops partway through.
-  package func recordArtifactsBeingPublished(
+  /// Withdraws the target's published record and records the files the running attempt is
+  /// about to publish. A publication that stops partway then leaves the target unpublished,
+  /// and a later attempt can remove the files it left behind.
+  package func beginPublishing(
     _ artifacts: [PrivateHeaderGeneration.ArtifactPath],
     targetID: String,
     in runID: PrivateHeaderGeneration.RunID
@@ -212,6 +213,7 @@ package actor GenerationStore {
         sql: "UPDATE runTargets SET artifactSet = ? WHERE runID = ? AND targetID = ?",
         arguments: [try Self.encode(artifacts), runID.rawValue, targetID]
       )
+      try db.execute(sql: "DELETE FROM targets WHERE targetID = ?", arguments: [targetID])
     }
   }
 
@@ -283,8 +285,9 @@ package actor GenerationStore {
     }
   }
 
-  /// The files recorded by attempts that have not been published since the target's last
-  /// publication. An attempt that stopped while publishing may have left some of them behind.
+  /// The files recorded by attempts made since the target's current publication, or by every
+  /// attempt when the target is unpublished. An attempt that stopped while publishing may
+  /// have left some of them behind.
   package func unpublishedAttemptArtifacts(
     targetID: String
   ) throws -> Set<PrivateHeaderGeneration.ArtifactPath> {

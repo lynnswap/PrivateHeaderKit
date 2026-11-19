@@ -259,14 +259,15 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let snapshot: Generation.RunSnapshot
     var infrastructureError: (any Error)?
     do {
+      // Targets carried over from the resumed run are recorded first, so that this run is a
+      // complete checkpoint even if it stops before reaching them.
+      for targetID in targetIDs where !targetIDsToRun.contains(targetID) {
+        try await store.markSkipped(targetID: targetID, in: runID, at: dateProvider())
+      }
       var wasCancelled = false
       var startedCount = 0
-      for target in targets {
+      for target in targets where targetIDsToRun.contains(target.candidate.identifier) {
         let targetID = target.candidate.identifier
-        guard targetIDsToRun.contains(targetID) else {
-          try await store.markSkipped(targetID: targetID, in: runID, at: dateProvider())
-          continue
-        }
         startedCount += 1
         try await store.beginTargetAttempt(
           targetID: targetID,
@@ -410,11 +411,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     let targetID = execution.result.targetID
     let staleArtifacts = Set(try await store.publishedArtifacts(targetID: targetID))
       .union(try await store.unpublishedAttemptArtifacts(targetID: targetID))
-    try await store.recordArtifactsBeingPublished(
-      execution.result.artifacts,
-      targetID: targetID,
-      in: runID
-    )
+    try await store.beginPublishing(execution.result.artifacts, targetID: targetID, in: runID)
     try Generation.TargetPublisher(artifactDirectory: artifactDirectory)
       .replace(staleArtifacts, with: execution.stagedFiles)
     try await store.recordPublishedTarget(

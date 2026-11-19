@@ -71,7 +71,7 @@ struct PrivateHeaderGenerationStoreTests {
     let runID = try await fixture.beginRun("run-incremental", targetIDs: ["framework:Foo"])
     let completed = fixture.completedTarget("framework:Foo")
 
-    try await fixture.store.recordArtifactsBeingPublished(
+    try await fixture.store.beginPublishing(
       completed.artifacts, targetID: "framework:Foo", in: runID
     )
     #expect(
@@ -93,6 +93,29 @@ struct PrivateHeaderGenerationStoreTests {
     )
     #expect(try await fixture.store.unpublishedAttemptArtifacts(targetID: "framework:Foo").isEmpty)
     #expect(try await fixture.loggedMessages() == ["Foo: degraded"])
+  }
+
+  @Test func publicationThatDidNotFinishLeavesTheTargetUnpublished() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let firstRunID = try await fixture.beginRun("run-first", targetIDs: ["framework:Foo"])
+    let published = fixture.completedTarget("framework:Foo")
+    try await fixture.store.recordPublishedTarget(published, in: firstRunID)
+    _ = try await fixture.store.finishRun(firstRunID, interrupted: false, at: fixture.date)
+    let secondRunID = try await fixture.beginRun("run-second", targetIDs: ["framework:Foo"])
+    let incoming = PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/New.h")
+
+    try await fixture.store.beginPublishing([incoming], targetID: "framework:Foo", in: secondRunID)
+
+    #expect(try await fixture.store.publishedArtifacts(targetID: "framework:Foo").isEmpty)
+    #expect(
+      try await fixture.store.unpublishedAttemptArtifacts(targetID: "framework:Foo")
+        == Set(published.artifacts + [incoming])
+    )
+    let checkpoint = try #require(
+      try await fixture.store.allTargetCheckpoint(availableTargetIDs: [])
+    )
+    #expect(checkpoint.hasUnfinishedWork)
   }
 
   @Test func checkpointReportsPublishedAndNewTargets() async throws {
