@@ -19,6 +19,13 @@ struct PrivateHeaderKitHelperExecution: Sendable {
                 outcome = .success(try await operation())
             } catch is CancellationError {
                 throw CancellationError()
+            } catch ToolingError.processLaunchFailed(let command, let underlying) {
+                // A helper that cannot be started fails every target the same way, so the
+                // run stops instead of recording the failure once per target.
+                throw PrivateHeaderGeneration.RawDumping.ExecutionError.environmentUnavailable(
+                    ToolingError.processLaunchFailed(command: command, underlying: underlying)
+                        .description
+                )
             } catch {
                 guard case .commandFailed = error as? ToolingError else { throw error }
                 try Task.checkCancellation()

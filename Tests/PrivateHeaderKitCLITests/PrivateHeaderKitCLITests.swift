@@ -2488,37 +2488,40 @@ private func macOSGenerateCommand(systemRoot: String) -> PrivateHeaderKitGenerat
 
 @Suite
 struct PrivateHeaderKitHelperLookupTests {
-    @Test func installedHelpersCarryTheirPlatformRuntimesAndTrackChanges() async throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        for name in ["privateheaderkit", "privateheaderkit-raw-helper", "privateheaderkit-watch-sim-helper"] {
-            try writeCLIExecutable(UUID().uuidString, to: root.appendingPathComponent(name))
+    @Test(arguments: [nil, SimulatorPlatform.iOS, .watchOS])
+    func installedHelpersAreUsedBesideTheExecutable(_ platform: SimulatorPlatform?) async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let simulatorHelperName =
+            platform == .watchOS ? "privateheaderkit-watch-sim-helper" : "privateheaderkit-sim-helper"
+        let runner = RecordingCommandRunner()
+        if platform != nil {
+            await #expect(throws: ToolingError.self) {
+                _ = try await resolvePrivateHeaderKitHelperPlan(
+                    publicExecutableURL: directory.appendingPathComponent("privateheaderkit"),
+                    simulatorHelperPath: nil,
+                    simulatorPlatform: platform,
+                    runner: runner
+                )
+            }
+            try writeCLIExecutable(
+                "simulator", to: directory.appendingPathComponent(simulatorHelperName)
+            )
         }
-        let names = ["macosx", "watchsimulator"]
-        for sdk in names {
-            let directory = root.appendingPathComponent("privateheaderkit-runtime-\(sdk)")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try Data("\(sdk)-runtime".utf8).write(to: directory.appendingPathComponent("libswiftCompatibilitySpan.dylib"))
-        }
-        let executable = root.appendingPathComponent("privateheaderkit")
+
         let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: executable, simulatorHelperPath: nil, simulatorPlatform: .watchOS
+            publicExecutableURL: directory.appendingPathComponent("privateheaderkit"),
+            simulatorHelperPath: nil,
+            simulatorPlatform: platform,
+            runner: runner
         )
-        try await executePrivateHeaderKitHelperBuilds(plan, runner: RecordingCommandRunner())
-        let prepared = plan.helperURLs.host.deletingLastPathComponent()
-        for sdk in names {
-            let library = prepared.appendingPathComponent("privateheaderkit-runtime-\(sdk)/libswiftCompatibilitySpan.dylib")
-            #expect(try String(contentsOf: library, encoding: .utf8) == "\(sdk)-runtime")
-        }
-        let library = root.appendingPathComponent("privateheaderkit-runtime-macosx/libswiftCompatibilitySpan.dylib")
-        try Data("changed-runtime".utf8).write(to: library)
-        await #expect(throws: ToolingError.self) {
-            try await executePrivateHeaderKitHelperBuilds(plan, runner: RecordingCommandRunner())
-        }
-        let changed = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: executable, simulatorHelperPath: nil, simulatorPlatform: .watchOS
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: runner)
+
+        #expect(
+            plan.helperURLs.host == directory.appendingPathComponent("privateheaderkit-raw-helper")
         )
-        #expect(changed.helperURLs.host != plan.helperURLs.host)
+        #expect(plan.helperURLs.simulator == directory.appendingPathComponent(simulatorHelperName))
+        #expect(await runner.captureCommandSnapshot().isEmpty)
     }
 
     @Test func installedPublicSymlinkResolvesHelpersFromActiveCohort() async throws {
@@ -2531,13 +2534,8 @@ struct PrivateHeaderKitHelperLookupTests {
         let bin = root.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: cohort, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        for executable in [
-            "privateheaderkit",
-            "privateheaderkit-raw-helper",
-            "privateheaderkit-sim-helper",
-            "privateheaderkit-watch-sim-helper",
-        ] {
-            try writeCLIExecutable("\(executable)-a", to: cohort.appendingPathComponent(executable))
+        for name in ["privateheaderkit", "privateheaderkit-watch-sim-helper"] {
+            try writeCLIExecutable(name, to: cohort.appendingPathComponent(name))
         }
         let current = root.appendingPathComponent("libexec/privateheaderkit/current")
         try FileManager.default.createSymbolicLink(at: current, withDestinationURL: cohort)
@@ -2547,80 +2545,38 @@ struct PrivateHeaderKitHelperLookupTests {
             withDestinationURL: current.appendingPathComponent("privateheaderkit")
         )
 
-        let raw = defaultRawDumpHelperURL(publicExecutableURL: publicExecutable)
-        let simulator = defaultSimulatorHelperURL(hostExecutableURL: raw, platform: .iOS)
-        let watchSimulator = defaultSimulatorHelperURL(
-            hostExecutableURL: raw,
-            platform: .watchOS
-        )
-        #expect(raw.standardizedFileURL == cohort.appendingPathComponent("privateheaderkit-raw-helper"))
-        #expect(
-            simulator.standardizedFileURL
-                == cohort.appendingPathComponent("privateheaderkit-sim-helper")
-        )
-        #expect(
-            watchSimulator.standardizedFileURL
-                == cohort.appendingPathComponent("privateheaderkit-watch-sim-helper")
-        )
         let plan = try await resolvePrivateHeaderKitHelperPlan(
             publicExecutableURL: publicExecutable,
             simulatorHelperPath: nil,
-            simulatorPlatform: nil
+            simulatorPlatform: .watchOS
         )
-        try await executePrivateHeaderKitHelperBuilds(
-            plan,
-            runner: RecordingCommandRunner()
+
+        #expect(
+            plan.helperURLs.host.standardizedFileURL
+                == cohort.appendingPathComponent("privateheaderkit-raw-helper").standardizedFileURL
         )
-        #expect(!FileManager.default.fileExists(atPath: plan.helperURLs.simulator.path))
-    }
-
-    @Test func installedMacOSPlanDoesNotRequireDefaultOrExplicitSimulatorArtifact() async throws {
-        for usesExplicitPath in [false, true] {
-            let root = try temporaryDirectory()
-            defer { try? FileManager.default.removeItem(at: root) }
-            let publicExecutable = root.appendingPathComponent("privateheaderkit")
-            let hostHelper = root.appendingPathComponent("privateheaderkit-raw-helper")
-            try writeCLIExecutable("cli", to: publicExecutable)
-            try writeCLIExecutable(
-                usesExplicitPath ? "host-explicit" : "host-default",
-                to: hostHelper
-            )
-            let simulatorHelperPath = usesExplicitPath
-                ? root.appendingPathComponent("missing-sim-helper").path
-                : nil
-
-            let plan = try await resolvePrivateHeaderKitHelperPlan(
-                publicExecutableURL: publicExecutable,
-                simulatorHelperPath: simulatorHelperPath,
-                simulatorPlatform: nil
-            )
-            let runner = RecordingCommandRunner()
-
-            try await executePrivateHeaderKitHelperBuilds(plan, runner: runner)
-
-            #expect(await runner.captureCommandSnapshot().isEmpty)
-            #expect(FileManager.default.fileExists(atPath: plan.helperURLs.host.path))
-            #expect(!FileManager.default.fileExists(atPath: plan.helperURLs.simulator.path))
-        }
+        #expect(
+            plan.helperURLs.simulator.standardizedFileURL
+                == cohort.appendingPathComponent("privateheaderkit-watch-sim-helper")
+                    .standardizedFileURL
+        )
     }
 
     @Test func SwiftPMHelpersUseReportedBinPathsAndDedicatedSimulatorScratch() async throws {
-        let fixture = try makeCLIIdentityFixture(configuration: "debug")
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
         let runner = RecordingCommandRunner()
         let sdkPath = "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         let simulatorTriple = "arm64-apple-ios-simulator"
-        let scratchPath = fixture.root
-            .appendingPathComponent(".build/privateheaderkit-simulator/\(simulatorTriple)")
-            .path
         let simulatorCommand = [
             "swift", "build", "--force-resolved-versions", "-c", "debug",
-            "--scratch-path", scratchPath,
+            "--scratch-path", "/repo/.build/privateheaderkit-simulator/\(simulatorTriple)",
             "--sdk", sdkPath,
             "--triple", simulatorTriple,
         ]
+        let rawBuild = swiftPMHostCommand(configuration: "debug")
+            + ["--product", "privateheaderkit-raw-helper"]
+        let simulatorBuild = simulatorCommand + ["--product", "privateheaderkit-sim-helper"]
         await runner.setCaptureOutput(
-            "build log\n\(fixture.hostBinDirectory.path)\n",
+            "build log\n/repo/.build/out/Products/Debug\n",
             for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
         )
         await runner.setCaptureOutput(
@@ -2628,321 +2584,136 @@ struct PrivateHeaderKitHelperLookupTests {
             for: ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]
         )
         await runner.setCaptureOutput(
-            "\n\(fixture.simulatorBinDirectory(triple: simulatorTriple).path)\n",
+            "\n/repo/.build/privateheaderkit-simulator/bin\n",
             for: simulatorCommand + ["--show-bin-path"]
         )
-        await configureCLIIdentity(
-            runner,
-            fixture: fixture,
-            simulatorSDKPath: sdkPath,
-            simulatorTriple: simulatorTriple
-        )
+        await runner.setCaptureOutput("", for: rawBuild)
+        await runner.setCaptureOutput("", for: simulatorBuild)
 
         let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: fixture.publicExecutable,
+            publicExecutableURL: URL(
+                fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit"
+            ),
             simulatorHelperPath: nil,
             simulatorPlatform: .iOS,
             runner: runner,
-            environment: [:],
             simulatorArchitecture: "arm64"
         )
 
         #expect(
-            plan.helperURLs.host.lastPathComponent == "privateheaderkit-raw-helper"
+            plan.helperURLs.host.path == "/repo/.build/out/Products/Debug/privateheaderkit-raw-helper"
         )
         #expect(
-            plan.helperURLs.simulator.lastPathComponent == "privateheaderkit-sim-helper"
+            plan.helperURLs.simulator.path
+                == "/repo/.build/privateheaderkit-simulator/bin/privateheaderkit-sim-helper"
         )
-        #expect(plan.helperURLs.host.path.contains("/prepared-tools/v1/"))
         #expect(!(await runner.captureCommandSnapshot()).contains {
             $0.command.contains("--product")
         })
 
-        let buildRunner = RecordingCommandRunner()
-        let rawBuild = swiftPMHostCommand(configuration: "debug")
-            + ["--product", "privateheaderkit-raw-helper"]
-        let simulatorBuild = simulatorCommand + ["--product", "privateheaderkit-sim-helper"]
-        await buildRunner.setCaptureOutput("", for: rawBuild)
-        await buildRunner.setCaptureOutput("", for: simulatorBuild)
-        await configureCLIIdentity(
-            buildRunner,
-            fixture: fixture,
-            simulatorSDKPath: sdkPath,
-            simulatorTriple: simulatorTriple
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: runner)
+
+        #expect(
+            await runner.captureCommandSnapshot().map(\.command).filter { $0.contains("--product") }
+                == [rawBuild, simulatorBuild]
         )
-        try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-        let productCommands = await buildRunner.captureCommandSnapshot()
-            .map(\.command)
-            .filter { $0.contains("--product") }
-        #expect(productCommands == [rawBuild, simulatorBuild])
-        #expect(productCommands.allSatisfy { $0.contains("--force-resolved-versions") })
-        #expect(try Data(contentsOf: plan.helperURLs.host) == Data("host".utf8))
-        #expect(try Data(contentsOf: plan.helperURLs.simulator) == Data("sim".utf8))
     }
 
     @Test func SwiftPMWatchHelperUsesWatchSDKTripleAndGenericProduct() async throws {
-        let fixture = try makeCLIIdentityFixture(configuration: "debug")
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let platform = SimulatorPlatform.watchOS
+        let runner = RecordingCommandRunner()
         let sdkPath = "/Platforms/WatchSimulator.platform/Developer/SDKs/WatchSimulator.sdk"
         let simulatorTriple = "arm64-apple-watchos-simulator"
-        let simulatorBinDirectory = fixture.simulatorBinDirectory(
-            triple: simulatorTriple,
-            platform: platform
-        )
-        try FileManager.default.createDirectory(
-            at: simulatorBinDirectory,
-            withIntermediateDirectories: true
-        )
-        try writeCLIExecutable(
-            "watch",
-            to: fixture.simulatorHelper(triple: simulatorTriple, platform: platform)
-        )
-        let scratchPath = fixture.root
-            .appendingPathComponent(".build/privateheaderkit-simulator/\(simulatorTriple)")
-            .path
         let simulatorCommand = [
             "swift", "build", "--force-resolved-versions", "-c", "debug",
-            "--scratch-path", scratchPath,
+            "--scratch-path", "/repo/.build/privateheaderkit-simulator/\(simulatorTriple)",
             "--sdk", sdkPath,
             "--triple", simulatorTriple,
         ]
-        let runner = RecordingCommandRunner()
+        let simulatorBuild = simulatorCommand + ["--product", "privateheaderkit-sim-helper"]
         await runner.setCaptureOutput(
-            "\(fixture.hostBinDirectory.path)\n",
+            "/repo/.build/out/Products/Debug\n",
             for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
         )
         await runner.setCaptureOutput(
             "\(sdkPath)\n",
-            for: ["xcrun", "--sdk", platform.sdkName, "--show-sdk-path"]
+            for: ["xcrun", "--sdk", "watchsimulator", "--show-sdk-path"]
         )
         await runner.setCaptureOutput(
-            "\(simulatorBinDirectory.path)\n",
+            "/repo/.build/privateheaderkit-simulator/watch-bin\n",
             for: simulatorCommand + ["--show-bin-path"]
         )
-        await configureCLIIdentity(
-            runner,
-            fixture: fixture,
-            simulatorSDKPath: sdkPath,
-            simulatorTriple: simulatorTriple,
-            simulatorPlatform: platform
+        await runner.setCaptureOutput(
+            "",
+            for: swiftPMHostCommand(configuration: "debug")
+                + ["--product", "privateheaderkit-raw-helper"]
         )
+        await runner.setCaptureOutput("", for: simulatorBuild)
 
         let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: fixture.publicExecutable,
+            publicExecutableURL: URL(
+                fileURLWithPath: "/repo/.build/out/Products/Debug/privateheaderkit"
+            ),
             simulatorHelperPath: nil,
-            simulatorPlatform: platform,
+            simulatorPlatform: .watchOS,
             runner: runner,
-            environment: [:],
             simulatorArchitecture: "arm64"
         )
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: runner)
 
-        let buildRunner = RecordingCommandRunner()
-        let hostBuild = swiftPMHostCommand(configuration: "debug")
-            + ["--product", "privateheaderkit-raw-helper"]
-        let simulatorBuild = simulatorCommand + ["--product", "privateheaderkit-sim-helper"]
-        await buildRunner.setCaptureOutput("", for: hostBuild)
-        await buildRunner.setCaptureOutput("", for: simulatorBuild)
-        await configureCLIIdentity(
-            buildRunner,
-            fixture: fixture,
-            simulatorSDKPath: sdkPath,
-            simulatorTriple: simulatorTriple,
-            simulatorPlatform: platform
+        #expect(
+            plan.helperURLs.simulator.path
+                == "/repo/.build/privateheaderkit-simulator/watch-bin/privateheaderkit-sim-helper"
         )
-
-        try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-
-        #expect((await runner.captureCommandSnapshot()).contains {
-            $0.command == ["xcrun", "--sdk", "watchsimulator", "--show-sdk-path"]
-        })
-        #expect((await buildRunner.captureCommandSnapshot()).contains {
-            $0.command == [
-                "xcrun", "--sdk", "watchsimulator", "--show-sdk-build-version",
-            ]
-        })
-        #expect((await buildRunner.captureCommandSnapshot()).contains {
-            $0.command == simulatorBuild
-        })
-        #expect(try Data(contentsOf: plan.helperURLs.simulator) == Data("watch".utf8))
+        #expect((await runner.captureCommandSnapshot()).contains { $0.command == simulatorBuild })
     }
 
-    @Test func explicitSimulatorHelperSkipsSimulatorBuildAndResolution() async throws {
-        let fixture = try makeCLIIdentityFixture(configuration: "release")
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let customSimulator = fixture.root.appendingPathComponent("custom-sim-helper")
-        try writeCLIExecutable("custom", to: customSimulator)
+    @Test(arguments: [SimulatorPlatform.iOS, nil])
+    func SwiftPMPlanBuildsOnlyTheHostHelperWithoutASimulatorBuild(
+        _ platform: SimulatorPlatform?
+    ) async throws {
+        // With a platform, the simulator helper is given explicitly. Without one, none is used.
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let explicitHelper = root.appendingPathComponent("custom-sim-helper")
+        try writeCLIExecutable("custom", to: explicitHelper)
+        let explicitPath = platform == nil ? nil : explicitHelper.path
         let runner = RecordingCommandRunner()
         let rawBuild = swiftPMHostCommand(configuration: "release")
             + ["--product", "privateheaderkit-raw-helper"]
-        let hostBinQuery = swiftPMHostCommand(configuration: "release")
-            + ["--show-bin-path"]
-        await runner.setCaptureOutput("\(fixture.hostBinDirectory.path)\n", for: hostBinQuery)
-        await configureCLIIdentity(runner, fixture: fixture)
+        await runner.setCaptureOutput(
+            "/repo/.build/release\n",
+            for: swiftPMHostCommand(configuration: "release") + ["--show-bin-path"]
+        )
+        await runner.setCaptureOutput("", for: rawBuild)
 
         let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: fixture.publicExecutable,
-            simulatorHelperPath: customSimulator.path,
-            simulatorPlatform: .iOS,
-            runner: runner,
-            environment: [:]
+            publicExecutableURL: URL(fileURLWithPath: "/repo/.build/release/privateheaderkit"),
+            simulatorHelperPath: explicitPath,
+            simulatorPlatform: platform,
+            runner: runner
         )
+        try await executePrivateHeaderKitHelperBuilds(plan, runner: runner)
 
-        #expect(
-            plan.helperURLs.host.lastPathComponent == "privateheaderkit-raw-helper"
-        )
-        #expect(plan.helperURLs.simulator.lastPathComponent == "privateheaderkit-sim-helper")
-        #expect(!(await runner.captureCommandSnapshot()).contains { $0.command.first == "xcrun"
-            && $0.command.contains("iphonesimulator") })
-        #expect(!(await runner.captureCommandSnapshot()).contains {
-            $0.command.contains("--product")
-        })
-
-        let buildRunner = RecordingCommandRunner()
-        await buildRunner.setCaptureOutput("", for: rawBuild)
-        await configureCLIIdentity(buildRunner, fixture: fixture)
-        try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-        #expect((await buildRunner.captureCommandSnapshot()).filter {
-            $0.command.contains("--product")
-        }.map(\.command) == [rawBuild])
-        #expect(try Data(contentsOf: plan.helperURLs.simulator) == Data("custom".utf8))
-    }
-
-    @Test func macOSSwiftPMPlanDoesNotRequireDefaultOrExplicitSimulatorArtifact() async throws {
-        for usesExplicitPath in [false, true] {
-            let fixture = try makeCLIIdentityFixture(configuration: "debug")
-            defer { try? FileManager.default.removeItem(at: fixture.root) }
-            try Data(usesExplicitPath ? "raw-explicit".utf8 : "raw-default".utf8)
-                .write(to: fixture.source)
-            let simulatorHelperPath = usesExplicitPath
-                ? fixture.root.appendingPathComponent("missing-sim-helper").path
-                : nil
-            let resolverRunner = RecordingCommandRunner()
-            await resolverRunner.setCaptureOutput(
-                "\(fixture.hostBinDirectory.path)\n",
-                for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
-            )
-            await configureCLIIdentity(resolverRunner, fixture: fixture)
-
-            let plan = try await resolvePrivateHeaderKitHelperPlan(
-                publicExecutableURL: fixture.publicExecutable,
-                simulatorHelperPath: simulatorHelperPath,
-                simulatorPlatform: nil,
-                runner: resolverRunner,
-                environment: [:]
-            )
-
-            #expect(!(await resolverRunner.captureCommandSnapshot()).contains {
-                $0.command.contains("iphonesimulator")
-                    || $0.command.contains("watchsimulator")
-                    || $0.command.contains("--product")
-            })
-
-            let buildRunner = RecordingCommandRunner()
-            let hostBuild = swiftPMHostCommand(configuration: "debug")
-                + ["--product", "privateheaderkit-raw-helper"]
-            await buildRunner.setCaptureOutput("", for: hostBuild)
-            await configureCLIIdentity(buildRunner, fixture: fixture)
-
-            try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-
-            #expect((await buildRunner.captureCommandSnapshot()).filter {
-                $0.command.contains("--product")
-            }.map(\.command) == [hostBuild])
-            #expect(FileManager.default.fileExists(atPath: plan.helperURLs.host.path))
-            #expect(!FileManager.default.fileExists(atPath: plan.helperURLs.simulator.path))
-        }
-    }
-
-    @Test func sourceMutationAfterResumeInspectionFailsBeforeHelperBuild() async throws {
-        let fixture = try makeCLIIdentityFixture(configuration: "debug")
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let resolverRunner = RecordingCommandRunner()
-        let hostBinQuery = swiftPMHostCommand(configuration: "debug")
-            + ["--show-bin-path"]
-        await resolverRunner.setCaptureOutput(
-            "\(fixture.hostBinDirectory.path)\n",
-            for: hostBinQuery
-        )
-        await configureCLIIdentity(resolverRunner, fixture: fixture)
-        let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: fixture.publicExecutable,
-            simulatorHelperPath: nil,
-            simulatorPlatform: nil,
-            runner: resolverRunner,
-            environment: [:]
-        )
-        try Data("mutated".utf8).write(to: fixture.source)
-
-        let buildRunner = RecordingCommandRunner()
-        await configureCLIIdentity(buildRunner, fixture: fixture)
-
-        await #expect(throws: ToolingError.self) {
-            try await executePrivateHeaderKitHelperBuilds(plan, runner: buildRunner)
-        }
-        #expect(!(await buildRunner.captureCommandSnapshot()).contains {
-            $0.command.contains("--product")
-        })
-    }
-
-    @Test func sourceMutationDuringHelperBuildFailsBeforeGeneration() async throws {
-        let fixture = try makeCLIIdentityFixture(configuration: "debug")
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let resolverRunner = RecordingCommandRunner()
-        await resolverRunner.setCaptureOutput(
-            "\(fixture.hostBinDirectory.path)\n",
-            for: swiftPMHostCommand(configuration: "debug") + ["--show-bin-path"]
-        )
-        await configureCLIIdentity(resolverRunner, fixture: fixture)
-        let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: fixture.publicExecutable,
-            simulatorHelperPath: nil,
-            simulatorPlatform: nil,
-            runner: resolverRunner,
-            environment: [:]
-        )
-
-        let rawBuild = swiftPMHostCommand(configuration: "debug")
-            + ["--product", "privateheaderkit-raw-helper"]
-        let recordingRunner = RecordingCommandRunner()
-        await recordingRunner.setCaptureOutput("", for: rawBuild)
-        await configureCLIIdentity(recordingRunner, fixture: fixture)
-        let mutatingRunner = MutatingCaptureRunner(
-            base: recordingRunner,
-            command: rawBuild,
-            mutation: {
-                try Data("mutated during build".utf8).write(to: fixture.source)
+        #expect(plan.helperURLs.host.path == "/repo/.build/release/privateheaderkit-raw-helper")
+        if let explicitPath {
+            #expect(plan.helperURLs.simulator.path == explicitPath)
+            await #expect(throws: ToolingError.self) {
+                _ = try await resolvePrivateHeaderKitHelperPlan(
+                    publicExecutableURL: URL(
+                        fileURLWithPath: "/repo/.build/release/privateheaderkit"
+                    ),
+                    simulatorHelperPath: root.appendingPathComponent("missing").path,
+                    simulatorPlatform: platform,
+                    runner: runner
+                )
             }
-        )
-
-        await #expect(throws: ToolingError.self) {
-            try await executePrivateHeaderKitHelperBuilds(plan, runner: mutatingRunner)
         }
-        #expect((await recordingRunner.captureCommandSnapshot()).contains {
-            $0.command == rawBuild
-        })
-    }
-
-    @Test func installedHelperMutationAfterResumeInspectionFails() async throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let publicExecutable = root.appendingPathComponent("privateheaderkit")
-        let hostHelper = root.appendingPathComponent("privateheaderkit-raw-helper")
-        try writeCLIExecutable("cli", to: publicExecutable)
-        try writeCLIExecutable("host-a", to: hostHelper)
-        let plan = try await resolvePrivateHeaderKitHelperPlan(
-            publicExecutableURL: publicExecutable,
-            simulatorHelperPath: nil,
-            simulatorPlatform: nil
+        #expect(
+            await runner.captureCommandSnapshot().map(\.command) == [
+                swiftPMHostCommand(configuration: "release") + ["--show-bin-path"],
+                rawBuild,
+            ]
         )
-        try writeCLIExecutable("host-b", to: hostHelper)
-
-        await #expect(throws: ToolingError.self) {
-            try await executePrivateHeaderKitHelperBuilds(
-                plan,
-                runner: RecordingCommandRunner()
-            )
-        }
     }
 
     @Test func emptySwiftPMBinPathFailsWithoutLayoutFallback() async {
@@ -2959,156 +2730,9 @@ struct PrivateHeaderKitHelperLookupTests {
                 ),
                 simulatorHelperPath: nil,
                 simulatorPlatform: nil,
-                runner: runner,
-                environment: [:]
+                runner: runner
             )
         }
-    }
-}
-
-private struct CLIIdentityFixture {
-    let root: URL
-    let configuration: String
-    let source: URL
-    let packageDescription: String
-
-    var hostBinDirectory: URL {
-        root.appendingPathComponent(
-            ".build/out/Products/\(configuration.capitalized)",
-            isDirectory: true
-        )
-    }
-
-    var publicExecutable: URL {
-        hostBinDirectory.appendingPathComponent("privateheaderkit")
-    }
-
-    var hostHelper: URL {
-        hostBinDirectory.appendingPathComponent("privateheaderkit-raw-helper")
-    }
-
-    func simulatorBinDirectory(
-        triple: String,
-        platform: SimulatorPlatform = .iOS
-    ) -> URL {
-        root.appendingPathComponent(
-            ".build/privateheaderkit-simulator/\(triple)/out/Products/"
-                + "\(configuration.capitalized)-\(platform.sdkName)",
-            isDirectory: true
-        )
-    }
-
-    func simulatorHelper(
-        triple: String,
-        platform: SimulatorPlatform = .iOS
-    ) -> URL {
-        simulatorBinDirectory(triple: triple, platform: platform)
-            .appendingPathComponent("privateheaderkit-sim-helper")
-    }
-}
-
-private func makeCLIIdentityFixture(configuration: String) throws -> CLIIdentityFixture {
-    let root = try temporaryDirectory()
-    let targetPaths = [
-        "Sources/RawHelper",
-        "Sources/SimulatorHelper",
-        "Sources/RawCore",
-        "Sources/Runtime/include",
-    ]
-    for path in targetPaths {
-        try FileManager.default.createDirectory(
-            at: root.appendingPathComponent(path, isDirectory: true),
-            withIntermediateDirectories: true
-        )
-    }
-    let source = root.appendingPathComponent("Sources/RawCore/Raw.swift")
-    try Data("raw".utf8).write(to: source)
-    try Data("host".utf8).write(
-        to: root.appendingPathComponent("Sources/RawHelper/main.swift")
-    )
-    try Data("sim".utf8).write(
-        to: root.appendingPathComponent("Sources/SimulatorHelper/main.swift")
-    )
-    try Data("header".utf8).write(
-        to: root.appendingPathComponent("Sources/Runtime/include/Runtime.h")
-    )
-    try Data("// manifest".utf8).write(to: root.appendingPathComponent("Package.swift"))
-    try Data(#"{"pins":[],"version":3}"#.utf8).write(
-        to: root.appendingPathComponent("Package.resolved")
-    )
-    let description = """
-    {"targets":[
-      {"name":"RawHelper","path":"Sources/RawHelper","product_memberships":["privateheaderkit-raw-helper"]},
-      {"name":"SimulatorHelper","path":"Sources/SimulatorHelper","product_memberships":["privateheaderkit-sim-helper"]},
-      {"name":"RawCore","path":"Sources/RawCore","product_memberships":["privateheaderkit-raw-helper","privateheaderkit-sim-helper"]},
-      {"name":"Runtime","path":"Sources/Runtime","product_memberships":["privateheaderkit-raw-helper","privateheaderkit-sim-helper"]}
-    ]}
-    """
-    let fixture = CLIIdentityFixture(
-        root: root,
-        configuration: configuration,
-        source: source,
-        packageDescription: description
-    )
-    try FileManager.default.createDirectory(
-        at: fixture.hostBinDirectory,
-        withIntermediateDirectories: true
-    )
-    try writeCLIExecutable("cli", to: fixture.publicExecutable)
-    try writeCLIExecutable("host", to: fixture.hostHelper)
-    let triple = "arm64-apple-ios-simulator"
-    try FileManager.default.createDirectory(
-        at: fixture.simulatorBinDirectory(triple: triple),
-        withIntermediateDirectories: true
-    )
-    try writeCLIExecutable("sim", to: fixture.simulatorHelper(triple: triple))
-    return fixture
-}
-
-private func configureCLIIdentity(
-    _ runner: RecordingCommandRunner,
-    fixture: CLIIdentityFixture,
-    simulatorSDKPath: String? = nil,
-    simulatorTriple: String? = nil,
-    simulatorPlatform: SimulatorPlatform = .iOS
-) async {
-    await runner.setCaptureOutput(
-        fixture.packageDescription,
-        for: ["swift", "package", "describe", "--type", "json"]
-    )
-    await runner.setCaptureOutput(
-        #"{"targets":[{"name":"RawHelper","dependencies":[]},{"name":"SimulatorHelper","dependencies":[]},{"name":"RawCore","dependencies":[]},{"name":"Runtime","dependencies":[]}]}"#,
-        for: ["swift", "package", "dump-package"]
-    )
-    await runner.setCaptureOutput("/usr/bin/swift", for: ["which", "swift"])
-    await runner.setCaptureOutput("Swift test", for: ["swift", "--version"])
-    await runner.setCaptureOutput("Xcode test", for: ["xcodebuild", "-version"])
-    await runner.setCaptureOutput(
-        #"{"compilerVersion":"Swift test","target":{"triple":"arm64-apple-macosx"}}"#,
-        for: ["swift", "-print-target-info"]
-    )
-    await runner.setCaptureOutput(
-        "TEST_MACOS_SDK",
-        for: ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"]
-    )
-    if let simulatorSDKPath, let simulatorTriple {
-        await runner.setCaptureOutput(
-            """
-            {"compilerVersion":"Swift test","target":{"triple":"\(simulatorTriple)"}}
-            """,
-            for: [
-                "swift", "-sdk", simulatorSDKPath,
-                "-target", simulatorTriple,
-                "-print-target-info",
-            ]
-        )
-        await runner.setCaptureOutput(
-            "TEST_SIMULATOR_SDK",
-            for: [
-                "xcrun", "--sdk", simulatorPlatform.sdkName,
-                "--show-sdk-build-version",
-            ]
-        )
     }
 }
 
@@ -3225,67 +2849,6 @@ private struct BufferedRawDumpProbeRunner: CommandRunning {
             wasKilled: false,
             lastLines: ["helper-warning", "fatal-tail"]
         )
-    }
-}
-
-private actor MutatingCaptureRunner: CommandRunning {
-    private let base: RecordingCommandRunner
-    private let command: [String]
-    private let mutation: @Sendable () throws -> Void
-
-    init(
-        base: RecordingCommandRunner,
-        command: [String],
-        mutation: @escaping @Sendable () throws -> Void
-    ) {
-        self.base = base
-        self.command = command
-        self.mutation = mutation
-    }
-
-    func runCapture(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> String {
-        let output = try await base.runCapture(command, env: env, cwd: cwd)
-        if command == self.command {
-            try mutation()
-        }
-        return output
-    }
-
-    func runCaptureChunks(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?,
-        consumeStandardOutput: @escaping CommandStandardOutputConsumer
-    ) async throws {
-        try await base.runCaptureChunks(
-            command,
-            env: env,
-            cwd: cwd,
-            consumeStandardOutput: consumeStandardOutput
-        )
-        if command == self.command {
-            try mutation()
-        }
-    }
-
-    func runSimple(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws {
-        try await base.runSimple(command, env: env, cwd: cwd)
-    }
-
-    func runStreaming(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> StreamingCommandResult {
-        try await base.runStreaming(command, env: env, cwd: cwd)
     }
 }
 
