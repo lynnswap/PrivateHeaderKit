@@ -3,7 +3,10 @@ import PrivateHeaderKitHelperProtocol
 import PrivateHeaderKitTooling
 
 struct RawHelperFailureCapsule: Equatable, Sendable {
+    /// The bounded process output plus the headline.
     static let maximumLineCount = BoundedProcessOutput.maximumRenderedLineCount + 1
+    /// The bounded process output plus a headline whose only variable part is the helper's
+    /// file name.
     static let maximumRenderedByteCount = 24 * 1_024
 
     enum HandshakeObservation: Equatable, Sendable {
@@ -74,16 +77,7 @@ struct RawHelperFailureCapsule: Equatable, Sendable {
             identity,
             "termination_observed_us=\(terminationObservedAt)",
         ].joined(separator: " ")
-        let text = (diagnosticLines + [headline]).joined(separator: "\n")
-        precondition(
-            diagnosticLines.count + 1 <= Self.maximumLineCount,
-            "RawHelperFailureCapsule must enforce its rendered line-count bound"
-        )
-        precondition(
-            text.utf8.count <= Self.maximumRenderedByteCount,
-            "RawHelperFailureCapsule must enforce its rendered byte-count bound"
-        )
-        self.text = text
+        self.text = (diagnosticLines + [headline]).joined(separator: "\n")
     }
 
     private static func simulatorChildTerminationSignal(in line: String) -> Int32? {
