@@ -210,7 +210,7 @@ separate output directory.
 | `--sim-helper <path>` | Explicit helper for the selected Simulator platform. |
 | `--runtime-metadata` | Load each target image to supplement Objective-C classes missing from its static metadata. |
 | `--resume` | Continue the latest compatible all-target run. |
-| `--fresh` | Restart all-target generation and permit legacy artifact migration. |
+| `--fresh` | Restart all-target generation. |
 
 `--resume` and `--fresh` are mutually exclusive. Run `privateheaderkit --help`
 for the command's generated reference.
@@ -328,20 +328,18 @@ The complete output base is:
         PrivateFrameworks/...
         SystemLibrary/...
         usr/lib/...
-  .privateheaderkit/
-    <source-storage-id>/
-      current -> generations/<generation-id>
-      generations/<generation-id>/...
-      legacy-backups/...
   .state/
     <source-storage-id>/generation.sqlite
 ```
 
 Completed targets are published into `generated-headers` one target at a time.
-If a later target or finalization fails, already published targets remain
-available. Failed or interrupted targets retain their last successfully
-published files. The immutable generation under `.privateheaderkit` is a
-recovery snapshot, not a visibility gate for generated headers.
+A target is generated in a staging directory under `.state`; once its helper
+succeeds, the files the target published before are removed and the new files
+are moved into place. If a later target fails, already published targets remain
+available. A target that fails or is interrupted before publication keeps its
+last successfully published files. If the process is terminated while a target
+is being published, that target's files can be incomplete until it is generated
+again; `--target all --resume` regenerates it.
 
 Objective-C header generation reads only the directly adopted protocol names
 needed by class, category, and protocol declarations. Protocol metadata reads
@@ -371,23 +369,14 @@ malformed metadata cannot grow process output without limit. Live warning
 presentation is also capped across the run; one aggregate warning points to the
 retained per-target details in the database.
 
-State, attempts, publication intent, and run diagnostics are stored in
-`generation.sqlite`, outside the published header tree. The `.privateheaderkit`
-tree is an internal recovery artifact; consumers should use only the printed
-`Headers` directory.
+Runs, target attempts, the files each target published, and run diagnostics
+are stored in `generation.sqlite`, outside the published header tree. Consumers
+should use only the printed `Headers` directory.
 
-PrivateHeaderKit automatically relocates its previous managed live directory,
-`generated-headers/<source-storage-id>`, to the platform/release layout while
-holding the same source lease. The whole directory is renamed atomically so
-completed targets from an interrupted run remain resumable. If both the old
-and new directories exist, PrivateHeaderKit leaves both unchanged and stops;
-it never guesses how to merge or overwrite them. Unrelated siblings under
-`generated-headers` are not part of this relocation.
-
-If the printed header directory is removed while the authenticated current
-generation remains available, the next run restores the missing published
-files before deciding whether to continue or restart. PrivateHeaderKit does not
-create a top-level source link.
+Published files are not kept anywhere else. If you delete files from the
+`Headers` directory, the affected targets count as unfinished: `--target all
+--resume` regenerates them, and a named target is regenerated whenever it is
+requested.
 
 ## Continue or Restart
 
@@ -395,28 +384,22 @@ Named targets are generated every time they are requested. They do not require
 `--resume`, `--fresh`, or a continuation decision in the wizard. They also do not
 replace the progress of an interrupted all-target run. Successful replacements
 remain visible, and a failed target keeps its last successfully published files.
-Legacy migration is separate: when an older artifact tree must be
-migrated, both named-target and all-target commands still require an explicit
-`--fresh` or the wizard's migration choice. Selecting a named target alone does
-not authorize moving the old output.
 
 Continuation applies only to `--target all`:
 
 - `--resume` continues the latest compatible all-target run and runs unfinished
   or missing targets. A changed plan is rejected.
-- `--fresh` regenerates every target. It also permits legacy artifact migration.
+- `--fresh` regenerates every target.
 - With neither flag, generation starts normally when no all-target state exists
   or the previous all-target run is complete, even if the producer version or
   generation settings have changed. Unfinished all-target work requires an
   explicit `--resume` or `--fresh` decision.
 
 The wizard offers Continue or Restart only for unfinished all-target work.
-A run interrupted during finalization can already have published every target;
-that run has no remaining generation work even though its terminal status is
-`interrupted`. Normal generation starts a new run in that case. Explicit resume
-checks compatibility and regenerates any missing or incompatible target output.
-Restarting in the wizard does not grant legacy migration permission; the separate
-migration choice does.
+A run interrupted after its last target was published has no remaining
+generation work even though its terminal status is `interrupted`. Normal
+generation starts a new run in that case. Explicit resume checks compatibility
+and regenerates any missing or incompatible target output.
 
 Named-target updates do not discard that progress; compatible successful
 replacements remain reusable when the all-target run resumes.
@@ -431,47 +414,20 @@ a run selected all targets, so their artifacts are preserved but their runs are
 not adopted as all-target resume checkpoints. The next all-target command starts
 a new run.
 
-## Legacy Output
+## Output From Earlier Versions
 
-Legacy state and legacy artifacts are handled separately:
+PrivateHeaderKit reads and writes only the layout in
+[Output Contract](#output-contract). An existing `generation.sqlite` is upgraded
+in place on the next run for its source, and published headers stay where they
+are. Earlier PrivateHeaderKit versions cannot open the upgraded database.
 
-- Older JSON state is not imported as resumable state. PrivateHeaderKit creates
-  `generation.sqlite` automatically and leaves the JSON files untouched. State
-  files alone do not require a confirmation or `--fresh`.
-- A pre-rewrite `<output-base>/<source-storage-id>` directory is inventoried and
-  copied into the draft generation. A fresh migration publishes the new
-  generation, then atomically moves the original directory under
-  `legacy-backups`; nothing replaces it at the output-base root.
+Earlier versions also created the following items. This version does not read,
+migrate, or remove them, so you can delete the ones you no longer need:
 
-Older PrivateHeaderKit versions created a managed
-`<output-base>/<source-storage-id>` symlink to the internal current generation.
-The next run for that source relocates the exact managed symlink out of the
-output-base root only after the current generation has been authenticated. A
-symlink with any other target, or
-a regular or special file at that path, is left unchanged and stops generation.
-Real directories remain subject to the explicit fresh-migration contract above.
-Except for the uncommitted compatibility state described below, a real
-directory that coexists with an authenticated current generation is ambiguous;
-PrivateHeaderKit leaves it unchanged and stops even when `--fresh` was
-requested.
-
-Before the current pointer is switched, output validation or archival failures
-leave the original directory in place. If the process stops after the switch,
-startup recovery completes the exclusive move into `legacy-backups` before
-resuming generation. The move uses device and file identity only to detect a
-replacement during that operation; later startups authenticate the backup with
-a portable checksum of its paths, item kinds, and file contents so copied or
-restored output remains usable. The checksum requirement and the generation
-that alone may archive the original directory are carried through every later
-generation marker. This keeps deletion or corruption detectable without
-allowing a later generation to archive a directory that reappears at the old
-path.
-
-When upgrading an older publication interrupted after its hidden `current`
-switch but before its legacy-directory swap, no portable checksum exists.
-Recovery detaches only that authenticated, uncommitted `current` pointer and
-aborts its generation; it leaves the directory untouched so an explicit fresh
-migration can inventory it under the current contract. An exact
-`legacy-<uuid>` symlink left in `legacy-backups` by an interrupted older atomic
-swap is moved into hidden managed quarantine after the current generation is
-authenticated.
+- `<output-base>/.privateheaderkit/`, which held recovery snapshots of the
+  published headers.
+- State directories under `<output-base>/.state/` that contain JSON files and no
+  `generation.sqlite`.
+- Header directories in older layouts, `<output-base>/<source-storage-id>/` and
+  `<output-base>/generated-headers/<source-storage-id>/`. Regenerate those
+  sources to get their headers in the current layout.

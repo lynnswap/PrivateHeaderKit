@@ -4,15 +4,9 @@ import Testing
 
 @testable import PrivateHeaderKitCore
 
-private let testLegacyArtifactChecksum = String(repeating: "a", count: 64)
-
 @Suite
 struct PrivateHeaderGenerationStoreTests {
-  private enum InjectedFault: Error {
-    case stop
-  }
-
-  @Test func migratesVersionOneDatabaseAndRecordsCurrentSchema() async throws {
+  @Test func migratesDatabaseWithOpenPublicationToDirectTargetPublication() async throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let databaseURL = root.appendingPathComponent("generation.sqlite")
@@ -20,26 +14,34 @@ struct PrivateHeaderGenerationStoreTests {
     var migrator = DatabaseMigrator()
     migrator.registerMigration("v1-generation-state") { db in
       try createVersionOneSchema(db)
+      try db.execute(
+        sql: """
+          INSERT INTO runs VALUES ('run-old', 'source', 'fingerprint', '["framework:Foo"]', 1, NULL, 'running', NULL);
+          INSERT INTO runTargets VALUES
+              ('run-old', 'framework:Foo', 'Foo', 'framework', 'running', NULL, '[]', 1);
+          INSERT INTO targets VALUES
+              ('framework:Foo', 'run-old', 'completed', '["Frameworks/Foo/Headers/Foo.h"]', 1);
+          INSERT INTO publicationIntents VALUES
+              ('generation-old', 'run-old', NULL, 'prepared', 'fingerprint', 'checksum', 1, NULL);
+          """)
     }
     try migrator.migrate(queue)
 
     let store = try GenerationStore(databaseURL: databaseURL)
-    #expect(
-      try await store.appliedMigrationIdentifiers() == [
-        "v1-generation-state",
-        "v2-run-logs-and-indexes",
-        "v3-causal-ordering",
-        "v4-published-artifact-digests",
-        "v5-all-target-resume",
-      ])
-    let columns = try await queue.read { db in
-      try db.columns(in: "runLogs").map(\.name)
+    try await store.interruptUnfinishedRuns(at: Date(timeIntervalSinceReferenceDate: 2))
+
+    let tables = try await queue.read { db in
+      try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    #expect(columns.contains("message"))
+    #expect(!tables.contains("publicationIntents"))
+    #expect(!tables.contains("publicationOrdering"))
     #expect(
-      try await queue.read { db in
-        try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'schemaVersion'")
-      } == nil)
+      try await store.publishedArtifacts(targetID: "framework:Foo")
+        == [PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Headers/Foo.h")]
+    )
+    let run = try #require(try await store.latestRunSnapshot())
+    #expect(run.status == .interrupted)
+    #expect(run.targets.map(\.status) == [.interrupted])
   }
 
   @Test func unknownFutureMigrationFailsFastBeforeMigration() async throws {
@@ -63,1027 +65,246 @@ struct PrivateHeaderGenerationStoreTests {
     }
   }
 
-  @Test func targetAttemptFaultRollsBackWholeDomainTransaction() async throws {
-    let fixture = try StoreFixture(fault: { point in
-      if point == .afterRunTargetWrite { throw InjectedFault.stop }
-    })
-    defer { fixture.cleanup() }
-    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-rollback")
-    _ = try await fixture.store.beginRun(
-      id: runID,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: fixture.date
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: runID,
-      at: fixture.date
-    )
-
-    do {
-      try await fixture.store.recordTargetAttempt(
-        fixture.completedTarget("framework:Foo"),
-        in: runID
-      )
-      Issue.record("fault-injected target transaction unexpectedly committed")
-    } catch InjectedFault.stop {}
-
-    let run = try await fixture.store.runSnapshot(runID)
-    #expect(run.targets.first?.status == .running)
-    #expect(run.targets.first?.artifacts.isEmpty == true)
-  }
-
-  @Test func publicationFinalizeFaultRollsBackRunTargetAndIntentChanges() async throws {
-    let fixture = try StoreFixture(fault: { point in
-      if point == .afterSemanticFinalize { throw InjectedFault.stop }
-    })
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-
-    do {
-      _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-      Issue.record("fault-injected publication unexpectedly committed")
-    } catch InjectedFault.stop {}
-
-    let run = try await fixture.store.runSnapshot(ids.runID)
-    #expect(run.status == .running)
-    #expect(try await fixture.store.targetSnapshot(targetID: "framework:Foo") == nil)
-    #expect(
-      try await fixture.store.publicationIntent(generationID: ids.generationID)?.state
-        == .pointerPublished)
-  }
-
-  @Test func committedPublicationUpdatesRunTargetAndIntentAtomically() async throws {
+  @Test func publishedTargetIsRecordedBeforeItsRunEnds() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-    let run = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-
-    #expect(run.status == .completed)
-    #expect(
-      try await fixture.store.targetSnapshot(targetID: "framework:Foo")?.lastSuccessfulRunID
-        == ids.runID)
-    #expect(
-      try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .committed
-    )
-  }
-
-  @Test func committedIntentAcceptsAuthenticatedCurrentWithoutTopLevelAlias() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-
-    let action = try await fixture.store.recover(
-      using: .init(
-        currentGenerationID: ids.generationID,
-        legacyArtifactState: .absent,
-        markers: [ids.generationID: fixture.marker(ids.generationID)]
-      ),
-      at: fixture.date
-    )
-
-    #expect(action == .none)
-    #expect(
-      try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .committed
-    )
-  }
-
-  @Test func committedMigratedIntentRequiresAuthenticatedLegacyBackup() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-    let marker = fixture.marker(
-      ids.generationID,
-      legacyBackupChecksum: testLegacyArtifactChecksum
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .absent,
-          markers: [ids.generationID: marker]
-        ),
-        at: fixture.date
-      )
-    }
-    #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .absent,
-          archivedLegacyArtifactChecksums: [testLegacyArtifactChecksum],
-          markers: [ids.generationID: marker]
-        ),
-        at: fixture.date
-      ) == .none
-    )
-  }
-
-  @Test func abortedIntentRecognizesAuthenticatedCommittedPreviousGeneration()
-    async throws
-  {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    let previous = try await fixture.prepareCompletedPublication(
-      runID: .init(rawValue: "run-old"),
-      generationID: previousGenerationID
-    )
-    try await fixture.store.markPointerPublished(previous.generationID)
-    _ = try await fixture.store.completePublication(previous.generationID, at: fixture.date)
-    let aborted = try await fixture.prepareCompletedPublication(
-      previousGenerationID: previousGenerationID,
-      runID: .init(rawValue: "run-aborted"),
-      generationID: .init(rawValue: "generation-aborted")
-    )
-    let publication = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: previousGenerationID,
-      legacyArtifactState: .absent,
-      markers: [previousGenerationID: fixture.marker(previousGenerationID)]
-    )
-
-    #expect(
-      try await fixture.store.recover(using: publication, at: fixture.date)
-        == .discardGeneration(aborted.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(using: publication, at: fixture.date)
-        == .recognized(previousGenerationID)
-    )
-    #expect(
-      try await fixture.store.publicationIntent(generationID: aborted.generationID)?.state
-        == .aborted
-    )
-  }
-
-  @Test func abortedIntentWithPreviousCurrentRejectsLegacyArtifactDirectory() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    let previous = try await fixture.prepareCompletedPublication(
-      runID: .init(rawValue: "run-old"),
-      generationID: previousGenerationID
-    )
-    try await fixture.store.markPointerPublished(previous.generationID)
-    _ = try await fixture.store.completePublication(previous.generationID, at: fixture.date)
-    let aborted = try await fixture.prepareCompletedPublication(
-      previousGenerationID: previousGenerationID,
-      runID: .init(rawValue: "run-aborted"),
-      generationID: .init(rawValue: "generation-aborted")
-    )
-    let publication = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: previousGenerationID,
-      legacyArtifactState: .directory,
-      markers: [previousGenerationID: fixture.marker(previousGenerationID)]
-    )
-    #expect(
-      try await fixture.store.recover(using: publication, at: fixture.date)
-        == .discardGeneration(aborted.generationID)
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(using: publication, at: fixture.date)
-    }
-  }
-
-  @Test func publishedTargetAttemptBecomesImmediatelyResumable() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-incremental")
-    _ = try await fixture.store.beginRun(
-      id: runID,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: fixture.date
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: runID,
-      at: fixture.date
-    )
+    let runID = try await fixture.beginRun("run-incremental", targetIDs: ["framework:Foo"])
     let completed = fixture.completedTarget("framework:Foo")
 
-    try await fixture.store.prepareTargetPublication(completed, in: runID)
-    try await fixture.store.recordPublishedTargetAttempt(
-      completed,
-      artifactDigests: [
-        PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h"):
-          String(repeating: "0", count: 64)
-      ],
-      in: runID
+    try await fixture.store.beginPublishing(
+      completed.artifacts, targetID: "framework:Foo", in: runID
     )
+    #expect(
+      try await fixture.store.unpublishedAttemptArtifacts(targetID: "framework:Foo")
+        == Set(completed.artifacts)
+    )
+    #expect(try await fixture.store.publishedArtifacts(targetID: "framework:Foo").isEmpty)
 
-    #expect(try await fixture.store.runSnapshot(runID).status == .running)
-    #expect(try await fixture.store.runSnapshot(runID).targets.first?.status == .completed)
-    #expect(
-      try await fixture.store.targetSnapshot(targetID: "framework:Foo")?.lastSuccessfulRunID
-        == runID
+    let warning = PrivateHeaderGeneration.GenerationWarning(
+      kind: "objc-metadata-warning", relativePath: "Frameworks/Foo", message: "Foo: degraded"
     )
+    try await fixture.store.recordPublishedTarget(completed, warnings: [warning], in: runID)
+
+    let run = try #require(try await fixture.store.latestRunSnapshot())
+    #expect(run.status == .running)
+    #expect(run.targets.map(\.status) == [.completed])
     #expect(
-      try await fixture.store.publishedArtifactsByTarget()["framework:Foo"]
-        == completed.artifacts
+      try await fixture.store.publishedArtifactsByTarget() == ["framework:Foo": completed.artifacts]
     )
+    #expect(try await fixture.store.unpublishedAttemptArtifacts(targetID: "framework:Foo").isEmpty)
+    #expect(try await fixture.loggedMessages() == ["Foo: degraded"])
   }
 
-  @Test func committedIntentRejectsMismatchedCurrentMarker() async throws {
+  @Test func publicationThatDidNotFinishLeavesTheTargetUnpublished() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-    let mismatched = PrivateHeaderGeneration.GenerationMarkerSnapshot(
-      generationID: ids.generationID,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "different-checksum",
-      artifactsByTarget: [:],
-      opaquePaths: []
-    )
+    let firstRunID = try await fixture.beginRun("run-first", targetIDs: ["framework:Foo"])
+    let published = fixture.completedTarget("framework:Foo")
+    try await fixture.store.recordPublishedTarget(published, in: firstRunID)
+    _ = try await fixture.store.finishRun(firstRunID, interrupted: false, at: fixture.date)
+    let secondRunID = try await fixture.beginRun("run-second", targetIDs: ["framework:Foo"])
+    let incoming = PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/New.h")
 
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .absent,
-          markers: [ids.generationID: mismatched]
-        ),
-        at: fixture.date
-      )
-    }
-  }
+    try await fixture.store.beginPublishing([incoming], targetID: "framework:Foo", in: secondRunID)
 
-  @Test func committedIntentRejectsLegacyArtifactDirectory() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .directory,
-          markers: [ids.generationID: fixture.marker(ids.generationID)]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func preparedIntentWithPreviousCurrentAbortsAsInterrupted() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication(
-      previousGenerationID: .init(rawValue: "generation-old")
-    )
-    let marker = fixture.marker(ids.generationID)
-    let action = try await fixture.store.recover(
-      using: .init(
-        currentGenerationID: .init(rawValue: "generation-old"),
-        legacyArtifactState: .absent,
-        markers: [ids.generationID: marker]
-      ),
-      at: fixture.date
-    )
-
-    #expect(action == .discardGeneration(ids.generationID))
-    #expect(try await fixture.store.runSnapshot(ids.runID).status == .interrupted)
-    #expect(try await fixture.store.targetSnapshot(targetID: "framework:Foo") == nil)
+    #expect(try await fixture.store.publishedArtifacts(targetID: "framework:Foo").isEmpty)
     #expect(
-      try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .aborted)
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .absent,
-          markers: [ids.generationID: marker]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func abortedIntentRetriesDiscardUntilGenerationIsAbsent() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    let previous = try await fixture.prepareCompletedPublication(
-      runID: .init(rawValue: "run-old"),
-      generationID: previousGenerationID
+      try await fixture.store.unpublishedAttemptArtifacts(targetID: "framework:Foo")
+        == Set(published.artifacts + [incoming])
     )
-    try await fixture.store.markPointerPublished(previous.generationID)
-    _ = try await fixture.store.completePublication(previous.generationID, at: fixture.date)
-    let ids = try await fixture.prepareCompletedPublication(
-      previousGenerationID: previousGenerationID,
-      runID: .init(rawValue: "run-new"),
-      generationID: .init(rawValue: "generation-new")
+    let checkpoint = try #require(
+      try await fixture.store.allTargetCheckpoint(availableTargetIDs: [])
     )
-    let previousMarker = fixture.marker(previousGenerationID)
-    let abortedMarker = fixture.marker(ids.generationID)
-    let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: previousGenerationID,
-      legacyArtifactState: .absent,
-      markers: [
-        previousGenerationID: previousMarker,
-        ids.generationID: abortedMarker,
-      ]
-    )
-
-    #expect(
-      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
-        == .discardGeneration(ids.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
-        == .discardGeneration(ids.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: previousGenerationID,
-          legacyArtifactState: .absent,
-          markers: [previousGenerationID: previousMarker]
-        ),
-        at: fixture.date
-      ) == .recognized(previousGenerationID)
-    )
-  }
-
-  @Test func abortedLegacyMigrationRetriesDiscardUntilGenerationIsAbsent() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication(previousGenerationID: nil)
-    let interruptedSnapshot = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: nil,
-      legacyArtifactState: .directory,
-      markers: [ids.generationID: fixture.marker(ids.generationID)]
-    )
-
-    #expect(
-      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
-        == .discardGeneration(ids.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(using: interruptedSnapshot, at: fixture.date)
-        == .discardGeneration(ids.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: nil,
-          legacyArtifactState: .directory,
-          markers: [:]
-        ),
-        at: fixture.date
-      ) == .recognized(nil)
-    )
-  }
-
-  @Test func abortedIntentRejectsMissingPreviousCurrentPointer() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    let ids = try await fixture.prepareCompletedPublication(
-      previousGenerationID: previousGenerationID
-    )
-    _ = try await fixture.store.recover(
-      using: .init(
-        currentGenerationID: previousGenerationID,
-        legacyArtifactState: .absent,
-        markers: [
-          previousGenerationID: fixture.marker(previousGenerationID),
-          ids.generationID: fixture.marker(ids.generationID),
-        ]
-      ),
-      at: fixture.date
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: nil,
-          legacyArtifactState: .absent,
-          markers: [:]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func abortedIntentRejectsUnrelatedCurrentPointer() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    let unrelatedGenerationID = PrivateHeaderGeneration.GenerationID(
-      rawValue: "generation-unrelated"
-    )
-    let ids = try await fixture.prepareCompletedPublication(
-      previousGenerationID: previousGenerationID
-    )
-    _ = try await fixture.store.recover(
-      using: .init(
-        currentGenerationID: previousGenerationID,
-        legacyArtifactState: .absent,
-        markers: [
-          previousGenerationID: fixture.marker(previousGenerationID),
-          ids.generationID: fixture.marker(ids.generationID),
-        ]
-      ),
-      at: fixture.date
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: unrelatedGenerationID,
-          legacyArtifactState: .absent,
-          markers: [unrelatedGenerationID: fixture.marker(unrelatedGenerationID)]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func controlledPreparedAbortFailsActiveTargetAndRetainsPendingRows() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-controlled-failure")
-    _ = try await fixture.store.beginRun(
-      id: runID,
-      plan: fixture.plan(targetIDs: ["framework:Foo", "framework:Bar"]),
-      at: fixture.date
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: runID,
-      at: fixture.date
-    )
-    try await fixture.store.recordTargetAttempt(
-      fixture.completedTarget("framework:Foo"),
-      in: runID
-    )
-    let generationID = PrivateHeaderGeneration.GenerationID(
-      rawValue: "generation-controlled-failure")
-    let previousGenerationID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    _ = try await fixture.store.preparePublication(
-      generationID: generationID,
-      runID: runID,
-      previousGenerationID: previousGenerationID,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "checksum",
-      at: fixture.date
-    )
-
-    let action = try await fixture.store.recover(
-      using: .init(
-        currentGenerationID: previousGenerationID,
-        legacyArtifactState: .absent,
-        markers: [:]
-      ),
-      at: fixture.date,
-      terminalReason: .failed(message: "generation move failed")
-    )
-
-    #expect(action == .discardGeneration(generationID))
-    let run = try await fixture.store.runSnapshot(runID)
-    #expect(run.status == .failed)
-    let targets = Dictionary(uniqueKeysWithValues: run.targets.map { ($0.targetID, $0) })
-    #expect(targets["framework:Foo"]?.status == .failed)
-    #expect(targets["framework:Foo"]?.failureSummary == "generation move failed")
-    #expect(targets["framework:Bar"]?.status == .pending)
-    #expect(
-      try await fixture.store.publicationIntent(generationID: generationID)?.state == .aborted)
-  }
-
-  @Test func pointerPublishedIntentCanNotMoveBackToPreviousCurrent() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let oldID = PrivateHeaderGeneration.GenerationID(rawValue: "generation-old")
-    let ids = try await fixture.prepareCompletedPublication(previousGenerationID: oldID)
-    try await fixture.store.markPointerPublished(ids.generationID)
-
-    do {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: oldID,
-          legacyArtifactState: .absent,
-          markers: [ids.generationID: fixture.marker(ids.generationID)]
-        ),
-        at: fixture.date
-      )
-      Issue.record("pointerPublished mismatch unexpectedly recovered")
-    } catch let error as PrivateHeaderGeneration.StateError {
-      guard case .corruptPublication = error else {
-        Issue.record("unexpected error: \(error)")
-        return
-      }
-    }
-  }
-
-  @Test func recoveryArchivesLegacyArtifactsThenRollsForwardIdempotently() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    let marker = fixture.marker(
-      ids.generationID,
-      legacyBackupChecksum: testLegacyArtifactChecksum
-    )
-    let incomplete = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: ids.generationID,
-      legacyArtifactState: .directory,
-      markers: [ids.generationID: marker]
-    )
-    #expect(
-      try await fixture.store.recover(using: incomplete, at: fixture.date)
-        == .archiveLegacyArtifacts(ids.generationID))
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .directory,
-          archivedLegacyArtifactChecksums: [testLegacyArtifactChecksum],
-          markers: [ids.generationID: marker]
-        ),
-        at: fixture.date
-      )
-    }
-
-    let complete = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: ids.generationID,
-      legacyArtifactState: .absent,
-      archivedLegacyArtifactChecksums: [testLegacyArtifactChecksum],
-      markers: [ids.generationID: marker]
-    )
-    #expect(
-      try await fixture.store.recover(using: complete, at: fixture.date)
-        == .rolledForward(ids.generationID))
-    #expect(try await fixture.store.recover(using: complete, at: fixture.date) == .none)
-    #expect(try await fixture.store.runSnapshot(ids.runID).status == .completed)
-  }
-
-  @Test func preparedFirstPublicationSafelyUnwindsUnattributedLegacyDirectory() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    let marker = fixture.marker(ids.generationID)
-    let current = PrivateHeaderGeneration.PublicationSnapshot(
-      currentGenerationID: ids.generationID,
-      legacyArtifactState: .directory,
-      markers: [ids.generationID: marker]
-    )
-
-    #expect(
-      try await fixture.store.recover(using: current, at: fixture.date)
-        == .detachCurrentPointer(ids.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: nil,
-          legacyArtifactState: .directory,
-          markers: [ids.generationID: marker]
-        ),
-        at: fixture.date
-      ) == .discardGeneration(ids.generationID)
-    )
-    #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: nil,
-          legacyArtifactState: .directory,
-          markers: [:]
-        ),
-        at: fixture.date
-      ) == .recognized(nil)
-    )
-    #expect(try await fixture.store.runSnapshot(ids.runID).status == .interrupted)
-    #expect(
-      try await fixture.store.publicationIntent(generationID: ids.generationID)?.state == .aborted
-    )
-  }
-
-  @Test func publicationWithPreviousCurrentRejectsUnattributedLegacyDirectory() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication(
-      previousGenerationID: .init(rawValue: "generation-old")
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .directory,
-          markers: [ids.generationID: fixture.marker(ids.generationID)]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func pointerPublishedIntentRejectsUnattributedLegacyDirectory() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(ids.generationID)
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .directory,
-          markers: [ids.generationID: fixture.marker(ids.generationID)]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func descendantGenerationDoesNotReuseLegacyArchiveAuthorization() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    let migrationGenerationID = PrivateHeaderGeneration.GenerationID(
-      rawValue: "generation-migration"
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .directory,
-          archivedLegacyArtifactChecksums: [testLegacyArtifactChecksum],
-          markers: [
-            ids.generationID: fixture.marker(
-              ids.generationID,
-              legacyBackupChecksum: testLegacyArtifactChecksum,
-              archiveOwnerGenerationID: migrationGenerationID
-            )
-          ]
-        ),
-        at: fixture.date
-      )
-    }
-  }
-
-  @Test func migratedPublicationRejectsMissingSourceAndBackup() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication()
-    await #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: ids.generationID,
-          legacyArtifactState: .absent,
-          markers: [
-            ids.generationID: fixture.marker(
-              ids.generationID,
-              legacyBackupChecksum: testLegacyArtifactChecksum
-            )
-          ]
-        ),
-        at: fixture.date
-      )
-    }
+    #expect(checkpoint.hasUnfinishedWork)
   }
 
   @Test func checkpointReportsPublishedAndNewTargets() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
-    let ids = try await fixture.prepareCompletedPublication(targetIDs: ["framework:Foo"])
-    try await fixture.store.markPointerPublished(ids.generationID)
-    _ = try await fixture.store.completePublication(ids.generationID, at: fixture.date)
-    let current = [
-      "framework:Foo": [try PrivateHeaderGeneration.ArtifactPath("Frameworks/Foo/Foo.h")]
-    ]
-    let checkpoint = try #require(try await fixture.store.allTargetCheckpoint(
-      currentArtifactsByTarget: current
-    ))
+    let runID = try await fixture.beginRun("run-publication", targetIDs: ["framework:Foo"])
+    try await fixture.store.recordPublishedTarget(
+      fixture.completedTarget("framework:Foo"), in: runID
+    )
+    _ = try await fixture.store.finishRun(runID, interrupted: false, at: fixture.date)
+
+    let checkpoint = try #require(
+      try await fixture.store.allTargetCheckpoint(availableTargetIDs: ["framework:Foo"])
+    )
     #expect(!checkpoint.hasUnfinishedWork)
     let summary = checkpoint.resumeSummary(
       selectedTargetIDs: ["framework:Foo", "framework:Bar"], at: fixture.date
     )
     #expect(summary.targets.map(\.status) == [.completed, .pending])
-    let missingArtifacts = try #require(try await fixture.store.allTargetCheckpoint(
-      currentArtifactsByTarget: [:]
-    ))
+
+    let missingArtifacts = try #require(
+      try await fixture.store.allTargetCheckpoint(availableTargetIDs: [])
+    )
     #expect(!missingArtifacts.hasUnfinishedWork)
-    #expect(missingArtifacts.resumeSummary(
-      selectedTargetIDs: ["framework:Foo"], at: fixture.date
-    ).targets.map(\.status) == [.pending])
+    #expect(
+      missingArtifacts.resumeSummary(selectedTargetIDs: ["framework:Foo"], at: fixture.date)
+        .targets.map(\.status) == [.pending]
+    )
   }
 
-  @Test func completedAttemptRequiresTransactionalPublicationOwnershipToResumeAsComplete()
-    async throws
-  {
+  @Test func targetPublishedOnlyByAnEarlierRunIsUnfinishedInTheCheckpoint() async throws {
     let fixture = try StoreFixture()
     defer { fixture.cleanup() }
-    let first = try await fixture.prepareCompletedPublication()
-    try await fixture.store.markPointerPublished(first.generationID)
-    _ = try await fixture.store.completePublication(first.generationID, at: fixture.date)
+    let firstRunID = try await fixture.beginRun("run-first", targetIDs: ["framework:Foo"])
+    try await fixture.store.recordPublishedTarget(
+      fixture.completedTarget("framework:Foo"), in: firstRunID
+    )
+    _ = try await fixture.store.finishRun(firstRunID, interrupted: false, at: fixture.date)
 
-    let secondRunID = PrivateHeaderGeneration.RunID(rawValue: "run-unpublished")
-    _ = try await fixture.store.beginRun(
-      id: secondRunID,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: fixture.date
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: secondRunID,
-      at: fixture.date
-    )
-    try await fixture.store.recordTargetAttempt(
-      fixture.completedTarget("framework:Foo"),
-      in: secondRunID
-    )
-    let secondGenerationID = PrivateHeaderGeneration.GenerationID(
-      rawValue: "generation-unpublished"
-    )
-    _ = try await fixture.store.preparePublication(
-      generationID: secondGenerationID,
-      runID: secondRunID,
-      previousGenerationID: first.generationID,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "checksum-new",
-      at: fixture.date
-    )
-    #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: first.generationID,
-          legacyArtifactState: .absent,
-          markers: [first.generationID: fixture.marker(first.generationID)]
-        ),
-        at: fixture.date
-      ) == .discardGeneration(secondGenerationID)
-    )
+    let secondRunID = try await fixture.beginRun("run-second", targetIDs: ["framework:Foo"])
+    _ = try await fixture.store.finishRun(secondRunID, interrupted: true, at: fixture.date)
 
-    let checkpoint = try #require(try await fixture.store.allTargetCheckpoint(
-      currentArtifactsByTarget: fixture.marker(first.generationID).artifactsByTarget
-    ))
+    let checkpoint = try #require(
+      try await fixture.store.allTargetCheckpoint(availableTargetIDs: ["framework:Foo"])
+    )
     #expect(checkpoint.hasUnfinishedWork)
-    let summary = checkpoint.resumeSummary(selectedTargetIDs: ["framework:Foo"], at: fixture.date)
-    #expect(summary.targets == [.init(targetID: "framework:Foo", status: .pending)])
-  }
-
-  @Test func interruptionIsIdempotentAndNeverBecomesFailure() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let runID = PrivateHeaderGeneration.RunID(rawValue: "run-interrupt")
-    _ = try await fixture.store.beginRun(
-      id: runID,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: fixture.date
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: runID,
-      at: fixture.date
-    )
-    #expect(try await fixture.store.markInterrupted(runID, at: fixture.date).status == .interrupted)
-    #expect(try await fixture.store.markInterrupted(runID, at: fixture.date).status == .interrupted)
-    #expect(try await fixture.store.runSnapshot(runID).targets.first?.status == .interrupted)
-  }
-
-  @Test func databaseSymlinkIsRejectedBeforeGRDBOpen() throws {
-    let root = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let real = root.appendingPathComponent("real.sqlite")
-    FileManager.default.createFile(atPath: real.path, contents: Data())
-    let link = root.appendingPathComponent("generation.sqlite")
-    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
-
-    #expect(throws: PrivateHeaderGeneration.StateError.self) {
-      _ = try GenerationStore(databaseURL: link)
-    }
-  }
-
-  @Test func malformedPersistedIdentifierThrowsInsteadOfTrapping() async throws {
-    let root = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let databaseURL = root.appendingPathComponent("generation.sqlite")
-    let store = try GenerationStore(databaseURL: databaseURL)
-    let queue = try DatabaseQueue(path: databaseURL.path)
-    try await queue.write { db in
-      try db.execute(
-        sql: """
-          INSERT INTO runs(
-              id, sourceIdentity, planFingerprint, targetIDs,
-              startedAt, endedAt, status, terminalStatusOverride
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-          """,
-        arguments: ["../unsafe", "macOS|16.0|25A", "fingerprint", "[]", 1.0, 1.0, "completed"]
-      )
-      try db.execute(
-        sql: "INSERT INTO runOrdering(runID) VALUES (?)",
-        arguments: ["../unsafe"]
-      )
-    }
-
-    do {
-      _ = try await store.latestRunSnapshot()
-      Issue.record("malformed persisted run ID unexpectedly decoded")
-    } catch let error as PrivateHeaderGeneration.StateError {
-      #expect(error == .invalidIdentifier(kind: "run", value: "../unsafe"))
-    }
-  }
-
-  @Test func latestRunAndIntentUseDatabaseSequenceInsteadOfWallClock() async throws {
-    let fixture = try StoreFixture()
-    defer { fixture.cleanup() }
-    let lateDate = Date(timeIntervalSinceReferenceDate: 500)
-    let earlyDate = Date(timeIntervalSinceReferenceDate: 100)
-
-    let firstRun = PrivateHeaderGeneration.RunID(rawValue: "run-inserted-first")
-    _ = try await fixture.store.beginRun(
-      id: firstRun,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: lateDate
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: firstRun,
-      at: lateDate
-    )
-    try await fixture.store.recordTargetAttempt(
-      fixture.completedTarget("framework:Foo", at: lateDate),
-      in: firstRun
-    )
-    let firstGeneration = PrivateHeaderGeneration.GenerationID(
-      rawValue: "generation-inserted-first")
-    _ = try await fixture.store.preparePublication(
-      generationID: firstGeneration,
-      runID: firstRun,
-      previousGenerationID: nil,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "first",
-      at: lateDate
-    )
-    try await fixture.store.markPointerPublished(firstGeneration)
-    _ = try await fixture.store.completePublication(firstGeneration, at: lateDate)
-
-    let secondRun = PrivateHeaderGeneration.RunID(rawValue: "run-inserted-second")
-    _ = try await fixture.store.beginRun(
-      id: secondRun,
-      plan: fixture.plan(targetIDs: ["framework:Foo"]),
-      at: earlyDate
-    )
-    try await fixture.store.beginTargetAttempt(
-      targetID: "framework:Foo",
-      displayName: "Foo",
-      kind: "framework",
-      in: secondRun,
-      at: earlyDate
-    )
-    try await fixture.store.recordTargetAttempt(
-      fixture.completedTarget("framework:Foo", at: earlyDate),
-      in: secondRun
-    )
-    let secondGeneration = PrivateHeaderGeneration.GenerationID(
-      rawValue: "generation-inserted-second")
-    _ = try await fixture.store.preparePublication(
-      generationID: secondGeneration,
-      runID: secondRun,
-      previousGenerationID: firstGeneration,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "second",
-      at: earlyDate
-    )
-    try await fixture.store.markPointerPublished(secondGeneration)
-    _ = try await fixture.store.completePublication(secondGeneration, at: earlyDate)
-
-    #expect(try await fixture.store.latestRunSnapshot()?.id == secondRun)
     #expect(
-      try await fixture.store.recover(
-        using: .init(
-          currentGenerationID: secondGeneration,
-          legacyArtifactState: .absent,
-          markers: [
-            secondGeneration: .init(
-              generationID: secondGeneration,
-              planFingerprint: "fingerprint",
-              artifactChecksum: "second",
-              artifactsByTarget: [:],
-              opaquePaths: []
-            )
-          ]
-        ),
-        at: earlyDate
-      ) == .none)
+      checkpoint.resumeSummary(selectedTargetIDs: ["framework:Foo"], at: fixture.date).targets
+        == [.init(targetID: "framework:Foo", status: .interrupted)]
+    )
+  }
+
+  @Test(arguments: [
+    ([PrivateHeaderGeneration.RunTargetStatus.completed, .completed], PrivateHeaderGeneration.RunStatus.completed),
+    ([.completed, .failed], .partial),
+    ([.partial, .failed], .partial),
+    ([.failed, .failed], .failed),
+  ])
+  func finishedRunStatusFollowsItsTargetAttempts(
+    targetStatuses: [PrivateHeaderGeneration.RunTargetStatus],
+    expected: PrivateHeaderGeneration.RunStatus
+  ) async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let targetIDs = targetStatuses.indices.map { "framework:Target\($0)" }
+    let runID = try await fixture.beginRun("run-status", targetIDs: targetIDs + ["framework:Skipped"])
+    for (targetID, status) in zip(targetIDs, targetStatuses) {
+      if status == .completed {
+        try await fixture.store.recordPublishedTarget(fixture.completedTarget(targetID), in: runID)
+      } else {
+        try await fixture.store.recordTargetAttempt(
+          .init(
+            targetID: targetID, displayName: targetID, kind: "framework", status: status,
+            failureSummary: "failed", completedAt: fixture.date
+          ),
+          in: runID
+        )
+      }
+    }
+    try await fixture.store.markSkipped(targetID: "framework:Skipped", in: runID, at: fixture.date)
+
+    #expect(
+      try await fixture.store.finishRun(runID, interrupted: false, at: fixture.date).status
+        == expected
+    )
+  }
+
+  @Test func interruptedRunEndsItsRunningTargetAsInterrupted() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let runID = try await fixture.beginRun("run-interrupt", targetIDs: ["framework:Foo"])
+
+    let run = try await fixture.store.finishRun(runID, interrupted: true, at: fixture.date)
+
+    #expect(run.status == .interrupted)
+    #expect(run.targets.map(\.status) == [.interrupted])
+  }
+
+  @Test func failedRunKeepsPublishedTargetsAndFailsTheRunningOne() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    let runID = try await fixture.beginRun(
+      "run-failure", targetIDs: ["framework:Bar", "framework:Foo"]
+    )
+    try await fixture.store.recordPublishedTarget(
+      fixture.completedTarget("framework:Bar"), in: runID
+    )
+
+    let run = try await fixture.store.failRun(runID, message: "helper mismatch", at: fixture.date)
+
+    #expect(run.status == .failed)
+    #expect(run.targets.map(\.status) == [.completed, .failed])
+    #expect(run.targets.map(\.failureSummary) == [nil, "helper mismatch"])
+  }
+
+  @Test func latestRunUsesInsertionOrderInsteadOfWallClock() async throws {
+    let fixture = try StoreFixture()
+    defer { fixture.cleanup() }
+    _ = try await fixture.beginRun(
+      "run-inserted-first", targetIDs: ["framework:Foo"],
+      at: Date(timeIntervalSinceReferenceDate: 500)
+    )
+    try await fixture.store.interruptUnfinishedRuns(at: fixture.date)
+    let secondRunID = try await fixture.beginRun(
+      "run-inserted-second", targetIDs: ["framework:Foo"],
+      at: Date(timeIntervalSinceReferenceDate: 100)
+    )
+
+    #expect(try await fixture.store.latestRunSnapshot()?.id == secondRunID)
   }
 }
 
-private final class StoreFixture: @unchecked Sendable {
+private final class StoreFixture: Sendable {
   let root: URL
   let databaseURL: URL
   let store: GenerationStore
   let date = Date(timeIntervalSinceReferenceDate: 100)
 
-  init(fault: @escaping GenerationStore.FaultInjector = { _ in }) throws {
+  init() throws {
     root = try temporaryDirectory()
     databaseURL = root.appendingPathComponent("generation.sqlite")
-    store = try GenerationStore(
-      databaseURL: databaseURL, faultInjector: fault)
+    store = try GenerationStore(databaseURL: databaseURL)
   }
 
   func cleanup() {
     try? FileManager.default.removeItem(at: root)
   }
 
-  func plan(targetIDs: [String]) -> PrivateHeaderGeneration.RunPlan {
-    .init(
-      sourceIdentity: "iOS|27.0|24A",
-      fingerprint: "fingerprint",
-      targetIDs: targetIDs,
-      isResumable: true
+  /// Begins an all-target run whose targets have all started their attempts.
+  func beginRun(
+    _ rawRunID: String,
+    targetIDs: [String],
+    at startDate: Date? = nil
+  ) async throws -> PrivateHeaderGeneration.RunID {
+    let runID = PrivateHeaderGeneration.RunID(rawValue: rawRunID)
+    try await store.beginRun(
+      id: runID,
+      plan: .init(
+        sourceIdentity: "iOS|27.0|24A",
+        fingerprint: "fingerprint",
+        targetIDs: targetIDs,
+        isResumable: true
+      ),
+      at: startDate ?? date
     )
+    for targetID in targetIDs {
+      try await store.beginTargetAttempt(
+        targetID: targetID, displayName: targetID, kind: "framework", in: runID,
+        at: startDate ?? date
+      )
+    }
+    return runID
   }
 
-  func completedTarget(
-    _ targetID: String,
-    at completedAt: Date? = nil
-  ) -> PrivateHeaderGeneration.TargetAttemptResult {
+  func completedTarget(_ targetID: String) -> PrivateHeaderGeneration.TargetAttemptResult {
     .init(
       targetID: targetID,
       displayName: targetID,
       kind: "framework",
       status: .completed,
       artifacts: [PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h")],
-      completedAt: completedAt ?? date
+      completedAt: date
     )
   }
 
-  func prepareCompletedPublication(
-    previousGenerationID: PrivateHeaderGeneration.GenerationID? = nil,
-    targetIDs: [String] = ["framework:Foo"],
-    runID: PrivateHeaderGeneration.RunID = .init(rawValue: "run-publication"),
-    generationID: PrivateHeaderGeneration.GenerationID = .init(rawValue: "generation-new")
-  ) async throws -> (
-    runID: PrivateHeaderGeneration.RunID, generationID: PrivateHeaderGeneration.GenerationID
-  ) {
-    _ = try await store.beginRun(id: runID, plan: plan(targetIDs: targetIDs), at: date)
-    for targetID in targetIDs {
-      try await store.beginTargetAttempt(
-        targetID: targetID,
-        displayName: targetID,
-        kind: "framework",
-        in: runID,
-        at: date
-      )
-      try await store.recordTargetAttempt(completedTarget(targetID), in: runID)
+  func loggedMessages() async throws -> [String] {
+    try await DatabaseQueue(path: databaseURL.path).read { db in
+      try String.fetchAll(db, sql: "SELECT message FROM runLogs ORDER BY id")
     }
-    _ = try await store.preparePublication(
-      generationID: generationID,
-      runID: runID,
-      previousGenerationID: previousGenerationID,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "checksum",
-      at: date
-    )
-    return (runID, generationID)
-  }
-
-  func marker(
-    _ generationID: PrivateHeaderGeneration.GenerationID,
-    legacyBackupChecksum: String? = nil,
-    archiveOwnerGenerationID: PrivateHeaderGeneration.GenerationID? = nil
-  ) -> PrivateHeaderGeneration.GenerationMarkerSnapshot {
-    .init(
-      generationID: generationID,
-      planFingerprint: "fingerprint",
-      artifactChecksum: "checksum",
-      artifactsByTarget: [
-        "framework:Foo": [PrivateHeaderGeneration.ArtifactPath(rawValue: "Frameworks/Foo/Foo.h")]
-      ],
-      opaquePaths: [],
-      legacyBackupRequirement: legacyBackupChecksum.map {
-        .init(
-          checksum: $0,
-          archiveOwnerGenerationID: archiveOwnerGenerationID ?? generationID
-        )
-      }
-    )
   }
 }
 

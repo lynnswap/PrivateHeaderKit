@@ -848,7 +848,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         )
         #expect(status == 0)
         let request = try #require(requestBox.value)
-        #expect(request.options.executionOptions == .init(continuation: .restart, allowsLegacyMigration: true))
+        #expect(request.options.executionOptions == .init(continuation: .restart))
         #expect(request.options.targetRequest == .query("AppKit,Foundation"))
         #expect(request.options.executionMode == .host)
         #expect(request.options.helperURLs?.host.path == "/cohort/privateheaderkit-raw-helper")
@@ -1529,7 +1529,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
                     useSharedCache: true
                 ),
-                executionOptions: .init(continuation: .restart, allowsLegacyMigration: true)
+                executionOptions: .init(continuation: .restart)
             )
         )
         let prepared = try await PrivateHeaderKitGenerationClient
@@ -1539,7 +1539,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(try await prepared.summary() == .noUnfinishedRun)
         #expect(await runner.captureCommandSnapshot().count == 1)
 
-        let result = try await prepared.run(.init(continuation: .restart, allowsLegacyMigration: true), { _ in })
+        let result = try await prepared.run(.init(continuation: .restart), { _ in })
         #expect(result.targetCounts.completed == 1)
         #expect(await runner.captureCommandSnapshot().map(\.command) == [
             inventoryCommand,
@@ -2168,103 +2168,6 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(helperResolutionCount.value == 1)
         #expect(output.text.contains("Step 1 of 3"))
         #expect(output.text.contains("Generation completed"))
-    }
-
-    @Test(arguments: [false, true], [false, true])
-    func legacyJSONStartsWithoutConfirmation(_ automated: Bool, _ namedTarget: Bool) async throws {
-        try await assertLegacyStartup(hasArtifacts: false, automated: automated, namedTarget: namedTarget)
-    }
-
-    @Test(arguments: [false, true], [false, true])
-    func legacyArtifactsStillRequireMigration(_ automated: Bool, _ namedTarget: Bool) async throws {
-        try await assertLegacyStartup(hasArtifacts: true, automated: automated, namedTarget: namedTarget)
-    }
-
-    @Test func interactiveLegacyMigrationUsesResolvedSourceAndReusesRuntimeIdentity() async throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let runtimeRoot = root.appendingPathComponent("RuntimeRoot", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: runtimeRoot.appendingPathComponent(
-                "System/Library/Frameworks/Foo.framework",
-                isDirectory: true
-            ),
-            withIntermediateDirectories: true
-        )
-        let outputBase = root.appendingPathComponent("Output", isDirectory: true)
-        let legacyArtifact = outputBase.appendingPathComponent(
-            "ios-v1-27.0-b1-24~41123/Unknown.txt",
-            isDirectory: false
-        )
-        try FileManager.default.createDirectory(
-            at: legacyArtifact.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data("legacy".utf8).write(to: legacyArtifact)
-
-        let input = ScriptedInput(["1", "1", "1"])
-        let output = ThreadSafeStrings()
-        let requestBox = ThreadSafeRequestBox()
-        let simulatorResolutionCount = ThreadSafeCounter()
-        let helperResolutionCount = ThreadSafeCounter()
-        let status = await runPrivateHeaderKitCommand(
-            ["privateheaderkit"],
-            currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-            generationClient: testPrivateHeaderKitGenerationClient(
-                summary: { _ in
-                    .legacyMigration(
-                        artifactPath: legacyArtifact.deletingLastPathComponent().path
-                    )
-                },
-                run: { request, executionOptions, _ in
-                    requestBox.set(request)
-                    #expect(executionOptions == .init(continuation: .restart, allowsLegacyMigration: true))
-                    return resultFixture(
-                        for: request,
-                        counts: PrivateHeaderGeneration.TargetCounts(total: 1, completed: 1)
-                    )
-                }
-            ),
-            simulatorResolver: { _ in
-                simulatorResolutionCount.increment()
-                return PrivateHeaderKitSimulatorResolution(
-                    runtimeVersion: "27.0",
-                    runtimeBuild: "24A123",
-                    runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
-                    resolvedRuntimeRoot: runtimeRoot.path,
-                    metadataIsSeed: false,
-                    deviceName: "iPhone 17 Pro",
-                    deviceUDID: "SIM-001"
-                )
-            },
-            helperResolver: { _, _, _ in
-                helperResolutionCount.increment()
-                return PrivateHeaderKitHelperPlan(
-                    helperURLs: testPrivateHeaderKitHelperURLs
-                )
-            },
-            interactiveSourceProvider: {
-                .init(sources: [
-                    PrivateHeaderKitInteractiveSource(
-                        platform: .iOS,
-                        version: "27.0",
-                        build: nil,
-                        systemRoot: nil
-                    ),
-                ])
-            },
-            interactiveOutputBaseDirectoryProvider: { outputBase.path },
-            interactiveScreenClearer: {},
-            inputReader: { try await input.readLine() },
-            outputLogger: output.append,
-            errorLogger: output.append
-        )
-
-        #expect(status == 0)
-        #expect(requestBox.value?.source.build == "24A123")
-        #expect(output.text.contains("Source: iOS 27.0 (24A123)"))
-        #expect(simulatorResolutionCount.value == 1)
-        #expect(helperResolutionCount.value == 1)
     }
 
     @Test func interactiveResumeReusesPreparedRuntimeAndDisplaysResolvedSource() async throws {
@@ -3982,92 +3885,6 @@ private func testPrivateHeaderKitGenerationClient(
     )
 }
 
-private func assertLegacyStartup(hasArtifacts: Bool, automated: Bool, namedTarget: Bool) async throws {
-    let root = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let systemRoot = root.appendingPathComponent("SystemRoot", isDirectory: true)
-    let frameworkURL = systemRoot.appendingPathComponent("System/Library/Frameworks/Foo.framework")
-    try FileManager.default.createDirectory(at: frameworkURL, withIntermediateDirectories: true)
-    try Data().write(to: frameworkURL.appendingPathComponent("Foo"))
-    let outputBase = root.appendingPathComponent("Output", isDirectory: true)
-    let source = try PrivateHeaderGeneration.Source(platform: .macOS, version: "16.0", metadataIsSeed: false)
-    let outputLayout = PrivateHeaderGeneration.Output(baseDirectory: outputBase)
-    let stateDirectory = outputLayout.stateDirectory(for: source)
-    let manifest = stateDirectory.appendingPathComponent("manifest.json")
-    let oldRun = stateDirectory.appendingPathComponent("runs/old.json")
-    try FileManager.default.createDirectory(at: oldRun.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let legacyData = Data("old metadata remains untouched".utf8)
-    for file in [manifest, oldRun] { try legacyData.write(to: file) }
-    let legacyArtifact = outputBase.appendingPathComponent("\(source.storageIdentifier)/Unknown.txt")
-    if hasArtifacts {
-        try FileManager.default.createDirectory(at: legacyArtifact.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "legacy".write(to: legacyArtifact, atomically: true, encoding: .utf8)
-    }
-
-    let runner = RecordingCommandRunner()
-    await runner.setStreamingHandler { command, _, _ in
-        try writeRawDumpProcessHandshake(for: command)
-        let outputIndex = try #require(command.firstIndex(of: "-o"))
-        let headers = URL(fileURLWithPath: command[outputIndex + 1]).appendingPathComponent(
-            "System/Library/Frameworks/Foo.framework/Headers"
-        )
-        try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
-        try "generated".write(to: headers.appendingPathComponent("Generated.h"), atomically: true, encoding: .utf8)
-        let reportIndex = try #require(command.firstIndex(of: "--diagnostics-report"))
-        try JSONEncoder().encode(PrivateHeaderKitRawDumpDiagnosticsReport(diagnostics: []))
-            .write(to: URL(fileURLWithPath: command[reportIndex + 1]), options: .atomic)
-        return .init(status: 0, wasKilled: false, lastLines: [])
-    }
-    let input = ScriptedInput(
-        (namedTarget ? ["1", "2", "Foo"] : ["1", "1"]) + (hasArtifacts ? ["1"] : [])
-    )
-    let output = ThreadSafeStrings()
-    let arguments = automated ? [
-        "privateheaderkit", "--platform", "macOS", "--version", "16.0",
-        "--system-root", systemRoot.path, "--out", outputBase.path,
-        "--target", namedTarget ? "Foo" : "all",
-    ] : ["privateheaderkit"]
-    let status = await runPrivateHeaderKitCommand(
-        arguments,
-        currentExecutableURL: URL(fileURLWithPath: "/cohort/privateheaderkit"),
-        generationClient: .live(processRunner: runner),
-        helperResolver: testPrivateHeaderKitHelperResolver,
-        releaseMetadataResolver: testPrivateHeaderKitReleaseMetadataResolver,
-        interactiveSourceProvider: {
-            .init(sources: [.init(platform: .macOS, version: "16.0", build: nil, systemRoot: systemRoot.path)])
-        },
-        interactiveOutputBaseDirectoryProvider: { outputBase.path },
-        interactiveScreenClearer: {},
-        inputReader: {
-            #expect(!automated)
-            return try await input.readLine()
-        },
-        outputLogger: output.append,
-        errorLogger: output.append
-    )
-
-    let expectsRefusal = automated && hasArtifacts
-    #expect(status == (expectsRefusal ? 2 : 0))
-    #expect(await runner.streamingCommandSnapshot().count == (expectsRefusal ? 0 : 1))
-    #expect(!output.text.contains("Legacy state"))
-    #expect(output.text.contains("Migrate and start fresh") == (hasArtifacts && !automated))
-    for file in [manifest, oldRun] { #expect(try Data(contentsOf: file) == legacyData) }
-    #expect(FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("generation.sqlite").path) == !expectsRefusal)
-    if expectsRefusal {
-        #expect(output.text.contains("requires an explicit fresh migration"))
-        #expect(try String(contentsOf: legacyArtifact, encoding: .utf8) == "legacy")
-    } else {
-        let artifactDirectory = outputLayout.artifactDirectory(for: source)
-        #expect(try String(contentsOf: artifactDirectory.appendingPathComponent("Frameworks/Foo/Headers/Generated.h"), encoding: .utf8) == "generated")
-        if hasArtifacts {
-            #expect(output.text.contains("artifact tree and unknown regular files will be preserved"))
-            #expect(output.text.contains("legacy-backups"))
-            #expect(!FileManager.default.fileExists(atPath: legacyArtifact.path))
-            #expect(try String(contentsOf: artifactDirectory.appendingPathComponent("Unknown.txt"), encoding: .utf8) == "legacy")
-        }
-    }
-}
-
 private func resultFixture(
     for request: PrivateHeaderKitGenerationRequest,
     counts: PrivateHeaderGeneration.TargetCounts,
@@ -4136,8 +3953,7 @@ private func unfinishedResumeSummaryFixture() async throws
         sharedCacheInventoryRunner: { _ in
             throw CLIFixtureError.unexpectedSharedCacheInventory
         },
-        runIDGenerator: { "run-unfinished" },
-        generationIDGenerator: { "generation-unfinished" }
+        runIDGenerator: { "run-unfinished" }
     )
     let preparedPlan = try await executor.prepare(plan)
     do {

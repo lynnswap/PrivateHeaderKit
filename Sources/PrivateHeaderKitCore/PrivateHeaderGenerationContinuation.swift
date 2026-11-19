@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 extension PrivateHeaderGeneration {
@@ -9,14 +10,9 @@ extension PrivateHeaderGeneration {
 
   package struct ExecutionOptions: Hashable, Sendable {
     package var continuation: Continuation
-    package var allowsLegacyMigration: Bool
 
-    package init(
-      continuation: Continuation = .automatic,
-      allowsLegacyMigration: Bool = false
-    ) {
+    package init(continuation: Continuation = .automatic) {
       self.continuation = continuation
-      self.allowsLegacyMigration = allowsLegacyMigration
     }
   }
 
@@ -81,14 +77,20 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     plan: PrivateHeaderGeneration.Plan,
     targetIDs: [String],
     fingerprint: String,
-    currentArtifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
     store: GenerationStore,
     at date: Date
   ) async throws -> PrivateHeaderGeneration.ContinuationDecision {
     let continuation = plan.options.executionOptions.continuation
-    guard plan.options.targetRequest.requestsAllTargets, continuation != .restart,
+    guard plan.options.targetRequest.requestsAllTargets, continuation != .restart else {
+      return .generate
+    }
+    let availableTargetIDs = Self.targetIDsWithAllArtifactsPresent(
+      try await store.publishedArtifactsByTarget(),
+      in: plan.artifactDirectory
+    )
+    guard
       let checkpoint = try await store.allTargetCheckpoint(
-        currentArtifactsByTarget: currentArtifactsByTarget
+        availableTargetIDs: availableTargetIDs
       )
     else { return .generate }
 
@@ -102,5 +104,93 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     }
     let summary = checkpoint.resumeSummary(selectedTargetIDs: targetIDs, at: date)
     return continuation == .resume ? .resume(summary) : .requiresResume(summary)
+  }
+
+  /// A published target counts as reusable only while every file it published still exists.
+  private static func targetIDsWithAllArtifactsPresent(
+    _ artifactsByTarget: [String: [PrivateHeaderGeneration.ArtifactPath]],
+    in artifactDirectory: URL
+  ) -> Set<String> {
+    Set(
+      artifactsByTarget.compactMap { targetID, artifacts in
+        artifacts.allSatisfy {
+          FileManager.default.fileExists(
+            atPath: artifactDirectory.appending(path: $0.rawValue).path
+          )
+        } ? targetID : nil
+      }
+    )
+  }
+}
+
+extension PrivateHeaderGeneration.GenerationExecutor {
+  /// Identifies the inputs that decide what an all-target run produces. A run resumes only
+  /// an earlier run with the same fingerprint.
+  package static func planFingerprint(
+    _ plan: PrivateHeaderGeneration.Plan,
+    executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode,
+    sharedCacheCohort: SharedCacheCohort?
+  ) -> String {
+    var components = [
+      "privateheaderkit-plan-fingerprint-v4",
+      plan.source.storageIdentifier,
+      plan.options.layout.rawValue,
+      plan.options.systemRoot?.standardizedFileURL.path ?? "",
+      plan.options.producerVersion,
+      String(plan.options.includeNestedChildren),
+      String(plan.options.rawDumpingOptions.skipExisting),
+      String(plan.options.rawDumpingOptions.useSharedCache),
+      String(plan.options.rawDumpingOptions.verbose),
+      String(plan.options.rawDumpingOptions.preferRuntimeMetadata),
+    ]
+    if plan.options.applicationSource != nil {
+      components += ["recovered-application", "include-analysis-binary", String(plan.options.includesAnalysisBinary)]
+    }
+    if let sharedCacheCohort {
+      components += [
+        "loaded-shared-cache",
+        String(sharedCacheCohort.schemaVersion),
+        sharedCacheCohort.cacheUUID.uuidString.lowercased(),
+        sharedCacheCohort.imagePathDigest,
+      ]
+    } else {
+      components.append("filesystem-only")
+    }
+    switch executionMode {
+    case .host:
+      components.append("host")
+    case .simulator(_, let sourceRuntimeRoot, let runtime):
+      components += [
+        "simulator",
+        sourceRuntimeRoot,
+        runtime.version,
+        runtime.build,
+        runtime.identifier,
+        runtime.runtimeRoot,
+      ]
+    case .ssh:
+      components.append("iphoneos")
+    }
+    for key in plan.options.rawDumpingOptions.helperEnvironment.keys.sorted() {
+      components += [
+        "environment",
+        key,
+        plan.options.rawDumpingOptions.helperEnvironment[key] ?? "",
+      ]
+    }
+    let digest = SHA256.hash(data: canonicalFingerprintPayload(components))
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  static func canonicalFingerprintPayload(_ components: [String]) -> Data {
+    var payload = Data()
+    for component in components {
+      let length = UInt64(component.utf8.count)
+      for shift in stride(from: 56, through: 0, by: -8) {
+        payload.append(UInt8(truncatingIfNeeded: length >> shift))
+      }
+      payload.append(contentsOf: component.utf8)
+    }
+    return payload
   }
 }

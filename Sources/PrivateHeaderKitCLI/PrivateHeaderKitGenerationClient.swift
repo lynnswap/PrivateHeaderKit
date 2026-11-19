@@ -14,7 +14,6 @@ struct PrivateHeaderKitPreparedGeneration: Sendable {
         case noUnfinishedRun
         case unfinished(PrivateHeaderGeneration.ResumeSummary)
         case incompatibleResume(reason: String)
-        case legacyMigration(artifactPath: String)
     }
 
     typealias LoadSummary = @Sendable () async throws -> Summary
@@ -92,8 +91,6 @@ private func preparePrivateHeaderGeneration(
                 switch error {
                 case .incompatibleResume(let reason):
                     return .incompatibleResume(reason: reason)
-                case .legacyMigrationRequiresFresh(let path):
-                    return .legacyMigration(artifactPath: path)
                 default:
                     throw error
                 }

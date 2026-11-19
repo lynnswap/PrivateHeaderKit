@@ -70,24 +70,12 @@ to restart. Named targets are always regenerated and do not require either flag.
 PrivateHeaderKit rejects an implicit decision here so that a script cannot
 discard or reinterpret unfinished work accidentally.
 
-## Legacy output blocks a run
+## Output from an earlier version is still on disk
 
-Use the interactive wizard to review what will be preserved and backed up. In
-automation, `--fresh` is the explicit permission to migrate an old artifact
-directory. Legacy JSON state alone does not block a run: a new SQLite database
-is initialized automatically, while the old files remain untouched and are not
-used for resume.
-
-See [Generation, Output, and Resume Behavior](generation.md#legacy-output) for
-the migration contract.
-
-## Both generated-header layouts exist
-
-PrivateHeaderKit does not merge
-`generated-headers/<source-storage-id>` with the corresponding
-`generated-headers/<platform>/<release-directory>`. Move one complete directory
-aside after deciding which tree to keep, then rerun the command. Both paths are
-left unchanged when this conflict is detected.
+This version does not read or migrate older output layouts, and it no longer
+uses the `.privateheaderkit` directory. See
+[Output From Earlier Versions](generation.md#output-from-earlier-versions) for
+what can be deleted.
 
 ## An install or update failed
 

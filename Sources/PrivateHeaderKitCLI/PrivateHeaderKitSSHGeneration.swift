@@ -19,7 +19,7 @@ struct PrivateHeaderKitSSHGenerateCommand: Equatable, Sendable {
   var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
     switch continuationMode {
     case .resume: .init(continuation: .resume)
-    case .fresh: .init(continuation: .restart, allowsLegacyMigration: true)
+    case .fresh: .init(continuation: .restart)
     case nil: .init()
     }
   }

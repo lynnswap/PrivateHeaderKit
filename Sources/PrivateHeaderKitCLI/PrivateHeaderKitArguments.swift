@@ -53,7 +53,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Flag(name: .customLong("runtime-metadata"), help: "Supplement missing Objective-C classes using runtime metadata. Loads the target image and runs its initializers.")
     var preferRuntimeMetadata = false
 
-    @Flag(exclusivity: .exclusive, help: "Continue or restart all-target generation. --fresh also permits legacy migration.")
+    @Flag(exclusivity: .exclusive, help: "Continue or restart all-target generation.")
     var continuationMode: PrivateHeaderKitContinuationMode?
 
     var usesInteractiveSelection: Bool {

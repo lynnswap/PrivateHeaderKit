@@ -82,11 +82,6 @@ private enum PrivateHeaderKitIncompatibleResumeAction {
     case back
 }
 
-private enum PrivateHeaderKitLegacyMigrationAction {
-    case migrateAndStartFresh
-    case back
-}
-
 func runPrivateHeaderKitInteractiveGenerate(
     invokedProgramName: String,
     currentExecutableURL: URL?,
@@ -219,7 +214,6 @@ func runPrivateHeaderKitInteractiveGenerate(
                             let executionOptions = try await interactiveExecutionOptions(
                                 preparedGeneration: preparedGeneration,
                                 request: request,
-                                outputBaseDirectory: command.outputBaseDirectory,
                                 screenClearer: screenClearer,
                                 inputReader: inputReader,
                                 outputLogger: outputLogger
@@ -264,30 +258,12 @@ func runPrivateHeaderKitInteractiveGenerate(
 private func interactiveExecutionOptions(
     preparedGeneration: PrivateHeaderKitPreparedGeneration,
     request: PrivateHeaderKitGenerationRequest,
-    outputBaseDirectory: String,
     screenClearer: PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
     outputLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> PrivateHeaderGeneration.ExecutionOptions {
     let summary = try await preparedGeneration.summary()
     switch summary {
-    case .legacyMigration(let artifactPath):
-        let action = try await promptLegacyMigrationDecision(
-            sourceDisplayName: request.source.label.displayName,
-            outputBaseDirectory: outputBaseDirectory,
-            artifactPath: artifactPath,
-            backupDirectory: request.output.baseDirectory
-                .appendingPathComponent(".privateheaderkit", isDirectory: true)
-                .appendingPathComponent(request.source.storageIdentifier, isDirectory: true)
-                .appendingPathComponent("legacy-backups", isDirectory: true),
-            screenClearer: screenClearer,
-            inputReader: inputReader,
-            outputLogger: outputLogger
-        )
-        guard action == .migrateAndStartFresh else {
-            throw PrivateHeaderKitInteractiveNavigation.back
-        }
-        return .init(continuation: .restart, allowsLegacyMigration: true)
     case .incompatibleResume(let reason):
         renderInteractiveIncompatibleResumeScreen(
             sourceDisplayName: request.source.label.displayName,
@@ -322,39 +298,6 @@ private func interactiveExecutionOptions(
         )
         return .init(continuation: action == .continuePrevious ? .resume : .restart)
     }
-}
-
-private func promptLegacyMigrationDecision(
-    sourceDisplayName: String,
-    outputBaseDirectory: String,
-    artifactPath: String,
-    backupDirectory: URL,
-    screenClearer: PrivateHeaderKitInteractiveScreenClearer,
-    inputReader: @escaping PrivateHeaderKitInputReader,
-    outputLogger: @escaping PrivateHeaderKitOutputLogger
-) async throws -> PrivateHeaderKitLegacyMigrationAction {
-    screenClearer()
-    outputLogger("PrivateHeaderKit")
-    outputLogger("")
-    outputLogger("Step 3 of 3: Migrate legacy output")
-    outputLogger("Legacy PrivateHeaderKit artifacts were found.")
-    outputLogger("")
-    outputLogger("Source: \(sourceDisplayName)")
-    outputLogger("Output: \(outputBaseDirectory)")
-    outputLogger("Legacy artifacts: \(artifactPath)")
-    outputLogger("")
-    outputLogger("The existing artifact tree and unknown regular files will be preserved.")
-    outputLogger("Artifact backup: \(backupDirectory.path)/")
-    outputLogger("")
-    outputLogger("  [1] Migrate and start fresh")
-    outputLogger("  [2] Back")
-
-    return try await promptIndexedSelection(
-        prompt: "Select action:",
-        values: [.migrateAndStartFresh, .back],
-        inputReader: inputReader,
-        outputLogger: outputLogger
-    )
 }
 
 func defaultInteractiveOutputBaseDirectory() -> String {

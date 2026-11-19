@@ -104,7 +104,7 @@ struct PrivateHeaderGenerationDeviceSourceTests {
         )
       )
       return PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
-        plan, canonicalOutputBase: output.baseDirectory, executionMode: mode, sharedCacheCohort: nil
+        plan, executionMode: mode, sharedCacheCohort: nil
       )
     }
     let first = try fingerprint(destination: "se", directory: "/tmp/privateheaderkit-first", controlPath: "/tmp/phk-ssh-first/master")

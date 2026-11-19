@@ -160,46 +160,6 @@ struct PrivateHeaderGenerationTests {
         == "/tmp/PrivateHeaderKit/.state/macos-v1-16.0-b1-25~41000/generation.sqlite")
   }
 
-  @Test func distinctPlansWithEmbeddedNewlinesHaveDistinctFingerprints() throws {
-    let source = try PrivateHeaderGeneration.Source(
-      platform: .macOS, version: "16.0", metadataIsSeed: false)
-    let output = PrivateHeaderGeneration.Output(
-      baseDirectory: URL(fileURLWithPath: "/tmp/PrivateHeaderKit", isDirectory: true)
-    )
-    let first = PrivateHeaderGeneration.makePlan(
-      source: source,
-      output: output,
-      options: .init(
-        systemRoot: URL(fileURLWithPath: "/runtime", isDirectory: true),
-      )
-    )
-    let second = PrivateHeaderGeneration.makePlan(
-      source: source,
-      output: output,
-      options: .init(
-        systemRoot: URL(fileURLWithPath: "/foo\nheaders\n/runtime", isDirectory: true),
-      )
-    )
-
-    let firstFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
-      first,
-      canonicalOutputBase: URL(
-        fileURLWithPath: "/output\nheaders\n/foo",
-        isDirectory: true
-      ),
-      executionMode: .host,
-      sharedCacheCohort: nil
-    )
-    let secondFingerprint = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
-      second,
-      canonicalOutputBase: URL(fileURLWithPath: "/output", isDirectory: true),
-      executionMode: .host,
-      sharedCacheCohort: nil
-    )
-
-    #expect(firstFingerprint != secondFingerprint)
-  }
-
   @Test func simulatorFingerprintUsesProducerAndRuntimeIdentityNotExecutionLocators() throws {
     let source = try PrivateHeaderGeneration.Source(
       platform: .iOS,
@@ -262,28 +222,23 @@ struct PrivateHeaderGenerationTests {
         producerVersion: "v1.1.0"
       )
     )
-    let outputBase = output.baseDirectory.standardizedFileURL
     let first = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
       firstPlan,
-      canonicalOutputBase: outputBase,
       executionMode: firstMode,
       sharedCacheCohort: nil
     )
     let relocated = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
       relocatedPlan,
-      canonicalOutputBase: outputBase,
       executionMode: secondMode,
       sharedCacheCohort: nil
     )
     let changedProducer = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
       changedProducerPlan,
-      canonicalOutputBase: outputBase,
       executionMode: secondMode,
       sharedCacheCohort: nil
     )
     let changedRuntime = PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
       relocatedPlan,
-      canonicalOutputBase: outputBase,
       executionMode: .simulator(
         deviceUDID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         sourceRuntimeRoot: "/Runtime",
