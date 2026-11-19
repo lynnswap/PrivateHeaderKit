@@ -1150,6 +1150,34 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(try fixture.readLiveHeader(framework: "Bar") == "resumed")
   }
 
+  @Test func targetWhoseDumpWroteHeadersOutsideItsDirectoryFailsWithoutStoppingTheRun()
+    async throws
+  {
+    let fixture = try ExecutorFixture()
+    defer { fixture.cleanup() }
+    try fixture.createFramework("Foo.framework")
+    try fixture.createFramework("Bar.framework")
+    let runner = RecordingRunner(contents: "generated", strayHeaderFramework: "Bar.framework")
+
+    do {
+      _ = try await fixture.executor(runner: runner, runID: "run-stray-header")
+        .run(plan: try fixture.plan(.allAvailable))
+      Issue.record("target with a stray header unexpectedly completed")
+    } catch let PrivateHeaderGeneration.GenerationError.runFailed(failure) {
+      #expect(failure.failedTargetIDs == ["framework:Bar.framework"])
+      #expect(failure.summary.targetCounts.completed == 1)
+      #expect(
+        failure.summary.targetFailures.first?.message?.contains(
+          "outside the target's output directory"
+        ) == true
+      )
+    }
+
+    #expect(await runner.invocationCount == 2)
+    #expect(try fixture.readLiveHeader(framework: "Foo") == "generated")
+    #expect(!FileManager.default.fileExists(atPath: fixture.liveHeaderURL(framework: "Bar").path))
+  }
+
   @Test func failedAndPartialAttemptsKeepTheLastPublishedFiles() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
@@ -1440,6 +1468,7 @@ private actor RecordingRunner {
   let result: PrivateHeaderGeneration.RawDumping.Result
   let thrownError: (any Error & Sendable)?
   let failingFramework: String?
+  let strayHeaderFramework: String?
   let primaryHeaderName: String
   let additionalHeaderName: String?
   let cancelsForFramework: String?
@@ -1450,6 +1479,7 @@ private actor RecordingRunner {
     result: PrivateHeaderGeneration.RawDumping.Result = .init(terminationStatus: 0),
     thrownError: (any Error & Sendable)? = nil,
     failingFramework: String? = nil,
+    strayHeaderFramework: String? = nil,
     primaryHeaderName: String = "Generated.h",
     additionalHeaderName: String? = nil,
     cancelsForFramework: String? = nil,
@@ -1459,6 +1489,7 @@ private actor RecordingRunner {
     self.result = result
     self.thrownError = thrownError
     self.failingFramework = failingFramework
+    self.strayHeaderFramework = strayHeaderFramework
     self.primaryHeaderName = primaryHeaderName
     self.additionalHeaderName = additionalHeaderName
     self.cancelsForFramework = cancelsForFramework
@@ -1481,6 +1512,11 @@ private actor RecordingRunner {
       try Data(contents.utf8).write(to: output.appendingPathComponent(primaryHeaderName))
       if let additionalHeaderName {
         try Data(contents.utf8).write(to: output.appendingPathComponent(additionalHeaderName))
+      }
+      if let strayHeaderFramework, invocation.inputPath.hasSuffix("/\(strayHeaderFramework)") {
+        try Data("stray".utf8).write(
+          to: invocation.stagingOutputDirectory.appendingPathComponent("Stray.h")
+        )
       }
     }
     afterRun()

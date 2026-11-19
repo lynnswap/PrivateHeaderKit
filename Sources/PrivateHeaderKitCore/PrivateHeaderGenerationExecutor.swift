@@ -526,11 +526,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       return Self.failedExecution(
         target, status: .failed, summary: String(describing: error), at: dateProvider())
     }
-    guard
-      staged.files.values.contains(where: {
-        ["h", "swiftinterface", "tsv"].contains($0.pathExtension)
-      })
-    else {
+    guard staged.files.values.contains(where: Self.isHeaderArtifact) else {
       return Self.failedExecution(
         target,
         status: .failed,
