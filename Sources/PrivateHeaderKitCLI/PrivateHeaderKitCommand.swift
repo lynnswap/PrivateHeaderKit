@@ -657,6 +657,13 @@ func resolvePrivateHeaderKitHelperPlan(
     simulatorArchitecture: String = defaultSwiftPMSimulatorArchitecture()
 ) async throws -> PrivateHeaderKitHelperPlan {
     let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
+    if let explicitSimulatorURL, simulatorPlatform != nil,
+       !FileManager.default.isExecutableFile(atPath: explicitSimulatorURL.path)
+    {
+        throw ToolingError.invalidArgument(
+            "--sim-helper is not an executable file: \(explicitSimulatorURL.path)"
+        )
+    }
     guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
         let hostURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
         return PrivateHeaderKitHelperPlan(

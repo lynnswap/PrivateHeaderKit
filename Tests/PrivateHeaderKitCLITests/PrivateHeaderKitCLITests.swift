@@ -2660,7 +2660,11 @@ struct PrivateHeaderKitHelperLookupTests {
         _ platform: SimulatorPlatform?
     ) async throws {
         // With a platform, the simulator helper is given explicitly. Without one, none is used.
-        let explicitPath = platform == nil ? nil : "/custom/sim-helper"
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let explicitHelper = root.appendingPathComponent("custom-sim-helper")
+        try writeCLIExecutable("custom", to: explicitHelper)
+        let explicitPath = platform == nil ? nil : explicitHelper.path
         let runner = RecordingCommandRunner()
         let rawBuild = swiftPMHostCommand(configuration: "release")
             + ["--product", "privateheaderkit-raw-helper"]
@@ -2681,6 +2685,16 @@ struct PrivateHeaderKitHelperLookupTests {
         #expect(plan.helperURLs.host.path == "/repo/.build/release/privateheaderkit-raw-helper")
         if let explicitPath {
             #expect(plan.helperURLs.simulator.path == explicitPath)
+            await #expect(throws: ToolingError.self) {
+                _ = try await resolvePrivateHeaderKitHelperPlan(
+                    publicExecutableURL: URL(
+                        fileURLWithPath: "/repo/.build/release/privateheaderkit"
+                    ),
+                    simulatorHelperPath: root.appendingPathComponent("missing").path,
+                    simulatorPlatform: platform,
+                    runner: runner
+                )
+            }
         }
         #expect(
             await runner.captureCommandSnapshot().map(\.command) == [
