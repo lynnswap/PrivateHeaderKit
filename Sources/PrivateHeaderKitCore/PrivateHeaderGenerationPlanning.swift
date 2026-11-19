@@ -41,11 +41,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
           expected: deviceSource.cacheUUID, actual: sharedCacheCohort.cacheUUID
         )
       }
-      catalog = try deviceSource.catalog(includeNestedChildren: plan.options.includeNestedChildren)
+      catalog = try deviceSource.catalog()
     } else {
       catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
         in: systemRoot,
-        includeNestedChildren: plan.options.includeNestedChildren,
         sharedCacheImagePaths: sharedCacheCohort?.imagePaths ?? []
       )
     }
@@ -105,26 +104,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
   ) throws -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
     switch request {
-    case .frameworks:
-      return deduplicated(
-        catalog.groups.flatMap {
-          group -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-          guard group.selectionCandidate.kind == .framework
-            || group.selectionCandidate.kind == .privateFramework
-          else {
-            return []
-          }
-          return group.executionTargets
-        }
-      )
-    case .system:
-      return deduplicated(
-        catalog.groups.flatMap {
-          group -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] in
-          guard group.selectionCandidate.kind != .usrLibDylib else { return [] }
-          return group.executionTargets
-        }
-      )
     case .allAvailable:
       return deduplicated(catalog.allExecutionTargets)
     case .identifiers(let targetIDs):

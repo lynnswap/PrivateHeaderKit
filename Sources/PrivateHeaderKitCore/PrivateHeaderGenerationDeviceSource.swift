@@ -46,17 +46,13 @@ extension PrivateHeaderGeneration {
       )
     }
 
-    func catalog(includeNestedChildren: Bool = true) throws -> TargetDiscovery.Catalog {
+    func catalog() throws -> TargetDiscovery.Catalog {
       _ = try source()
       let catalog = try JSONDecoder().decode(TargetDiscovery.Catalog.self, from: catalogData)
       for target in catalog.allExecutionTargets {
         _ = try ArtifactPath(target.artifactRoot.rawValue)
       }
-      if includeNestedChildren { return catalog }
-      return TargetDiscovery.Catalog(groups: catalog.groups.compactMap { group in
-        guard let primary = group.primaryTarget else { return nil }
-        return .init(selectionCandidate: group.selectionCandidate, primaryTarget: primary, childTargets: [])
-      })
+      return catalog
     }
   }
 }

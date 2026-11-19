@@ -1,11 +1,6 @@
 import Foundation
 
 extension PrivateHeaderGeneration {
-  package enum Layout: String, Codable, CaseIterable, Hashable, Sendable {
-    case headers
-    case bundle
-  }
-
   package enum RunStatus: String, Codable, CaseIterable, Hashable, Sendable {
     case running
     case completed

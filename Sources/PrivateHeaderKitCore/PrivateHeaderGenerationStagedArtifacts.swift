@@ -112,41 +112,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     return candidates
   }
 
-  static func artifactRoot(
-    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
-    layout: PrivateHeaderGeneration.Layout
-  ) throws -> PrivateHeaderGeneration.ArtifactPath {
-    switch layout {
-    case .headers:
-      target.artifactRoot
-    case .bundle:
-      try bundleArtifactRoot(for: target.source)
-    }
-  }
-
-  fileprivate static func bundleArtifactRoot(
-    for source: PrivateHeaderGeneration.TargetDiscovery.SourceMetadata
-  ) throws -> PrivateHeaderGeneration.ArtifactPath {
-    switch source {
-    case .framework(let framework):
-      try PrivateHeaderGeneration.ArtifactPath(framework.systemLibraryRelativePath)
-    case .systemLibraryBundle(let bundle):
-      try PrivateHeaderGeneration.ArtifactPath(
-        artifactRootForBundleLayout(systemLibraryRelativePath: bundle.relativePath)
-      )
-    case .usrLibDylib(let dylib):
-      try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(dylib.name)")
-    case .application(let logicalImagePath):
-      try PrivateHeaderGeneration.ArtifactPath(String(URL(fileURLWithPath: logicalImagePath).deletingLastPathComponent().path.dropFirst()))
-    }
-  }
-
-  fileprivate static func artifactRootForBundleLayout(systemLibraryRelativePath: String) -> String {
-    let first = systemLibraryRelativePath.split(separator: "/", maxSplits: 1).first
-    if first == "Frameworks" || first == "PrivateFrameworks" { return systemLibraryRelativePath }
-    return "SystemLibrary/\(systemLibraryRelativePath)"
-  }
-
   static func inputPath(
     for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode

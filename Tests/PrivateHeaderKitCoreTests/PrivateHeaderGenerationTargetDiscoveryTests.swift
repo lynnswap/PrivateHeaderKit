@@ -617,30 +617,6 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         )
     }
 
-    @Test func nestedDiscoveryCanBeDisabled() throws {
-        let root = try makeTemporaryDirectory()
-        defer {
-            try? FileManager.default.removeItem(at: root)
-        }
-
-        try createLoadableBundle("System/Library/Frameworks/Foo.framework", in: root)
-        try createLoadableBundle(
-            "System/Library/Frameworks/Foo.framework/XPCServices/FooHelper.xpc",
-            in: root
-        )
-
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
-            in: root,
-            includeNestedChildren: false
-        )
-
-        let framework = try #require(
-            catalog.groups.first { $0.selectionCandidate.displayName == "Foo" }
-        )
-        #expect(framework.childTargets.isEmpty)
-        #expect(catalog.allExecutionTargets.map(\.candidate.displayName) == ["Foo"])
-    }
-
     @Test func nestedContainerIOFailureIsSurfaced() throws {
         let root = try makeTemporaryDirectory()
         defer {

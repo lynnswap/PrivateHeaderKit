@@ -495,7 +495,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
     let rawFailureSummary =
       rawResult.failureSummary ?? "raw dump exited with status \(rawResult.terminationStatus)"
-    let artifactRoot = try Self.artifactRoot(for: target, layout: plan.options.layout)
+    let artifactRoot = target.artifactRoot
     let staged: StagedArtifacts
     do {
       let runtimeRoot = plan.options.systemRoot?.path ?? ""

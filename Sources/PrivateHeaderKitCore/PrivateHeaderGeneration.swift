@@ -336,7 +336,6 @@ extension PrivateHeaderGeneration {
   }
 
   package struct Target: CustomStringConvertible, Hashable, Sendable {
-    package static let allAvailable = Target(identifier: "allAvailable")
     package let identifier: String
 
     fileprivate init(identifier: String) {
@@ -469,8 +468,6 @@ extension PrivateHeaderGeneration {
   }
 
   package enum TargetRequest: Hashable, Sendable {
-    case frameworks
-    case system
     case allAvailable
     case identifiers([String])
     case query(String)
@@ -480,19 +477,17 @@ extension PrivateHeaderGeneration {
       case .allAvailable: true
       case .query(let query):
         (try? TargetQuery(commaSeparated: query).requestsAllAvailableTargets) == true
-      case .frameworks, .system, .identifiers: false
+      case .identifiers: false
       }
     }
   }
 
   package struct Options: Hashable, Sendable {
-    package var layout: Layout
     package var targetRequest: TargetRequest
     package var systemRoot: URL?
     package var helperURLs: RawDumping.HelperURLs?
     package var executionMode: RawDumping.ExecutionMode?
     package var rawDumpingOptions: RawDumping.Options
-    package var includeNestedChildren: Bool
     package var executionOptions: ExecutionOptions
     package var producerVersion: String
     package var deviceSource: DeviceSourceSnapshot?
@@ -500,26 +495,22 @@ extension PrivateHeaderGeneration {
     package var includesAnalysisBinary: Bool
 
     package init(
-      layout: Layout = .headers,
       targetRequest: TargetRequest = .allAvailable,
       systemRoot: URL? = nil,
       helperURLs: RawDumping.HelperURLs? = nil,
       executionMode: RawDumping.ExecutionMode? = nil,
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
-      includeNestedChildren: Bool = true,
       executionOptions: ExecutionOptions = .init(),
       producerVersion: String = PrivateHeaderKitBuildInfo.version,
       deviceSource: DeviceSourceSnapshot? = nil,
       applicationSource: ApplicationSourceSnapshot? = nil,
       includesAnalysisBinary: Bool = false
     ) {
-      self.layout = layout
       self.targetRequest = targetRequest
       self.systemRoot = systemRoot
       self.helperURLs = helperURLs
       self.executionMode = executionMode
       self.rawDumpingOptions = rawDumpingOptions
-      self.includeNestedChildren = includeNestedChildren
       self.executionOptions = executionOptions
       self.producerVersion = producerVersion
       self.deviceSource = deviceSource
@@ -558,7 +549,6 @@ extension PrivateHeaderGeneration {
     package let output: Output
     package let artifactDirectory: URL
     package let stateDirectory: URL
-    package let target: Target
     package let options: Options
 
     package init(source: Source, output: Output, options: Options) {
@@ -566,7 +556,6 @@ extension PrivateHeaderGeneration {
       self.output = output
       artifactDirectory = output.artifactDirectory(for: source)
       stateDirectory = output.stateDirectory(for: source)
-      target = .allAvailable
       self.options = options
     }
 

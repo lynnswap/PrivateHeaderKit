@@ -11,7 +11,6 @@ extension PrivateHeaderGeneration {
     enum TargetDiscovery {
         static func discover(
             in systemRoot: URL,
-            includeNestedChildren: Bool = true,
             sharedCacheImagePaths: [String] = [],
             fileManager: FileManager = .default
         ) throws -> Catalog {
@@ -25,20 +24,17 @@ extension PrivateHeaderGeneration {
             groups += try discoverFrameworks(
                 in: root,
                 location: .publicFramework,
-                includeNestedChildren: includeNestedChildren,
                 sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
             groups += try discoverFrameworks(
                 in: root,
                 location: .privateFramework,
-                includeNestedChildren: includeNestedChildren,
                 sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
             groups += try discoverSystemLibraryBundles(
                 in: root,
-                includeNestedChildren: includeNestedChildren,
                 sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
@@ -218,7 +214,6 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     static func discoverFrameworks(
         in systemRoot: URL,
         location: FrameworkLocation,
-        includeNestedChildren: Bool,
         sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
     ) throws -> [DiscoveredTargetGroup] {
@@ -250,13 +245,13 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             )
             let sourceMetadata = SourceMetadata.framework(source)
             let bundleURL = frameworksDirectory.appendingPathComponent(bundleName, isDirectory: true)
-            let childTargets = try includeNestedChildren ? nestedChildTargets(
+            let childTargets = try nestedChildTargets(
                 parentSystemLibraryRelativePath: source.systemLibraryRelativePath,
                 parentURL: bundleURL,
                 systemRoot: systemRoot,
                 sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
-            ) : []
+            )
             let selectionCandidate = try PrivateHeaderGeneration.TargetCandidate(
                 identifier: "\(location.identifierPrefix):\(bundleName)",
                 displayName: source.frameworkName,
@@ -286,7 +281,6 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
 
     static func discoverSystemLibraryBundles(
         in systemRoot: URL,
-        includeNestedChildren: Bool,
         sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
     ) throws -> [DiscoveredTargetGroup] {
@@ -356,7 +350,6 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 source: source,
                 bundleURL: url,
                 systemRoot: systemRoot,
-                includeNestedChildren: includeNestedChildren,
                 sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             ) {
@@ -506,17 +499,16 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         source: SystemLibraryBundleSource,
         bundleURL: URL,
         systemRoot: URL,
-        includeNestedChildren: Bool,
         sharedCacheImages: SharedCacheImageIndex,
         fileManager: FileManager
     ) throws -> DiscoveredTargetGroup? {
-        let childTargets = try includeNestedChildren ? nestedChildTargets(
+        let childTargets = try nestedChildTargets(
             parentSystemLibraryRelativePath: source.relativePath,
             parentURL: bundleURL,
             systemRoot: systemRoot,
             sharedCacheImages: sharedCacheImages,
             fileManager: fileManager
-        ) : []
+        )
         let sourceMetadata = SourceMetadata.systemLibraryBundle(source)
         let selectionCandidate = try systemLibraryCandidate(for: source)
         let primaryTarget = try loadableBundleTarget(
