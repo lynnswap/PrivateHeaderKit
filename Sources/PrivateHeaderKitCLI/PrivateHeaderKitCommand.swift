@@ -657,24 +657,21 @@ func resolvePrivateHeaderKitHelperPlan(
     simulatorArchitecture: String = defaultSwiftPMSimulatorArchitecture()
 ) async throws -> PrivateHeaderKitHelperPlan {
     let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
-    if let explicitSimulatorURL, simulatorPlatform != nil,
-       Which.find(explicitSimulatorURL.path) == nil
-    {
-        throw ToolingError.invalidArgument(
-            "--sim-helper is not an executable file: \(explicitSimulatorURL.path)"
-        )
+    if let explicitSimulatorURL, simulatorPlatform != nil {
+        try requireExecutableSimulatorHelper(explicitSimulatorURL)
     }
     guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
         let hostURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
-        return PrivateHeaderKitHelperPlan(
-            helperURLs: .init(
-                host: hostURL,
-                simulator: explicitSimulatorURL
-                    ?? defaultSimulatorHelperURL(
-                        hostExecutableURL: hostURL,
-                        platform: simulatorPlatform ?? .iOS
-                    )
+        let simulatorURL = explicitSimulatorURL
+            ?? defaultSimulatorHelperURL(
+                hostExecutableURL: hostURL,
+                platform: simulatorPlatform ?? .iOS
             )
+        if simulatorPlatform != nil {
+            try requireExecutableSimulatorHelper(simulatorURL)
+        }
+        return PrivateHeaderKitHelperPlan(
+            helperURLs: .init(host: hostURL, simulator: simulatorURL)
         )
     }
 
@@ -746,6 +743,17 @@ func resolvePrivateHeaderKitHelperPlan(
         helperURLs: .init(host: hostURL, simulator: simulatorURL),
         buildInvocations: buildInvocations
     )
+}
+
+/// A Simulator helper is started through `simctl spawn`, which reports a helper it cannot
+/// start as an ordinary nonzero exit. Checking the file first keeps a missing helper from
+/// being recorded as one failure per target.
+private func requireExecutableSimulatorHelper(_ url: URL) throws {
+    guard Which.find(url.path) != nil else {
+        throw ToolingError.message(
+            "Simulator helper is missing or not an executable file: \(url.path)"
+        )
+    }
 }
 
 func preparePrivateHeaderKitHelpers(_ plan: PrivateHeaderKitHelperPlan) async throws {

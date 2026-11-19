@@ -2490,8 +2490,24 @@ private func macOSGenerateCommand(systemRoot: String) -> PrivateHeaderKitGenerat
 struct PrivateHeaderKitHelperLookupTests {
     @Test(arguments: [nil, SimulatorPlatform.iOS, .watchOS])
     func installedHelpersAreUsedBesideTheExecutable(_ platform: SimulatorPlatform?) async throws {
-        let directory = URL(fileURLWithPath: "/opt/privateheaderkit/libexec", isDirectory: true)
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let simulatorHelperName =
+            platform == .watchOS ? "privateheaderkit-watch-sim-helper" : "privateheaderkit-sim-helper"
         let runner = RecordingCommandRunner()
+        if platform != nil {
+            await #expect(throws: ToolingError.self) {
+                _ = try await resolvePrivateHeaderKitHelperPlan(
+                    publicExecutableURL: directory.appendingPathComponent("privateheaderkit"),
+                    simulatorHelperPath: nil,
+                    simulatorPlatform: platform,
+                    runner: runner
+                )
+            }
+            try writeCLIExecutable(
+                "simulator", to: directory.appendingPathComponent(simulatorHelperName)
+            )
+        }
 
         let plan = try await resolvePrivateHeaderKitHelperPlan(
             publicExecutableURL: directory.appendingPathComponent("privateheaderkit"),
@@ -2504,13 +2520,7 @@ struct PrivateHeaderKitHelperLookupTests {
         #expect(
             plan.helperURLs.host == directory.appendingPathComponent("privateheaderkit-raw-helper")
         )
-        #expect(
-            plan.helperURLs.simulator
-                == directory.appendingPathComponent(
-                    platform == .watchOS
-                        ? "privateheaderkit-watch-sim-helper" : "privateheaderkit-sim-helper"
-                )
-        )
+        #expect(plan.helperURLs.simulator == directory.appendingPathComponent(simulatorHelperName))
         #expect(await runner.captureCommandSnapshot().isEmpty)
     }
 
@@ -2524,7 +2534,9 @@ struct PrivateHeaderKitHelperLookupTests {
         let bin = root.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: cohort, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        try writeCLIExecutable("cli", to: cohort.appendingPathComponent("privateheaderkit"))
+        for name in ["privateheaderkit", "privateheaderkit-watch-sim-helper"] {
+            try writeCLIExecutable(name, to: cohort.appendingPathComponent(name))
+        }
         let current = root.appendingPathComponent("libexec/privateheaderkit/current")
         try FileManager.default.createSymbolicLink(at: current, withDestinationURL: cohort)
         let publicExecutable = bin.appendingPathComponent("privateheaderkit")
