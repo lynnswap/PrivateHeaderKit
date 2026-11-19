@@ -156,46 +156,28 @@ func resolvePrivateHeaderKitReleaseMetadata(
     try RuntimeReleaseMetadata.isSeed(in: systemRoot, layout: layout)
 }
 
+/// The helper executables a generation uses and, when the CLI runs from a package checkout,
+/// the builds that produce them.
 struct PrivateHeaderKitHelperPlan: Sendable {
     let helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs
-    fileprivate let preparation: PrivateHeaderKitHelperPreparation
+    fileprivate let buildInvocations: [PrivateHeaderKitHelperBuildInvocation]
 
     init(helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs) {
-        self.helperURLs = helperURLs
-        self.preparation = .ready
+        self.init(helperURLs: helperURLs, buildInvocations: [])
     }
 
     fileprivate init(
         helperURLs: PrivateHeaderGeneration.RawDumping.HelperURLs,
-        preparation: PrivateHeaderKitHelperPreparation
+        buildInvocations: [PrivateHeaderKitHelperBuildInvocation]
     ) {
         self.helperURLs = helperURLs
-        self.preparation = preparation
+        self.buildInvocations = buildInvocations
     }
 }
 
 private struct PrivateHeaderKitHelperBuildInvocation: Sendable {
     let command: [String]
     let cwd: URL
-}
-
-private enum PrivateHeaderKitHelperPreparation: Sendable {
-    case ready
-    case installed(PrivateHeaderKitInstalledToolValidation)
-    case swiftPM(PrivateHeaderKitSwiftPMToolPreparation)
-}
-
-private struct PrivateHeaderKitInstalledToolValidation: Sendable {
-    let runningExecutableIdentity: String
-    let artifacts: [ToolArtifactInput]
-    let baseline: ToolArtifactSnapshot
-}
-
-private struct PrivateHeaderKitSwiftPMToolPreparation: Sendable {
-    let context: SwiftPMToolIdentityContext
-    let baseline: SwiftPMToolSnapshot
-    let buildInvocations: [PrivateHeaderKitHelperBuildInvocation]
-    let preparedArtifacts: [ToolArtifactInput]
 }
 
 func runPrivateHeaderKitCommand(
@@ -662,49 +644,33 @@ func resolvePrivateHeaderKitHelperURLs(
     )
 }
 
+/// Locates the helpers beside an installed CLI, or plans their builds when the CLI runs from
+/// a package checkout.
+///
+/// The helpers report the build version compiled into them, and generation rejects a helper
+/// whose version differs from the CLI's.
 func resolvePrivateHeaderKitHelperPlan(
     publicExecutableURL: URL,
     simulatorHelperPath: String?,
     simulatorPlatform: SimulatorPlatform?,
     runner: CommandRunning = ProcessRunner(),
-    environment: [String: String] = ProcessInfo.processInfo.environment,
     simulatorArchitecture: String = defaultSwiftPMSimulatorArchitecture()
 ) async throws -> PrivateHeaderKitHelperPlan {
-    let runningExecutableIdentity = try currentProcessExecutableBuildIdentity()
+    let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
     guard let layout = swiftPMBuildProductLayout(for: publicExecutableURL) else {
         let hostURL = defaultRawDumpHelperURL(publicExecutableURL: publicExecutableURL)
-        let simulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
-            ?? defaultSimulatorHelperURL(
-                hostExecutableURL: hostURL,
-                platform: simulatorPlatform ?? .iOS
-            )
-        var artifacts = [
-            ToolArtifactInput(role: "host-helper", url: hostURL),
-        ]
-        if simulatorPlatform != nil {
-            artifacts.append(ToolArtifactInput(
-                role: "simulator-helper",
-                url: simulatorURL
-            ))
-        }
-        artifacts = try addingBundledHelperRuntimes(to: artifacts, simulatorPlatform: simulatorPlatform)
-        let baseline = try captureToolArtifactSnapshot(
-            runningExecutableIdentity: runningExecutableIdentity,
-            artifacts: artifacts,
-            fileManager: .default
-        )
-        let preparedURLs = try privateHeaderKitPreparedHelperURLs(
-            compatibilityIdentity: baseline.compatibilityIdentity
-        )
         return PrivateHeaderKitHelperPlan(
-            helperURLs: preparedURLs,
-            preparation: .installed(PrivateHeaderKitInstalledToolValidation(
-                runningExecutableIdentity: runningExecutableIdentity,
-                artifacts: artifacts,
-                baseline: baseline
-            ))
+            helperURLs: .init(
+                host: hostURL,
+                simulator: explicitSimulatorURL
+                    ?? defaultSimulatorHelperURL(
+                        hostExecutableURL: hostURL,
+                        platform: simulatorPlatform ?? .iOS
+                    )
+            )
         )
     }
+
     let hostCommand = [
         "swift", "build", "--force-resolved-versions", "-c", layout.configuration,
     ]
@@ -720,31 +686,16 @@ func resolvePrivateHeaderKitHelperPlan(
         "privateheaderkit-raw-helper",
         isDirectory: false
     )
-    let hostBuildInvocation = PrivateHeaderKitHelperBuildInvocation(
-        command: hostCommand + ["--product", "privateheaderkit-raw-helper"],
-        cwd: layout.repoRoot
-    )
-    let simulatorURL: URL
-    var buildInvocations = [hostBuildInvocation]
-    var buildRecipes = [SwiftPMToolBuildRecipe(
-        product: "privateheaderkit-raw-helper",
-        configuration: layout.configuration,
-        destination: .host
-    )]
-    var externalArtifacts = [ToolArtifactInput]()
-    var preparedArtifacts = [
-        ToolArtifactInput(role: "host-helper", url: hostURL),
+    var buildInvocations = [
+        PrivateHeaderKitHelperBuildInvocation(
+            command: hostCommand + ["--product", "privateheaderkit-raw-helper"],
+            cwd: layout.repoRoot
+        )
     ]
-    if let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath) {
+
+    let simulatorURL: URL
+    if let explicitSimulatorURL {
         simulatorURL = explicitSimulatorURL
-        if simulatorPlatform != nil {
-            let artifact = ToolArtifactInput(
-                role: "simulator-helper",
-                url: explicitSimulatorURL
-            )
-            externalArtifacts.append(artifact)
-            preparedArtifacts.append(artifact)
-        }
     } else if let simulatorPlatform {
         let simulatorTriple = simulatorPlatform.swiftPMTriple(
             architecture: simulatorArchitecture
@@ -757,118 +708,37 @@ func resolvePrivateHeaderKitHelperPlan(
             ),
             failureMessage: "failed to resolve \(simulatorPlatform.userFacingSimulatorName) SDK path"
         )
-        let scratchPath = SwiftPMBuildPaths.simulatorScratchURL(
-            repoRoot: layout.repoRoot,
-            triple: simulatorTriple
-        )
         let simulatorCommand = [
             "swift", "build", "--force-resolved-versions", "-c", layout.configuration,
-            "--scratch-path", scratchPath.path,
+            "--scratch-path",
+            SwiftPMBuildPaths.simulatorScratchURL(
+                repoRoot: layout.repoRoot,
+                triple: simulatorTriple
+            ).path,
             "--sdk", sdkPath,
             "--triple", simulatorTriple,
         ]
-        let simulatorBinDirectory = try swiftPMBinDirectory(
+        simulatorURL = try swiftPMBinDirectory(
             from: await runner.runCapture(
                 simulatorCommand + ["--show-bin-path"],
                 env: nil,
                 cwd: layout.repoRoot
             ),
             destination: simulatorPlatform.userFacingSimulatorName
-        )
-        simulatorURL = simulatorBinDirectory.appendingPathComponent(
-            "privateheaderkit-sim-helper",
-            isDirectory: false
-        )
-        buildInvocations.append(PrivateHeaderKitHelperBuildInvocation(
-            command: simulatorCommand + ["--product", "privateheaderkit-sim-helper"],
-            cwd: layout.repoRoot
-        ))
-        buildRecipes.append(SwiftPMToolBuildRecipe(
-            product: "privateheaderkit-sim-helper",
-            configuration: layout.configuration,
-            destination: .simulator(
-                platform: simulatorPlatform,
-                sdkPath: sdkPath,
-                triple: simulatorTriple
+        ).appendingPathComponent("privateheaderkit-sim-helper", isDirectory: false)
+        buildInvocations.append(
+            PrivateHeaderKitHelperBuildInvocation(
+                command: simulatorCommand + ["--product", "privateheaderkit-sim-helper"],
+                cwd: layout.repoRoot
             )
-        ))
-        preparedArtifacts.append(ToolArtifactInput(
-            role: "simulator-helper",
-            url: simulatorURL
-        ))
+        )
     } else {
-        simulatorURL = defaultSimulatorHelperURL(
-            hostExecutableURL: hostURL,
-            platform: .iOS
-        )
+        simulatorURL = defaultSimulatorHelperURL(hostExecutableURL: hostURL, platform: .iOS)
     }
-    externalArtifacts = try addingBundledHelperRuntimes(
-        to: externalArtifacts, simulatorPlatform: simulatorPlatform
-    )
-    preparedArtifacts = try addingBundledHelperRuntimes(
-        to: preparedArtifacts, simulatorPlatform: simulatorPlatform
-    )
-    let identityContext = SwiftPMToolIdentityContext(
-        repoRoot: layout.repoRoot,
-        runningExecutableIdentity: runningExecutableIdentity,
-        builds: buildRecipes,
-        externalArtifacts: externalArtifacts,
-        buildEnvironment: environment
-    )
-    let baseline = try await captureSwiftPMToolSnapshot(
-        context: identityContext,
-        runner: runner,
-        fileManager: .default
-    )
-    let preparedURLs = try privateHeaderKitPreparedHelperURLs(
-        compatibilityIdentity: baseline.compatibilityIdentity
-    )
     return PrivateHeaderKitHelperPlan(
-        helperURLs: preparedURLs,
-        preparation: .swiftPM(PrivateHeaderKitSwiftPMToolPreparation(
-            context: identityContext,
-            baseline: baseline,
-            buildInvocations: buildInvocations,
-            preparedArtifacts: preparedArtifacts
-        ))
+        helperURLs: .init(host: hostURL, simulator: simulatorURL),
+        buildInvocations: buildInvocations
     )
-}
-
-private func addingBundledHelperRuntimes(
-    to helpers: [ToolArtifactInput],
-    simulatorPlatform: SimulatorPlatform?,
-    fileManager: FileManager = .default
-) throws -> [ToolArtifactInput] {
-    var artifacts = helpers
-    for helper in helpers {
-        let sdk: String
-        switch helper.role {
-        case "host-helper": sdk = "macosx"
-        case "simulator-helper":
-            guard let simulatorPlatform else { continue }
-            sdk = simulatorPlatform.sdkName
-        default: continue
-        }
-        let directoryName = "privateheaderkit-runtime-\(sdk)"
-        let directory = helper.url.resolvingSymlinksInPath().deletingLastPathComponent()
-            .appendingPathComponent(directoryName, isDirectory: true)
-        let libraries: [URL]
-        do {
-            libraries = try fileManager.contentsOfDirectory(
-                at: directory, includingPropertiesForKeys: nil
-            )
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            continue
-        }
-        for library in libraries where library.pathExtension == "dylib" {
-            artifacts.append(ToolArtifactInput(
-                role: "runtime/\(directoryName)/\(library.lastPathComponent)",
-                url: library,
-                requiresExecutable: false
-            ))
-        }
-    }
-    return artifacts
 }
 
 func preparePrivateHeaderKitHelpers(_ plan: PrivateHeaderKitHelperPlan) async throws {
@@ -879,209 +749,8 @@ func executePrivateHeaderKitHelperBuilds(
     _ plan: PrivateHeaderKitHelperPlan,
     runner: CommandRunning
 ) async throws {
-    switch plan.preparation {
-    case .ready:
-        return
-    case let .installed(validation):
-        let current = try captureToolArtifactSnapshot(
-            runningExecutableIdentity: validation.runningExecutableIdentity,
-            artifacts: validation.artifacts,
-            fileManager: .default
-        )
-        guard current == validation.baseline else {
-            throw ToolingError.message(
-                "installed generation helpers changed after resume inspection"
-            )
-        }
-        try materializePrivateHeaderKitHelpers(
-            sources: validation.artifacts,
-            snapshot: current,
-            runningExecutableIdentity: validation.runningExecutableIdentity,
-            destinations: plan.helperURLs,
-            fileManager: .default
-        )
-    case let .swiftPM(preparation):
-        let beforeBuild = try await captureSwiftPMToolSnapshot(
-            context: preparation.context,
-            runner: runner,
-            fileManager: .default
-        )
-        guard beforeBuild == preparation.baseline else {
-            throw ToolingError.message(
-                "SwiftPM helper inputs changed after resume inspection"
-            )
-        }
-        for invocation in preparation.buildInvocations {
-            _ = try await runner.runCapture(
-                invocation.command,
-                env: nil,
-                cwd: invocation.cwd
-            )
-        }
-        let afterBuild = try await captureSwiftPMToolSnapshot(
-            context: preparation.context,
-            runner: runner,
-            fileManager: .default
-        )
-        guard afterBuild == preparation.baseline else {
-            throw ToolingError.message(
-                "SwiftPM helper inputs changed while building generation helpers"
-            )
-        }
-        let preparedSnapshot = try captureToolArtifactSnapshot(
-            runningExecutableIdentity: preparation.context.runningExecutableIdentity,
-            artifacts: preparation.preparedArtifacts,
-            fileManager: .default
-        )
-        try materializePrivateHeaderKitHelpers(
-            sources: preparation.preparedArtifacts,
-            snapshot: preparedSnapshot,
-            runningExecutableIdentity: preparation.context.runningExecutableIdentity,
-            destinations: plan.helperURLs,
-            fileManager: .default
-        )
-    }
-}
-
-private func privateHeaderKitPreparedHelperURLs(
-    compatibilityIdentity: String,
-    fileManager: FileManager = .default
-) throws -> PrivateHeaderGeneration.RawDumping.HelperURLs {
-    guard let digest = compatibilityIdentity.split(separator: ":").last.map(String.init),
-          digest.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil
-    else {
-        throw ToolingError.message("tool compatibility identity has no content digest")
-    }
-    let directory = fileManager.temporaryDirectory
-        .appendingPathComponent("PrivateHeaderKit", isDirectory: true)
-        .appendingPathComponent("prepared-tools", isDirectory: true)
-        .appendingPathComponent("v1", isDirectory: true)
-        .appendingPathComponent(digest, isDirectory: true)
-    return PrivateHeaderGeneration.RawDumping.HelperURLs(
-        host: directory.appendingPathComponent(
-            "privateheaderkit-raw-helper",
-            isDirectory: false
-        ),
-        simulator: directory.appendingPathComponent(
-            "privateheaderkit-sim-helper",
-            isDirectory: false
-        )
-    )
-}
-
-private func materializePrivateHeaderKitHelpers(
-    sources: [ToolArtifactInput],
-    snapshot: ToolArtifactSnapshot,
-    runningExecutableIdentity: String,
-    destinations: PrivateHeaderGeneration.RawDumping.HelperURLs,
-    fileManager: FileManager
-) throws {
-    let finalDirectory = destinations.host.deletingLastPathComponent()
-    var destinationByRole = [
-        "host-helper": destinations.host,
-        "simulator-helper": destinations.simulator,
-    ]
-    for source in sources where source.role.hasPrefix("runtime/") {
-        destinationByRole[source.role] = finalDirectory.appendingPathComponent(
-            String(source.role.dropFirst("runtime/".count)), isDirectory: false
-        )
-    }
-    let destinationInputs = try sources.map { source -> ToolArtifactInput in
-        guard let destination = destinationByRole[source.role] else {
-            throw ToolingError.message("unsupported prepared helper role: \(source.role)")
-        }
-        return ToolArtifactInput(
-            role: source.role, url: destination, requiresExecutable: source.requiresExecutable
-        )
-    }
-    guard destinations.simulator.deletingLastPathComponent() == finalDirectory else {
-        throw ToolingError.message("prepared helpers must share one content directory")
-    }
-    if fileManager.fileExists(atPath: finalDirectory.path) {
-        try validateMaterializedPrivateHeaderKitHelpers(
-            destinationInputs,
-            expected: snapshot,
-            runningExecutableIdentity: runningExecutableIdentity,
-            fileManager: fileManager
-        )
-        return
-    }
-
-    let parent = finalDirectory.deletingLastPathComponent()
-    try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
-    let stagingDirectory = parent.appendingPathComponent(
-        ".\(finalDirectory.lastPathComponent).\(UUID().uuidString).tmp",
-        isDirectory: true
-    )
-    try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
-    var stagingExists = true
-    defer {
-        if stagingExists {
-            try? fileManager.removeItem(at: stagingDirectory)
-        }
-    }
-    for source in sources {
-        guard let finalURL = destinationByRole[source.role] else {
-            throw ToolingError.message("unsupported prepared helper role: \(source.role)")
-        }
-        let stagingURL = stagingDirectory.appendingPathComponent(
-            String(finalURL.path.dropFirst(finalDirectory.path.count + 1)),
-            isDirectory: false
-        )
-        try fileManager.createDirectory(
-            at: stagingURL.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        try fileManager.copyItem(
-            at: source.url.resolvingSymlinksInPath(),
-            to: stagingURL
-        )
-        try fileManager.setAttributes(
-            [.posixPermissions: NSNumber(value: UInt16(source.requiresExecutable ? 0o555 : 0o444))],
-            ofItemAtPath: stagingURL.path
-        )
-    }
-    for directory in try fileManager.contentsOfDirectory(
-        at: stagingDirectory, includingPropertiesForKeys: [.isDirectoryKey]
-    ) where try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
-        try fileManager.setAttributes(
-            [.posixPermissions: NSNumber(value: UInt16(0o555))], ofItemAtPath: directory.path
-        )
-    }
-    try fileManager.setAttributes(
-        [.posixPermissions: NSNumber(value: UInt16(0o555))],
-        ofItemAtPath: stagingDirectory.path
-    )
-    do {
-        try fileManager.moveItem(at: stagingDirectory, to: finalDirectory)
-        stagingExists = false
-    } catch {
-        guard fileManager.fileExists(atPath: finalDirectory.path) else {
-            throw error
-        }
-    }
-    try validateMaterializedPrivateHeaderKitHelpers(
-        destinationInputs,
-        expected: snapshot,
-        runningExecutableIdentity: runningExecutableIdentity,
-        fileManager: fileManager
-    )
-}
-
-private func validateMaterializedPrivateHeaderKitHelpers(
-    _ inputs: [ToolArtifactInput],
-    expected: ToolArtifactSnapshot,
-    runningExecutableIdentity: String,
-    fileManager: FileManager
-) throws {
-    let actual = try captureToolArtifactSnapshot(
-        runningExecutableIdentity: runningExecutableIdentity,
-        artifacts: inputs,
-        fileManager: fileManager
-    )
-    guard actual == expected else {
-        throw ToolingError.message(
-            "prepared helper content does not match its compatibility identity"
-        )
+    for invocation in plan.buildInvocations {
+        _ = try await runner.runCapture(invocation.command, env: nil, cwd: invocation.cwd)
     }
 }
 
