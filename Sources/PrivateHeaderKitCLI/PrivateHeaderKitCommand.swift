@@ -658,7 +658,7 @@ func resolvePrivateHeaderKitHelperPlan(
 ) async throws -> PrivateHeaderKitHelperPlan {
     let explicitSimulatorURL = explicitSimulatorHelperURL(simulatorHelperPath)
     if let explicitSimulatorURL, simulatorPlatform != nil,
-       !FileManager.default.isExecutableFile(atPath: explicitSimulatorURL.path)
+       Which.find(explicitSimulatorURL.path) == nil
     {
         throw ToolingError.invalidArgument(
             "--sim-helper is not an executable file: \(explicitSimulatorURL.path)"
