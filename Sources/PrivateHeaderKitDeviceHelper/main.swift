@@ -6,7 +6,7 @@ import PrivateHeaderKitRawDumpCore
 @main
 struct PrivateHeaderKitDeviceHelperMain {
   static func main() async {
-    var arguments = Array(CommandLine.arguments.dropFirst())
+    let arguments = Array(CommandLine.arguments.dropFirst())
     if arguments.first == PrivateHeaderKitHelperCommand.runningApplication.rawValue {
       do {
         let report = try PrivateHeaderGeneration.RunningApplicationResolver.resolve(
@@ -54,9 +54,6 @@ struct PrivateHeaderKitDeviceHelperMain {
         exit(EXIT_FAILURE)
       }
       return
-    }
-    if arguments.first == PrivateHeaderKitHelperCommand.rawDump.rawValue {
-      arguments.removeFirst()
     }
     await PrivateHeaderKitRawDumpCLI.main(arguments: arguments)
   }
