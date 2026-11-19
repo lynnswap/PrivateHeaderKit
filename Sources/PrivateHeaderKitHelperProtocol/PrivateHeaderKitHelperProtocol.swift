@@ -85,6 +85,21 @@ package struct PrivateHeaderKitRawDumpDiagnostic: Codable, Hashable, Sendable {
         self.degradation = Self.bounded(degradation, fallback: "metadata was partially decoded")
     }
 
+    /// Decoding applies the same shortening and escaping, so a diagnostic is terminal-safe
+    /// wherever it came from.
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            owner: try container.decode(String.self, forKey: .owner),
+            degradation: try container.decode(String.self, forKey: .degradation)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case owner
+        case degradation
+    }
+
     private static func bounded(_ value: String, fallback: String) -> String {
         guard !value.isEmpty else { return fallback }
         var result = ""

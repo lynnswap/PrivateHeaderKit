@@ -137,6 +137,12 @@ struct PrivateHeaderKitHelperProtocolTests {
             )
         )
         #expect(decoded.diagnostics == [diagnostic])
+
+        let unescaped = try JSONDecoder().decode(
+            PrivateHeaderKitRawDumpDiagnostic.self,
+            from: Data(#"{"owner":"esc\u001b[31m","degradation":"x"}"#.utf8)
+        )
+        #expect(unescaped.owner == #"esc\u{001b}[31m"#)
     }
 
     @Test func rawDumpDiagnosticsRejectsAnotherSchemaAndMalformedPayloads() {
