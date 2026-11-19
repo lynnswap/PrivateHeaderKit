@@ -137,7 +137,7 @@ struct PrivateHeaderKitSimulatorRecoveryTests {
         #expect(await runner.streamingCommandSnapshot().count == 1)
     }
 
-    @Test func aProcessLaunchErrorDoesNotAttemptToRestartTheSimulator() async throws {
+    @Test func aProcessLaunchErrorStopsTheRunWithoutRestartingTheSimulator() async throws {
         let fixture = try SimulatorRecoveryFixture()
         defer { fixture.cleanup() }
         let invocation = try fixture.invocation()
@@ -149,9 +149,9 @@ struct PrivateHeaderKitSimulatorRecoveryTests {
         do {
             _ = try await runPrivateHeaderKitRawDump(invocation, processRunner: runner, recoveryReporter: { _ in })
             Issue.record("a missing executable unexpectedly completed")
-        } catch let ToolingError.processLaunchFailed(command, underlying) {
-            #expect(command == invocation.command)
-            #expect(underlying == "executable missing")
+        } catch let PrivateHeaderGeneration.RawDumping.ExecutionError.environmentUnavailable(reason) {
+            #expect(reason.contains("failed to launch process"))
+            #expect(reason.contains("executable missing"))
         }
         #expect(await runner.captureCommandSnapshot().isEmpty)
         #expect(await runner.simpleCommandSnapshot().isEmpty)
