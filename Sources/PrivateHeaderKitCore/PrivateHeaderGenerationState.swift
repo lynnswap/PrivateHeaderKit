@@ -22,26 +22,6 @@ extension PrivateHeaderGeneration {
     case partial
     case failed
     case interrupted
-
-    var preservesLastSuccessfulArtifacts: Bool {
-      switch self {
-      case .partial, .failed, .interrupted:
-        true
-      case .pending, .running, .skipped, .completed:
-        false
-      }
-    }
-
-    var isSuccessfulOrSkipped: Bool {
-      self == .completed || self == .skipped
-    }
-  }
-
-  package enum PublicationState: String, Codable, CaseIterable, Hashable, Sendable {
-    case prepared
-    case pointerPublished
-    case committed
-    case aborted
   }
 
   package struct RunID: RawRepresentable, Codable, CustomStringConvertible, Hashable, Sendable {
@@ -68,26 +48,6 @@ extension PrivateHeaderGeneration {
         && !value.contains("/")
         && !value.contains("\0")
     }
-  }
-
-  package struct GenerationID: RawRepresentable, Codable, CustomStringConvertible, Hashable,
-    Sendable
-  {
-    package let rawValue: String
-
-    package init(rawValue: String) {
-      precondition(RunID.isSafeComponent(rawValue), "invalid generation ID")
-      self.rawValue = rawValue
-    }
-
-    package init(_ rawValue: String) throws {
-      guard RunID.isSafeComponent(rawValue) else {
-        throw StateError.invalidIdentifier(kind: "generation", value: rawValue)
-      }
-      self.rawValue = rawValue
-    }
-
-    package var description: String { rawValue }
   }
 
   package struct ArtifactPath: RawRepresentable, Codable, CustomStringConvertible, Hashable,
@@ -183,15 +143,6 @@ extension PrivateHeaderGeneration {
     package let failureSummary: String?
   }
 
-  package struct TargetSnapshot: Equatable, Sendable {
-    package let targetID: String
-    package let lastSuccessfulRunID: RunID
-    package let status: RunTargetStatus
-    package let artifacts: [ArtifactPath]
-    package let artifactDigests: [ArtifactPath: String]
-    package let updatedAt: Date
-  }
-
   package struct TargetCounts: Equatable, Hashable, Sendable {
     package let total: Int
     package let pending: Int
@@ -251,7 +202,7 @@ extension PrivateHeaderGeneration {
     package var counts: TargetCounts { TargetCounts(targets: targets) }
 
     package var publishedArtifactCounts: ArtifactCounts {
-      // Completed attempts have committed their live replacement; partial attempts have not.
+      // Only completed attempts replace the published files; partial attempts do not.
       ArtifactCounts(artifacts: targets.filter { $0.status == .completed }.flatMap(\.artifacts))
     }
   }
@@ -289,125 +240,10 @@ extension PrivateHeaderGeneration {
     }
   }
 
-  package struct PublicationIntent: Equatable, Sendable {
-    package let generationID: GenerationID
-    package let runID: RunID
-    package let previousGenerationID: GenerationID?
-    package let state: PublicationState
-    package let planFingerprint: String
-    package let artifactChecksum: String
-    package let createdAt: Date
-    package let completedAt: Date?
-  }
-
-  package enum LegacyArtifactState: Equatable, Sendable {
-    case absent
-    case directory
-
-    package var isDirectory: Bool {
-      if case .directory = self { true } else { false }
-    }
-  }
-
-  package struct LegacyBackupRequirement: Codable, Equatable, Sendable {
-    package let checksum: String
-    package let archiveOwnerGenerationID: GenerationID
-
-    package init(checksum: String, archiveOwnerGenerationID: GenerationID) {
-      self.checksum = checksum
-      self.archiveOwnerGenerationID = archiveOwnerGenerationID
-    }
-  }
-
-  package struct GenerationMarkerSnapshot: Equatable, Sendable {
-    package let generationID: GenerationID
-    package let planFingerprint: String
-    package let artifactChecksum: String
-    package let artifactsByTarget: [String: [ArtifactPath]]
-    package let opaquePaths: [ArtifactPath]
-    package let contentDigests: [ArtifactPath: String]
-    package let legacyBackupRequirement: LegacyBackupRequirement?
-
-    package init(
-      generationID: GenerationID,
-      planFingerprint: String,
-      artifactChecksum: String,
-      artifactsByTarget: [String: [ArtifactPath]],
-      opaquePaths: [ArtifactPath],
-      contentDigests: [ArtifactPath: String] = [:],
-      legacyBackupRequirement: LegacyBackupRequirement? = nil
-    ) {
-      self.generationID = generationID
-      self.planFingerprint = planFingerprint
-      self.artifactChecksum = artifactChecksum
-      self.artifactsByTarget = artifactsByTarget
-      self.opaquePaths = opaquePaths
-      self.contentDigests = contentDigests
-      self.legacyBackupRequirement = legacyBackupRequirement
-    }
-  }
-
-  package struct PublicationSnapshot: Equatable, Sendable {
-    package let currentGenerationID: GenerationID?
-    package let legacyArtifactState: LegacyArtifactState
-    package let archivedLegacyArtifactChecksums: Set<String>
-    package let markers: [GenerationID: GenerationMarkerSnapshot]
-
-    package init(
-      currentGenerationID: GenerationID?,
-      legacyArtifactState: LegacyArtifactState,
-      archivedLegacyArtifactChecksums: Set<String> = [],
-      markers: [GenerationID: GenerationMarkerSnapshot]
-    ) {
-      self.currentGenerationID = currentGenerationID
-      self.legacyArtifactState = legacyArtifactState
-      self.archivedLegacyArtifactChecksums = archivedLegacyArtifactChecksums
-      self.markers = markers
-    }
-
-    package var validGenerationIDs: Set<GenerationID> { Set(markers.keys) }
-    package var currentMarker: GenerationMarkerSnapshot? {
-      currentGenerationID.flatMap { markers[$0] }
-    }
-  }
-
-  package enum RecoveryAction: Equatable, Sendable {
-    case none
-    case recognized(GenerationID?)
-    case discardGeneration(GenerationID)
-    case archiveLegacyArtifacts(GenerationID)
-    case detachCurrentPointer(GenerationID)
-    case rolledForward(GenerationID)
-  }
-
-  package enum RecoveryTerminalReason: Equatable, Sendable {
-    case interrupted
-    case failed(message: String)
-  }
-
-  package enum StoreFaultPoint: Equatable, Sendable {
-    case afterRunTargetWrite
-    case afterPublicationIntentWrite
-    case afterSemanticFinalize
-    case beforeTerminalRunCommit
-    case beforeRunLogWrite
-  }
-
-  package enum PublicationFaultPoint: Equatable, Sendable {
-    case afterPrepared
-    case afterGenerationMove
-    case afterCurrentPointerSwitch
-    case afterLegacyArtifactArchive
-    case beforeCommitted
-  }
-
   package enum StateError: Error, Equatable, CustomStringConvertible, Sendable {
     case invalidIdentifier(kind: String, value: String)
     case invalidArtifactPath(String)
-    case invalidTransition(entity: String, from: String, to: String)
     case missingRun(RunID)
-    case missingPublicationIntent(GenerationID)
-    case corruptPublication(String)
     case unsupportedMigrations([String])
 
     package var description: String {
@@ -416,14 +252,8 @@ extension PrivateHeaderGeneration {
         "invalid \(kind) identifier: \(value)"
       case .invalidArtifactPath(let path):
         "artifact path is not safe: \(path)"
-      case .invalidTransition(let entity, let from, let to):
-        "invalid \(entity) transition from \(from) to \(to)"
       case .missingRun(let runID):
         "generation run does not exist: \(runID.rawValue)"
-      case .missingPublicationIntent(let generationID):
-        "publication intent does not exist: \(generationID.rawValue)"
-      case .corruptPublication(let message):
-        "publication state is corrupt: \(message)"
       case .unsupportedMigrations(let identifiers):
         "generation database contains unsupported migrations: \(identifiers.joined(separator: ", "))"
       }

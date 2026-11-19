@@ -548,13 +548,6 @@ extension PrivateHeaderGeneration {
         .appendingPathComponent(source.artifactDirectoryName, isDirectory: true)
     }
 
-    package func legacyStorageArtifactDirectory(for source: Source) -> URL {
-      artifactBaseDirectory.appendingPathComponent(
-        source.storageIdentifier,
-        isDirectory: true
-      )
-    }
-
     package func stateDirectory(for source: Source) -> URL {
       stateBaseDirectory.appendingPathComponent(source.storageIdentifier, isDirectory: true)
     }
@@ -641,8 +634,6 @@ extension PrivateHeaderGeneration {
     case unresolvedTargetQuery(TargetResolution)
     case incompatibleResume(String)
     case resumeRequired(ResumeSummary)
-    case legacyMigrationRequiresFresh(String)
-    case conflictingArtifactDirectories(legacyPath: String, currentPath: String)
     case runFailed(RunFailure)
     case runInterrupted(RunInterruption)
     case infrastructureFailed(RunInfrastructureFailure)
@@ -676,12 +667,6 @@ extension PrivateHeaderGeneration {
         "existing generation state is incompatible: \(reason)"
       case .resumeRequired(let summary):
         "existing generation state is unfinished; explicit resume is required for \(summary.latestRunID.rawValue)"
-      case .legacyMigrationRequiresFresh(let path):
-        "legacy artifact directory at \(path) requires an explicit fresh migration"
-      case .conflictingArtifactDirectories(let legacyPath, let currentPath):
-        "both the legacy and current generated-header directories exist "
-          + "(legacy: \(legacyPath), current: \(currentPath)); "
-          + "move one directory aside before retrying"
       case .runFailed(let failure):
         "private header generation run \(failure.summary.runID.rawValue) failed for \(failure.failedTargetIDs.count) targets"
       case .runInterrupted(let interruption):

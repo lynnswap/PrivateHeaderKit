@@ -26,7 +26,7 @@ struct PrivateHeaderGenerationApplicationTests {
       )
       let plan = fixture.plan(application: application, mode: mode, includesBinary: includesBinary)
       return PrivateHeaderGeneration.GenerationExecutor.planFingerprint(
-        plan, canonicalOutputBase: fixture.output.baseDirectory, executionMode: mode, sharedCacheCohort: nil
+        plan, executionMode: mode, sharedCacheCohort: nil
       )
     }
     let first = try fingerprint(destination: "device", directory: "/tmp/first", includesBinary: false)
