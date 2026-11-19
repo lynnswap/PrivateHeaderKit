@@ -132,7 +132,6 @@ extension PrivateHeaderGeneration {
       guard let executionMode = plan.options.executionMode else {
         throw GenerationError.missingExecutionConfiguration("executionMode")
       }
-      try await validatePreparedCohort(preparedPlan)
       return try await withStore(for: plan) { store in
         try await run(
           preparedPlan,

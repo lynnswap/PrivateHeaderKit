@@ -5,10 +5,10 @@ import Testing
 
 @Suite
 struct PrivateHeaderKitHelperProtocolTests {
-    @Test func rawDumpProcessHandshakeRoundTripsItsExactBoundedSchema() throws {
+    @Test func rawDumpProcessHandshakeRoundTripsItsSchema() throws {
         let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let executableUUID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
-        let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+        let handshake = PrivateHeaderKitRawDumpProcessHandshake(
             invocationID: invocationID,
             processIdentifier: 4_242,
             helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
@@ -26,7 +26,6 @@ struct PrivateHeaderKitHelperProtocolTests {
         )
 
         #expect(decoded == handshake)
-        #expect(data.count <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount)
         #expect(
             Set(object.keys) == [
                 "schemaVersion",
@@ -46,10 +45,10 @@ struct PrivateHeaderKitHelperProtocolTests {
         #expect(!wire.contains("RuntimeRoot"))
     }
 
-    @Test func rawDumpProcessHandshakeRejectsMismatchedInvocationAndOversizedPayload() throws {
+    @Test func rawDumpProcessHandshakeRejectsAnotherInvocationOrSchema() throws {
         let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let unexpectedID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
-        let handshake = try PrivateHeaderKitRawDumpProcessHandshake(
+        let handshake = PrivateHeaderKitRawDumpProcessHandshake(
             invocationID: invocationID,
             processIdentifier: 4_242,
             helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
@@ -68,74 +67,18 @@ struct PrivateHeaderKitHelperProtocolTests {
                 expectedInvocationID: unexpectedID
             )
         }
+        let newerSchema = String(decoding: try handshake.encoded(), as: UTF8.self)
+            .replacingOccurrences(of: #""schemaVersion":1"#, with: #""schemaVersion":2"#)
         #expect(
-            throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.encodedPayloadTooLarge(
-                actual: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount + 1,
-                maximum: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
+            throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.unsupportedSchemaVersion(
+                expected: 1,
+                actual: 2
             )
         ) {
             _ = try PrivateHeaderKitRawDumpProcessHandshake.decode(
-                Data(
-                    repeating: 0,
-                    count: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount + 1
-                ),
+                Data(newerSchema.utf8),
                 expectedInvocationID: invocationID
             )
-        }
-    }
-
-    @Test func rawDumpProcessHandshakeEnforcesExecutableNameBounds() throws {
-        let invocationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-        let executableUUID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
-        let maximum = try PrivateHeaderKitRawDumpProcessHandshake(
-            invocationID: invocationID,
-            processIdentifier: 4_242,
-            helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
-            executableName: String(
-                repeating: "\\",
-                count: PrivateHeaderKitRawDumpProcessHandshake.maximumExecutableNameUTF8Count
-            ),
-            executableMachOUUID: executableUUID
-        )
-
-        #expect(
-            try maximum.encoded().count
-                <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount
-        )
-        #expect(throws: PrivateHeaderKitRawDumpProcessHandshake.ValidationError.self) {
-            _ = try PrivateHeaderKitRawDumpProcessHandshake(
-                invocationID: invocationID,
-                processIdentifier: 4_242,
-                helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,
-                executableName: String(
-                    repeating: "e",
-                    count: PrivateHeaderKitRawDumpProcessHandshake.maximumExecutableNameUTF8Count + 1
-                ),
-                executableMachOUUID: executableUUID
-            )
-        }
-    }
-
-    @Test func rawDumpProcessHandshakeStrictlyRejectsInvalidFields() {
-        let expectedID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-        let validFields = #""schemaVersion":1,"invocationID":"11111111-2222-3333-4444-555555555555","processIdentifier":4242,"helperStartedAtUnixMicroseconds":1700000000123456,"executableName":"privateheaderkit-sim-helper","executableMachOUUID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee""#
-        let payloads = [
-            "{\(validFields),\"path\":\"/private/var/tmp/helper\"}",
-            "{\(validFields.replacingOccurrences(of: "\"schemaVersion\":1", with: "\"schemaVersion\":2"))}",
-            "{\(validFields.replacingOccurrences(of: "11111111-2222-3333-4444-555555555555", with: "00000000-0000-0000-0000-000000000000"))}",
-            "{\(validFields.replacingOccurrences(of: "\"processIdentifier\":4242", with: "\"processIdentifier\":0"))}",
-            "{\(validFields.replacingOccurrences(of: "\"helperStartedAtUnixMicroseconds\":1700000000123456", with: "\"helperStartedAtUnixMicroseconds\":0"))}",
-            "{\(validFields.replacingOccurrences(of: "privateheaderkit-sim-helper", with: "/private/helper"))}",
-            "{\(validFields.replacingOccurrences(of: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", with: "00000000-0000-0000-0000-000000000000"))}",
-        ]
-
-        for payload in payloads {
-            #expect(throws: (any Error).self) {
-                _ = try PrivateHeaderKitRawDumpProcessHandshake.decode(
-                    Data(payload.utf8),
-                    expectedInvocationID: expectedID
-                )
-            }
         }
     }
 
@@ -194,32 +137,18 @@ struct PrivateHeaderKitHelperProtocolTests {
             )
         )
         #expect(decoded.diagnostics == [diagnostic])
-    }
 
-    @Test func escapeHeavyMaximumReportFitsEncodedContract() throws {
-        let field = String(repeating: #"\"#, count: 2_048)
-        let diagnostics = (0..<PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount)
-            .map { index in
-                PrivateHeaderKitRawDumpDiagnostic(
-                    owner: field,
-                    degradation: "\(index)-\(field)"
-                )
-            }
-        let data = try JSONEncoder().encode(
-            PrivateHeaderKitRawDumpDiagnosticsReport(diagnostics: diagnostics)
+        let unescaped = try JSONDecoder().decode(
+            PrivateHeaderKitRawDumpDiagnostic.self,
+            from: Data(#"{"owner":"esc\u001b[31m","degradation":"x"}"#.utf8)
         )
-
-        #expect(data.count <= PrivateHeaderKitRawDumpDiagnosticsReport.maximumEncodedByteCount)
+        #expect(unescaped.owner == #"esc\u{001b}[31m"#)
     }
 
-    @Test func rawDumpDiagnosticsRejectsWrongVersionMalformedAndNoncanonicalPayloads() {
+    @Test func rawDumpDiagnosticsRejectsAnotherSchemaAndMalformedPayloads() {
         let payloads = [
             #"{"schemaVersion":3,"producerVersion":"v1.2.3","diagnostics":[],"omittedDiagnosticCount":0}"#,
             "not-json",
-            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[{"owner":"b","degradation":"x"},{"owner":"a","degradation":"x"}],"omittedDiagnosticCount":0}"#,
-            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[{"owner":"line\nowner","degradation":"x"}],"omittedDiagnosticCount":0}"#,
-            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[],"omittedDiagnosticCount":-1}"#,
-            #"{"schemaVersion":2,"producerVersion":"","diagnostics":[],"omittedDiagnosticCount":0}"#,
         ]
 
         for payload in payloads {
@@ -230,50 +159,6 @@ struct PrivateHeaderKitHelperProtocolTests {
                 )
             }
         }
-    }
-
-    @Test func rawDumpDiagnosticsDecoderRejectsExcessiveRecordCount() throws {
-        let records = (0...PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount)
-            .map { index in
-                "{\"owner\":\"owner-\(String(format: "%03d", index))\",\"degradation\":\"x\"}"
-            }
-            .joined(separator: ",")
-        let data = Data(
-            """
-            {"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[\(records)],"omittedDiagnosticCount":0}
-            """.utf8
-        )
-
-        #expect(throws: PrivateHeaderKitRawDumpDiagnosticsReport.ValidationError.self) {
-            _ = try JSONDecoder().decode(
-                PrivateHeaderKitRawDumpDiagnosticsReport.self,
-                from: data
-            )
-        }
-    }
-
-    @Test func rawDumpDiagnosticsDecoderRejectsNegativeOmittedCount() {
-        let data = Data(
-            #"{"schemaVersion":2,"producerVersion":"v1.2.3","diagnostics":[],"omittedDiagnosticCount":-1}"#.utf8
-        )
-
-        #expect(throws: DecodingError.self) {
-            _ = try JSONDecoder().decode(
-                PrivateHeaderKitRawDumpDiagnosticsReport.self,
-                from: data
-            )
-        }
-    }
-
-    @Test func rawDumpDiagnosticsOmittedCountSaturates() {
-        let report = PrivateHeaderKitRawDumpDiagnosticsReport(
-            diagnostics: (0...PrivateHeaderKitRawDumpDiagnosticsReport.maximumDiagnosticCount).map { index in
-                PrivateHeaderKitRawDumpDiagnostic(owner: "\(index)", degradation: "x")
-            },
-            omittedDiagnosticCount: UInt.max
-        )
-
-        #expect(report.omittedDiagnosticCount == UInt.max)
     }
 
     @Test func resolvedGraphPinsReaderAndLoggingFixes() throws {
@@ -359,7 +244,7 @@ struct PrivateHeaderKitHelperProtocolTests {
 
     @Test func inventoryNormalizesImagePathMembershipAndRoundTrips() throws {
         let cacheUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-        let inventory = try PrivateHeaderKitSharedCacheInventory(
+        let inventory = PrivateHeaderKitSharedCacheInventory(
             producerVersion: "v1.2.3",
             cacheUUID: cacheUUID,
             imagePaths: [
@@ -392,19 +277,6 @@ struct PrivateHeaderKitHelperProtocolTests {
 
         #expect(throws: PrivateHeaderKitSharedCacheInventory.ValidationError.self) {
             _ = try JSONDecoder().decode(PrivateHeaderKitSharedCacheInventory.self, from: data)
-        }
-    }
-
-    @Test(arguments: [
-        "usr/lib/libobjc.A.dylib",
-        "/",
-        "/usr//lib/libobjc.A.dylib",
-        "/usr/lib/../libobjc.A.dylib",
-        "/usr/lib/./libobjc.A.dylib",
-    ])
-    func inventoryRejectsNonLogicalPaths(_ path: String) {
-        #expect(throws: PrivateHeaderKitSharedCacheInventory.ValidationError.self) {
-            _ = try PrivateHeaderKitSharedCacheInventory(cacheUUID: UUID(), imagePaths: [path])
         }
     }
 

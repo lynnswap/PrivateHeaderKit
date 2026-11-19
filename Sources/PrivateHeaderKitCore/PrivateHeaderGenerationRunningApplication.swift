@@ -160,7 +160,7 @@ extension PrivateHeaderGeneration {
         }
 
         private func report(pid: Int32, info: ApplicationInfo, image: PrivateHeaderKitProcessImage) throws -> PrivateHeaderKitRunningApplicationReport {
-            try .init(application: .init(
+            .init(application: .init(
                 processIdentifier: pid, bundleIdentifier: info.bundleIdentifier, version: info.version,
                 build: info.build, executableName: info.executableName, mainImage: image
             ))

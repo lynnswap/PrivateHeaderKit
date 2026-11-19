@@ -212,12 +212,10 @@ struct RawHelperFailureCapsuleTests {
         }
     }
 
-    @Test func successfulRunRequiresBoundedRegularInvocationBoundHandshake() async throws {
+    @Test func successfulRunRequiresAHandshakeFromItsOwnInvocation() async throws {
         enum FixtureKind: CaseIterable, Sendable {
             case missing
             case malformed
-            case oversized
-            case directory
             case wrongInvocation
         }
 
@@ -233,18 +231,6 @@ struct RawHelperFailureCapsuleTests {
                     try Data("not-json".utf8).write(
                         to: fixture.invocation.processHandshakeReportURL,
                         options: .atomic
-                    )
-                case .oversized:
-                    try Data(
-                        count: PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount + 1
-                    ).write(
-                        to: fixture.invocation.processHandshakeReportURL,
-                        options: .atomic
-                    )
-                case .directory:
-                    try FileManager.default.createDirectory(
-                        at: fixture.invocation.processHandshakeReportURL,
-                        withIntermediateDirectories: false
                     )
                 case .wrongInvocation:
                     try Self.helperHandshake(invocationID: UUID()).encoded().write(
@@ -264,35 +250,6 @@ struct RawHelperFailureCapsuleTests {
                     throws: PrivateHeaderGeneration.RawDumping.ContractError
                         .missingProcessHandshake(
                             fixture.invocation.processHandshakeReportURL.path
-                        )
-                ) {
-                    _ = try await runPrivateHeaderKitRawDump(
-                        fixture.invocation,
-                        processRunner: runner
-                    )
-                }
-            case .oversized:
-                await #expect(
-                    throws: PrivateHeaderGeneration.RawDumping.ContractError
-                        .processHandshakeTooLarge(
-                            path: fixture.invocation.processHandshakeReportURL.path,
-                            actual: PrivateHeaderKitRawDumpProcessHandshake
-                                .maximumEncodedByteCount + 1,
-                            maximum: PrivateHeaderKitRawDumpProcessHandshake
-                                .maximumEncodedByteCount
-                        )
-                ) {
-                    _ = try await runPrivateHeaderKitRawDump(
-                        fixture.invocation,
-                        processRunner: runner
-                    )
-                }
-            case .directory:
-                await #expect(
-                    throws: PrivateHeaderGeneration.RawDumping.ContractError
-                        .invalidProcessHandshake(
-                            path: fixture.invocation.processHandshakeReportURL.path,
-                            reason: "report is not a regular file"
                         )
                 ) {
                     _ = try await runPrivateHeaderKitRawDump(
@@ -325,7 +282,7 @@ struct RawHelperFailureCapsuleTests {
         invocationID: UUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
         executableName: String = "privateheaderkit-raw-helper"
     ) throws -> PrivateHeaderKitRawDumpProcessHandshake {
-        try PrivateHeaderKitRawDumpProcessHandshake(
+        PrivateHeaderKitRawDumpProcessHandshake(
             invocationID: invocationID,
             processIdentifier: 4_242,
             helperStartedAtUnixMicroseconds: 1_700_000_000_123_456,

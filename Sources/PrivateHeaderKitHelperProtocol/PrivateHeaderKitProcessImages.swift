@@ -47,9 +47,9 @@ package struct PrivateHeaderKitProcessImageInventory: Codable, Equatable, Sendab
         images: [PrivateHeaderKitProcessImage],
         failures: [PrivateHeaderKitProcessImageFailure],
         producerVersion: String = PrivateHeaderKitBuildInfo.version
-    ) throws {
+    ) {
         self.schemaVersion = Self.currentSchemaVersion
-        self.producerVersion = try PrivateHeaderKitProducerVersion.validated(producerVersion)
+        self.producerVersion = producerVersion
         self.processIdentifier = processIdentifier
         self.images = images
         self.failures = failures
@@ -61,9 +61,7 @@ package struct PrivateHeaderKitProcessImageInventory: Codable, Equatable, Sendab
         guard schemaVersion == Self.currentSchemaVersion else {
             throw PrivateHeaderKitProcessImageReportError.unsupportedSchemaVersion(schemaVersion)
         }
-        producerVersion = try PrivateHeaderKitProducerVersion.validated(
-            container.decode(String.self, forKey: .producerVersion)
-        )
+        producerVersion = try container.decode(String.self, forKey: .producerVersion)
         processIdentifier = try container.decode(Int32.self, forKey: .processIdentifier)
         images = try container.decode([PrivateHeaderKitProcessImage].self, forKey: .images)
         failures = try container.decode([PrivateHeaderKitProcessImageFailure].self, forKey: .failures)
@@ -88,9 +86,9 @@ package struct PrivateHeaderKitRecoveredProcessImage: Codable, Equatable, Sendab
         processIdentifier: Int32, image: PrivateHeaderKitProcessImage,
         outputPath: String, encryptedBytesRecovered: UInt64,
         producerVersion: String = PrivateHeaderKitBuildInfo.version
-    ) throws {
+    ) {
         self.schemaVersion = Self.currentSchemaVersion
-        self.producerVersion = try PrivateHeaderKitProducerVersion.validated(producerVersion)
+        self.producerVersion = producerVersion
         self.processIdentifier = processIdentifier
         self.image = image
         self.outputPath = outputPath
@@ -103,9 +101,7 @@ package struct PrivateHeaderKitRecoveredProcessImage: Codable, Equatable, Sendab
         guard schemaVersion == Self.currentSchemaVersion else {
             throw PrivateHeaderKitProcessImageReportError.unsupportedSchemaVersion(schemaVersion)
         }
-        producerVersion = try PrivateHeaderKitProducerVersion.validated(
-            container.decode(String.self, forKey: .producerVersion)
-        )
+        producerVersion = try container.decode(String.self, forKey: .producerVersion)
         processIdentifier = try container.decode(Int32.self, forKey: .processIdentifier)
         image = try container.decode(PrivateHeaderKitProcessImage.self, forKey: .image)
         outputPath = try container.decode(String.self, forKey: .outputPath)

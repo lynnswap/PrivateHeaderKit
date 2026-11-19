@@ -320,7 +320,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(!FileManager.default.fileExists(atPath: fixture.databaseURL.path))
   }
 
-  @Test func preparedCacheCohortIsReusedByResumeAndValidatedBeforeEveryRawDump() async throws {
+  @Test func preparedCacheCohortIsLoadedOnceAndPassedToEveryRawDump() async throws {
     let fixture = try ExecutorFixture()
     defer { fixture.cleanup() }
     try fixture.createFramework("Foo.framework")
@@ -353,7 +353,7 @@ struct PrivateHeaderGenerationExecutorTests {
     #expect(await inventoryRunner.invocationCount == 1)
     _ = try await executor.run(preparedPlan)
 
-    #expect(await inventoryRunner.invocationCount == 2)
+    #expect(await inventoryRunner.invocationCount == 1)
     #expect(await rawRunner.invocationCount == 2)
     for invocation in await rawRunner.invocations {
       #expect(invocation.command.contains("--expected-cache-uuid"))
@@ -414,43 +414,6 @@ struct PrivateHeaderGenerationExecutorTests {
       )
     }
 
-    #expect(!FileManager.default.fileExists(atPath: fixture.outputBase.path))
-  }
-
-  @Test func changedPreparedCacheCohortFailsBeforeLeaseStateOrRawDump() async throws {
-    let fixture = try ExecutorFixture()
-    defer { fixture.cleanup() }
-    try fixture.createFramework("Foo.framework")
-    let inventoryRunner = RecordingInventoryRunner(
-      data: try sharedCacheInventoryData(
-        cacheUUID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
-        imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
-      )
-    )
-    let rawRunner = RecordingRunner(contents: "generated")
-    let executor = fixture.executor(
-      runner: rawRunner,
-      inventoryRunner: { invocation in try await inventoryRunner.run(invocation) },
-      runID: "run-cache-change"
-    )
-    let preparedPlan = try await executor.prepare(
-      try fixture.plan(
-        .query("Foo"),
-        rawDumpingOptions: .init(useSharedCache: true)
-      )
-    )
-    await inventoryRunner.replaceData(
-      try sharedCacheInventoryData(
-        cacheUUID: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
-        imagePaths: ["/System/Library/Frameworks/Foo.framework/Foo"]
-      )
-    )
-
-    await #expect(throws: PrivateHeaderGeneration.GenerationError.self) {
-      _ = try await executor.run(preparedPlan)
-    }
-
-    #expect(await rawRunner.invocationCount == 0)
     #expect(!FileManager.default.fileExists(atPath: fixture.outputBase.path))
   }
 
@@ -1575,7 +1538,7 @@ private actor RecordingRunner {
 }
 
 private actor RecordingInventoryRunner {
-  private var data: Data
+  private let data: Data
   private(set) var invocations:
     [PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation] = []
 
@@ -1584,10 +1547,6 @@ private actor RecordingInventoryRunner {
   }
 
   var invocationCount: Int { invocations.count }
-
-  func replaceData(_ data: Data) {
-    self.data = data
-  }
 
   func run(
     _ invocation: PrivateHeaderGeneration.RawDumping.SharedCacheInventoryInvocation

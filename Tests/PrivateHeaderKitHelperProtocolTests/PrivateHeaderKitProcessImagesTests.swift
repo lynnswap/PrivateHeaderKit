@@ -9,7 +9,7 @@ import Testing
     }
 
     @Test func inventoryRoundTripRetainsIndividualInspectionFailures() throws {
-        let report = try PrivateHeaderKitProcessImageInventory(
+        let report = PrivateHeaderKitProcessImageInventory(
             processIdentifier: 1234, images: [image],
             failures: [.init(loadAddress: 0x30000, path: nil, error: "unreadable image header")]
         )
@@ -20,7 +20,7 @@ import Testing
     }
 
     @Test func recoveryRoundTripRetainsActiveArchitectureAndZeroByteSuccess() throws {
-        let report = try PrivateHeaderKitRecoveredProcessImage(
+        let report = PrivateHeaderKitRecoveredProcessImage(
             processIdentifier: 1234, image: image, outputPath: "/synthetic/output.macho", encryptedBytesRecovered: 0
         )
         let decoded = try JSONDecoder().decode(PrivateHeaderKitRecoveredProcessImage.self,
@@ -30,8 +30,8 @@ import Testing
     }
 
     @Test func incompatibleInventoryAndRecoverySchemasAreRejected() throws {
-        let inventory = try PrivateHeaderKitProcessImageInventory(processIdentifier: 1234, images: [image], failures: [])
-        let recovered = try PrivateHeaderKitRecoveredProcessImage(
+        let inventory = PrivateHeaderKitProcessImageInventory(processIdentifier: 1234, images: [image], failures: [])
+        let recovered = PrivateHeaderKitRecoveredProcessImage(
             processIdentifier: 1234, image: image, outputPath: "/synthetic/output.macho", encryptedBytesRecovered: 64
         )
         func incompatible(_ report: some Encodable) throws -> Data {

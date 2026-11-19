@@ -178,7 +178,6 @@ struct PrivateHeaderKitRawDumpArgumentTests {
             data,
             expectedInvocationID: invocationID
         )
-        #expect(data.count <= PrivateHeaderKitRawDumpProcessHandshake.maximumEncodedByteCount)
         #expect(handshake.processIdentifier == 4_242)
         #expect(handshake.helperStartedAtUnixMicroseconds == 1_700_000_000_123_456)
         #expect(handshake.executableName == "privateheaderkit-sim-helper")
@@ -873,7 +872,7 @@ struct PrivateHeaderKitRawDumpSharedCacheTests {
     @Test func inventoryEncodingMatchesHelperWireSchema() throws {
         let uuid = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         let data = try encodeSharedCacheInventory(
-            try PrivateHeaderKitSharedCacheInventory(
+            PrivateHeaderKitSharedCacheInventory(
                 cacheUUID: uuid,
                 imagePaths: ["/usr/lib/libobjc.A.dylib"]
             )
