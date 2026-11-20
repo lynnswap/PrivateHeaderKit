@@ -13,12 +13,12 @@ private let processGroupTeardownSequence: [TeardownStep] = [
     ),
 ]
 
-/// Runs `operation`, waits for the process-group leader to exit, and kills what is left of its
-/// group.
+/// Runs `operation` while a concurrent task waits for the process-group leader to exit and
+/// then kills what is left of its group.
 ///
 /// swift-subprocess ends its teardown sequence as soon as the leader exits, and runs none when
 /// the leader exits by itself. A descendant that ignores SIGTERM or outlives the leader would
-/// otherwise keep running after the command returns.
+/// otherwise keep running after the command returns and keep the output pipes open.
 private func terminatingProcessGroup<
     Success,
     Input: InputProtocol,
@@ -26,40 +26,41 @@ private func terminatingProcessGroup<
     FailureOutput: OutputProtocol
 >(
     of execution: Execution<Input, Output, FailureOutput>,
-    after operation: () async throws -> Success
+    during operation: () async throws -> Success
 ) async throws -> Success {
+    async let processGroupTermination: Void = terminateProcessGroup(
+        afterExitOf: execution.processIdentifier.value
+    )
     let outcome: Result<Success, any Error>
     do {
         outcome = .success(try await operation())
     } catch {
-        // The leader may run indefinitely, so stop it before waiting for its exit.
+        // The leader may run indefinitely, so stop it.
         await execution.teardown(using: processGroupTeardownSequence)
         outcome = .failure(error)
     }
-
-    let processGroupID = execution.processIdentifier.value
     // swift-subprocess reaps the leader after this closure returns. Until then the exited leader
     // keeps its PID, so the ID cannot name another process group while this one is signaled.
-    if await hasExitedWithoutBeingReaped(processGroupID) {
-        // kill(2) succeeds while a member is still exiting and fails with EPERM once only
-        // zombies are left in the group.
-        while kill(-processGroupID, SIGKILL) == 0 {
-            await Task.yield()
-        }
-    }
+    await processGroupTermination
     return try outcome.get()
 }
 
-private func hasExitedWithoutBeingReaped(_ processIdentifier: pid_t) async -> Bool {
-    await withCheckedContinuation { continuation in
+private func terminateProcessGroup(afterExitOf leader: pid_t) async {
+    let hasExited = await withCheckedContinuation { continuation in
         DispatchQueue.global(qos: .utility).async {
             var info = siginfo_t()
             var status: Int32
             repeat {
-                status = waitid(P_PID, id_t(processIdentifier), &info, WEXITED | WNOWAIT)
+                status = waitid(P_PID, id_t(leader), &info, WEXITED | WNOWAIT)
             } while status != 0 && errno == EINTR
             continuation.resume(returning: status == 0)
         }
+    }
+    guard hasExited else { return }
+    // kill(2) succeeds while a member is still exiting and fails with EPERM once only zombies
+    // are left in the group.
+    while kill(-leader, SIGKILL) == 0 {
+        await Task.yield()
     }
 }
 
@@ -67,7 +68,8 @@ private func boundedOutput(
     from sequence: SubprocessOutputSequence
 ) async throws -> BoundedProcessOutput {
     var collector = BoundedProcessOutputCollector()
-    // swift-subprocess closes the pipe when the sequence ends, so the loop always runs to the end.
+    // swift-subprocess closes the pipe when the sequence ends, so the loop always runs to the
+    // end. Every writer is gone once the process group has been terminated.
     for try await buffer in sequence {
         collector.consume(buffer.withUnsafeBytes { Array($0) })
     }
@@ -251,49 +253,46 @@ public struct ProcessRunner: CommandRunning, Sendable {
     public func runInteractive(
         _ command: [String], env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
-        // A cancelled call must not reach the terminal restoration below, which discards
-        // unread input.
-        try Task.checkCancellation()
-        var originalTerminal = termios()
-        let hasTerminal = tcgetattr(STDIN_FILENO, &originalTerminal) == 0
-        let outcome: Result<Void, any Error>
-        do {
-            let result = try await launch(command, env: env, cwd: cwd) { configuration in
-                try await Subprocess.run(
+        try await launch(command, env: env, cwd: cwd) { configuration in
+            var originalTerminal = termios()
+            let hasTerminal = tcgetattr(STDIN_FILENO, &originalTerminal) == 0
+            let outcome: Result<Void, any Error>
+            do {
+                let result = try await Subprocess.run(
                     configuration, input: .currentStandardInput,
                     output: .currentStandardOutput, error: .currentStandardError
                 ) { execution in
                     try await terminatingProcessGroup(of: execution) {}
                 }
+                try requireSuccess(
+                    result.terminationStatus, command: command,
+                    standardError: "interactive command failed"
+                )
+                outcome = .success(())
+            } catch {
+                outcome = .failure(error)
             }
-            try requireSuccess(
-                result.terminationStatus, command: command, standardError: "interactive command failed"
-            )
-            outcome = .success(())
-        } catch {
-            outcome = .failure(error)
-        }
-        if hasTerminal, tcsetattr(STDIN_FILENO, TCSAFLUSH, &originalTerminal) != 0 {
-            let primary: String
-            switch outcome {
-            case .success: primary = "interactive command completed"
-            case .failure(let error): primary = String(describing: error)
+            if hasTerminal, tcsetattr(STDIN_FILENO, TCSAFLUSH, &originalTerminal) != 0 {
+                let primary: String
+                switch outcome {
+                case .success: primary = "interactive command completed"
+                case .failure(let error): primary = String(describing: error)
+                }
+                throw ToolingError.message(primary + "; terminal restoration failed (errno \(errno))")
             }
-            throw ToolingError.message(primary + "; terminal restoration failed (errno \(errno))")
+            try outcome.get()
         }
-        try outcome.get()
     }
 
     public func runWithInputFile(
         _ command: [String], inputFile: URL, env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
-        try Task.checkCancellation()
-        let handle = try FileHandle(forReadingFrom: inputFile)
-        defer { try? handle.close() }
-        // The child reads this file directly. A rejected remote command can
-        // then close stdin without a pipe writer delivering SIGPIPE to us.
         let result = try await launch(command, env: env, cwd: cwd) { configuration in
-            try await Subprocess.run(
+            let handle = try FileHandle(forReadingFrom: inputFile)
+            defer { try? handle.close() }
+            // The child reads this file directly. A rejected remote command can
+            // then close stdin without a pipe writer delivering SIGPIPE to us.
+            return try await Subprocess.run(
                 configuration,
                 input: .fileDescriptor(.init(rawValue: handle.fileDescriptor), closeAfterSpawningProcess: false),
                 output: .bytes(limit: .max), error: .bytes(limit: .max)
