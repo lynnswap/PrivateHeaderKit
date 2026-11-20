@@ -253,11 +253,17 @@ public struct ProcessRunner: CommandRunning, Sendable {
     public func runInteractive(
         _ command: [String], env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
-        try await launch(command, env: env, cwd: cwd) { configuration in
-            var originalTerminal = termios()
-            let hasTerminal = tcgetattr(STDIN_FILENO, &originalTerminal) == 0
-            let outcome: Result<Void, any Error>
-            do {
+        var restorationErrorCode: Int32?
+        let outcome: Result<Void, any Error>
+        do {
+            try await launch(command, env: env, cwd: cwd) { configuration in
+                var originalTerminal = termios()
+                let hasTerminal = tcgetattr(STDIN_FILENO, &originalTerminal) == 0
+                defer {
+                    if hasTerminal, tcsetattr(STDIN_FILENO, TCSAFLUSH, &originalTerminal) != 0 {
+                        restorationErrorCode = errno
+                    }
+                }
                 let result = try await Subprocess.run(
                     configuration, input: .currentStandardInput,
                     output: .currentStandardOutput, error: .currentStandardError
@@ -268,20 +274,22 @@ public struct ProcessRunner: CommandRunning, Sendable {
                     result.terminationStatus, command: command,
                     standardError: "interactive command failed"
                 )
-                outcome = .success(())
-            } catch {
-                outcome = .failure(error)
             }
-            if hasTerminal, tcsetattr(STDIN_FILENO, TCSAFLUSH, &originalTerminal) != 0 {
-                let primary: String
-                switch outcome {
-                case .success: primary = "interactive command completed"
-                case .failure(let error): primary = String(describing: error)
-                }
-                throw ToolingError.message(primary + "; terminal restoration failed (errno \(errno))")
-            }
-            try outcome.get()
+            outcome = .success(())
+        } catch {
+            outcome = .failure(error)
         }
+        if let restorationErrorCode {
+            let primary: String
+            switch outcome {
+            case .success: primary = "interactive command completed"
+            case .failure(let error): primary = String(describing: error)
+            }
+            throw ToolingError.message(
+                primary + "; terminal restoration failed (errno \(restorationErrorCode))"
+            )
+        }
+        try outcome.get()
     }
 
     public func runWithInputFile(
