@@ -5,11 +5,11 @@ import Testing
 
 struct PrivateHeaderKitSymbolSearchTests {
     @Test func parsesSearchWithoutGenerationInputs() throws {
-        #expect(try parsePrivateHeaderKitCommand([
+        #expect(try ParsedCommand(arguments: [
             "privateheaderkit", "search", "Foo::bar(int)", "--in", "/generated", "--exact",
         ]) == .search(.init(query: "Foo::bar(int)", directory: "/generated", exact: true)))
         #expect(throws: (any Error).self) {
-            try parsePrivateHeaderKitCommand(["privateheaderkit", "search", "", "--in", "/generated"])
+            try ParsedCommand(arguments: ["privateheaderkit", "search", "", "--in", "/generated"])
         }
     }
 
@@ -24,36 +24,33 @@ struct PrivateHeaderKitSymbolSearchTests {
         ])
         try list.tsv.write(to: library.appendingPathComponent("Foo.symbols.tsv"), atomically: true, encoding: .utf8)
         try "ignored".write(to: root.appendingPathComponent("user.tsv"), atomically: true, encoding: .utf8)
-        var lines: [String] = []
-        #expect(try runPrivateHeaderKitSearchCommand(
-            .init(query: "foo", directory: root.path, exact: false), outputLogger: { lines.append($0) }
-        ) == 0)
-        #expect(lines.count == 3)
-        #expect(lines[1].contains("\tlocal\t__ZN3Foo3barEi\tFoo::bar(int)"))
-        #expect(lines[1].contains(list.imagePath))
-        lines.removeAll()
-        #expect(try runPrivateHeaderKitSearchCommand(
-            .init(query: "__ZN3Foo3barEi", directory: root.path, exact: true), outputLogger: { lines.append($0) }
-        ) == 0)
-        #expect(lines.count == 2)
-        #expect(try runPrivateHeaderKitSearchCommand(
-            .init(query: "foo::bar(int)", directory: root.path, exact: true), outputLogger: { _ in }
-        ) == 1)
+        let lines = SearchMessages()
+        #expect(try search(.init(query: "foo", directory: root.path, exact: false), output: lines) == 0)
+        #expect(lines.values.count == 3)
+        #expect(lines.values[1].contains("\tlocal\t__ZN3Foo3barEi\tFoo::bar(int)"))
+        #expect(lines.values[1].contains(list.imagePath))
+        let exactLines = SearchMessages()
+        #expect(
+            try search(.init(query: "__ZN3Foo3barEi", directory: root.path, exact: true), output: exactLines)
+                == 0
+        )
+        #expect(exactLines.values.count == 2)
+        #expect(try search(.init(query: "foo::bar(int)", directory: root.path, exact: true)) == 1)
     }
 
     @Test func reportsMissingListsWithoutPretendingTheQueryHasNoMatches() throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        var output: [String] = []
-        var errors: [String] = []
-        let status = try runPrivateHeaderKitSearchCommand(
+        let output = SearchMessages()
+        let errors = SearchMessages()
+        let status = try search(
             .init(query: "anything", directory: root.path, exact: false),
-            outputLogger: { output.append($0) }, errorLogger: { errors.append($0) }
+            output: output, errors: errors
         )
         #expect(status == 2)
-        #expect(output.isEmpty)
-        #expect(errors.count == 1)
-        #expect(errors.first?.contains("no .symbols.tsv files found") == true)
+        #expect(output.values.isEmpty)
+        #expect(errors.values.count == 1)
+        #expect(errors.values.first?.contains("no .symbols.tsv files found") == true)
     }
 
     @Test(arguments: ["malformed", "encoding"], ["Foo", "Absent"])
@@ -66,19 +63,19 @@ struct PrivateHeaderKitSymbolSearchTests {
             .write(to: bad)
         try Data("also broken".utf8).write(to: anotherBad)
         try writeList(to: root.appendingPathComponent("Z.symbols.tsv"))
-        var output: [String] = []
-        var errors: [String] = []
-        let status = try runPrivateHeaderKitSearchCommand(
+        let output = SearchMessages()
+        let errors = SearchMessages()
+        let status = try search(
             .init(query: query, directory: root.path, exact: false),
-            outputLogger: { output.append($0) }, errorLogger: { errors.append($0) }
+            output: output, errors: errors
         )
         #expect(status == 2)
-        #expect(errors.count == 2)
-        #expect(errors[0].contains(bad.path))
-        #expect(errors[1].contains(anotherBad.path))
-        #expect(output.count == (query == "Foo" ? 2 : 1))
-        #expect(output.allSatisfy { !$0.hasPrefix("error:") })
-        if query == "Foo" { #expect(output[1].contains("\t_Foo\tFoo")) }
+        #expect(errors.values.count == 2)
+        #expect(errors.values[0].contains(bad.path))
+        #expect(errors.values[1].contains(anotherBad.path))
+        #expect(output.values.count == (query == "Foo" ? 2 : 1))
+        #expect(output.values.allSatisfy { !$0.hasPrefix("error:") })
+        if query == "Foo" { #expect(output.values[1].contains("\t_Foo\tFoo")) }
     }
 
     @Test func traversalFailureDoesNotHideReadableSiblingResults() throws {
@@ -93,31 +90,32 @@ struct PrivateHeaderKitSymbolSearchTests {
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
         // Elevated processes can bypass mode bits and cannot exercise this failure.
         guard !FileManager.default.isReadableFile(atPath: unreadable.path) else { return }
-        var output: [String] = []
-        var errors: [String] = []
-        let status = try runPrivateHeaderKitSearchCommand(
+        let output = SearchMessages()
+        let errors = SearchMessages()
+        let status = try search(
             .init(query: "Foo", directory: root.path, exact: false),
-            outputLogger: { output.append($0) }, errorLogger: { errors.append($0) }
+            output: output, errors: errors
         )
         #expect(status == 2)
-        #expect(output.count == 2)
-        #expect(errors.contains { $0.contains(unreadable.path) })
-        #expect(!errors.contains { $0.contains("no .symbols.tsv files found") })
+        #expect(output.values.count == 2)
+        #expect(errors.values.contains { $0.contains(unreadable.path) })
+        #expect(!errors.values.contains { $0.contains("no .symbols.tsv files found") })
     }
 
     @Test func missingRootReportsTraversalFailureInsteadOfMissingLists() throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let missing = root.appendingPathComponent("Missing")
-        var errors: [String] = []
-        let status = try runPrivateHeaderKitSearchCommand(
+        let output = SearchMessages()
+        let errors = SearchMessages()
+        let status = try search(
             .init(query: "Foo", directory: missing.path, exact: false),
-            outputLogger: { _ in Issue.record("unexpected output for a missing root") },
-            errorLogger: { errors.append($0) }
+            output: output, errors: errors
         )
         #expect(status == 2)
-        #expect(errors.contains { $0.contains(missing.path) })
-        #expect(!errors.contains { $0.contains("no .symbols.tsv files found") })
+        #expect(output.values.isEmpty)
+        #expect(errors.values.contains { $0.contains(missing.path) })
+        #expect(!errors.values.contains { $0.contains("no .symbols.tsv files found") })
     }
 
     @Test func cancellationAfterTheFinalResultIsNotReportedAsSearchSuccess() async throws {
@@ -125,15 +123,28 @@ struct PrivateHeaderKitSymbolSearchTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try writeList(to: root.appendingPathComponent("Foo.symbols.tsv"))
         let task = Task {
-            try runPrivateHeaderKitSearchCommand(
-                .init(query: "Foo", directory: root.path, exact: false),
-                outputLogger: { line in
-                    if line.contains("\t_Foo\tFoo") { withUnsafeCurrentTask { $0?.cancel() } }
-                },
-                errorLogger: { _ in Issue.record("cancellation was reported as a file error") }
-            )
+            try SearchCommand(
+                options: .init(query: "Foo", directory: root.path, exact: false),
+                console: Console(
+                    output: { line in
+                        if line.contains("\t_Foo\tFoo") { withUnsafeCurrentTask { $0?.cancel() } }
+                    },
+                    error: { _ in Issue.record("cancellation was reported as a file error") }
+                )
+            ).run()
         }
         await #expect(throws: CancellationError.self) { _ = try await task.value }
+    }
+
+    private func search(
+        _ options: SearchCommand.Options,
+        output: SearchMessages = SearchMessages(),
+        errors: SearchMessages = SearchMessages()
+    ) throws -> Int32 {
+        try SearchCommand(
+            options: options,
+            console: Console(output: output.record, error: errors.record)
+        ).run()
     }
 
     private func writeList(to url: URL) throws {
@@ -147,5 +158,18 @@ struct PrivateHeaderKitSymbolSearchTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         return root
+    }
+}
+
+private final class SearchMessages: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    func record(_ message: String) {
+        lock.withLock { storage.append(message) }
+    }
+
+    var values: [String] {
+        lock.withLock { storage }
     }
 }

@@ -5,7 +5,7 @@ import PrivateHeaderKitTooling
 
 extension PrivateHeaderKitSSHSession {
   func recoverApplication(
-    _ selection: PrivateHeaderKitSSHGenerateCommand.ApplicationSelection,
+    _ selection: SSHGenerateCommand.ApplicationSelection,
     localDirectory: URL,
     includesBinary: Bool
   ) async throws -> (snapshot: PrivateHeaderGeneration.ApplicationSourceSnapshot, systemVersion: PrivateHeaderKitOperatingSystemVersion) {

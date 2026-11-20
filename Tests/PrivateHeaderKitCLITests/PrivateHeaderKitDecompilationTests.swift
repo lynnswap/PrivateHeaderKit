@@ -6,10 +6,10 @@ import Testing
 
 struct PrivateHeaderKitDecompilationTests {
     @Test func parsesFileAndSharedCacheSources() throws {
-        #expect(try parsePrivateHeaderKitCommand([
+        #expect(try ParsedCommand(arguments: [
             "privateheaderkit", "decompile", "--binary", "/tmp/Foo", "--symbol=_CFunction",
         ]) == .decompile(command()))
-        let parsed = try parsePrivateHeaderKitCommand([
+        let parsed = try ParsedCommand(arguments: [
             "privateheaderkit", "decompile", "--shared-cache", "/cache", "--image", "/usr/lib/Foo",
             "--symbol=-[Foo method:]", "--ghidra-home", "/ghidra", "--output", "/result.c",
             "--processor", "AARCH64:LE:64:AppleSilicon", "--timeout", "30",
@@ -30,7 +30,7 @@ struct PrivateHeaderKitDecompilationTests {
         ["--binary", "/Foo", "--symbol", "name", "--timeout", "0"],
     ]) func rejectsIncompleteOrConflictingRequests(_ arguments: [String]) {
         #expect(throws: (any Error).self) {
-            try parsePrivateHeaderKitCommand(["privateheaderkit", "decompile"] + arguments)
+            try ParsedCommand(arguments: ["privateheaderkit", "decompile"] + arguments)
         }
     }
 
@@ -57,11 +57,13 @@ struct PrivateHeaderKitDecompilationTests {
             try "int found(void) { return 7; }".write(to: cwd.appendingPathComponent("code.c"), atomically: true, encoding: .utf8)
             return .init(status: 0, wasKilled: false, lastLines: [])
         }
-        let code = try await decompilePrivateHeaderKitFunction(
-            command(symbol: symbol), processRunner: runner,
-            environment: ["GHIDRA_HOME": "/Tools/Ghidra", "JAVA_HOME": "/Tools/Java"], temporaryDirectory: alias,
-            progressReporter: progress.record
-        )
+        let code = try await DecompileCommand(
+            options: command(symbol: symbol),
+            processRunner: runner,
+            console: Console(output: { _ in }, error: progress.record),
+            environment: ["GHIDRA_HOME": "/Tools/Ghidra", "JAVA_HOME": "/Tools/Java"],
+            temporaryDirectory: alias
+        ).pseudocode()
         #expect(code.contains("return 7"))
         #expect(try FileManager.default.contentsOfDirectory(atPath: actual.path).isEmpty)
     }
@@ -92,11 +94,13 @@ struct PrivateHeaderKitDecompilationTests {
             }
             return .init(status: 0, wasKilled: false, lastLines: [])
         }
-        _ = try await decompilePrivateHeaderKitFunction(
-            command(source: .sharedCache(path: "/cache", image: "/usr/lib/Foo"), ipsw: "tools/ipsw"),
-            processRunner: runner, environment: ["GHIDRA_HOME": "/ghidra"], temporaryDirectory: root,
-            progressReporter: progress.record
-        )
+        _ = try await DecompileCommand(
+            options: command(source: .sharedCache(path: "/cache", image: "/usr/lib/Foo"), ipsw: "tools/ipsw"),
+            processRunner: runner,
+            console: Console(output: { _ in }, error: progress.record),
+            environment: ["GHIDRA_HOME": "/ghidra"],
+            temporaryDirectory: root
+        ).pseudocode()
         #expect(await runner.streamingCommandSnapshot().count == 2)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
@@ -116,11 +120,13 @@ struct PrivateHeaderKitDecompilationTests {
             return .init(status: failure == "tool" ? 42 : 0, wasKilled: false, lastLines: ["test diagnostic"])
         }
         do {
-            _ = try await decompilePrivateHeaderKitFunction(
-                command(source: usesCache ? .sharedCache(path: "/cache", image: "/usr/lib/Foo") : .binary("/tmp/Foo")),
-                processRunner: runner, environment: ["GHIDRA_HOME": "/ghidra"], temporaryDirectory: root,
-                progressReporter: progress.record
-            )
+            _ = try await DecompileCommand(
+                options: command(source: usesCache ? .sharedCache(path: "/cache", image: "/usr/lib/Foo") : .binary("/tmp/Foo")),
+                processRunner: runner,
+                console: Console(output: { _ in }, error: progress.record),
+                environment: ["GHIDRA_HOME": "/ghidra"],
+                temporaryDirectory: root
+            ).pseudocode()
             Issue.record("failure unexpectedly succeeded")
         } catch {
             if failure == "cancel" {
@@ -147,11 +153,13 @@ struct PrivateHeaderKitDecompilationTests {
             return .init(status: 42, wasKilled: false, lastLines: ["extraction diagnostic"])
         }
         do {
-            _ = try await decompilePrivateHeaderKitFunction(
-                command(source: .sharedCache(path: "/cache", image: "/usr/lib/Foo")),
-                processRunner: runner, environment: ["GHIDRA_HOME": "/ghidra"], temporaryDirectory: root,
-                progressReporter: progress.record
-            )
+            _ = try await DecompileCommand(
+                options: command(source: .sharedCache(path: "/cache", image: "/usr/lib/Foo")),
+                processRunner: runner,
+                console: Console(output: { _ in }, error: progress.record),
+                environment: ["GHIDRA_HOME": "/ghidra"],
+                temporaryDirectory: root
+            ).pseudocode()
             Issue.record("failed extraction unexpectedly succeeded")
         } catch {
             if cancels {
@@ -173,9 +181,12 @@ struct PrivateHeaderKitDecompilationTests {
         let request = command(ghidraHome: "/ghidra")
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try await decompilePrivateHeaderKitFunction(
-                request, processRunner: runner, temporaryDirectory: root, progressReporter: progress.record
-            )
+            return try await DecompileCommand(
+                options: request,
+                processRunner: runner,
+                console: Console(output: { _ in }, error: progress.record),
+                temporaryDirectory: root
+            ).pseudocode()
         }
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(progress.values.isEmpty)
@@ -198,13 +209,14 @@ struct PrivateHeaderKitDecompilationTests {
         }
         let output = DecompilationMessages()
         let progress = DecompilationMessages()
-        let status = try await runPrivateHeaderKitDecompileCommand(
-            command(
+        let status = try await DecompileCommand(
+            options: command(
                 source: usesCache ? .sharedCache(path: "/cache", image: "/usr/lib/Foo") : .binary("/tmp/Foo"),
                 ghidraHome: "/ghidra", outputPath: writesFile ? file.path : nil
             ),
-            processRunner: runner, outputLogger: output.record, progressReporter: progress.record
-        )
+            processRunner: runner,
+            console: Console(output: output.record, error: progress.record)
+        ).run()
         #expect(status == 0)
         #expect(output.values == [writesFile ? "Pseudocode: \(file.path)" : code])
         #expect(progress.values == (usesCache ? ["Extracting shared-cache image with ipsw..."] : [])
@@ -218,15 +230,25 @@ struct PrivateHeaderKitDecompilationTests {
     @Test func cleanupFailureRetainsTheOriginalDiagnosticAndWorkspace() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        }
+        // Elevated processes can bypass mode bits and cannot exercise this failure.
+        guard getuid() != 0 else { return }
         let runner = RecordingCommandRunner()
         await runner.setStreamingHandler { _, _, _ in
-            .init(status: 1, wasKilled: false, lastLines: ["original failure"])
+            // The workspace cannot be removed from a directory that is not writable.
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+            return .init(status: 1, wasKilled: false, lastLines: ["original failure"])
         }
         do {
-            _ = try await decompilePrivateHeaderKitFunction(
-                command(), processRunner: runner, environment: ["GHIDRA_HOME": "/ghidra"], temporaryDirectory: root,
-                removeDirectory: { _ in throw CocoaError(.fileWriteNoPermission) }
-            )
+            _ = try await DecompileCommand(
+                options: command(),
+                processRunner: runner,
+                console: Console(output: { _ in }, error: { _ in }),
+                environment: ["GHIDRA_HOME": "/ghidra"],
+                temporaryDirectory: root
+            ).pseudocode()
             Issue.record("cleanup failure unexpectedly succeeded")
         } catch {
             #expect(String(describing: error).contains("original failure"))
@@ -246,18 +268,20 @@ struct PrivateHeaderKitDecompilationTests {
             return .init(status: 0, wasKilled: false, lastLines: [])
         }
         await #expect(throws: (any Error).self) {
-            try await runPrivateHeaderKitDecompileCommand(
-                command(ghidraHome: "/ghidra", outputPath: output.path), processRunner: runner, outputLogger: { _ in }
-            )
+            try await DecompileCommand(
+                options: command(ghidraHome: "/ghidra", outputPath: output.path),
+                processRunner: runner,
+                console: Console(output: { _ in }, error: { _ in })
+            ).run()
         }
         #expect(try String(contentsOf: output, encoding: .utf8) == "keep")
     }
 
     private func command(
-        source: PrivateHeaderKitDecompileCommand.Source = .binary("/tmp/Foo"),
+        source: DecompileCommand.Source = .binary("/tmp/Foo"),
         symbol: String = "_CFunction", ghidraHome: String? = nil,
         ipsw: String = "ipsw", outputPath: String? = nil
-    ) -> PrivateHeaderKitDecompileCommand {
+    ) -> DecompileCommand.Options {
         .init(source: source, symbol: symbol, ghidraHome: ghidraHome, ipsw: ipsw,
               processor: nil, timeout: 120, outputPath: outputPath)
     }

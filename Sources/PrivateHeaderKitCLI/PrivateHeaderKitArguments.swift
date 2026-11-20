@@ -8,14 +8,14 @@ enum PrivateHeaderKitContinuationMode: String, EnumerableFlag, Equatable, Sendab
     case fresh
 }
 
-extension PrivateHeaderKitGenerateCommand.Platform: ExpressibleByArgument {}
+extension GenerateCommand.Platform: ExpressibleByArgument {}
 
 struct PrivateHeaderKitGenerationArguments: ParsableArguments {
     @Flag(name: .customLong("tool-version"), help: "Print the PrivateHeaderKit build version and exit. --version selects the source OS version.")
     var showsToolVersion = false
 
     @Option(help: "Source platform: iOS, watchOS, or macOS.")
-    var platform: PrivateHeaderKitGenerateCommand.Platform?
+    var platform: GenerateCommand.Platform?
 
     @Option(name: .customLong("version"), help: "Source OS version.")
     var sourceVersion: String?
@@ -72,7 +72,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             && continuationMode == nil
     }
 
-    func command() throws -> PrivateHeaderKitCommand {
+    func command() throws -> ParsedCommand {
         if showsToolVersion {
             throw CleanExit.message(PrivateHeaderKitBuildInfo.version)
         }
@@ -101,7 +101,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
                 guard !preferRuntimeMetadata else {
                     throw ValidationError("--runtime-metadata cannot be used with --app or --pid; recovered applications are parsed statically")
                 }
-                let selection: PrivateHeaderKitSSHGenerateCommand.ApplicationSelection
+                let selection: SSHGenerateCommand.ApplicationSelection
                 if let identifier = applicationBundleIdentifier {
                     guard !identifier.isEmpty, !identifier.contains("\0") else { throw ValidationError("--app must not be empty or contain NUL") }
                     selection = .bundleIdentifier(identifier)
@@ -119,7 +119,7 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
             guard let targetQuery, !targetQuery.isEmpty else {
                 throw ValidationError("Missing expected argument '--target <target>'")
             }
-            try validatePrivateHeaderKitTargetQuery(targetQuery)
+            try GenerateCommand.validateTargetQuery(targetQuery)
             return .generateSSH(.init(
                 destination: sshDestination, outputBaseDirectory: outputBaseDirectory,
                 targetQuery: targetQuery, continuationMode: continuationMode,
@@ -156,14 +156,14 @@ struct PrivateHeaderKitGenerationArguments: ParsableArguments {
         if let simulatorHelperPath, simulatorHelperPath.isEmpty {
             throw ValidationError("Argument '--sim-helper <sim-helper>' must not be empty")
         }
-        try validatePrivateHeaderKitTargetQuery(targetQuery)
+        try GenerateCommand.validateTargetQuery(targetQuery)
         try PrivateHeaderGeneration.Source.validateIdentity(
             platform: platform.corePlatform,
             version: sourceVersion,
             build: build
         )
 
-        return .generate(PrivateHeaderKitGenerateCommand(
+        return .generate(GenerateCommand.Options(
             platform: platform,
             version: sourceVersion,
             build: build,
@@ -207,40 +207,40 @@ struct PrivateHeaderKitGenerateAlias: ParsableCommand {
     }
 }
 
-enum PrivateHeaderKitCommand: Equatable {
+/// The command an invocation selects, with its options.
+enum ParsedCommand: Equatable {
     case interactiveGenerate(outputBaseDirectory: String?)
-    case generate(PrivateHeaderKitGenerateCommand)
-    case generateSSH(PrivateHeaderKitSSHGenerateCommand)
-    case decompile(PrivateHeaderKitDecompileCommand)
-    case search(PrivateHeaderKitSearchCommand)
-}
+    case generate(GenerateCommand.Options)
+    case generateSSH(SSHGenerateCommand.Options)
+    case decompile(DecompileCommand.Options)
+    case search(SearchCommand.Options)
 
-func parsePrivateHeaderKitCommand(_ args: [String]) throws -> PrivateHeaderKitCommand {
-    let programName = args.first ?? "privateheaderkit"
-    let invokedName = URL(fileURLWithPath: programName).lastPathComponent
-    if legacyPrivateHeaderKitCommandNames.contains(invokedName) {
-        throw PrivateHeaderKitCLIError.legacyCommand(invokedName)
-    }
-    if let firstArgument = args.dropFirst().first,
-       legacyPrivateHeaderKitCommandNames.contains(firstArgument) {
-        throw PrivateHeaderKitCLIError.legacyCommand(firstArgument)
-    }
+    /// Parses the command line, starting with the invoked program name.
+    init(arguments: [String]) throws {
+        let programName = arguments.first ?? "privateheaderkit"
+        let invokedName = URL(fileURLWithPath: programName).lastPathComponent
+        if legacyPrivateHeaderKitCommandNames.contains(invokedName) {
+            throw PrivateHeaderKitCLIError.legacyCommand(invokedName)
+        }
+        if let firstArgument = arguments.dropFirst().first,
+           legacyPrivateHeaderKitCommandNames.contains(firstArgument) {
+            throw PrivateHeaderKitCLIError.legacyCommand(firstArgument)
+        }
 
-    var parsed = try PrivateHeaderKitArguments.parseAsRoot(Array(args.dropFirst()))
-    if let decompile = parsed as? PrivateHeaderKitDecompileArguments {
-        return .decompile(try decompile.command())
+        var parsed = try PrivateHeaderKitArguments.parseAsRoot(Array(arguments.dropFirst()))
+        if let decompile = parsed as? PrivateHeaderKitDecompileArguments {
+            self = .decompile(try decompile.options())
+        } else if let search = parsed as? PrivateHeaderKitSearchArguments {
+            self = .search(search.options)
+        } else if let root = parsed as? PrivateHeaderKitArguments {
+            self = try root.generation.command()
+        } else if let generate = parsed as? PrivateHeaderKitGenerateAlias {
+            self = try generate.generation.command()
+        } else {
+            // ArgumentParser represents both `--help` and its built-in `help` command as
+            // an internal command value. Running it produces the library's typed CleanExit.
+            try parsed.run()
+            preconditionFailure("ArgumentParser returned an unhandled command that did not exit")
+        }
     }
-    if let search = parsed as? PrivateHeaderKitSearchArguments {
-        return .search(search.command)
-    }
-    if let root = parsed as? PrivateHeaderKitArguments {
-        return try root.generation.command()
-    }
-    if let generate = parsed as? PrivateHeaderKitGenerateAlias {
-        return try generate.generation.command()
-    }
-    // ArgumentParser represents both `--help` and its built-in `help` command as
-    // an internal command value. Running it produces the library's typed CleanExit.
-    try parsed.run()
-    preconditionFailure("ArgumentParser returned an unhandled command that did not exit")
 }

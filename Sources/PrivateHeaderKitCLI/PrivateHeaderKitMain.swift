@@ -34,11 +34,11 @@ struct PrivateHeaderKitMain {
         let status = await coordinatePrivateHeaderKitOperation(
             signalSource: signalSource,
             operation: {
-                await runPrivateHeaderKitCommand(arguments)
+                await CommandLineTool().run(arguments)
             }
         )
         #else
-        let status = await runPrivateHeaderKitCommand(arguments)
+        let status = await CommandLineTool().run(arguments)
         #endif
         exit(status)
     }

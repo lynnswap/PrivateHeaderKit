@@ -38,12 +38,16 @@ struct PrivateHeaderKitGhidraIntegrationTests {
             "xcrun", "clang++", "-std=c++17", "-O0", "-g0", "-dynamiclib",
             source.path, first.path, second.path, "-framework", "Foundation", "-o", binary.path,
         ])
-        func command(_ symbol: String) -> PrivateHeaderKitDecompileCommand {
+        func command(_ symbol: String) -> DecompileCommand.Options {
             .init(source: .binary(binary.path), symbol: symbol, ghidraHome: ghidraHome,
                   ipsw: "ipsw", processor: nil, timeout: 120, outputPath: nil)
         }
         for name in ["_PHKWrite", "__ZN8PHKProbe4callEi", "-[PHKObjCProbe write:]"] {
-            let code = try await decompilePrivateHeaderKitFunction(command(name))
+            let code = try await DecompileCommand(
+                options: command(name),
+                processRunner: ProcessRunner(),
+                console: Console(output: { _ in }, error: { _ in })
+            ).pseudocode()
             #expect(code.contains("Ghidra pseudocode"))
             #expect(code.contains(name == "_PHKWrite" ? "PHKGlobal" : "PHKWrite"))
         }
@@ -53,7 +57,11 @@ struct PrivateHeaderKitGhidraIntegrationTests {
             ("__ZL12PHKDuplicatei", "Symbol is ambiguous"),
         ] {
             do {
-                _ = try await decompilePrivateHeaderKitFunction(command(name))
+                _ = try await DecompileCommand(
+                    options: command(name),
+                    processRunner: ProcessRunner(),
+                    console: Console(output: { _ in }, error: { _ in })
+                ).pseudocode()
                 Issue.record("invalid selection unexpectedly decompiled: \(name)")
             } catch {
                 #expect(String(describing: error).contains(message))
