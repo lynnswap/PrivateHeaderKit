@@ -250,6 +250,9 @@ public struct ProcessRunner: CommandRunning, Sendable {
     public func runInteractive(
         _ command: [String], env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
+        // A cancelled call must not reach the terminal restoration below, which discards
+        // unread input.
+        try Task.checkCancellation()
         var originalTerminal = termios()
         let hasTerminal = tcgetattr(STDIN_FILENO, &originalTerminal) == 0
         let outcome: Result<Void, any Error>
@@ -283,6 +286,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
     public func runWithInputFile(
         _ command: [String], inputFile: URL, env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
+        try Task.checkCancellation()
         let handle = try FileHandle(forReadingFrom: inputFile)
         defer { try? handle.close() }
         // The child reads this file directly. A rejected remote command can
@@ -339,6 +343,8 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 try await terminatingProcessGroup(of: execution) {
                     async let standardError = boundedOutput(from: execution.standardError)
                     for try await buffer in execution.standardOutput {
+                        // The child can keep writing until teardown kills it.
+                        try Task.checkCancellation()
                         try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
                     }
                     return try await standardError
