@@ -17,14 +17,6 @@ private final class LockedDataBox: @unchecked Sendable {
         lock.unlock()
     }
 
-    func append(_ newData: Data, contains marker: Data) -> Bool {
-        lock.lock()
-        data.append(newData)
-        let contains = data.range(of: marker) != nil
-        lock.unlock()
-        return contains
-    }
-
     func snapshot() -> Data {
         lock.lock()
         let current = data
@@ -66,13 +58,6 @@ private final class AsyncEvent: @unchecked Sendable {
                 lock.unlock()
             }
         }
-    }
-
-    var value: Bool {
-        lock.lock()
-        let value = isSignaled
-        lock.unlock()
-        return value
     }
 }
 
@@ -257,84 +242,6 @@ private func processIsLive(_ processIdentifier: pid_t) throws -> Bool {
     try liveProcessIdentity(processIdentifier) != nil
 }
 
-private func spawnImmediateProcessGroupLeader() throws -> pid_t {
-    var attributes: posix_spawnattr_t?
-    let initializeStatus = posix_spawnattr_init(&attributes)
-    guard initializeStatus == 0 else {
-        throw ToolingError.message(
-            "initialize process attributes failed (errno \(initializeStatus))"
-        )
-    }
-    defer { posix_spawnattr_destroy(&attributes) }
-
-    let processGroupStatus = posix_spawnattr_setpgroup(&attributes, 0)
-    guard processGroupStatus == 0 else {
-        throw ToolingError.message(
-            "configure child process group failed (errno \(processGroupStatus))"
-        )
-    }
-    let flagsStatus = posix_spawnattr_setflags(
-        &attributes,
-        Int16(POSIX_SPAWN_SETPGROUP)
-    )
-    guard flagsStatus == 0 else {
-        throw ToolingError.message(
-            "configure process attributes failed (errno \(flagsStatus))"
-        )
-    }
-
-    let executable = "/usr/bin/true"
-    guard let argument = strdup(executable) else {
-        throw ToolingError.message("allocate process argument failed")
-    }
-    defer { free(argument) }
-    var arguments: [UnsafeMutablePointer<CChar>?] = [argument, nil]
-    var processIdentifier: pid_t = 0
-    let spawnStatus = executable.withCString { executablePointer in
-        arguments.withUnsafeMutableBufferPointer { buffer in
-            posix_spawn(
-                &processIdentifier,
-                executablePointer,
-                nil,
-                &attributes,
-                buffer.baseAddress,
-                environ
-            )
-        }
-    }
-    guard spawnStatus == 0 else {
-        throw ToolingError.message("spawn process failed (errno \(spawnStatus))")
-    }
-    return processIdentifier
-}
-
-private func exitedChildRemainsWaitable(_ processIdentifier: pid_t) throws -> Bool {
-    while true {
-        var info = siginfo_t()
-        errno = 0
-        guard waitid(
-            P_PID,
-            id_t(processIdentifier),
-            &info,
-            WEXITED | WNOWAIT | WNOHANG
-        ) == 0 else {
-            let errorCode = errno
-            if errorCode == EINTR {
-                continue
-            }
-            throw ToolingError.message(
-                "inspect waitable child failed (errno \(errorCode == 0 ? EIO : errorCode))"
-            )
-        }
-        return info.si_pid == processIdentifier
-    }
-}
-
-private func reapChild(_ processIdentifier: pid_t) {
-    var status: Int32 = 0
-    while waitpid(processIdentifier, &status, 0) < 0, errno == EINTR {}
-}
-
 private func fixtureStillHoldsExclusiveLock(at path: String) -> Bool {
     let descriptor = path.withCString { open($0, O_RDWR) }
     guard descriptor >= 0 else { return false }
@@ -373,159 +280,27 @@ private func waitForProcessGroupLocks(parent: String, child: String) async throw
     throw ToolingError.message("process group did not acquire both test locks")
 }
 
-private func makePipeDescriptors() throws -> (read: Int32, write: Int32) {
-    var descriptors = [Int32](repeating: -1, count: 2)
-    guard pipe(&descriptors) == 0 else {
-        throw ToolingError.message("pipe failed (errno \(errno))")
-    }
-    return (read: descriptors[0], write: descriptors[1])
-}
-
-private func fillPipeLeavingGap(
-    readDescriptor: Int32,
-    writeDescriptor: Int32,
-    gapByteCount: Int
-) throws -> Int {
-    let originalFlags = fcntl(writeDescriptor, F_GETFL)
-    guard originalFlags >= 0,
-          fcntl(writeDescriptor, F_SETFL, originalFlags | O_NONBLOCK) == 0
-    else {
-        throw ToolingError.message("fcntl pipe failed (errno \(errno))")
-    }
-    defer { _ = fcntl(writeDescriptor, F_SETFL, originalFlags) }
-
-    let buffer = [UInt8](repeating: UInt8(ascii: "f"), count: 4 * 1024)
-    var filledByteCount = 0
-    while true {
-        let written = buffer.withUnsafeBytes { bytes in
-            Darwin.write(writeDescriptor, bytes.baseAddress, bytes.count)
-        }
-        if written > 0 {
-            filledByteCount += written
-            continue
-        }
-        if written < 0, errno == EINTR {
-            continue
-        }
-        guard written < 0, errno == EAGAIN else {
-            throw ToolingError.message("fill pipe failed (errno \(errno))")
-        }
-        break
-    }
-    guard filledByteCount > gapByteCount else {
-        throw ToolingError.message("pipe capacity is too small for cancellation test")
-    }
-
-    var remainingGap = gapByteCount
-    var drainBuffer = [UInt8](repeating: 0, count: gapByteCount)
-    while remainingGap > 0 {
-        let drained = drainBuffer.withUnsafeMutableBytes { bytes in
-            Darwin.read(
-                readDescriptor,
-                bytes.baseAddress,
-                min(bytes.count, remainingGap)
-            )
-        }
-        if drained > 0 {
-            remainingGap -= drained
-        } else if drained < 0, errno == EINTR {
-            continue
-        } else {
-            throw ToolingError.message("drain pipe gap failed (errno \(errno))")
-        }
-    }
-    return filledByteCount
-}
-
-private final class PipeReadableByteProbe {
-    private let queueDescriptor: Int32
-
-    init(readDescriptor: Int32) throws {
-        queueDescriptor = kqueue()
-        guard queueDescriptor >= 0 else {
-            throw ToolingError.message("kqueue failed (errno \(errno))")
-        }
-        var event = kevent(
-            ident: UInt(readDescriptor),
-            filter: Int16(EVFILT_READ),
-            flags: UInt16(EV_ADD | EV_ENABLE),
-            fflags: 0,
-            data: 0,
-            udata: nil
-        )
-        guard kevent(queueDescriptor, &event, 1, nil, 0, nil) == 0 else {
-            let code = errno
-            _ = close(queueDescriptor)
-            throw ToolingError.message("register pipe kqueue failed (errno \(code))")
-        }
-    }
-
-    deinit {
-        _ = close(queueDescriptor)
-    }
-
-    func readableByteCount() throws -> Int {
-        var event = kevent()
-        var timeout = timespec(tv_sec: 0, tv_nsec: 0)
-        let eventCount = kevent(
-            queueDescriptor,
-            nil,
-            0,
-            &event,
-            1,
-            &timeout
-        )
-        guard eventCount >= 0 else {
-            throw ToolingError.message("read pipe kqueue failed (errno \(errno))")
-        }
-        return eventCount == 0 ? 0 : Int(event.data)
-    }
-}
-
-private func drainPipeToEOF(_ descriptor: Int32) throws -> Int {
-    var totalByteCount = 0
-    var buffer = [UInt8](repeating: 0, count: 4 * 1024)
-    while true {
-        let readCount = buffer.withUnsafeMutableBytes { bytes in
-            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
-        }
-        if readCount > 0 {
-            totalByteCount += readCount
-        } else if readCount == 0 {
-            return totalByteCount
-        } else if errno != EINTR {
-            throw ToolingError.message("drain pipe failed (errno \(errno))")
-        }
-    }
-}
-
-private enum InjectedPassthroughError: Error {
+private enum InjectedConsumerError: Error {
     case failure
 }
 
 @Suite
 struct StreamingProcessRunnerTests {
-    @Test func streamingCombinesOutputAndForwardsExactBytes() async throws {
-        let passthrough = LockedDataBox()
-
-        let result = try await ProcessRunner().runStreaming(
+    @Test func bufferedRunCombinesStandardOutputAndStandardError() async throws {
+        let result = try await ProcessRunner().runBuffered(
             shellCommand(
                 "print -r -- stdout-line; print -u2 -- stderr-line; print -r -- tail-line"
             ),
-            streamOutput: true,
-            passthrough: { passthrough.append($0) }
+            env: nil,
+            cwd: nil
         )
 
-        let forwarded = String(decoding: passthrough.snapshot(), as: UTF8.self)
         #expect(result.status == 0)
         #expect(!result.wasKilled)
         #expect(result.lastLines.contains("stdout-line"))
         #expect(result.lastLines.contains("stderr-line"))
         #expect(result.lastLines.contains("tail-line"))
         #expect(result.terminationObservedAtUnixEpochMicroseconds != nil)
-        #expect(forwarded.contains("stdout-line"))
-        #expect(forwarded.contains("stderr-line"))
-        #expect(forwarded.contains("tail-line"))
     }
 
     @Test func bufferedRunnerRetainsCombinedTailWithoutForwardingOutput() async throws {
@@ -538,6 +313,18 @@ struct StreamingProcessRunnerTests {
         )
 
         #expect(output == "buffered-ok\n")
+    }
+
+    @Test func simpleRunnerForwardsStandardOutputAndWithholdsStandardError() async throws {
+        let helper = try testHelperExecutableURL()
+
+        let output = try await ProcessRunner().runCapture(
+            [helper.path, "simple-output"],
+            env: nil,
+            cwd: nil
+        )
+
+        #expect(output == "simple-stdout\n")
     }
 
     @Test func helperUsesNullDeviceWhenParentStdinIsClosed() async throws {
@@ -712,15 +499,13 @@ struct StreamingProcessRunnerTests {
         )
         #expect(brokenCandidateCapture == "selected-path")
 
-        let brokenCandidateStreaming = try await ProcessRunner().runStreaming(
+        let brokenCandidateBuffered = try await ProcessRunner().runBuffered(
             [executableName],
             env: ["PATH": brokenCandidatePATH],
-            cwd: workingDirectoryAlias,
-            streamOutput: false,
-            passthrough: { _ in }
+            cwd: workingDirectoryAlias
         )
-        #expect(brokenCandidateStreaming.status == 0)
-        #expect(brokenCandidateStreaming.lastLines == ["selected-path"])
+        #expect(brokenCandidateBuffered.status == 0)
+        #expect(brokenCandidateBuffered.lastLines == ["selected-path"])
 
         do {
             _ = try await ProcessRunner().runCapture(
@@ -812,18 +597,12 @@ struct StreamingProcessRunnerTests {
         }
     }
 
-    @Test func nonzeroStreamingExitKeepsBoundedOutputAndSimpleRendersTermination() async throws {
+    @Test func nonzeroExitKeepsBoundedOutputAndSimpleReportsStandardError() async throws {
         let command = [
             "/bin/sh", "-c",
             "printf 'stream-output\\n'; printf 'stream-error\\n' >&2; exit 24",
         ]
-        let result = try await ProcessRunner().runStreaming(
-            command,
-            env: nil,
-            cwd: nil,
-            streamOutput: false,
-            passthrough: { _ in }
-        )
+        let result = try await ProcessRunner().runBuffered(command, env: nil, cwd: nil)
 
         #expect(result.status == 24)
         #expect(!result.wasKilled)
@@ -845,7 +624,7 @@ struct StreamingProcessRunnerTests {
             }
             #expect(failedCommand == command)
             #expect(status == 24)
-            #expect(standardError == "stream-output\nstream-error")
+            #expect(standardError == "stream-error")
         } catch {
             Issue.record("unexpected error: \(error)")
         }
@@ -917,12 +696,12 @@ struct StreamingProcessRunnerTests {
         }
     }
 
-    @Test func precancelledTasksNeverSpawnCaptureChunkedOrStreamingChildren() async throws {
+    @Test func precancelledTasksNeverSpawnCaptureChunkedOrBufferedChildren() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let captureMarker = directory.appendingPathComponent("capture-started").path
         let chunkedMarker = directory.appendingPathComponent("chunked-started").path
-        let streamingMarker = directory.appendingPathComponent("streaming-started").path
+        let bufferedMarker = directory.appendingPathComponent("buffered-started").path
 
         let captureTask = Task {
             withUnsafeCurrentTask { $0?.cancel() }
@@ -941,10 +720,10 @@ struct StreamingProcessRunnerTests {
                 consumeStandardOutput: { _ in }
             )
         }
-        let streamingTask = Task {
+        let bufferedTask = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try await ProcessRunner().runStreaming(
-                ["/usr/bin/touch", streamingMarker],
+            return try await ProcessRunner().runBuffered(
+                ["/usr/bin/touch", bufferedMarker],
                 env: nil,
                 cwd: nil
             )
@@ -967,16 +746,16 @@ struct StreamingProcessRunnerTests {
             Issue.record("unexpected chunked capture error: \(error)")
         }
         do {
-            _ = try await streamingTask.value
-            Issue.record("expected streaming cancellation")
+            _ = try await bufferedTask.value
+            Issue.record("expected buffered cancellation")
         } catch is CancellationError {
             // Cancellation wins before configuration or spawn.
         } catch {
-            Issue.record("unexpected streaming error: \(error)")
+            Issue.record("unexpected buffered error: \(error)")
         }
         #expect(!FileManager.default.fileExists(atPath: captureMarker))
         #expect(!FileManager.default.fileExists(atPath: chunkedMarker))
-        #expect(!FileManager.default.fileExists(atPath: streamingMarker))
+        #expect(!FileManager.default.fileExists(atPath: bufferedMarker))
     }
 
     @Test func collectorPreservesUTF8AcrossChunksAndRetainsHeadAndTail() throws {
@@ -1093,18 +872,15 @@ struct StreamingProcessRunnerTests {
         #expect(result.diagnosticLines.last == "Exited with status 19")
     }
 
-    @Test func helperOutputPreservesExactBytesAndBoundedLines() async throws {
+    @Test func bufferedOutputDecodesUTF8SplitAcrossWrites() async throws {
         let helper = try testHelperExecutableURL()
-        let passthrough = LockedDataBox()
-        let expected = (1...9).map { "line-\($0)\n" }.joined() + "emoji:😀\nline-10\n"
 
-        let result = try await ProcessRunner().runStreaming(
+        let result = try await ProcessRunner().runBuffered(
             [helper.path, "chunked-output"],
-            streamOutput: true,
-            passthrough: { passthrough.append($0) }
+            env: nil,
+            cwd: nil
         )
 
-        #expect(passthrough.snapshot() == Data(expected.utf8))
         #expect(result.emittedOutput.lines == [
             "line-1", "line-2", "line-3", "line-4", "line-5", "line-6", "line-7",
             "line-8", "line-9", "emoji:😀", "line-10",
@@ -1115,13 +891,13 @@ struct StreamingProcessRunnerTests {
     @Test func signalOnlyTerminationKeepsEmittedOutputEmptyAndRecordsObservationTime()
         async throws
     {
-        let observedAt: UInt64 = 1_777_000_123_456_789
-        let runner = ProcessRunner(terminationObservationClock: { observedAt })
-        let result = try await runner.runStreaming(
+        let before = UInt64(Date().timeIntervalSince1970 * 1_000_000)
+        let result = try await ProcessRunner().runBuffered(
             ["/bin/sh", "-c", "kill -TERM $$"],
-            streamOutput: false,
-            passthrough: { _ in }
+            env: nil,
+            cwd: nil
         )
+        let after = UInt64(Date().timeIntervalSince1970 * 1_000_000)
 
         #expect(result.status == SIGTERM)
         #expect(result.wasKilled)
@@ -1132,15 +908,13 @@ struct StreamingProcessRunnerTests {
             "No process diagnostic was emitted.",
             "Terminated by signal \(SIGTERM)",
         ])
-        #expect(result.terminationObservedAtUnixEpochMicroseconds == observedAt)
+        let observedAt = try #require(result.terminationObservedAtUnixEpochMicroseconds)
+        #expect((before...after).contains(observedAt))
     }
 
     @Test func longExceptionRetainsNameReasonFirstApplicationFrameAndTail() async throws {
         let helper = try testHelperExecutableURL()
-        let observedAt: UInt64 = 1_777_000_987_654_321
-        let result = try await ProcessRunner(
-            terminationObservationClock: { observedAt }
-        ).runBuffered(
+        let result = try await ProcessRunner().runBuffered(
             [helper.path, "long-exception-failure"],
             env: nil,
             cwd: nil
@@ -1171,19 +945,6 @@ struct StreamingProcessRunnerTests {
         )
         #expect(result.lastLines.last == "final-diagnostic-tail")
         #expect(result.diagnosticLines.last == "Exited with status 19")
-        #expect(result.terminationObservedAtUnixEpochMicroseconds == observedAt)
-    }
-
-    @Test func waitableLeaderAnchorsIdentityThroughProcessGroupCompletion() async throws {
-        let processIdentifier = try spawnImmediateProcessGroupLeader()
-        defer { reapChild(processIdentifier) }
-
-        let leader = try await waitForOwnedProcessGroupLeaderExit(processIdentifier)
-        #expect(leader.processIdentifier == processIdentifier)
-        #expect(try exitedChildRemainsWaitable(processIdentifier))
-
-        try await completeOwnedProcessGroup(leader)
-        #expect(try exitedChildRemainsWaitable(processIdentifier))
     }
 
     @Test(arguments: ["CHILD_PID=0\n", "CHILD_PID=-1\n"])
@@ -1232,17 +993,17 @@ struct StreamingProcessRunnerTests {
         #expect(try processIsLive(childPID) == false)
     }
 
-    @Test func streamingNormalLeaderExitCompletesOwnedProcessGroup() async throws {
+    @Test func bufferedNormalLeaderExitCompletesOwnedProcessGroup() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let childLock = directory.appendingPathComponent("normal-streaming-child.lock").path
         defer { terminateRecordedProcessIfLive(at: childLock) }
         let helper = try testHelperExecutableURL()
 
-        let result = try await ProcessRunner().runStreaming(
+        let result = try await ProcessRunner().runBuffered(
             [helper.path, "process-group-normal-leader-exit", childLock],
-            streamOutput: false,
-            passthrough: { _ in }
+            env: nil,
+            cwd: nil
         )
         let childPID = try processIdentifier(from: result.lastLines.joined(separator: "\n"))
 
@@ -1252,7 +1013,7 @@ struct StreamingProcessRunnerTests {
         #expect(try processIsLive(childPID) == false)
     }
 
-    @Test func cancellationWaitsForWholeProcessGroupAndOutputDrain() async throws {
+    @Test func bufferedCancellationAfterSpawnWaitsForWholeProcessGroup() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("parent.lock").path
@@ -1262,43 +1023,25 @@ struct StreamingProcessRunnerTests {
             terminateRecordedProcessIfLive(at: childLock)
         }
         let helper = try testHelperExecutableURL()
-        let readiness = AsyncEvent()
-        let output = LockedDataBox()
-        let readyMarker = Data("READY\n".utf8)
 
         let task = Task {
-            defer { readiness.signal() }
-            return try await ProcessRunner().runStreaming(
+            try await ProcessRunner().runBuffered(
                 [helper.path, "process-group", parentLock, childLock],
-                streamOutput: true,
-                passthrough: { data in
-                    if output.append(data, contains: readyMarker) {
-                        readiness.signal()
-                    }
-                }
+                env: nil,
+                cwd: nil
             )
         }
-        await readiness.wait()
-        guard output.snapshot().range(of: readyMarker) != nil else {
-            do {
-                _ = try await task.value
-                Issue.record("process group helper completed before readiness")
-            } catch {
-                Issue.record("process group helper failed before readiness: \(error)")
-            }
-            return
-        }
+        try await waitForProcessGroupLocks(parent: parentLock, child: childLock)
         task.cancel()
+
         do {
             _ = try await task.value
             Issue.record("expected cancellation")
         } catch is CancellationError {
-            // Cancellation is preserved after the owned process group has no live member.
+            // Cancellation is reported after the process group has no live member.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
-
-        #expect(output.snapshot().range(of: readyMarker) != nil)
         #expect(try processIsLive(recordedProcessIdentifier(at: parentLock)) == false)
         #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
@@ -1336,7 +1079,7 @@ struct StreamingProcessRunnerTests {
         #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
 
-    @Test func passthroughFailureWaitsForWholeProcessGroup() async throws {
+    @Test func consumerFailureWaitsForWholeProcessGroup() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("error-parent.lock").path
@@ -1348,17 +1091,18 @@ struct StreamingProcessRunnerTests {
         let helper = try testHelperExecutableURL()
 
         do {
-            _ = try await ProcessRunner().runStreaming(
+            try await ProcessRunner().runCaptureChunks(
                 [helper.path, "process-group", parentLock, childLock],
-                streamOutput: true,
-                passthrough: { data in
+                env: nil,
+                cwd: nil,
+                consumeStandardOutput: { data in
                     guard data.range(of: Data("READY\n".utf8)) != nil else { return }
-                    throw InjectedPassthroughError.failure
+                    throw InjectedConsumerError.failure
                 }
             )
-            Issue.record("expected passthrough failure")
-        } catch InjectedPassthroughError.failure {
-            // The original downstream failure is preserved after group teardown.
+            Issue.record("expected consumer failure")
+        } catch InjectedConsumerError.failure {
+            // The consumer's failure is rethrown after the process group is terminated.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
@@ -1366,7 +1110,7 @@ struct StreamingProcessRunnerTests {
         #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
     }
 
-    @Test func cancellationUnblocksStoppedPassthroughAndWaitsForProcessGroup() async throws {
+    @Test func cancellationUnblocksSuspendedConsumerAndWaitsForProcessGroup() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let parentLock = directory.appendingPathComponent("blocked-parent.lock").path
@@ -1376,92 +1120,40 @@ struct StreamingProcessRunnerTests {
             terminateRecordedProcessIfLive(at: childLock)
         }
         let helper = try testHelperExecutableURL()
-        let passthroughEntered = AsyncEvent()
-        let passthroughRelease = AsyncEvent()
+        let consumerEntered = AsyncEvent()
+        let consumerRelease = AsyncEvent()
 
         let task = Task {
-            defer { passthroughEntered.signal() }
-            return try await ProcessRunner().runStreaming(
+            defer { consumerEntered.signal() }
+            return try await ProcessRunner().runCaptureChunks(
                 [helper.path, "process-group", parentLock, childLock],
-                streamOutput: true,
-                passthrough: { data in
+                env: nil,
+                cwd: nil,
+                consumeStandardOutput: { data in
                     guard data.range(of: Data("READY\n".utf8)) != nil else { return }
-                    passthroughEntered.signal()
+                    consumerEntered.signal()
                     try await withTaskCancellationHandler {
-                        await passthroughRelease.wait()
+                        await consumerRelease.wait()
                         try Task.checkCancellation()
                     } onCancel: {
-                        passthroughRelease.signal()
+                        consumerRelease.signal()
                     }
                 }
             )
         }
-        await passthroughEntered.wait()
+        await consumerEntered.wait()
         task.cancel()
 
         do {
             _ = try await task.value
-            Issue.record("expected blocked passthrough cancellation")
+            Issue.record("expected suspended consumer cancellation")
         } catch is CancellationError {
-            // The async sink releases before the runner completes process-group teardown.
+            // The consumer resumes before the runner finishes terminating the process group.
         } catch {
             Issue.record("unexpected error: \(error)")
         }
         #expect(try processIsLive(recordedProcessIdentifier(at: parentLock)) == false)
         #expect(try processIsLive(recordedProcessIdentifier(at: childLock)) == false)
-    }
-
-    @Test func dispatchWriterCancellationStopsBlockedPipeAndClosesOwnedDescriptor() async throws {
-        var descriptors = try makePipeDescriptors()
-        defer {
-            if descriptors.read >= 0 { _ = close(descriptors.read) }
-            if descriptors.write >= 0 { _ = close(descriptors.write) }
-        }
-        let gapByteCount = 4 * 1024
-        let pipeCapacity = try fillPipeLeavingGap(
-            readDescriptor: descriptors.read,
-            writeDescriptor: descriptors.write,
-            gapByteCount: gapByteCount
-        )
-        let writer = try CancellableStandardOutputWriter(
-            fileDescriptor: descriptors.write
-        )
-        let pipeProbe = try PipeReadableByteProbe(readDescriptor: descriptors.read)
-        let writeFinished = AsyncEvent()
-        let writeTask = Task {
-            defer { writeFinished.signal() }
-            try await writer.write(
-                Data(repeating: UInt8(ascii: "w"), count: gapByteCount * 2)
-            )
-        }
-
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(10))
-        while try pipeProbe.readableByteCount() < pipeCapacity,
-              !writeFinished.value,
-              clock.now < deadline
-        {
-            await Task.yield()
-        }
-        #expect(try pipeProbe.readableByteCount() == pipeCapacity)
-        #expect(!writeFinished.value)
-
-        writeTask.cancel()
-        async let cleanup: Void = writer.finish()
-        do {
-            try await writeTask.value
-            Issue.record("expected blocked DispatchIO write cancellation")
-        } catch is CancellationError {
-            // close(.stop) resumes the one pending write continuation exactly once.
-        } catch {
-            Issue.record("unexpected writer error: \(error)")
-        }
-        await cleanup
-
-        _ = close(descriptors.write)
-        descriptors.write = -1
-        let drainedByteCount = try drainPipeToEOF(descriptors.read)
-        #expect(drainedByteCount == pipeCapacity)
     }
 }
 #endif

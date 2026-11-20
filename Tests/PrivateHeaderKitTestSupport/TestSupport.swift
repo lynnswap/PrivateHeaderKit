@@ -197,7 +197,7 @@ public actor RecordingCommandRunner: CommandRunning {
         try await simpleHandler?(command, env, cwd)
     }
 
-    public func runStreaming(
+    public func runBuffered(
         _ command: [String],
         env: [String: String]?,
         cwd: URL?
