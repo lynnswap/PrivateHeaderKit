@@ -68,6 +68,9 @@ private func boundedOutput(
 ) async throws -> BoundedProcessOutput {
     var collector = BoundedProcessOutputCollector()
     for try await buffer in sequence {
+        // Reads of buffered data do not observe cancellation, and the child can keep writing
+        // until teardown kills it.
+        try Task.checkCancellation()
         collector.consume(buffer.withUnsafeBytes { Array($0) })
     }
     return collector.finish()
@@ -349,7 +352,6 @@ public struct ProcessRunner: CommandRunning, Sendable {
                         }
                         group.addTask {
                             for try await buffer in execution.standardOutput {
-                                // The child can keep writing until teardown kills it.
                                 try Task.checkCancellation()
                                 try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
                             }
