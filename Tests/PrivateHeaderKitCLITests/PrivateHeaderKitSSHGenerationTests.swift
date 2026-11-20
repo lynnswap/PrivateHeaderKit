@@ -260,7 +260,7 @@ struct PrivateHeaderKitSSHGenerationTests {
       #expect(error.description.contains(error.remoteDirectory))
     }
     let source = try JSONDecoder().decode(
-      PrivateHeaderGeneration.DeviceSourceSnapshot.self, from: fixture.snapshotData
+      DeviceSourceSnapshot.self, from: fixture.snapshotData
     ).source()
     #expect(source.artifactPlatformDirectoryName == "iPhoneOS")
     #expect(errors.text.contains(source.label.displayName))
