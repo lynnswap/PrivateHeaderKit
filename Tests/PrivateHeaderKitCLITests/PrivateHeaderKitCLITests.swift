@@ -328,7 +328,10 @@ struct PrivateHeaderKitCLIExecutionTests {
         let cancellationOutput = ThreadSafeStrings()
 
         let cancellationTask = Task<Int, Error> {
-            try await withPrivateHeaderKitSimulatorSession(
+            // A session that fails before its operation starts fails the test instead of
+            // leaving it waiting.
+            defer { operationStarted.signal() }
+            return try await withPrivateHeaderKitSimulatorSession(
                 iosGenerateCommand(build: nil, systemRoot: nil),
                 runner: host.runner,
                 outputLogger: cancellationOutput.append,
@@ -995,7 +998,10 @@ struct PrivateHeaderKitCLIExecutionTests {
             }
         )
         let task = Task {
-            await host.run(
+            // A run that ends before it reaches the helper fails the test instead of leaving
+            // it waiting.
+            defer { generationStarted.signal() }
+            return await host.run(
                 GenerationHost.iOSArguments + ["--out", host.output.path, "--target", "all"],
                 output: output
             )
