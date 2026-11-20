@@ -2,294 +2,75 @@ import Foundation
 
 #if os(macOS)
 import Darwin
-import Dispatch
 import Subprocess
-#endif
 
-#if os(macOS)
-struct ProcessGroupTeardownError: Error, Sendable, CustomStringConvertible {
-    let operation: String
-    let processGroupID: pid_t
-    let errorCode: Int32
-
-    var description: String {
-        "\(operation) for process group \(processGroupID) failed (errno \(errorCode))"
-    }
-}
-
-private enum CapturedCommandStreamResult: Sendable {
-    case standardOutputComplete
-    case standardErrorComplete(BoundedProcessOutput)
-}
-
-struct WaitableProcessGroupLeader: Sendable {
-    let processIdentifier: pid_t
-
-    fileprivate init(processIdentifier: pid_t) {
-        self.processIdentifier = processIdentifier
-    }
-}
-
-private let ownedProcessGroupTeardownSequence: [TeardownStep] = [
-    // The leader gets a graceful interval. If it exits first, the lexical ownership
-    // boundary below completes teardown for any remaining descendants.
+/// SIGTERM for the whole process group, then SIGKILL if the leader is still running five seconds
+/// later.
+private let processGroupTeardownSequence: [TeardownStep] = [
     .gracefulShutDown(
         toProcessGroup: true,
         allowedDurationToNextStep: .seconds(5)
     ),
 ]
 
-private func processGroupTeardownError(
-    operation: String,
-    processGroupID: pid_t,
-    errorCode: Int32
-) -> ProcessGroupTeardownError {
-    ProcessGroupTeardownError(
-        operation: operation,
-        processGroupID: processGroupID,
-        errorCode: errorCode
-    )
-}
-
-private func processGroupHasLiveMember(
-    _ processGroupID: pid_t
-) throws(ProcessGroupTeardownError) -> Bool {
-    var processIDs = [pid_t](repeating: 0, count: 16)
-
-    while true {
-        guard processIDs.count <= Int(Int32.max) / MemoryLayout<pid_t>.stride else {
-            throw processGroupTeardownError(
-                operation: "list members",
-                processGroupID: processGroupID,
-                errorCode: EOVERFLOW
-            )
-        }
-
-        errno = 0
-        let memberCount = processIDs.withUnsafeMutableBytes { buffer in
-            proc_listpgrppids(
-                processGroupID,
-                buffer.baseAddress,
-                Int32(buffer.count)
-            )
-        }
-        let listError = errno
-        if memberCount == 0 {
-            if listError == EINTR {
-                continue
-            }
-            if listError == 0 {
-                return false
-            }
-            throw processGroupTeardownError(
-                operation: "list members",
-                processGroupID: processGroupID,
-                errorCode: listError
-            )
-        }
-        guard memberCount > 0, Int(memberCount) <= processIDs.count else {
-            throw processGroupTeardownError(
-                operation: "list members",
-                processGroupID: processGroupID,
-                errorCode: listError == 0 ? EIO : listError
-            )
-        }
-        if Int(memberCount) == processIDs.count {
-            guard processIDs.count <= Int(Int32.max) / (2 * MemoryLayout<pid_t>.stride) else {
-                throw processGroupTeardownError(
-                    operation: "list members",
-                    processGroupID: processGroupID,
-                    errorCode: EOVERFLOW
-                )
-            }
-            processIDs = [pid_t](repeating: 0, count: processIDs.count * 2)
-            continue
-        }
-
-        for processID in processIDs.prefix(Int(memberCount)) {
-            guard processID > 0 else {
-                throw processGroupTeardownError(
-                    operation: "list members",
-                    processGroupID: processGroupID,
-                    errorCode: EIO
-                )
-            }
-            while true {
-                var info = proc_bsdshortinfo()
-                let expectedSize = Int32(MemoryLayout<proc_bsdshortinfo>.size)
-                errno = 0
-                let actualSize = withUnsafeMutablePointer(to: &info) { pointer in
-                    proc_pidinfo(
-                        processID,
-                        PROC_PIDT_SHORTBSDINFO,
-                        0,
-                        pointer,
-                        expectedSize
-                    )
-                }
-                let infoError = errno
-                if actualSize == expectedSize {
-                    guard info.pbsi_pgid == UInt32(processGroupID) else { break }
-                    if info.pbsi_status != UInt32(SZOMB) {
-                        return true
-                    }
-                    break
-                }
-                if actualSize <= 0 {
-                    if infoError == EINTR {
-                        continue
-                    }
-                    if infoError == ESRCH {
-                        break
-                    }
-                    throw processGroupTeardownError(
-                        operation: "inspect member \(processID)",
-                        processGroupID: processGroupID,
-                        errorCode: infoError == 0 ? EIO : infoError
-                    )
-                }
-                throw processGroupTeardownError(
-                    operation: "inspect member \(processID)",
-                    processGroupID: processGroupID,
-                    errorCode: EIO
-                )
-            }
-        }
-        return false
-    }
-}
-
-func waitForOwnedProcessGroupLeaderExit(
-    _ processIdentifier: pid_t
-) async throws(ProcessGroupTeardownError) -> WaitableProcessGroupLeader {
-    guard processIdentifier > 0 else {
-        throw processGroupTeardownError(
-            operation: "wait for leader exit",
-            processGroupID: processIdentifier,
-            errorCode: EINVAL
-        )
-    }
-
-    let outcome: Result<WaitableProcessGroupLeader, ProcessGroupTeardownError> =
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                while true {
-                    var info = siginfo_t()
-                    errno = 0
-                    if waitid(
-                        P_PID,
-                        id_t(processIdentifier),
-                        &info,
-                        WEXITED | WNOWAIT
-                    ) == 0 {
-                        guard info.si_pid == processIdentifier else {
-                            continuation.resume(returning: .failure(
-                                processGroupTeardownError(
-                                    operation: "verify waitable leader",
-                                    processGroupID: processIdentifier,
-                                    errorCode: EIO
-                                )
-                            ))
-                            return
-                        }
-                        continuation.resume(returning: .success(
-                            WaitableProcessGroupLeader(
-                                processIdentifier: processIdentifier
-                            )
-                        ))
-                        return
-                    }
-
-                    let errorCode = errno
-                    if errorCode == EINTR {
-                        continue
-                    }
-                    continuation.resume(returning: .failure(
-                        processGroupTeardownError(
-                            operation: "wait for leader exit",
-                            processGroupID: processIdentifier,
-                            errorCode: errorCode == 0 ? EIO : errorCode
-                        )
-                    ))
-                    return
-                }
-            }
-        }
-    return try outcome.get()
-}
-
-func completeOwnedProcessGroup(
-    _ leader: WaitableProcessGroupLeader
-) async throws(ProcessGroupTeardownError) {
-    let processGroupID = leader.processIdentifier
-
-    // waitid(WNOWAIT) keeps the leader as our waitable child until this body returns to
-    // swift-subprocess. That kernel-owned identity prevents this numeric PID/PGID from being
-    // recycled while lingering descendants are signaled and observed to terminate.
-    while true {
-        if Darwin.kill(-processGroupID, SIGKILL) == 0 {
-            await Task.yield()
-            if try processGroupHasLiveMember(processGroupID) {
-                continue
-            }
-            return
-        }
-        let errorCode = errno
-        switch errorCode {
-        case EINTR:
-            continue
-        case EPERM:
-            // Darwin excludes zombies from process-group signal delivery. Recheck after the
-            // failed signal to distinguish a completed zombie-only group from a live member that
-            // this adapter no longer has permission to terminate.
-            if try processGroupHasLiveMember(processGroupID) {
-                throw ProcessGroupTeardownError(
-                    operation: "send SIGKILL",
-                    processGroupID: processGroupID,
-                    errorCode: errorCode
-                )
-            }
-            // A zombie has already released its executable resources. Its parent may be outside
-            // this process group and may never reap it, so group-object extinction is not an
-            // achievable completion contract; no live member is the owned lifecycle boundary.
-            return
-        case ESRCH:
-            return
-        default:
-            throw ProcessGroupTeardownError(
-                operation: "send SIGKILL",
-                processGroupID: processGroupID,
-                errorCode: errorCode
-            )
-        }
-    }
-}
-
-private func withOwnedProcessGroup<
-    Success: Sendable,
+/// Runs `operation`, waits for the process-group leader to exit, and kills what is left of its
+/// group.
+///
+/// swift-subprocess ends its teardown sequence as soon as the leader exits, and runs none when
+/// the leader exits by itself. A descendant that ignores SIGTERM or outlives the leader would
+/// otherwise keep running after the command returns.
+private func terminatingProcessGroup<
+    Success,
     Input: InputProtocol,
     Output: OutputProtocol,
     FailureOutput: OutputProtocol
 >(
-    execution: Execution<Input, Output, FailureOutput>,
-    operation: () async throws -> Success
+    of execution: Execution<Input, Output, FailureOutput>,
+    after operation: () async throws -> Success
 ) async throws -> Success {
     let outcome: Result<Success, any Error>
     do {
         outcome = .success(try await operation())
     } catch {
-        // A body failure must reach process teardown without first waiting for a leader that
-        // may otherwise run indefinitely. Cancellation can start the same teardown concurrently;
-        // swift-subprocess shares its process monitor across those idempotent waiters.
-        await execution.teardown(using: ownedProcessGroupTeardownSequence)
+        // The leader may run indefinitely, so stop it before waiting for its exit.
+        await execution.teardown(using: processGroupTeardownSequence)
         outcome = .failure(error)
     }
 
-    let leader = try await waitForOwnedProcessGroupLeaderExit(
-        execution.processIdentifier.value
-    )
-    try await completeOwnedProcessGroup(leader)
+    let processGroupID = execution.processIdentifier.value
+    // swift-subprocess reaps the leader after this closure returns. Until then the exited leader
+    // keeps its PID, so the ID cannot name another process group while this one is signaled.
+    if await hasExitedWithoutBeingReaped(processGroupID) {
+        // kill(2) succeeds while a member is still exiting and fails with EPERM once only
+        // zombies are left in the group.
+        while kill(-processGroupID, SIGKILL) == 0 {
+            await Task.yield()
+        }
+    }
     return try outcome.get()
+}
+
+private func hasExitedWithoutBeingReaped(_ processIdentifier: pid_t) async -> Bool {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global(qos: .utility).async {
+            var info = siginfo_t()
+            var status: Int32
+            repeat {
+                status = waitid(P_PID, id_t(processIdentifier), &info, WEXITED | WNOWAIT)
+            } while status != 0 && errno == EINTR
+            continuation.resume(returning: status == 0)
+        }
+    }
+}
+
+private func boundedOutput(
+    from sequence: SubprocessOutputSequence
+) async throws -> BoundedProcessOutput {
+    var collector = BoundedProcessOutputCollector()
+    for try await buffer in sequence {
+        collector.consume(buffer.withUnsafeBytes { Array($0) })
+    }
+    return collector.finish()
 }
 #endif
 
@@ -419,22 +200,28 @@ public struct StreamingCommandResult: Equatable, Sendable {
 
 public typealias CommandStandardOutputConsumer = @Sendable (Data) async throws -> Void
 
+/// Runs commands to completion.
+///
+/// A nonzero exit or a terminating signal throws ``ToolingError/commandFailed(command:status:stderr:)``,
+/// except from ``runBuffered(_:env:cwd:)``, which returns it.
 public protocol CommandRunning: Sendable {
+    /// Runs a command that shares the caller's standard input, output, and error.
     func runInteractive(_ command: [String], env: [String: String]?, cwd: URL?) async throws
+    /// Runs a command that reads its standard input from `inputFile`.
     func runWithInputFile(_ command: [String], inputFile: URL, env: [String: String]?, cwd: URL?) async throws
+    /// Returns everything the command wrote to standard output.
     func runCapture(_ command: [String], env: [String: String]?, cwd: URL?) async throws -> String
+    /// Passes the command's standard output to `consumeStandardOutput` as it arrives.
     func runCaptureChunks(
         _ command: [String],
         env: [String: String]?,
         cwd: URL?,
         consumeStandardOutput: @escaping CommandStandardOutputConsumer
     ) async throws
+    /// Runs a command whose standard output goes to the caller's standard output.
     func runSimple(_ command: [String], env: [String: String]?, cwd: URL?) async throws
-    func runStreaming(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> StreamingCommandResult
+    /// Returns the command's termination with a bounded rendering of its standard output and
+    /// standard error.
     func runBuffered(
         _ command: [String],
         env: [String: String]?,
@@ -452,65 +239,33 @@ public extension CommandRunning {
     ) async throws {
         throw ToolingError.unsupported("this command runner does not support binary input")
     }
-
-    func runBuffered(
-        _ command: [String],
-        env: [String: String]? = nil,
-        cwd: URL? = nil
-    ) async throws -> StreamingCommandResult {
-        try await runStreaming(command, env: env, cwd: cwd)
-    }
 }
 
+/// Runs each command as the leader of its own session and process group. A run returns or throws
+/// only after no process of that group is still running, including when the task is cancelled.
 public struct ProcessRunner: CommandRunning, Sendable {
-    private let terminationObservationClock: @Sendable () throws -> UInt64
+    public init() {}
 
-    public init() {
 #if os(macOS)
-        self.terminationObservationClock = unixEpochMicrosecondsFromRealtimeClock
-#else
-        self.terminationObservationClock = {
-            throw ToolingError.unsupported("process execution is not available on this platform")
-        }
-#endif
-    }
-
-    init(
-        terminationObservationClock: @escaping @Sendable () throws -> UInt64
-    ) {
-        self.terminationObservationClock = terminationObservationClock
-    }
-
-    /// Inherit the caller's standard IO while retaining the owned process-group boundary.
     public func runInteractive(
         _ command: [String], env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
-#if os(macOS)
-        try Task.checkCancellation()
-        let configurations = try processConfigurations(command, env: env, cwd: cwd)
-        guard let configuration = configurations.first else {
-            throw ToolingError.invalidArgument("process command must include an executable")
-        }
         var originalTerminal = termios()
         let hasTerminal = tcgetattr(STDIN_FILENO, &originalTerminal) == 0
         let outcome: Result<Void, any Error>
         do {
-            let result = try await Subprocess.run(
-                configuration, input: .currentStandardInput,
-                output: .currentStandardOutput, error: .currentStandardError
-            ) { execution in
-                try await withOwnedProcessGroup(execution: execution) {}
+            let result = try await launch(command, env: env, cwd: cwd) { configuration in
+                try await Subprocess.run(
+                    configuration, input: .currentStandardInput,
+                    output: .currentStandardOutput, error: .currentStandardError
+                ) { execution in
+                    try await terminatingProcessGroup(of: execution) {}
+                }
             }
-            try Task.checkCancellation()
-            let termination = commandTermination(result.terminationStatus)
-            guard termination.status == 0, !termination.wasKilled else {
-                throw ToolingError.commandFailed(
-                    command: command, status: termination.status, stderr: "interactive command failed"
-                )
-            }
+            try requireSuccess(
+                result.terminationStatus, command: command, standardError: "interactive command failed"
+            )
             outcome = .success(())
-        } catch let error as SubprocessError {
-            outcome = .failure(Task.isCancelled ? CancellationError() : mapSubprocessError(error, command: command))
         } catch {
             outcome = .failure(error)
         }
@@ -522,123 +277,53 @@ public struct ProcessRunner: CommandRunning, Sendable {
             }
             throw ToolingError.message(primary + "; terminal restoration failed (errno \(errno))")
         }
-        return try outcome.get()
-#else
-        throw ToolingError.unsupported("process execution is not available on this platform")
-#endif
+        try outcome.get()
     }
 
     public func runWithInputFile(
         _ command: [String], inputFile: URL, env: [String: String]? = nil, cwd: URL? = nil
     ) async throws {
-#if os(macOS)
-        try Task.checkCancellation()
-        let configurations = try processConfigurations(command, env: env, cwd: cwd)
-        guard let configuration = configurations.first else {
-            throw ToolingError.invalidArgument("process command must include an executable")
-        }
         let handle = try FileHandle(forReadingFrom: inputFile)
-        let outcome: Result<Void, any Error>
-        do {
-            // The child reads this file directly. A rejected remote command can
-            // then close stdin without a pipe writer delivering SIGPIPE to us.
-            let result = try await Subprocess.run(
+        defer { try? handle.close() }
+        // The child reads this file directly. A rejected remote command can
+        // then close stdin without a pipe writer delivering SIGPIPE to us.
+        let result = try await launch(command, env: env, cwd: cwd) { configuration in
+            try await Subprocess.run(
                 configuration,
                 input: .fileDescriptor(.init(rawValue: handle.fileDescriptor), closeAfterSpawningProcess: false),
                 output: .bytes(limit: .max), error: .bytes(limit: .max)
             ) { execution in
-                try await withOwnedProcessGroup(execution: execution) {}
+                try await terminatingProcessGroup(of: execution) {}
             }
-            try Task.checkCancellation()
-            let termination = commandTermination(result.terminationStatus)
-            guard termination.status == 0, !termination.wasKilled else {
-                throw ToolingError.commandFailed(
-                    command: command, status: termination.status,
-                    stderr: String(decoding: result.standardError, as: UTF8.self)
-                )
-            }
-            outcome = .success(())
-        } catch let error as ProcessGroupTeardownError {
-            outcome = .failure(mapProcessGroupTeardownError(error, command: command))
-        } catch let error as SubprocessError {
-            outcome = .failure(Task.isCancelled ? CancellationError() : mapSubprocessError(error, command: command))
-        } catch {
-            outcome = .failure(error)
         }
-        do { try handle.close() }
-        catch {
-            let primary: String
-            switch outcome {
-            case .success: primary = "input command completed"
-            case .failure(let failure): primary = String(describing: failure)
-            }
-            throw ToolingError.message(primary + "; input file close also failed: \(error)")
-        }
-        return try outcome.get()
-#else
-        throw ToolingError.unsupported("process execution is not available on this platform")
-#endif
+        try requireSuccess(
+            result.terminationStatus, command: command,
+            standardError: String(decoding: result.standardError, as: UTF8.self)
+        )
     }
 
-#if os(macOS)
     public func runCapture(
         _ command: [String],
         env: [String: String]? = nil,
         cwd: URL? = nil
     ) async throws -> String {
-        try Task.checkCancellation()
-        let configurations = try processConfigurations(command, env: env, cwd: cwd)
-        var lastRetryableLaunchError: SubprocessError?
-        for configuration in configurations {
-            try Task.checkCancellation()
-            do {
-                let result = try await Subprocess.run(
-                    configuration,
-                    input: .none,
-                    // Capture is an exact command contract: callers parse complete JSON and build
-                    // metadata, so truncating at the library default would corrupt successful output.
-                    output: .bytes(limit: .max),
-                    error: .bytes(limit: .max)
-                ) { execution in
-                    try await withOwnedProcessGroup(execution: execution) {
-                    }
-                }
-                // Preserve cancellation only after the owned process group has no live member.
-                try Task.checkCancellation()
-                let termination = commandTermination(result.terminationStatus)
-                let standardOutput = String(decoding: result.standardOutput, as: UTF8.self)
-                let standardError = String(decoding: result.standardError, as: UTF8.self)
-                guard termination.status == 0, !termination.wasKilled else {
-                    throw ToolingError.commandFailed(
-                        command: command,
-                        status: termination.status,
-                        stderr: standardError
-                    )
-                }
-                return standardOutput
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as ProcessGroupTeardownError {
-                throw mapProcessGroupTeardownError(error, command: command)
-            } catch let error as SubprocessError {
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                guard isRetryableExecutableLaunchError(error) else {
-                    throw mapSubprocessError(error, command: command)
-                }
-                lastRetryableLaunchError = error
-            } catch {
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                throw error
+        let result = try await launch(command, env: env, cwd: cwd) { configuration in
+            try await Subprocess.run(
+                configuration,
+                input: .none,
+                // Callers parse complete JSON and build metadata, so the library's default
+                // limit would corrupt successful output.
+                output: .bytes(limit: .max),
+                error: .bytes(limit: .max)
+            ) { execution in
+                try await terminatingProcessGroup(of: execution) {}
             }
         }
-        guard let lastRetryableLaunchError else {
-            preconditionFailure("process configuration produced no executable candidates")
-        }
-        throw mapSubprocessError(lastRetryableLaunchError, command: command)
+        try requireSuccess(
+            result.terminationStatus, command: command,
+            standardError: String(decoding: result.standardError, as: UTF8.self)
+        )
+        return String(decoding: result.standardOutput, as: UTF8.self)
     }
 
     public func runCaptureChunks(
@@ -647,158 +332,43 @@ public struct ProcessRunner: CommandRunning, Sendable {
         cwd: URL? = nil,
         consumeStandardOutput: @escaping CommandStandardOutputConsumer
     ) async throws {
-        try Task.checkCancellation()
-        let configurations = try processConfigurations(command, env: env, cwd: cwd)
-        var lastRetryableLaunchError: SubprocessError?
-        for configuration in configurations {
-            try Task.checkCancellation()
-            do {
-                let result = try await Subprocess.run(
-                    configuration,
-                    input: .none,
-                    output: .sequence,
-                    error: .sequence
-                ) { execution in
-                    try await withOwnedProcessGroup(execution: execution) {
-                        return try await withThrowingTaskGroup(
-                            of: CapturedCommandStreamResult.self
-                        ) { group in
-                            group.addTask {
-                                for try await buffer in execution.standardOutput {
-                                    try Task.checkCancellation()
-                                    let bytes = buffer.withUnsafeBytes { Array($0) }
-                                    if !bytes.isEmpty {
-                                        try await consumeStandardOutput(Data(bytes))
-                                    }
-                                }
-                                return .standardOutputComplete
-                            }
-                            group.addTask {
-                                var collector = BoundedProcessOutputCollector()
-                                for try await buffer in execution.standardError {
-                                    try Task.checkCancellation()
-                                    collector.consume(buffer.withUnsafeBytes { Array($0) })
-                                }
-                                return .standardErrorComplete(collector.finish())
-                            }
-
-                            var standardErrorOutput = BoundedProcessOutput(lines: [])
-                            while let streamResult = try await group.next() {
-                                if case .standardErrorComplete(let output) = streamResult {
-                                    standardErrorOutput = output
-                                }
-                            }
-                            return standardErrorOutput
-                        }
+        let result = try await launch(command, env: env, cwd: cwd) { configuration in
+            try await Subprocess.run(
+                configuration, input: .none, output: .sequence, error: .sequence
+            ) { execution in
+                try await terminatingProcessGroup(of: execution) {
+                    async let standardError = boundedOutput(from: execution.standardError)
+                    for try await buffer in execution.standardOutput {
+                        try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
                     }
+                    return try await standardError
                 }
-                try Task.checkCancellation()
-                let termination = commandTermination(result.terminationStatus)
-                let commandResult = StreamingCommandResult(
-                    status: termination.status,
-                    wasKilled: termination.wasKilled,
-                    emittedOutput: result.closureResult
-                )
-                guard termination.status == 0, !termination.wasKilled else {
-                    throw ToolingError.commandFailed(
-                        command: command,
-                        status: termination.status,
-                        stderr: commandResult.lastLines.joined(separator: "\n")
-                    )
-                }
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as ProcessGroupTeardownError {
-                throw mapProcessGroupTeardownError(error, command: command)
-            } catch let error as SubprocessError {
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                guard isRetryableExecutableLaunchError(error) else {
-                    throw mapSubprocessError(error, command: command)
-                }
-                lastRetryableLaunchError = error
-            } catch {
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                throw error
             }
         }
-        guard let lastRetryableLaunchError else {
-            preconditionFailure("process configuration produced no executable candidates")
-        }
-        throw mapSubprocessError(lastRetryableLaunchError, command: command)
+        try requireSuccess(
+            result.terminationStatus, command: command, diagnosticOutput: result.closureResult
+        )
     }
 
+    /// The child writes to the caller's standard output itself, so a stalled reader blocks the
+    /// child and never this process.
     public func runSimple(
         _ command: [String],
         env: [String: String]? = nil,
         cwd: URL? = nil
     ) async throws {
-        let result = try await runStreaming(command, env: env, cwd: cwd)
-        guard result.status == 0, !result.wasKilled else {
-            throw ToolingError.commandFailed(
-                command: command,
-                status: result.status,
-                stderr: result.lastLines.joined(separator: "\n")
-            )
-        }
-    }
-
-    public func runStreaming(
-        _ command: [String],
-        env: [String: String]? = nil,
-        cwd: URL? = nil
-    ) async throws -> StreamingCommandResult {
-        try Task.checkCancellation()
-        let outputWriter: CancellableStandardOutputWriter
-        do {
-            outputWriter = try CancellableStandardOutputWriter()
-        } catch let error as StandardOutputWriterError {
-            throw ToolingError.processExecutionFailed(
-                command: command,
-                underlying: error.description
-            )
-        }
-
-        return try await withTaskCancellationHandler {
-            do {
-                let result = try await runStreaming(
-                    command,
-                    env: env,
-                    cwd: cwd,
-                    streamOutput: true,
-                    passthrough: { data in
-                        try await outputWriter.write(data)
-                    }
-                )
-                // Every write has completed before this point. Closing with .stop is therefore
-                // lossless and also makes the cleanup wait cancellation-safe: there is no
-                // graceful-close state that a later cancellation would need to upgrade.
-                await outputWriter.finish()
-                try Task.checkCancellation()
-                return result
-            } catch let error as ProcessGroupTeardownError {
-                await outputWriter.finish()
-                throw mapProcessGroupTeardownError(error, command: command)
-            } catch {
-                await outputWriter.finish()
-                if Task.isCancelled {
-                    throw CancellationError()
+        let result = try await launch(command, env: env, cwd: cwd) { configuration in
+            try await Subprocess.run(
+                configuration, input: .none, output: .currentStandardOutput, error: .sequence
+            ) { execution in
+                try await terminatingProcessGroup(of: execution) {
+                    try await boundedOutput(from: execution.standardError)
                 }
-                if let writerError = error as? StandardOutputWriterError {
-                    throw ToolingError.processExecutionFailed(
-                        command: command,
-                        underlying: writerError.description
-                    )
-                }
-                throw error
             }
-        } onCancel: {
-            outputWriter.cancel()
         }
+        try requireSuccess(
+            result.terminationStatus, command: command, diagnosticOutput: result.closureResult
+        )
     }
 
     public func runBuffered(
@@ -806,68 +376,51 @@ public struct ProcessRunner: CommandRunning, Sendable {
         env: [String: String]? = nil,
         cwd: URL? = nil
     ) async throws -> StreamingCommandResult {
-        try await runStreaming(
-            command,
-            env: env,
-            cwd: cwd,
-            streamOutput: false,
-            passthrough: { _ in }
+        let result = try await launch(command, env: env, cwd: cwd) { configuration in
+            try await Subprocess.run(
+                configuration, input: .none, output: .sequence, error: .combinedWithOutput
+            ) { execution in
+                try await terminatingProcessGroup(of: execution) {
+                    try await boundedOutput(from: execution.standardOutput)
+                }
+            }
+        }
+        let termination = commandTermination(result.terminationStatus)
+        return StreamingCommandResult(
+            status: termination.status,
+            wasKilled: termination.wasKilled,
+            emittedOutput: result.closureResult,
+            terminationObservedAtUnixEpochMicroseconds: UInt64(
+                exactly: (Date().timeIntervalSince1970 * 1_000_000).rounded(.down)
+            )
         )
     }
 
-    func runStreaming(
+    /// Runs `command` from the first executable candidate that launches, and maps what
+    /// swift-subprocess throws to ``ToolingError``.
+    private func launch<Value>(
         _ command: [String],
-        env: [String: String]? = nil,
-        cwd: URL? = nil,
-        streamOutput: Bool,
-        passthrough: @escaping @Sendable (Data) async throws -> Void
-    ) async throws -> StreamingCommandResult {
+        env: [String: String]?,
+        cwd: URL?,
+        _ run: (Configuration) async throws -> Value
+    ) async throws -> Value {
         try Task.checkCancellation()
-        let configurations = try processConfigurations(command, env: env, cwd: cwd)
-        var lastRetryableLaunchError: SubprocessError?
-        for configuration in configurations {
+        var launchFailure = ToolingError.processLaunchFailed(command: command, underlying: "no executable candidate")
+        for configuration in try processConfigurations(command, env: env, cwd: cwd) {
             try Task.checkCancellation()
             do {
-                let result = try await Subprocess.run(
-                    configuration,
-                    input: .none,
-                    output: .sequence,
-                    error: .combinedWithOutput
-                ) { execution in
-                    try await withOwnedProcessGroup(execution: execution) {
-                        var collector = BoundedProcessOutputCollector()
-                        for try await buffer in execution.standardOutput {
-                            let bytes = buffer.withUnsafeBytes { Array($0) }
-                            if streamOutput {
-                                try await passthrough(Data(bytes))
-                            }
-                            collector.consume(bytes)
-                        }
-                        return collector.finish()
-                    }
-                }
-                // See runCapture: cancellation is observed after group completion.
+                let value = try await run(configuration)
+                // Cancellation terminates the process group; report it once the group is gone.
                 try Task.checkCancellation()
-                let termination = commandTermination(result.terminationStatus)
-                return StreamingCommandResult(
-                    status: termination.status,
-                    wasKilled: termination.wasKilled,
-                    emittedOutput: result.closureResult,
-                    terminationObservedAtUnixEpochMicroseconds:
-                        try terminationObservationClock()
-                )
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as ProcessGroupTeardownError {
-                throw error
+                return value
             } catch let error as SubprocessError {
                 if Task.isCancelled {
                     throw CancellationError()
                 }
+                launchFailure = mapSubprocessError(error, command: command)
                 guard isRetryableExecutableLaunchError(error) else {
-                    throw mapSubprocessError(error, command: command)
+                    throw launchFailure
                 }
-                lastRetryableLaunchError = error
             } catch {
                 if Task.isCancelled {
                     throw CancellationError()
@@ -875,10 +428,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 throw error
             }
         }
-        guard let lastRetryableLaunchError else {
-            preconditionFailure("process configuration produced no executable candidates")
-        }
-        throw mapSubprocessError(lastRetryableLaunchError, command: command)
+        throw launchFailure
     }
 
     private func processConfigurations(
@@ -945,7 +495,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
         }
         var platformOptions = PlatformOptions()
         platformOptions.createSession = true
-        platformOptions.teardownSequence = ownedProcessGroupTeardownSequence
+        platformOptions.teardownSequence = processGroupTeardownSequence
         return executablePaths.map { executablePath in
             Configuration(
                 executable: .path(.init(executablePath)),
@@ -991,16 +541,6 @@ public struct ProcessRunner: CommandRunning, Sendable {
         }
     }
 
-    private func mapProcessGroupTeardownError(
-        _ error: ProcessGroupTeardownError,
-        command: [String]
-    ) -> ToolingError {
-        .processExecutionFailed(
-            command: command,
-            underlying: error.description
-        )
-    }
-
     private func commandTermination(
         _ status: TerminationStatus
     ) -> (status: Int32, wasKilled: Bool) {
@@ -1010,6 +550,36 @@ public struct ProcessRunner: CommandRunning, Sendable {
         case .signaled(let signal):
             (Int32(signal), true)
         }
+    }
+
+    private func requireSuccess(
+        _ terminationStatus: TerminationStatus,
+        command: [String],
+        standardError: String
+    ) throws {
+        guard !terminationStatus.isSuccess else { return }
+        throw ToolingError.commandFailed(
+            command: command,
+            status: commandTermination(terminationStatus).status,
+            stderr: standardError
+        )
+    }
+
+    private func requireSuccess(
+        _ terminationStatus: TerminationStatus,
+        command: [String],
+        diagnosticOutput: BoundedProcessOutput
+    ) throws {
+        let termination = commandTermination(terminationStatus)
+        try requireSuccess(
+            terminationStatus,
+            command: command,
+            standardError: StreamingCommandResult(
+                status: termination.status,
+                wasKilled: termination.wasKilled,
+                emittedOutput: diagnosticOutput
+            ).lastLines.joined(separator: "\n")
+        )
     }
 #else
     public func runCapture(
@@ -1037,7 +607,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
         throw ToolingError.unsupported("process execution is not available on this platform")
     }
 
-    public func runStreaming(
+    public func runBuffered(
         _ command: [String],
         env: [String: String]?,
         cwd: URL?
@@ -1046,168 +616,6 @@ public struct ProcessRunner: CommandRunning, Sendable {
     }
 #endif
 }
-
-#if os(macOS)
-private enum StandardOutputWriterError: Error, CustomStringConvertible, Sendable {
-    case descriptorDuplicationFailed(Int32)
-    case writeFailed(Int32)
-
-    var description: String {
-        let operation: String
-        let code: Int32
-        switch self {
-        case .descriptorDuplicationFailed(let errorCode):
-            operation = "dup standard output"
-            code = errorCode
-        case .writeFailed(let errorCode):
-            operation = "write standard output"
-            code = errorCode
-        }
-        return "\(operation) failed (errno \(code): \(String(cString: strerror(code))))"
-    }
-}
-
-private final class DispatchIOCleanupWaiter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isComplete = false
-    private var waiter: CheckedContinuation<Void, Never>?
-
-    func complete() {
-        lock.lock()
-        precondition(!isComplete, "DispatchIO cleanup completed more than once")
-        isComplete = true
-        let waiter = waiter
-        self.waiter = nil
-        lock.unlock()
-        waiter?.resume()
-    }
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if isComplete {
-                lock.unlock()
-                continuation.resume()
-            } else {
-                precondition(waiter == nil, "DispatchIO cleanup supports one waiter")
-                waiter = continuation
-                lock.unlock()
-            }
-        }
-    }
-}
-
-private final class DispatchIOWriteCompletion: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, any Error>?
-
-    init(_ continuation: CheckedContinuation<Void, any Error>) {
-        self.continuation = continuation
-    }
-
-    func succeed() {
-        resume(with: .success(()))
-    }
-
-    func fail(errorCode: Int32) {
-        resume(with: .failure(StandardOutputWriterError.writeFailed(errorCode)))
-    }
-
-    private func resume(with result: Result<Void, any Error>) {
-        lock.lock()
-        let continuation = continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(with: result)
-    }
-}
-
-final class CancellableStandardOutputWriter: @unchecked Sendable {
-    private let queue: DispatchQueue
-    private let channel: DispatchIO
-    private let cleanupWaiter: DispatchIOCleanupWaiter
-    private let closeLock = NSLock()
-    private var isClosed = false
-
-    init(fileDescriptor: Int32 = STDOUT_FILENO) throws {
-        let descriptor = dup(fileDescriptor)
-        guard descriptor >= 0 else {
-            throw StandardOutputWriterError.descriptorDuplicationFailed(errno)
-        }
-
-        let queue = DispatchQueue(label: "PrivateHeaderKit.ProcessRunner.stdout")
-        let cleanupWaiter = DispatchIOCleanupWaiter()
-        self.queue = queue
-        self.cleanupWaiter = cleanupWaiter
-        self.channel = DispatchIO(
-            type: .stream,
-            fileDescriptor: descriptor,
-            queue: queue
-        ) { _ in
-            _ = Darwin.close(descriptor)
-            cleanupWaiter.complete()
-        }
-        channel.setLimit(lowWater: 1)
-    }
-
-    func write(_ data: Data) async throws {
-        guard !data.isEmpty else { return }
-        try Task.checkCancellation()
-        let dispatchData = data.withUnsafeBytes { DispatchData(bytes: $0) }
-
-        do {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    let completion = DispatchIOWriteCompletion(continuation)
-                    channel.write(offset: 0, data: dispatchData, queue: queue) {
-                        done,
-                        _,
-                        errorCode in
-                        if errorCode != 0 {
-                            completion.fail(errorCode: errorCode)
-                        } else if done {
-                            completion.succeed()
-                        }
-                    }
-                }
-            } onCancel: {
-                self.stop()
-            }
-        } catch {
-            if Task.isCancelled {
-                throw CancellationError()
-            }
-            throw error
-        }
-        try Task.checkCancellation()
-    }
-
-    func finish() async {
-        stop()
-        await cleanupWaiter.wait()
-    }
-
-    func cancel() {
-        stop()
-    }
-
-    private func stop() {
-        close(flags: .stop)
-    }
-
-    private func close(flags: DispatchIO.CloseFlags) {
-        closeLock.lock()
-        guard !isClosed else {
-            closeLock.unlock()
-            return
-        }
-        isClosed = true
-        closeLock.unlock()
-        channel.close(flags: flags)
-    }
-}
-
-#endif
 
 struct BoundedProcessOutputCollector {
     private var pendingLine = BoundedProcessLineBytes()
@@ -1478,33 +886,4 @@ private func saturatingSum(_ lhs: UInt, _ rhs: UInt) -> UInt {
 
 private func saturatingSubtract(_ lhs: UInt, _ rhs: UInt) -> UInt {
     lhs >= rhs ? lhs - rhs : 0
-}
-
-private func unixEpochMicrosecondsFromRealtimeClock() throws -> UInt64 {
-#if os(macOS)
-    var time = timespec()
-    guard clock_gettime(CLOCK_REALTIME, &time) == 0 else {
-        throw ToolingError.message(
-            "failed to observe process termination time (errno \(errno))"
-        )
-    }
-    guard time.tv_sec >= 0, time.tv_nsec >= 0 else {
-        throw ToolingError.message("process termination clock returned a negative value")
-    }
-    let seconds = UInt64(time.tv_sec)
-    let (secondMicroseconds, overflow) = seconds.multipliedReportingOverflow(by: 1_000_000)
-    guard !overflow else {
-        throw ToolingError.message("process termination clock exceeded UInt64")
-    }
-    let nanosecondMicroseconds = UInt64(time.tv_nsec) / 1_000
-    let (result, additionOverflow) = secondMicroseconds.addingReportingOverflow(
-        nanosecondMicroseconds
-    )
-    guard !additionOverflow else {
-        throw ToolingError.message("process termination clock exceeded UInt64")
-    }
-    return result
-#else
-    throw ToolingError.unsupported("process execution is not available on this platform")
-#endif
 }

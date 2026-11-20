@@ -49,6 +49,16 @@ private struct PrivateHeaderKitToolingTestHelper {
 #else
                 throw HelperError.invalidCommand(command)
 #endif
+            case "simple-output":
+#if os(macOS)
+                try await ProcessRunner().runSimple(
+                    ["/bin/sh", "-c", "echo simple-stdout; echo simple-stderr >&2"],
+                    env: nil,
+                    cwd: nil
+                )
+#else
+                throw HelperError.invalidCommand(command)
+#endif
             case "process-group":
 #if os(macOS)
                 let arguments = Array(CommandLine.arguments.dropFirst(2))
@@ -215,7 +225,7 @@ private struct PrivateHeaderKitToolingTestHelper {
 
     private static func runClosedStdinCheck() async throws {
         _ = close(STDIN_FILENO)
-        let result = try await ProcessRunner().runStreaming(
+        let result = try await ProcessRunner().runBuffered(
             ["/bin/zsh", "-lc", "cat >/dev/null; print -r -- stdin-ok"],
             env: nil,
             cwd: nil

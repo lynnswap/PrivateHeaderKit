@@ -2824,14 +2824,6 @@ private struct BufferedRawDumpProbeRunner: CommandRunning {
         throw ToolingError.message("unexpected runSimple command: \(command)")
     }
 
-    func runStreaming(
-        _ command: [String],
-        env: [String: String]?,
-        cwd: URL?
-    ) async throws -> StreamingCommandResult {
-        throw ToolingError.message("unexpected runStreaming command: \(command)")
-    }
-
     func runBuffered(
         _ command: [String],
         env: [String: String]?,
@@ -3281,12 +3273,12 @@ private struct CaptureOnlyCommandRunner: CommandRunning {
         throw ToolingError.message("unexpected runSimple command: \(command)")
     }
 
-    func runStreaming(
+    func runBuffered(
         _ command: [String],
         env: [String: String]?,
         cwd: URL?
     ) async throws -> StreamingCommandResult {
-        throw ToolingError.message("unexpected runStreaming command: \(command)")
+        throw ToolingError.message("unexpected runBuffered command: \(command)")
     }
 }
 
