@@ -1,6 +1,7 @@
 import Foundation
 import PrivateHeaderKitCore
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 import PrivateHeaderKitTooling
 
 struct PrivateHeaderKitSSHSession: Sendable {
@@ -49,14 +50,14 @@ struct PrivateHeaderKitSSHSession: Sendable {
     )
   }
 
-  func snapshot() async throws -> PrivateHeaderGeneration.DeviceSourceSnapshot {
+  func snapshot() async throws -> DeviceSourceSnapshot {
     let q = PrivateHeaderGeneration.RawDumping.shellQuote
     let output = try await processRunner.runCapture(
       command(q(directory + "/privateheaderkit-device-helper") + " "
         + PrivateHeaderKitHelperCommand.deviceSource.rawValue), env: nil, cwd: nil
     )
     let snapshot = try JSONDecoder().decode(
-      PrivateHeaderGeneration.DeviceSourceSnapshot.self, from: Data(output.utf8)
+      DeviceSourceSnapshot.self, from: Data(output.utf8)
     )
     guard snapshot.producerVersion == PrivateHeaderKitBuildInfo.version else {
       throw PrivateHeaderGeneration.GenerationError.producerVersionMismatch(
@@ -163,7 +164,7 @@ struct SSHGenerateCommand: Sendable {
       try await session.connect()
       deploymentStarted = true
       try await session.deploy(bundle: bundle)
-      let snapshot: PrivateHeaderGeneration.DeviceSourceSnapshot?
+      let snapshot: DeviceSourceSnapshot?
       let application: PrivateHeaderGeneration.ApplicationSourceSnapshot?
       let source: PrivateHeaderGeneration.Source
       if let selection = options.application {

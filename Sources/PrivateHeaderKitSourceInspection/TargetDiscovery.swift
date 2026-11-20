@@ -7,84 +7,107 @@ import Darwin
 import Glibc
 #endif
 
-extension PrivateHeaderGeneration {
-    enum TargetDiscovery {
-        static func discover(
-            in systemRoot: URL,
-            sharedCacheImagePaths: [String] = [],
-            fileManager: FileManager = .default
-        ) throws -> Catalog {
-            let root = systemRoot.standardizedFileURL
-            guard try isDirectory(root, fileManager: fileManager) else {
-                throw Error.missingSystemRoot(root.path)
-            }
-            let sharedCacheImages = SharedCacheImageIndex(paths: sharedCacheImagePaths)
-
-            var groups: [DiscoveredTargetGroup] = []
-            groups += try discoverFrameworks(
-                in: root,
-                location: .publicFramework,
-                sharedCacheImages: sharedCacheImages,
-                fileManager: fileManager
-            )
-            groups += try discoverFrameworks(
-                in: root,
-                location: .privateFramework,
-                sharedCacheImages: sharedCacheImages,
-                fileManager: fileManager
-            )
-            groups += try discoverSystemLibraryBundles(
-                in: root,
-                sharedCacheImages: sharedCacheImages,
-                fileManager: fileManager
-            )
-            groups += try discoverUsrLibDylibs(
-                in: root,
-                sharedCacheImagePaths: sharedCacheImagePaths,
-                fileManager: fileManager
-            )
-
-            return Catalog(groups: groups)
+package enum TargetDiscovery {
+    package static func discover(
+        in systemRoot: URL,
+        sharedCacheImagePaths: [String] = [],
+        fileManager: FileManager = .default
+    ) throws -> Catalog {
+        let root = systemRoot.standardizedFileURL
+        guard try isDirectory(root, fileManager: fileManager) else {
+            throw Error.missingSystemRoot(root.path)
         }
+        let sharedCacheImages = SharedCacheImageIndex(paths: sharedCacheImagePaths)
+
+        var groups: [DiscoveredTargetGroup] = []
+        groups += try discoverFrameworks(
+            in: root,
+            location: .publicFramework,
+            sharedCacheImages: sharedCacheImages,
+            fileManager: fileManager
+        )
+        groups += try discoverFrameworks(
+            in: root,
+            location: .privateFramework,
+            sharedCacheImages: sharedCacheImages,
+            fileManager: fileManager
+        )
+        groups += try discoverSystemLibraryBundles(
+            in: root,
+            sharedCacheImages: sharedCacheImages,
+            fileManager: fileManager
+        )
+        groups += try discoverUsrLibDylibs(
+            in: root,
+            sharedCacheImagePaths: sharedCacheImagePaths,
+            fileManager: fileManager
+        )
+
+        return Catalog(groups: groups)
     }
 }
 
-extension PrivateHeaderGeneration.TargetDiscovery {
-    struct Catalog: Codable, Hashable, Sendable {
-        let groups: [DiscoveredTargetGroup]
+extension TargetDiscovery {
+    package struct Catalog: Codable, Hashable, Sendable {
+        package let groups: [DiscoveredTargetGroup]
 
-        var resolverCandidates: [PrivateHeaderGeneration.TargetCandidate] {
+        package init(groups: [DiscoveredTargetGroup]) {
+            self.groups = groups
+        }
+
+        package var resolverCandidates: [TargetCandidate] {
             groups.map(\.selectionCandidate)
         }
 
-        var resolver: PrivateHeaderGeneration.TargetResolver {
-            PrivateHeaderGeneration.TargetResolver(candidates: resolverCandidates)
-        }
-
-        var allExecutionTargets: [DiscoveredTarget] {
+        package var allExecutionTargets: [DiscoveredTarget] {
             groups.flatMap(\.executionTargets)
         }
     }
 
-    struct DiscoveredTargetGroup: Codable, Hashable, Sendable {
-        let selectionCandidate: PrivateHeaderGeneration.TargetCandidate
-        let primaryTarget: DiscoveredTarget?
-        let childTargets: [DiscoveredTarget]
+    package struct DiscoveredTargetGroup: Codable, Hashable, Sendable {
+        package let selectionCandidate: TargetCandidate
+        package let primaryTarget: DiscoveredTarget?
+        package let childTargets: [DiscoveredTarget]
 
-        var executionTargets: [DiscoveredTarget] {
+        package init(
+            selectionCandidate: TargetCandidate,
+            primaryTarget: DiscoveredTarget?,
+            childTargets: [DiscoveredTarget]
+        ) {
+            self.selectionCandidate = selectionCandidate
+            self.primaryTarget = primaryTarget
+            self.childTargets = childTargets
+        }
+
+        package var executionTargets: [DiscoveredTarget] {
             primaryTarget.map { [$0] + childTargets } ?? childTargets
         }
     }
 
-    struct DiscoveredTarget: Codable, Hashable, Sendable {
-        let candidate: PrivateHeaderGeneration.TargetCandidate
-        let source: SourceMetadata
-        let artifactRoot: PrivateHeaderGeneration.ArtifactPath
-        let inputPath: String
-        let runtimeInputPath: String
+    package struct DiscoveredTarget: Codable, Hashable, Sendable {
+        package let candidate: TargetCandidate
+        package let source: SourceMetadata
+        /// The directory, relative to a source's artifact directory, that receives the target's files.
+        package let artifactRoot: String
+        package let inputPath: String
+        package let runtimeInputPath: String
+
+        package init(
+            candidate: TargetCandidate,
+            source: SourceMetadata,
+            artifactRoot: String,
+            inputPath: String,
+            runtimeInputPath: String
+        ) {
+            self.candidate = candidate
+            self.source = source
+            self.artifactRoot = artifactRoot
+            self.inputPath = inputPath
+            self.runtimeInputPath = runtimeInputPath
+        }
     }
 
-    enum SourceMetadata: Codable, Hashable, Sendable {
+    package enum SourceMetadata: Codable, Hashable, Sendable {
         case framework(FrameworkSource)
         case systemLibraryBundle(SystemLibraryBundleSource)
         case usrLibDylib(UsrLibDylibSource)
@@ -104,7 +127,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct FrameworkSource: Codable, Hashable, Sendable {
+    package struct FrameworkSource: Codable, Hashable, Sendable {
         let location: FrameworkLocation
         let bundleName: String
 
@@ -117,7 +140,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    enum FrameworkLocation: Codable, Hashable, Sendable {
+    package enum FrameworkLocation: Codable, Hashable, Sendable {
         case publicFramework
         case privateFramework
 
@@ -130,7 +153,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
             }
         }
 
-        var targetKind: PrivateHeaderGeneration.TargetKind {
+        var targetKind: TargetKind {
             switch self {
             case .publicFramework:
                 .framework
@@ -149,18 +172,18 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct SystemLibraryBundleSource: Codable, Hashable, Sendable {
+    package struct SystemLibraryBundleSource: Codable, Hashable, Sendable {
         let relativePath: String
         let bundleKind: BundleKind
         let role: BundleRole
     }
 
-    enum BundleRole: Codable, Hashable, Sendable {
+    package enum BundleRole: Codable, Hashable, Sendable {
         case topLevel
         case nestedChild(parentRelativePath: String)
     }
 
-    enum BundleKind: String, Codable, Hashable, Sendable {
+    package enum BundleKind: String, Codable, Hashable, Sendable {
         case app
         case bundle
         case xpc
@@ -171,7 +194,7 @@ extension PrivateHeaderGeneration.TargetDiscovery {
         }
     }
 
-    struct UsrLibDylibSource: Codable, Hashable, Sendable {
+    package struct UsrLibDylibSource: Codable, Hashable, Sendable {
         let name: String
     }
 
@@ -210,7 +233,7 @@ private struct SharedCacheImageIndex {
     }
 }
 
-private extension PrivateHeaderGeneration.TargetDiscovery {
+private extension TargetDiscovery {
     static func discoverFrameworks(
         in systemRoot: URL,
         location: FrameworkLocation,
@@ -252,7 +275,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
                 sharedCacheImages: sharedCacheImages,
                 fileManager: fileManager
             )
-            let selectionCandidate = try PrivateHeaderGeneration.TargetCandidate(
+            let selectionCandidate = try TargetCandidate(
                 identifier: "\(location.identifierPrefix):\(bundleName)",
                 displayName: source.frameworkName,
                 kind: location.targetKind,
@@ -412,7 +435,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             let inputPath = filesystemDylibNameSet.contains(name)
                 ? hostInputPath(for: sourceMetadata, in: systemRoot)
                 : sourceMetadata.runtimeInputPath
-            let candidate = try PrivateHeaderGeneration.TargetCandidate(
+            let candidate = try TargetCandidate(
                 identifier: "usr-lib:\(name)",
                 displayName: name,
                 kind: .usrLibDylib,
@@ -423,7 +446,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             let target = DiscoveredTarget(
                 candidate: candidate,
                 source: sourceMetadata,
-                artifactRoot: try PrivateHeaderGeneration.ArtifactPath("usr/lib/\(name)"),
+                artifactRoot: "usr/lib/\(name)",
                 inputPath: inputPath,
                 runtimeInputPath: sourceMetadata.runtimeInputPath
             )
@@ -529,12 +552,12 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
 
     static func systemLibraryCandidate(
         for source: SystemLibraryBundleSource
-    ) throws -> PrivateHeaderGeneration.TargetCandidate {
-        let kind: PrivateHeaderGeneration.TargetKind = switch source.role {
+    ) throws -> TargetCandidate {
+        let kind: TargetKind = switch source.role {
         case .topLevel: .systemBundle
         case .nestedChild: .nestedBundle
         }
-        return try PrivateHeaderGeneration.TargetCandidate(
+        return try TargetCandidate(
             identifier: systemLibraryIdentifier(for: source),
             displayName: source.relativePath,
             kind: kind,
@@ -545,7 +568,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
     }
 
     static func loadableBundleTarget(
-        candidate: PrivateHeaderGeneration.TargetCandidate,
+        candidate: TargetCandidate,
         source: SourceMetadata,
         bundleURL: URL,
         systemRoot: URL,
@@ -578,7 +601,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
         return DiscoveredTarget(
             candidate: candidate,
             source: source,
-            artifactRoot: try artifactRoot(systemLibraryRelativePath: systemLibraryRelativePath),
+            artifactRoot: artifactRoot(systemLibraryRelativePath: systemLibraryRelativePath),
             inputPath: hostInputPath(for: source, in: systemRoot),
             runtimeInputPath: source.runtimeInputPath
         )
@@ -662,7 +685,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
 
     static func artifactRoot(
         systemLibraryRelativePath: String
-    ) throws -> PrivateHeaderGeneration.ArtifactPath {
+    ) -> String {
         let sourceComponents = systemLibraryRelativePath
             .split(separator: "/", omittingEmptySubsequences: false)
             .map(String.init)
@@ -675,9 +698,7 @@ private extension PrivateHeaderGeneration.TargetDiscovery {
             artifactComponents = ["SystemLibrary"] + sourceComponents
         }
 
-        return try PrivateHeaderGeneration.ArtifactPath(
-            artifactComponents.joined(separator: "/")
-        )
+        return artifactComponents.joined(separator: "/")
     }
 
     static func hostInputPath(for source: SourceMetadata, in systemRoot: URL) -> String {

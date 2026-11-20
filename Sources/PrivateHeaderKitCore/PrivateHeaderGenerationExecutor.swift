@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 
 extension PrivateHeaderGeneration {
   /// Runs a generation plan: dumps each selected target through a helper, publishes the
@@ -443,7 +444,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   /// A failure of the target itself is returned as its attempt result. An error that would
   /// repeat for every target, such as a helper from another build, is thrown.
   fileprivate func executeTarget(
-    _ target: Generation.TargetDiscovery.DiscoveredTarget,
+    _ target: TargetDiscovery.DiscoveredTarget,
     plan: Generation.Plan,
     helperURLs: Generation.RawDumping.HelperURLs,
     executionMode: Generation.RawDumping.ExecutionMode,
@@ -547,12 +548,12 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         completedAt: dateProvider()
       ),
       stagedFiles: staged.files,
-      warnings: Self.objCMetadataWarnings(rawResult, relativePath: artifactRoot.rawValue)
+      warnings: Self.objCMetadataWarnings(rawResult, relativePath: artifactRoot)
     )
   }
 
   fileprivate static func failedExecution(
-    _ target: Generation.TargetDiscovery.DiscoveredTarget,
+    _ target: TargetDiscovery.DiscoveredTarget,
     status: Generation.RunTargetStatus,
     summary: String,
     artifacts: [Generation.ArtifactPath] = [],
@@ -572,7 +573,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   }
 
   fileprivate static func interruptedResult(
-    _ target: Generation.TargetDiscovery.DiscoveredTarget,
+    _ target: TargetDiscovery.DiscoveredTarget,
     at date: Date
   ) -> Generation.TargetAttemptResult {
     failedExecution(target, status: .interrupted, summary: "cancelled", at: date).result

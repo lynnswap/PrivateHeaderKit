@@ -1,5 +1,6 @@
 import Foundation
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 
 #if canImport(Darwin)
   import Darwin
