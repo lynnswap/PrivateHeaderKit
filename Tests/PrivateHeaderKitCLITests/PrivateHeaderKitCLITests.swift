@@ -1870,6 +1870,7 @@ private struct GenerationHost: Sendable {
 
     var executable: URL { root.appendingPathComponent("Cohort/privateheaderkit") }
     var hostHelper: URL { root.appendingPathComponent("Cohort/privateheaderkit-raw-helper") }
+    var simulatorHelper: URL { root.appendingPathComponent("Cohort/privateheaderkit-sim-helper") }
     var systemRoot: URL { root.appendingPathComponent("SystemRoot", isDirectory: true) }
     var runtimeRoot: URL { root.appendingPathComponent("RuntimeRoot", isDirectory: true) }
     var output: URL { root.appendingPathComponent("Output", isDirectory: true) }
@@ -1908,6 +1909,10 @@ private struct GenerationHost: Sendable {
         }
     ) async {
         let runtimeRoot = runtimeRoot
+        let inventoryCommand = [
+            "xcrun", "simctl", "spawn", Self.createdDeviceUDID,
+            simulatorHelper.path, "__shared-cache-inventory",
+        ]
         await runner.setCaptureHandler { command, _, _ in
             switch command {
             case ["xcrun", "simctl", "list", "runtimes", "-j"]:
@@ -1929,7 +1934,7 @@ private struct GenerationHost: Sendable {
             if command.starts(with: ["xcrun", "simctl", "create"]) {
                 return Self.createdDeviceUDID + "\n"
             }
-            if command.last == "__shared-cache-inventory" {
+            if command == inventoryCommand {
                 let frameworks = runtimeRoot.appendingPathComponent("System/Library/Frameworks")
                 let names = try FileManager.default.contentsOfDirectory(atPath: frameworks.path)
                     .map { ($0 as NSString).deletingPathExtension }
@@ -2598,7 +2603,10 @@ struct PrivateHeaderKitAsyncInputTests {
             echoWriter: { _ in }
         )
         let commandTask = Task {
-            await runPrivateHeaderKitCommand(
+            // A command that ends before it prompts fails the test instead of leaving it
+            // waiting.
+            defer { probe.stopWaiting() }
+            return await runPrivateHeaderKitCommand(
                 ["privateheaderkit"],
                 currentExecutableURL: host.executable,
                 processRunner: host.runner,
@@ -3088,6 +3096,11 @@ private final class TerminalProbe: @unchecked Sendable {
 
     func waitForEnter(_ count: Int) async {
         await enterEvents.wait(until: count)
+    }
+
+    /// Releases `waitForEnter` for a command that ended without reading input.
+    func stopWaiting() {
+        enterEvents.signal()
     }
 }
 
