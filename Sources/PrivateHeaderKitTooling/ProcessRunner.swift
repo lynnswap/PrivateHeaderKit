@@ -67,10 +67,8 @@ private func boundedOutput(
     from sequence: SubprocessOutputSequence
 ) async throws -> BoundedProcessOutput {
     var collector = BoundedProcessOutputCollector()
+    // swift-subprocess closes the pipe when the sequence ends, so the loop always runs to the end.
     for try await buffer in sequence {
-        // Reads of buffered data do not observe cancellation, and the child can keep writing
-        // until teardown kills it.
-        try Task.checkCancellation()
         collector.consume(buffer.withUnsafeBytes { Array($0) })
     }
     return collector.finish()
@@ -351,9 +349,20 @@ public struct ProcessRunner: CommandRunning, Sendable {
                             try await boundedOutput(from: execution.standardError)
                         }
                         group.addTask {
-                            for try await buffer in execution.standardOutput {
-                                try Task.checkCancellation()
-                                try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
+                            // Leaving the loop early would leak the pipe, so a failed or
+                            // cancelled consumer stops the child and the rest is discarded.
+                            var failure: (any Error)?
+                            for try await buffer in execution.standardOutput where failure == nil {
+                                do {
+                                    try Task.checkCancellation()
+                                    try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
+                                } catch {
+                                    failure = error
+                                    await execution.teardown(using: processGroupTeardownSequence)
+                                }
+                            }
+                            if let failure {
+                                throw failure
                             }
                             return nil
                         }
