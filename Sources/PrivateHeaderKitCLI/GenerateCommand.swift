@@ -48,11 +48,11 @@ struct GenerateCommand: Sendable {
         let simulatorHelperPath: String?
         var preferRuntimeMetadata = false
 
-        var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
+        var continuation: PrivateHeaderGeneration.Continuation {
             switch continuationMode {
-            case .resume: .init(continuation: .resume)
-            case .fresh: .init(continuation: .restart)
-            case nil: .init()
+            case .resume: .resume
+            case .fresh: .restart
+            case nil: .automatic
             }
         }
     }
@@ -79,7 +79,7 @@ struct GenerateCommand: Sendable {
                     )
                     return try await preparedGeneration.runReporting(
                         to: console,
-                        executionOptions: options.executionOptions,
+                        continuation: options.continuation,
                         targetQuery: options.targetQuery
                     )
                 } catch let error as PrivateHeaderGeneration.GenerationError {
@@ -197,7 +197,7 @@ struct GenerateCommand: Sendable {
                 preferRuntimeMetadata: options.preferRuntimeMetadata,
                 helperEnvironment: ["PH_RUNTIME_ROOT": effectiveSource.systemRoot.path]
             ),
-            executionOptions: options.executionOptions,
+            continuation: options.continuation,
             producerVersion: PrivateHeaderKitBuildInfo.version
         )
         return GenerationRequest(source: source, output: output, options: generationOptions)

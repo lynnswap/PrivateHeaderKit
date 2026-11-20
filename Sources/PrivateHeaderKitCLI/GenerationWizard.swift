@@ -133,13 +133,13 @@ struct GenerationWizard: Sendable {
                                     )
                                     continue
                                 }
-                                let executionOptions = try await promptExecutionOptions(
+                                let continuation = try await promptContinuation(
                                     for: preparedGeneration
                                 )
                                 try await finishInput()
                                 return try await preparedGeneration.runReporting(
                                     to: console,
-                                    executionOptions: executionOptions,
+                                    continuation: continuation,
                                     targetQuery: query,
                                     clearScreen: clearScreen
                                 )
@@ -171,9 +171,9 @@ struct GenerationWizard: Sendable {
     }
 
     /// Asks whether to continue or restart when an all-target run is unfinished.
-    private func promptExecutionOptions(
+    private func promptContinuation(
         for preparedGeneration: PreparedGeneration
-    ) async throws -> PrivateHeaderGeneration.ExecutionOptions {
+    ) async throws -> PrivateHeaderGeneration.Continuation {
         let request = preparedGeneration.request
         let summary = try await preparedGeneration.summary()
         switch summary {
@@ -189,9 +189,9 @@ struct GenerationWizard: Sendable {
             guard action == .restart else {
                 throw PrivateHeaderKitInteractiveNavigation.back
             }
-            return .init(continuation: .restart)
+            return .restart
         case .noUnfinishedRun:
-            return request.options.executionOptions
+            return request.options.continuation
         case .unfinished(let resumeSummary):
             renderResumeScreen(
                 sourceDisplayName: request.source.label.displayName,
@@ -201,7 +201,7 @@ struct GenerationWizard: Sendable {
                 prompt: "Select action:",
                 values: [.continuePrevious, .restart]
             )
-            return .init(continuation: action == .continuePrevious ? .resume : .restart)
+            return action == .continuePrevious ? .resume : .restart
         }
     }
 

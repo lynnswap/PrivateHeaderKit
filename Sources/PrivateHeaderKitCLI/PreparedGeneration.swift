@@ -79,11 +79,11 @@ struct PreparedGeneration: Sendable {
     }
 
     func run(
-        _ executionOptions: PrivateHeaderGeneration.ExecutionOptions,
+        _ continuation: PrivateHeaderGeneration.Continuation,
         progressReporter: @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
     ) async throws -> PrivateHeaderGeneration.Result {
         try await executor.run(
-            preparedPlan.withExecutionOptions(executionOptions),
+            preparedPlan.withContinuation(continuation),
             progressReporter: progressReporter
         )
     }
@@ -93,13 +93,13 @@ struct PreparedGeneration: Sendable {
     /// `clearScreen` runs before the result when the wizard shows it on a fresh screen.
     func runReporting(
         to console: Console,
-        executionOptions: PrivateHeaderGeneration.ExecutionOptions,
+        continuation: PrivateHeaderGeneration.Continuation,
         targetQuery: String,
         clearScreen: (@Sendable () -> Void)? = nil
     ) async throws -> GenerationOutcome {
         do {
             let result = try await run(
-                executionOptions,
+                continuation,
                 progressReporter: privateHeaderKitProgressReporter(
                     artifactDirectory: request.output.artifactDirectory(for: request.source),
                     outputLogger: console.output,

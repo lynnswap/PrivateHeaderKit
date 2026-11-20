@@ -336,20 +336,6 @@ extension PrivateHeaderGeneration {
     }
   }
 
-  package struct Target: CustomStringConvertible, Hashable, Sendable {
-    package let identifier: String
-
-    fileprivate init(identifier: String) {
-      self.identifier = identifier
-    }
-
-    package static func generated(identifier: String) -> Target {
-      Target(identifier: identifier)
-    }
-
-    package var description: String { identifier }
-  }
-
   package enum ProgressEvent: Equatable, Sendable {
     case runStarted(runID: RunID, totalTargetCount: Int)
     case targetStarted(index: Int, total: Int, displayName: String)
@@ -470,7 +456,6 @@ extension PrivateHeaderGeneration {
 
   package enum TargetRequest: Hashable, Sendable {
     case allAvailable
-    case identifiers([String])
     case query(String)
 
     package var requestsAllTargets: Bool {
@@ -478,7 +463,6 @@ extension PrivateHeaderGeneration {
       case .allAvailable: true
       case .query(let query):
         (try? TargetQuery(commaSeparated: query).requestsAllAvailableTargets) == true
-      case .identifiers: false
       }
     }
   }
@@ -489,7 +473,7 @@ extension PrivateHeaderGeneration {
     package var helperURLs: RawDumping.HelperURLs?
     package var executionMode: RawDumping.ExecutionMode?
     package var rawDumpingOptions: RawDumping.Options
-    package var executionOptions: ExecutionOptions
+    package var continuation: Continuation
     package var producerVersion: String
     package var deviceSource: DeviceSourceSnapshot?
     package var applicationSource: ApplicationSourceSnapshot?
@@ -501,7 +485,7 @@ extension PrivateHeaderGeneration {
       helperURLs: RawDumping.HelperURLs? = nil,
       executionMode: RawDumping.ExecutionMode? = nil,
       rawDumpingOptions: RawDumping.Options = RawDumping.Options(),
-      executionOptions: ExecutionOptions = .init(),
+      continuation: Continuation = .automatic,
       producerVersion: String = PrivateHeaderKitBuildInfo.version,
       deviceSource: DeviceSourceSnapshot? = nil,
       applicationSource: ApplicationSourceSnapshot? = nil,
@@ -512,7 +496,7 @@ extension PrivateHeaderGeneration {
       self.helperURLs = helperURLs
       self.executionMode = executionMode
       self.rawDumpingOptions = rawDumpingOptions
-      self.executionOptions = executionOptions
+      self.continuation = continuation
       self.producerVersion = producerVersion
       self.deviceSource = deviceSource
       self.applicationSource = applicationSource
@@ -568,7 +552,6 @@ extension PrivateHeaderGeneration {
   package struct Result: Hashable, Sendable {
     package let plan: Plan
     package let artifactDirectory: URL
-    package let generatedTargets: [Target]
     package let runID: RunID
     package let stateDatabaseURL: URL
     package let targetCounts: TargetCounts
@@ -578,7 +561,6 @@ extension PrivateHeaderGeneration {
     package init(
       plan: Plan,
       artifactDirectory: URL,
-      generatedTargets: [Target],
       runID: RunID,
       stateDatabaseURL: URL,
       targetCounts: TargetCounts,
@@ -587,7 +569,6 @@ extension PrivateHeaderGeneration {
     ) {
       self.plan = plan
       self.artifactDirectory = artifactDirectory
-      self.generatedTargets = generatedTargets
       self.runID = runID
       self.stateDatabaseURL = stateDatabaseURL
       self.targetCounts = targetCounts
@@ -614,7 +595,6 @@ extension PrivateHeaderGeneration {
     case emptySharedCacheInventory(cacheUUID: UUID)
     case deviceCacheChanged(expected: UUID, actual: UUID)
     case noDiscoveredTargets(systemRoot: String)
-    case unknownSelectedTargets([String])
     case unresolvedTargetQuery(TargetResolution)
     case incompatibleResume(String)
     case resumeRequired(ResumeSummary)
@@ -634,8 +614,6 @@ extension PrivateHeaderGeneration {
         "loaded shared cache \(cacheUUID.uuidString.lowercased()) contains no images"
       case .noDiscoveredTargets(let systemRoot):
         "no private header targets were discovered under \(systemRoot)"
-      case .unknownSelectedTargets(let targetIDs):
-        "selected targets were not discovered: \(targetIDs.joined(separator: ", "))"
       case .unresolvedTargetQuery(let resolution):
         "target query could not be resolved:\n" + resolution.diagnostics.joined(separator: "\n")
       case .incompatibleResume(let reason):

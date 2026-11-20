@@ -107,17 +107,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     switch request {
     case .allAvailable:
       return deduplicated(catalog.allExecutionTargets)
-    case .identifiers(let targetIDs):
-      let requested = deduplicatedTargetIDs(targetIDs)
-      let all = catalog.allExecutionTargets
-      let selected = requested.compactMap { id in all.first { $0.candidate.identifier == id } }
-      if selected.count != requested.count {
-        let found = Set(selected.map(\.candidate.identifier))
-        throw PrivateHeaderGeneration.GenerationError.unknownSelectedTargets(
-          requested.filter { !found.contains($0) }.sorted()
-        )
-      }
-      return deduplicated(selected)
     case .query(let query):
       let targetQuery = try PrivateHeaderGeneration.TargetQuery(commaSeparated: query)
       let resolution = catalog.resolver.resolve(targetQuery)
@@ -150,10 +139,5 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   ) -> [TargetDiscovery.DiscoveredTarget] {
     var seen: Set<String> = []
     return targets.filter { seen.insert($0.candidate.identifier).inserted }
-  }
-
-  fileprivate static func deduplicatedTargetIDs(_ targetIDs: [String]) -> [String] {
-    var seen: Set<String> = []
-    return targetIDs.filter { seen.insert($0).inserted }
   }
 }

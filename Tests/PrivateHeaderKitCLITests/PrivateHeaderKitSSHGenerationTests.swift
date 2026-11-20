@@ -22,7 +22,7 @@ struct PrivateHeaderKitSSHGenerationTests {
     #expect(command.destination == destination)
     #expect(command.outputBaseDirectory == "/tmp/Headers")
     #expect(command.targetQuery == "SpringBoard,SpringBoardUI")
-    #expect(command.executionOptions.continuation == .resume)
+    #expect(command.continuation == .resume)
     #expect(!command.preferRuntimeMetadata)
   }
 
@@ -436,7 +436,7 @@ struct PrivateHeaderKitSSHGenerationTests {
     let child = Task {
       try await prepared.runReporting(
         to: Console(output: output.append, error: errors.append),
-        executionOptions: .init(), targetQuery: "libobjc.A.dylib"
+        continuation: .automatic, targetQuery: "libobjc.A.dylib"
       )
     }
     let outcome = try await child.value
