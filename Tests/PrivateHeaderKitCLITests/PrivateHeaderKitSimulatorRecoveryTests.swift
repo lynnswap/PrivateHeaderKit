@@ -292,7 +292,7 @@ struct PrivateHeaderKitSimulatorRecoveryTests {
             recoveryReporter: { _ in }
         )
         let operation = Task {
-            try await bootGate.track { try await prepared.run(.init(continuation: .restart), progressReporter: { _ in }) }
+            try await bootGate.track { try await prepared.run(.restart, progressReporter: { _ in }) }
         }
         try #require(await bootGate.waitUntilEntered())
         let pendingCommands = await runner.streamingCommandSnapshot().map(\.command)
@@ -397,11 +397,11 @@ private struct SimulatorRecoveryFixture: Sendable {
             source: try .init(platform: .iOS, version: "27.0", build: "24A1", metadataIsSeed: false),
             output: .init(baseDirectory: root.appendingPathComponent("Output", isDirectory: true)),
             options: .init(
-                targetRequest: .identifiers(["framework:Foo.framework", "framework:Bar.framework"]),
+                targetRequest: .query("Foo,Bar"),
                 systemRoot: runtimeRoot,
                 helperURLs: helperURLs,
                 executionMode: executionMode,
-                executionOptions: .init(continuation: .restart)
+                continuation: .restart
             )
         )
     }

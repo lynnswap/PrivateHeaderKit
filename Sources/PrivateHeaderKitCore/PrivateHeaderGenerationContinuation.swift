@@ -8,14 +8,6 @@ extension PrivateHeaderGeneration {
     case restart
   }
 
-  package struct ExecutionOptions: Hashable, Sendable {
-    package var continuation: Continuation
-
-    package init(continuation: Continuation = .automatic) {
-      self.continuation = continuation
-    }
-  }
-
   enum ContinuationDecision {
     case generate
     case resume(ResumeSummary)
@@ -80,7 +72,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     store: GenerationStore,
     at date: Date
   ) async throws -> PrivateHeaderGeneration.ContinuationDecision {
-    let continuation = plan.options.executionOptions.continuation
+    let continuation = plan.options.continuation
     guard plan.options.targetRequest.requestsAllTargets, continuation != .restart else {
       return .generate
     }

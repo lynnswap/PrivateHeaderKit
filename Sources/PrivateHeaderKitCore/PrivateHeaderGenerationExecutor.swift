@@ -53,9 +53,9 @@ extension PrivateHeaderGeneration {
         self.sharedCacheCohort = sharedCacheCohort
       }
 
-      package func withExecutionOptions(_ executionOptions: ExecutionOptions) -> PreparedPlan {
+      package func withContinuation(_ continuation: Continuation) -> PreparedPlan {
         var options = plan.options
-        options.executionOptions = executionOptions
+        options.continuation = continuation
         return PreparedPlan(
           plan: Plan(source: plan.source, output: plan.output, options: options),
           selectedTargets: selectedTargets,
@@ -96,7 +96,7 @@ extension PrivateHeaderGeneration {
     ) async throws -> ResumeSummary? {
       let plan = preparedPlan.plan
       guard plan.options.targetRequest.requestsAllTargets,
-        plan.options.executionOptions.continuation != .restart
+        plan.options.continuation != .restart
       else { return nil }
       guard let executionMode = plan.options.executionMode else {
         throw GenerationError.missingExecutionConfiguration("executionMode")
@@ -254,7 +254,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
     var warnings: [Generation.GenerationWarning] = []
     var warningBudget = ObjCMetadataWarningPresentationBudget()
-    var generatedTargetIDs: [String] = []
     let snapshot: Generation.RunSnapshot
     var infrastructureError: (any Error)?
     do {
@@ -301,7 +300,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
         if execution.result.status == .completed {
           try await publish(execution, to: plan.artifactDirectory, in: runID, store: store)
-          generatedTargetIDs.append(targetID)
           let presentedWarnings = warningBudget.consume(execution.warnings)
           warnings += presentedWarnings
           presentedWarnings.forEach { progressReporter?(.warning($0)) }
@@ -391,7 +389,6 @@ extension PrivateHeaderGeneration.GenerationExecutor {
     return Generation.Result(
       plan: plan,
       artifactDirectory: plan.artifactDirectory,
-      generatedTargets: generatedTargetIDs.map(Generation.Target.generated(identifier:)),
       runID: runID,
       stateDatabaseURL: plan.databaseURL,
       targetCounts: snapshot.counts,

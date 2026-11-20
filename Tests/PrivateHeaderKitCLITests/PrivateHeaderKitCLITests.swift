@@ -1315,7 +1315,7 @@ struct PrivateHeaderKitCLIExecutionTests {
                 rawDumpingOptions: PrivateHeaderGeneration.RawDumping.Options(
                     useSharedCache: true
                 ),
-                executionOptions: .init(continuation: .restart)
+                continuation: .restart
             )
         )
         let prepared = try await PreparedGeneration(
@@ -1327,7 +1327,7 @@ struct PrivateHeaderKitCLIExecutionTests {
         #expect(try await prepared.summary() == .noUnfinishedRun)
         #expect(await runner.captureCommandSnapshot().count == 1)
 
-        let result = try await prepared.run(.init(continuation: .restart), progressReporter: { _ in })
+        let result = try await prepared.run(.restart, progressReporter: { _ in })
         #expect(result.targetCounts.completed == 1)
         #expect(await runner.captureCommandSnapshot().map(\.command) == [inventoryCommand])
         #expect(await runner.streamingCommandSnapshot().count == 1)

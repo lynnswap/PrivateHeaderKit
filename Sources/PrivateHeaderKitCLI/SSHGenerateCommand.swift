@@ -126,11 +126,11 @@ struct SSHGenerateCommand: Sendable {
     var application: ApplicationSelection? = nil
     var includesAnalysisBinary = false
 
-    var executionOptions: PrivateHeaderGeneration.ExecutionOptions {
+    var continuation: PrivateHeaderGeneration.Continuation {
       switch continuationMode {
-      case .resume: .init(continuation: .resume)
-      case .fresh: .init(continuation: .restart)
-      case nil: .init()
+      case .resume: .resume
+      case .fresh: .restart
+      case nil: .automatic
       }
     }
   }
@@ -194,7 +194,7 @@ struct SSHGenerateCommand: Sendable {
           ),
           executionMode: .ssh(destination: options.destination, directory: session.directory, controlPath: session.controlPath),
           rawDumpingOptions: .init(useSharedCache: application == nil, preferRuntimeMetadata: options.preferRuntimeMetadata),
-          executionOptions: options.executionOptions,
+          continuation: options.continuation,
           deviceSource: snapshot, applicationSource: application, includesAnalysisBinary: options.includesAnalysisBinary
         )
       )
@@ -202,7 +202,7 @@ struct SSHGenerateCommand: Sendable {
         request: request, processRunner: processRunner, recoveryReporter: console.error
       )
       let result = try await prepared.runReporting(
-        to: console, executionOptions: options.executionOptions,
+        to: console, continuation: options.continuation,
         targetQuery: application?.identity.bundleIdentifier ?? options.targetQuery
       )
       outcome = .success(result)
