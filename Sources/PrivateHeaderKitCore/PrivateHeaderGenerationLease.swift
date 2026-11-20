@@ -28,7 +28,6 @@ package enum GenerationLease {
     guard descriptor >= 0 else {
       throw LeaseError.openFailed(path: lockURL.path, errno: errno)
     }
-    // Closing the descriptor releases the lock.
     defer { _ = close(descriptor) }
 
     guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
@@ -38,6 +37,9 @@ package enum GenerationLease {
       }
       throw LeaseError.acquisitionFailed(path: lockURL.path, errno: error)
     }
+    // A process being spawned holds a copy of the descriptor until it execs, and closing
+    // this copy leaves the lock held through that one. Unlocking releases it for every copy.
+    defer { _ = flock(descriptor, LOCK_UN) }
     return try await operation()
   }
 }
