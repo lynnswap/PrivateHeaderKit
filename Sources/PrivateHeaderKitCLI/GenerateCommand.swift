@@ -283,6 +283,8 @@ private struct EffectiveSource {
     let useSharedCache: Bool
 }
 
+/// The directory at `path` with symbolic links resolved, so that two spellings of one
+/// system root compare equal.
 func canonicalDirectoryURL(path: String) -> URL {
     URL(fileURLWithPath: path, isDirectory: true)
         .resolvingSymlinksInPath()

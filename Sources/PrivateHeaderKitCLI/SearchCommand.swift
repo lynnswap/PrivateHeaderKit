@@ -27,7 +27,7 @@ struct PrivateHeaderKitSearchArguments: ParsableCommand {
 }
 
 /// Searches the symbol lists under a generated header directory.
-struct SearchCommand {
+struct SearchCommand: Sendable {
     struct Options: Equatable, Sendable {
         let query: String
         let directory: String
