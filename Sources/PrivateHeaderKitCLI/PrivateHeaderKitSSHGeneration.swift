@@ -135,7 +135,6 @@ func runPrivateHeaderKitSSHGenerateCommand(
   _ command: PrivateHeaderKitSSHGenerateCommand,
   currentExecutableURL: URL?,
   processRunner: any CommandRunning,
-  generationClient: PrivateHeaderKitGenerationClient,
   outputLogger: @escaping PrivateHeaderKitOutputLogger,
   errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> Int32 {
@@ -197,7 +196,9 @@ func runPrivateHeaderKitSSHGenerateCommand(
         deviceSource: snapshot, applicationSource: application, includesAnalysisBinary: command.includesAnalysisBinary
       )
     )
-    let prepared = try await generationClient.prepare(request)
+    let prepared = try await preparePrivateHeaderGeneration(
+      request: request, processRunner: processRunner, recoveryReporter: errorLogger
+    )
     let result = try await runPrivateHeaderKitPreparedGeneration(
       prepared, request: request, targetQuery: application?.identity.bundleIdentifier ?? command.targetQuery,
       executionOptions: command.executionOptions, resultScreenClearer: nil,
