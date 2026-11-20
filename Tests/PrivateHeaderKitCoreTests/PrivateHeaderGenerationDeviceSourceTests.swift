@@ -1,5 +1,6 @@
 import Foundation
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 import Testing
 
 @testable import PrivateHeaderKitCore
@@ -49,7 +50,7 @@ struct PrivateHeaderGenerationDeviceSourceTests {
     defer { fixture.cleanup() }
     let snapshot = try fixture.snapshot()
     let roundTrip = try JSONDecoder().decode(
-      PrivateHeaderGeneration.DeviceSourceSnapshot.self,
+      DeviceSourceSnapshot.self,
       from: JSONEncoder().encode(snapshot)
     )
     let source = try roundTrip.source()
@@ -65,6 +66,26 @@ struct PrivateHeaderGenerationDeviceSourceTests {
     #expect(catalog.allExecutionTargets.map(\.runtimeInputPath) == [
       "/System/Library/PrivateFrameworks/SpringBoard.framework", "/usr/lib/libobjc.A.dylib",
     ])
+  }
+
+  @Test func snapshotWithAnUnsafeArtifactRootIsRejected() throws {
+    let fixture = try DeviceSourceFixture(metadataIsSeed: false)
+    defer { fixture.cleanup() }
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture.snapshot())) as? [String: Any]
+    )
+    let encodedCatalog = try #require(object["catalogData"] as? String)
+    let catalogData = try #require(Data(base64Encoded: encodedCatalog))
+    let catalog = String(decoding: catalogData, as: UTF8.self)
+      .replacingOccurrences(of: #""artifactRoot":"usr\/lib"#, with: #""artifactRoot":"..\/lib"#)
+    object["catalogData"] = Data(catalog.utf8).base64EncodedString()
+    let snapshot = try JSONDecoder().decode(
+      DeviceSourceSnapshot.self, from: JSONSerialization.data(withJSONObject: object)
+    )
+
+    #expect(throws: PrivateHeaderGeneration.StateError.invalidArtifactPath("../lib/libobjc.A.dylib")) {
+      _ = try snapshot.catalog()
+    }
   }
 
   @Test func absentRestoreMetadataRepresentsAReleaseWhileMalformedMetadataFails() throws {
@@ -145,7 +166,7 @@ private struct DeviceSourceFixture {
     try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0).write(to: url)
   }
 
-  func snapshot() throws -> PrivateHeaderGeneration.DeviceSourceSnapshot {
+  func snapshot() throws -> DeviceSourceSnapshot {
     try .collect(
       systemRoot: root, architecture: "cpu16777228-sub2",
       inventory: .init(cacheUUID: cacheUUID, imagePaths: [
