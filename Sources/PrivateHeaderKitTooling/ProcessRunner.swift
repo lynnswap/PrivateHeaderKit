@@ -341,13 +341,26 @@ public struct ProcessRunner: CommandRunning, Sendable {
                 configuration, input: .none, output: .sequence, error: .sequence
             ) { execution in
                 try await terminatingProcessGroup(of: execution) {
-                    async let standardError = boundedOutput(from: execution.standardError)
-                    for try await buffer in execution.standardOutput {
-                        // The child can keep writing until teardown kills it.
-                        try Task.checkCancellation()
-                        try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
+                    // A group reports the first failure of either stream while the other is
+                    // still open.
+                    try await withThrowingTaskGroup(of: BoundedProcessOutput?.self) { group in
+                        group.addTask {
+                            try await boundedOutput(from: execution.standardError)
+                        }
+                        group.addTask {
+                            for try await buffer in execution.standardOutput {
+                                // The child can keep writing until teardown kills it.
+                                try Task.checkCancellation()
+                                try await consumeStandardOutput(buffer.withUnsafeBytes { Data($0) })
+                            }
+                            return nil
+                        }
+                        var standardError = BoundedProcessOutput(lines: [])
+                        for try await output in group {
+                            standardError = output ?? standardError
+                        }
+                        return standardError
                     }
-                    return try await standardError
                 }
             }
         }
