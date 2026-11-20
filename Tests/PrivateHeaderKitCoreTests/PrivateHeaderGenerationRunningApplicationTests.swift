@@ -1,11 +1,11 @@
 import Foundation
 import PrivateHeaderKitHelperProtocol
 import Testing
-@testable import PrivateHeaderKitCore
+@testable import PrivateHeaderKitSourceInspection
 
 #if canImport(Darwin)
 @Suite struct PrivateHeaderGenerationRunningApplicationTests {
-    typealias Resolver = PrivateHeaderGeneration.RunningApplicationResolver
+    typealias Resolver = RunningApplicationResolver
 
     @Test func bundleSelectionInspectsOnlyMatchingExecutableCandidatesAndConfirmsMainPath() throws {
         let fixture = try RunningApplicationFixture()
@@ -142,7 +142,7 @@ import Testing
 private enum FixtureFailure: Error { case unreadable, unexpected }
 
 private final class RunningApplicationFixture {
-    typealias Resolver = PrivateHeaderGeneration.RunningApplicationResolver
+    typealias Resolver = RunningApplicationResolver
     let directory: URL
     let applicationBundle: URL
     let executableName: String

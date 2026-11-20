@@ -1,6 +1,7 @@
 import Foundation
 import PrivateHeaderKitCore
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 import PrivateHeaderKitTestSupport
 import PrivateHeaderKitTooling
 import Testing
@@ -376,7 +377,7 @@ struct PrivateHeaderKitSSHGenerationTests {
     let fixture = try SSHGenerationFixture()
     defer { fixture.cleanup() }
     let snapshot = try JSONDecoder().decode(
-      PrivateHeaderGeneration.DeviceSourceSnapshot.self, from: fixture.snapshotData
+      DeviceSourceSnapshot.self, from: fixture.snapshotData
     )
     let helper = fixture.root.appendingPathComponent("privateheaderkit-device-helper")
     let request = PrivateHeaderKitGenerationRequest(
@@ -484,7 +485,7 @@ private struct SSHGenerationFixture: Sendable {
     try PropertyListSerialization.data(
       fromPropertyList: ["ProductVersion": "26.0.1", "ProductBuildVersion": "23A355"], format: .binary, options: 0
     ).write(to: versionURL)
-    snapshotData = try JSONEncoder().encode(PrivateHeaderGeneration.DeviceSourceSnapshot.collect(
+    snapshotData = try JSONEncoder().encode(DeviceSourceSnapshot.collect(
       systemRoot: systemRoot, architecture: "cpu16777228-sub2",
       inventory: .init(cacheUUID: cacheUUID, imagePaths: ["/usr/lib/libobjc.A.dylib"])
     ))
