@@ -1,21 +1,6 @@
 import ArgumentParser
 import Foundation
 
-struct PrivateHeaderKitDecompileCommand: Equatable, Sendable {
-    enum Source: Equatable, Sendable {
-        case binary(String)
-        case sharedCache(path: String, image: String)
-    }
-
-    let source: Source
-    let symbol: String
-    let ghidraHome: String?
-    let ipsw: String
-    let processor: String?
-    let timeout: Int32
-    let outputPath: String?
-}
-
 struct PrivateHeaderKitDecompileArguments: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "decompile",
@@ -36,12 +21,12 @@ struct PrivateHeaderKitDecompileArguments: ParsableCommand {
     @Option(name: .customLong("output"), help: "Write pseudocode to a new file instead of standard output.")
     var outputPath: String?
 
-    mutating func validate() throws { _ = try command() }
+    mutating func validate() throws { _ = try options() }
 
-    func command() throws -> PrivateHeaderKitDecompileCommand {
+    func options() throws -> DecompileCommand.Options {
         guard !symbol.isEmpty else { throw ValidationError("--symbol must not be empty") }
         guard timeout > 0 else { throw ValidationError("--timeout must be greater than zero") }
-        let source: PrivateHeaderKitDecompileCommand.Source
+        let source: DecompileCommand.Source
         switch (binary, sharedCache, image) {
         case (.some(let binary), nil, nil) where !binary.isEmpty:
             source = .binary(binary)

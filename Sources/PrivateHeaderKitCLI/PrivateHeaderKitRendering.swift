@@ -451,15 +451,15 @@ func renderPrivateHeaderKitRunSummary(
 }
 
 func renderPrivateHeaderKitSimulatorPreparation(
-    _ command: PrivateHeaderKitGenerateCommand,
+    _ options: GenerateCommand.Options,
     outputLogger: PrivateHeaderKitOutputLogger
 ) {
-    outputLogger("Preparing simulator for \(command.platform.rawValue) \(command.version)...")
+    outputLogger("Preparing simulator for \(options.platform.rawValue) \(options.version)...")
 }
 
 func renderPrivateHeaderKitSimulatorReady(
-    _ resolution: PrivateHeaderKitSimulatorResolution,
-    command: PrivateHeaderKitGenerateCommand,
+    _ resolution: SimulatorResolution,
+    command options: GenerateCommand.Options,
     outputLogger: PrivateHeaderKitOutputLogger
 ) {
     let description: String
@@ -468,7 +468,7 @@ func renderPrivateHeaderKitSimulatorReady(
         description = "\(resolution.deviceName) (UDID: \(resolution.deviceUDID))"
     case .runOwned:
         description =
-            "temporary \(command.platform.rawValue) \(resolution.runtimeVersion) device "
+            "temporary \(options.platform.rawValue) \(resolution.runtimeVersion) device "
             + "(UDID: \(resolution.deviceUDID))"
     }
     outputLogger("Simulator ready: \(description)")
@@ -483,7 +483,7 @@ func renderPrivateHeaderKitSimulatorCleanup(
 }
 
 func renderPrivateHeaderKitCommandOutcome(
-    _ outcome: PrivateHeaderKitCommandOutcome,
+    _ outcome: GenerationOutcome,
     outputLogger: PrivateHeaderKitOutputLogger,
     errorLogger: PrivateHeaderKitOutputLogger
 ) {

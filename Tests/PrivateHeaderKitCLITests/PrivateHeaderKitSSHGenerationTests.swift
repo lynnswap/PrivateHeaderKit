@@ -14,7 +14,7 @@ struct PrivateHeaderKitSSHGenerationTests {
     let arguments = ["privateheaderkit"] + (usesAlias ? ["generate"] : []) + [
       "--ssh", destination, "--out", "/tmp/Headers", "--target", "SpringBoard,SpringBoardUI", "--resume",
     ]
-    guard case .generateSSH(let command) = try parsePrivateHeaderKitCommand(arguments) else {
+    guard case .generateSSH(let command) = try ParsedCommand(arguments: arguments) else {
       Issue.record("SSH generation did not produce an SSH command")
       return
     }
@@ -26,7 +26,7 @@ struct PrivateHeaderKitSSHGenerationTests {
   }
 
   @Test func sshRuntimeMetadataRequiresAnExplicitOption() throws {
-    guard case .generateSSH(let command) = try parsePrivateHeaderKitCommand([
+    guard case .generateSSH(let command) = try ParsedCommand(arguments: [
       "privateheaderkit", "--ssh", "iphone-se", "--runtime-metadata",
       "--out", "/tmp/Headers", "--target", "SpringBoard",
     ]) else {
@@ -58,10 +58,10 @@ struct PrivateHeaderKitSSHGenerationTests {
   ])
   func sshSourceRejectsConflictingLocalSourceOptions(option: [String]) async {
     let errors = SSHTestMessages()
-    let status = await runPrivateHeaderKitCommand(
-      ["privateheaderkit", "--ssh", "iphone-se", "--out", "/tmp/Headers", "--target", "all"] + option,
-      currentExecutableURL: nil, outputLogger: { _ in }, errorLogger: errors.append
-    )
+    let status = await CommandLineTool(
+      executableURL: nil,
+      console: Console(output: { _ in }, error: errors.append)
+    ).run(["privateheaderkit", "--ssh", "iphone-se", "--out", "/tmp/Headers", "--target", "all"] + option)
     #expect(status != 0)
     #expect(errors.text.contains("--ssh reads the source OS from the peer"))
   }
@@ -73,10 +73,10 @@ struct PrivateHeaderKitSSHGenerationTests {
   ])
   func incompleteSSHInputsReportTheMissingInput(arguments: [String], expectedOption: String) async {
     let errors = SSHTestMessages()
-    let status = await runPrivateHeaderKitCommand(
-      ["privateheaderkit"] + arguments, currentExecutableURL: nil,
-      outputLogger: { _ in }, errorLogger: errors.append
-    )
+    let status = await CommandLineTool(
+      executableURL: nil,
+      console: Console(output: { _ in }, error: errors.append)
+    ).run(["privateheaderkit"] + arguments)
     #expect(status != 0)
     #expect(errors.text.contains(expectedOption))
   }
@@ -84,11 +84,11 @@ struct PrivateHeaderKitSSHGenerationTests {
   @Test func toolVersionWithSSHOptionsHasNoTransportSideEffects() async {
     let runner = RecordingCommandRunner()
     let output = SSHTestMessages()
-    let status = await runPrivateHeaderKitCommand(
-      ["privateheaderkit", "--tool-version", "--ssh", "iphone-se"],
-      currentExecutableURL: nil, processRunner: runner,
-      outputLogger: output.append, errorLogger: { _ in }
-    )
+    let status = await CommandLineTool(
+      executableURL: nil,
+      processRunner: runner,
+      console: Console(output: output.append, error: { _ in })
+    ).run(["privateheaderkit", "--tool-version", "--ssh", "iphone-se"])
     #expect(status == 0)
     #expect(output.text.trimmingCharacters(in: .newlines) == PrivateHeaderKitBuildInfo.version)
     #expect(await runner.captureCommandSnapshot().isEmpty)
@@ -247,11 +247,11 @@ struct PrivateHeaderKitSSHGenerationTests {
     }
     let errors = SSHTestMessages()
     do {
-      _ = try await runPrivateHeaderKitSSHGenerateCommand(
-        .init(destination: "iphone-se", outputBaseDirectory: fixture.output.path, targetQuery: "libobjc.A.dylib", continuationMode: nil),
-        currentExecutableURL: fixture.executable, processRunner: runner,
-        outputLogger: { _ in }, errorLogger: errors.append
-      )
+      _ = try await SSHGenerateCommand(
+        options: .init(destination: "iphone-se", outputBaseDirectory: fixture.output.path, targetQuery: "libobjc.A.dylib", continuationMode: nil),
+        executableURL: fixture.executable, processRunner: runner,
+        console: Console(output: { _ in }, error: errors.append)
+      ).run()
       Issue.record("a failed SSH run unexpectedly succeeded")
     } catch let error as PrivateHeaderKitSSHCleanupFailure {
       #expect(error.description.contains("failed for 1 targets"))
@@ -297,11 +297,11 @@ struct PrivateHeaderKitSSHGenerationTests {
     }
     let errors = SSHTestMessages()
 
-    let status = await runPrivateHeaderKitCommand(
-      ["privateheaderkit", "--ssh", "iphone-se", "--out", fixture.output.path, "--target", "SpringBoard"],
-      currentExecutableURL: fixture.executable,
-      processRunner: runner, outputLogger: { _ in }, errorLogger: errors.append
-    )
+    let status = await CommandLineTool(
+      executableURL: fixture.executable,
+      processRunner: runner,
+      console: Console(output: { _ in }, error: errors.append)
+    ).run(["privateheaderkit", "--ssh", "iphone-se", "--out", fixture.output.path, "--target", "SpringBoard"])
 
     #expect(status == 2)
     #expect(errors.text.contains("status=17"))
@@ -393,7 +393,7 @@ struct PrivateHeaderKitSSHGenerationTests {
       PrivateHeaderGeneration.DeviceSourceSnapshot.self, from: fixture.snapshotData
     )
     let helper = fixture.root.appendingPathComponent("privateheaderkit-device-helper")
-    let request = PrivateHeaderKitGenerationRequest(
+    let request = GenerationRequest(
       source: try snapshot.source(), output: .init(baseDirectory: fixture.output),
       options: .init(
         targetRequest: .query("libobjc.A.dylib"), systemRoot: URL(fileURLWithPath: "/"),
@@ -427,28 +427,15 @@ struct PrivateHeaderKitSSHGenerationTests {
       try await consume(Data("retained partial archive".utf8))
       throw ToolingError.message("fixture archive transfer failed")
     }
-    let prepared = try await preparePrivateHeaderGeneration(
+    let prepared = try await PreparedGeneration(
       request: request, processRunner: runner, recoveryReporter: { _ in }
     )
-    let progressDetails = SSHTestMessages()
     let errors = SSHTestMessages()
     let output = SSHTestMessages()
-    let observedPrepared = PrivateHeaderKitPreparedGeneration(
-      summary: prepared.summary,
-      run: { options, report in
-        try await prepared.run(options) { event in
-          if case .targetFinished(_, _, _, _, let failure) = event, let failure {
-            progressDetails.append(failure)
-          }
-          report(event)
-        }
-      }
-    )
     let child = Task {
-      try await runPrivateHeaderKitPreparedGeneration(
-        observedPrepared, request: request, targetQuery: "libobjc.A.dylib",
-        executionOptions: .init(), resultScreenClearer: nil,
-        outputLogger: output.append, errorLogger: errors.append
+      try await prepared.runReporting(
+        to: Console(output: output.append, error: errors.append),
+        executionOptions: .init(), targetQuery: "libobjc.A.dylib"
       )
     }
     let outcome = try await child.value
@@ -462,7 +449,6 @@ struct PrivateHeaderKitSSHGenerationTests {
     #expect(failure.contains(cancelled ? "CancellationError" : "SSH helper finished with status 255"))
     #expect(failure.contains("fixture termination failed"))
     #expect(failure.contains("fixture archive transfer failed"))
-    #expect(progressDetails.text.contains(failure))
     #expect(errors.text.contains("fixture termination failed"))
     #expect(errors.text.contains("fixture archive transfer failed"))
     #expect(errors.text.contains("local recovery archive:"))

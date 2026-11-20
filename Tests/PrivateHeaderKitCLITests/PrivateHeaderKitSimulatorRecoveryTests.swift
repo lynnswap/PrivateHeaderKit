@@ -286,13 +286,13 @@ struct PrivateHeaderKitSimulatorRecoveryTests {
                 throw ToolingError.commandFailed(command: command, status: 1, stderr: "boot failed")
             }
         }
-        let prepared = try await preparePrivateHeaderGeneration(
+        let prepared = try await PreparedGeneration(
             request: request,
             processRunner: runner,
             recoveryReporter: { _ in }
         )
         let operation = Task {
-            try await bootGate.track { try await prepared.run(.init(continuation: .restart), { _ in }) }
+            try await bootGate.track { try await prepared.run(.init(continuation: .restart), progressReporter: { _ in }) }
         }
         try #require(await bootGate.waitUntilEntered())
         let pendingCommands = await runner.streamingCommandSnapshot().map(\.command)
@@ -387,13 +387,13 @@ private struct SimulatorRecoveryFixture: Sendable {
         )
     }
 
-    func generationRequest() throws -> PrivateHeaderKitGenerationRequest {
+    func generationRequest() throws -> GenerationRequest {
         for name in ["Foo", "Bar"] {
             let framework = runtimeRoot.appendingPathComponent("System/Library/Frameworks/\(name).framework", isDirectory: true)
             try FileManager.default.createDirectory(at: framework, withIntermediateDirectories: true)
             try Data().write(to: framework.appendingPathComponent(name))
         }
-        return PrivateHeaderKitGenerationRequest(
+        return GenerationRequest(
             source: try .init(platform: .iOS, version: "27.0", build: "24A1", metadataIsSeed: false),
             output: .init(baseDirectory: root.appendingPathComponent("Output", isDirectory: true)),
             options: .init(

@@ -3,83 +3,148 @@ import PrivateHeaderKitCore
 import PrivateHeaderKitHelperProtocol
 import PrivateHeaderKitTooling
 
-struct PrivateHeaderKitGenerationRequest: Sendable {
+struct GenerationRequest: Sendable {
     let source: PrivateHeaderGeneration.Source
     let output: PrivateHeaderGeneration.Output
     let options: PrivateHeaderGeneration.Options
 }
 
-struct PrivateHeaderKitPreparedGeneration: Sendable {
+/// How a generation command ended: its exit status and, when a run started, that run's status.
+struct GenerationOutcome: Equatable, Sendable {
+    let exitCode: Int32
+    let runStatus: PrivateHeaderGeneration.RunStatus?
+    var failureSummary: String? = nil
+}
+
+/// A generation whose targets are resolved and whose helpers run through one process runner.
+struct PreparedGeneration: Sendable {
     enum Summary: Equatable, Sendable {
         case noUnfinishedRun
         case unfinished(PrivateHeaderGeneration.ResumeSummary)
         case incompatibleResume(reason: String)
     }
 
-    typealias LoadSummary = @Sendable () async throws -> Summary
-    typealias Run = @Sendable (
-        PrivateHeaderGeneration.ExecutionOptions,
-        @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
-    ) async throws -> PrivateHeaderGeneration.Result
+    let request: GenerationRequest
+    private let executor: PrivateHeaderGeneration.GenerationExecutor
+    private let preparedPlan: PrivateHeaderGeneration.GenerationExecutor.PreparedPlan
 
-    let summary: LoadSummary
-    let run: Run
-}
+    /// Resolves the targets that `request` selects.
+    init(
+        request: GenerationRequest,
+        processRunner: any CommandRunning,
+        recoveryReporter: @escaping PrivateHeaderKitOutputLogger
+    ) async throws {
+        let executor = PrivateHeaderGeneration.GenerationExecutor(
+            rawDumpRunner: { invocation in
+                try await runPrivateHeaderKitRawDump(
+                    invocation,
+                    processRunner: processRunner,
+                    recoveryReporter: recoveryReporter
+                )
+            },
+            sharedCacheInventoryRunner: { invocation in
+                try await capturePrivateHeaderKitSharedCacheInventory(
+                    invocation,
+                    processRunner: processRunner,
+                    recoveryReporter: recoveryReporter
+                )
+            }
+        )
+        self.request = request
+        self.executor = executor
+        preparedPlan = try await executor.prepare(
+            PrivateHeaderGeneration.makePlan(
+                source: request.source,
+                output: request.output,
+                options: request.options
+            )
+        )
+    }
 
-/// Resolves the request's targets and returns the generation that runs them through
-/// `processRunner`.
-func preparePrivateHeaderGeneration(
-    request: PrivateHeaderKitGenerationRequest,
-    processRunner: any CommandRunning,
-    recoveryReporter: @escaping PrivateHeaderKitOutputLogger
-) async throws -> PrivateHeaderKitPreparedGeneration {
-    let executor = PrivateHeaderGeneration.GenerationExecutor(
-        rawDumpRunner: { invocation in
-            try await runPrivateHeaderKitRawDump(
-                invocation,
-                processRunner: processRunner,
-                recoveryReporter: recoveryReporter
-            )
-        },
-        sharedCacheInventoryRunner: { invocation in
-            try await capturePrivateHeaderKitSharedCacheInventory(
-                invocation,
-                processRunner: processRunner,
-                recoveryReporter: recoveryReporter
-            )
+    /// The unfinished all-target run that running this generation would continue, if any.
+    func summary() async throws -> Summary {
+        do {
+            guard let summary = try await executor.availableResumeSummary(for: preparedPlan) else {
+                return .noUnfinishedRun
+            }
+            return .unfinished(summary)
+        } catch let error as PrivateHeaderGeneration.GenerationError {
+            switch error {
+            case .incompatibleResume(let reason):
+                return .incompatibleResume(reason: reason)
+            default:
+                throw error
+            }
         }
-    )
-    let plan = PrivateHeaderGeneration.makePlan(
-        source: request.source,
-        output: request.output,
-        options: request.options
-    )
-    let preparedPlan = try await executor.prepare(plan)
-    return PrivateHeaderKitPreparedGeneration(
-        summary: {
-            do {
-                guard let summary = try await executor.availableResumeSummary(
-                    for: preparedPlan
-                ) else {
-                    return .noUnfinishedRun
-                }
-                return .unfinished(summary)
-            } catch let error as PrivateHeaderGeneration.GenerationError {
-                switch error {
-                case .incompatibleResume(let reason):
-                    return .incompatibleResume(reason: reason)
-                default:
-                    throw error
+    }
+
+    func run(
+        _ executionOptions: PrivateHeaderGeneration.ExecutionOptions,
+        progressReporter: @escaping PrivateHeaderGeneration.GenerationExecutor.ProgressReporter
+    ) async throws -> PrivateHeaderGeneration.Result {
+        try await executor.run(
+            preparedPlan.withExecutionOptions(executionOptions),
+            progressReporter: progressReporter
+        )
+    }
+
+    /// Runs the generation and writes its progress and result to `console`.
+    ///
+    /// `clearScreen` runs before the result when the wizard shows it on a fresh screen.
+    func runReporting(
+        to console: Console,
+        executionOptions: PrivateHeaderGeneration.ExecutionOptions,
+        targetQuery: String,
+        clearScreen: (@Sendable () -> Void)? = nil
+    ) async throws -> GenerationOutcome {
+        do {
+            let result = try await run(
+                executionOptions,
+                progressReporter: privateHeaderKitProgressReporter(
+                    artifactDirectory: request.output.artifactDirectory(for: request.source),
+                    outputLogger: console.output,
+                    failureLogger: console.error
+                )
+            )
+            clearScreen?()
+            renderPrivateHeaderKitRunSummary(
+                result.summary,
+                sourceDisplayName: result.plan.source.label.displayName,
+                targetQuery: targetQuery,
+                title: "Generation completed",
+                outputLogger: console.output
+            )
+            return GenerationOutcome(exitCode: 0, runStatus: result.summary.status)
+        } catch let error as PrivateHeaderGeneration.GenerationError {
+            let cancellationRequested = Task.isCancelled
+            if cancellationRequested {
+                guard case .runInterrupted = error else {
+                    throw CancellationError()
                 }
             }
-        },
-        run: { executionOptions, progressReporter in
-            try await executor.run(
-                preparedPlan.withExecutionOptions(executionOptions),
-                progressReporter: progressReporter
+            let runStatus = renderPrivateHeaderKitGenerationError(
+                error,
+                sourceDisplayName: request.source.label.displayName,
+                targetQuery: targetQuery,
+                screenClearer: clearScreen,
+                outputLogger: console.error
+            )
+            return GenerationOutcome(
+                exitCode: cancellationRequested ? 130 : 2,
+                runStatus: runStatus,
+                failureSummary: String(describing: error)
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            console.error("error: \(error)")
+            return GenerationOutcome(
+                exitCode: 2,
+                runStatus: nil,
+                failureSummary: String(describing: error)
             )
         }
-    )
+    }
 }
 
 func runPrivateHeaderKitRawDump(

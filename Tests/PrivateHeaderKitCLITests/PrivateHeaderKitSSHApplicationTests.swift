@@ -9,7 +9,7 @@ import Testing
 struct PrivateHeaderKitSSHApplicationTests {
   @Test(arguments: [["--app", "com.example.Sample"], ["--pid", "1234"]])
   func applicationSelectionUsesTheExistingSSHFlow(selector: [String]) throws {
-    let parsed = try parsePrivateHeaderKitCommand(["privateheaderkit", "--ssh", "device", "--out", "/tmp/output"] + selector + ["--include-binary", "--resume"])
+    let parsed = try ParsedCommand(arguments: ["privateheaderkit", "--ssh", "device", "--out", "/tmp/output"] + selector + ["--include-binary", "--resume"])
     guard case .generateSSH(let command) = parsed else { Issue.record("expected SSH generation"); return }
     #expect(command.application != nil)
     #expect(command.includesAnalysisBinary)
@@ -24,7 +24,7 @@ struct PrivateHeaderKitSSHApplicationTests {
   ])
   func conflictingApplicationOptionsFailBeforeConnecting(options: [String]) {
     #expect(throws: (any Error).self) {
-      try parsePrivateHeaderKitCommand(["privateheaderkit", "--ssh", "device", "--out", "/tmp/output"] + options)
+      try ParsedCommand(arguments: ["privateheaderkit", "--ssh", "device", "--out", "/tmp/output"] + options)
     }
   }
 
