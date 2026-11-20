@@ -1,58 +1,25 @@
 import Foundation
-import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 
-extension PrivateHeaderGeneration {
-  /// Metadata and a target catalog collected by the helper on the source device.
-  package struct DeviceSourceSnapshot: Codable, Hashable, Sendable {
-    package let schemaVersion: Int
-    package let producerVersion: String
-    package let version: String
-    package let build: String
-    package let architecture: String
-    package let cacheUUID: UUID
-    package let metadataIsSeed: Bool
-    private let catalogData: Data
-
-    package static func collect(
-      systemRoot: URL = URL(fileURLWithPath: "/", isDirectory: true),
-      architecture: String,
-      inventory: PrivateHeaderKitSharedCacheInventory
-    ) throws -> Self {
-      let systemVersion = try PrivateHeaderKitOperatingSystemVersion.collect(systemRoot: systemRoot)
-      let catalog = try TargetDiscovery.discover(
-        in: systemRoot, sharedCacheImagePaths: inventory.imagePaths
-      )
-      return Self(
-        schemaVersion: 1,
-        producerVersion: PrivateHeaderKitBuildInfo.version,
-        version: systemVersion.version,
-        build: systemVersion.build,
-        architecture: architecture,
-        cacheUUID: inventory.cacheUUID,
-        metadataIsSeed: systemVersion.metadataIsSeed,
-        catalogData: try JSONEncoder().encode(catalog)
-      )
+extension DeviceSourceSnapshot {
+  package func source() throws -> PrivateHeaderGeneration.Source {
+    guard schemaVersion == 1 else {
+      throw CocoaError(.coderReadCorrupt, userInfo: [
+        NSLocalizedDescriptionKey: "unsupported device source schema \(schemaVersion)"
+      ])
     }
+    return try PrivateHeaderGeneration.Source(
+      platform: .iOS, version: version, build: build, metadataIsSeed: metadataIsSeed,
+      imageVariant: .iPhoneOS(architecture: architecture, cacheUUID: cacheUUID)
+    )
+  }
 
-    package func source() throws -> Source {
-      guard schemaVersion == 1 else {
-        throw CocoaError(.coderReadCorrupt, userInfo: [
-          NSLocalizedDescriptionKey: "unsupported device source schema \(schemaVersion)"
-        ])
-      }
-      return try Source(
-        platform: .iOS, version: version, build: build, metadataIsSeed: metadataIsSeed,
-        imageVariant: .iPhoneOS(architecture: architecture, cacheUUID: cacheUUID)
-      )
+  func catalog() throws -> TargetDiscovery.Catalog {
+    _ = try source()
+    let catalog = try JSONDecoder().decode(TargetDiscovery.Catalog.self, from: catalogData)
+    for target in catalog.allExecutionTargets {
+      _ = try PrivateHeaderGeneration.ArtifactPath(target.artifactRoot)
     }
-
-    func catalog() throws -> TargetDiscovery.Catalog {
-      _ = try source()
-      let catalog = try JSONDecoder().decode(TargetDiscovery.Catalog.self, from: catalogData)
-      for target in catalog.allExecutionTargets {
-        _ = try ArtifactPath(target.artifactRoot.rawValue)
-      }
-      return catalog
-    }
+    return catalog
   }
 }

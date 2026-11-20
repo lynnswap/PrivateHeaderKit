@@ -106,10 +106,17 @@ let package = Package(
             ]
         ),
         .target(
-            name: "PrivateHeaderKitCore",
+            name: "PrivateHeaderKitSourceInspection",
             dependencies: [
                 "PrivateHeaderKitHelperProtocol",
                 "PrivateHeaderKitExecutableResolution",
+            ]
+        ),
+        .target(
+            name: "PrivateHeaderKitCore",
+            dependencies: [
+                "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitSourceInspection",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -118,6 +125,7 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitSourceInspection",
                 "PrivateHeaderKitTooling",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(
@@ -144,7 +152,7 @@ let package = Package(
         .executableTarget(
             name: "PrivateHeaderKitDeviceHelper",
             dependencies: [
-                "PrivateHeaderKitHelperProtocol", "PrivateHeaderKitRawDumpCore", "PrivateHeaderKitCore",
+                "PrivateHeaderKitHelperProtocol", "PrivateHeaderKitRawDumpCore", "PrivateHeaderKitSourceInspection",
             ]
         ),
         .executableTarget(
@@ -202,6 +210,7 @@ let package = Package(
             dependencies: [
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitSourceInspection",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -222,6 +231,7 @@ let package = Package(
                 "PrivateHeaderKitCLI",
                 "PrivateHeaderKitCore",
                 "PrivateHeaderKitHelperProtocol",
+                "PrivateHeaderKitSourceInspection",
                 "PrivateHeaderKitTestSupport",
                 "PrivateHeaderKitTooling",
             ]

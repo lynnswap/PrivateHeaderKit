@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 
 extension PrivateHeaderGeneration {
   package struct ApplicationIdentity: Codable, Hashable, Sendable {
@@ -55,7 +56,7 @@ extension PrivateHeaderGeneration {
       let target = TargetDiscovery.DiscoveredTarget(
         candidate: candidate,
         source: .application(logicalImagePath: logicalImagePath),
-        artifactRoot: try ArtifactPath("Applications/" + identity.storageIdentifier + "/Headers"),
+        artifactRoot: "Applications/" + identity.storageIdentifier + "/Headers",
         inputPath: recoveredBinaryPath,
         runtimeInputPath: recoveredBinaryPath
       )

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import PrivateHeaderKitCore
+@testable import PrivateHeaderKitSourceInspection
 
 @Suite
 struct PrivateHeaderGenerationTargetDiscoveryTests {
@@ -26,7 +27,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             withDestinationURL: root.appendingPathComponent("usr/lib/libobjc.A.dylib")
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(catalog.groups.map(\.selectionCandidate.displayName) == [
             "AVFoundation",
@@ -46,7 +47,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             .usrLibDylib,
             .usrLibDylib,
         ])
-        #expect(catalog.groups.compactMap(\.primaryTarget?.artifactRoot.rawValue) == [
+        #expect(catalog.groups.compactMap(\.primaryTarget?.artifactRoot) == [
             "Frameworks/AVFoundation",
             "Frameworks/UIKit",
             "PrivateFrameworks/SafariShared",
@@ -83,7 +84,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createLoadableBundle("System/Library/CoreServices/Disk.app", in: root)
         try createLoadableBundle("System/Library/PreferenceBundles/Disk.bundle", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(catalog.groups.map(\.selectionCandidate.displayName) == [
             "Disk",
@@ -102,13 +103,13 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try writeBundleInfo(diskPath, executableName: "ActualExecutable", in: root)
         try writeFile(diskPath + "/ActualExecutable", in: root)
 
-        let admitted = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let admitted = try TargetDiscovery.discover(in: root)
         #expect(admitted.groups.map(\.selectionCandidate.displayName) == ["CustomDisk"])
 
         let cacheOnlyPath = "System/Library/Frameworks/CustomCacheOnly.framework"
         try createDirectory(cacheOnlyPath, in: root)
         try writeBundleInfo(cacheOnlyPath, executableName: "ActualExecutable", in: root)
-        let cacheOnly = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let cacheOnly = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: [
                 "/System/Library/Frameworks/CustomCacheOnly.framework/ActualExecutable"
@@ -120,7 +121,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createDirectory(fallbackPath, in: root)
         try writeBundleInfo(fallbackPath, executableName: "ActualExecutable", in: root)
         try writeFile(fallbackPath + "/CustomFallback", in: root)
-        let basenameFallback = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let basenameFallback = try TargetDiscovery.discover(in: root)
         #expect(basenameFallback.groups.map(\.selectionCandidate.displayName) == [
             "CustomDisk", "CustomFallback",
         ])
@@ -134,7 +135,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             try createDirectory("System/Library/Frameworks/\(name).framework", in: root)
         }
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let catalog = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: [
                 "/System/Library/Frameworks/Flat.framework/Flat",
@@ -165,7 +166,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             in: root
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let catalog = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: [
                 "/System/Library/Frameworks/PublicShellExtra.framework/PublicShell",
@@ -187,7 +188,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createLoadableBundle("System/Library/CoreServices/Live.app", in: root)
         try createLoadableBundle("System/Library/PreferenceBundles/Live.bundle", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(catalog.groups.map(\.selectionCandidate.displayName) == [
             "CoreServices/Live.app",
@@ -206,7 +207,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try writeFile(parent + "/PlugIns/ShellExtension.appex/Resources/data", in: root)
         try writeFile(parent + "/XPCServices/ShellService.xpc/Resources/data", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
         let group = try #require(catalog.groups.first)
 
         #expect(group.primaryTarget?.candidate.displayName == "Parent")
@@ -223,7 +224,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         let parent = "System/Library/Frameworks/Foo.framework"
         try createDirectory(parent + "/XPCServices/Foo.xpc", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let catalog = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: [
                 "/System/Library/Frameworks/Foo.framework/Versions/A/Foo"
@@ -247,7 +248,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createDirectory(parent, in: root)
         try createLoadableBundle(parent + "/XPCServices/LiveService.xpc", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
         let group = try #require(catalog.groups.first)
 
         #expect(group.selectionCandidate.displayName == "Shell")
@@ -275,7 +276,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             withDestinationPath: "Missing"
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
         #expect(catalog.groups.isEmpty)
     }
 
@@ -296,7 +297,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             in: root
         )
         try createDirectory("System/Library/CoreServices/Cache.app", in: root)
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let catalog = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: [
                 "/System/Library/CoreServices/Cache.app/Contents/MacOS/Cache"
@@ -318,11 +319,11 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "/System/Library/Frameworks/Cache.framework/Versions/A/Cache",
             "/System/Library/Frameworks/Cache.framework/Cache",
         ]
-        let first = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let first = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: aliases
         )
-        let second = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let second = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: Array(aliases.reversed())
         )
@@ -345,13 +346,13 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createLoadableBundle("System/Library/CoreServices/Siri.app", in: root)
         try createLoadableBundle("System/Library/CoreServices/Siri.bundle", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(catalog.groups.map(\.selectionCandidate.identifier) == [
             "system-library:CoreServices/Siri.app",
             "system-library:CoreServices/Siri.bundle",
         ])
-        #expect(catalog.groups.compactMap(\.primaryTarget?.artifactRoot.rawValue) == [
+        #expect(catalog.groups.compactMap(\.primaryTarget?.artifactRoot) == [
             "SystemLibrary/CoreServices/Siri.app",
             "SystemLibrary/CoreServices/Siri.bundle",
         ])
@@ -368,7 +369,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createLoadableBundle("System/Library/PreferenceBundles/Foo.bundle", in: root)
         try writeFile("usr/lib/libobjc.A.dylib", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         let framework = try #require(
             catalog.groups.first { $0.selectionCandidate.displayName == "UIKit" }?.primaryTarget
@@ -473,7 +474,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             withDestinationPath: "../PrivateFrameworks/SFSymbols.framework/Versions/A/Resources/CoreGlyphs.bundle"
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
         let frameworkGroup = try #require(
             catalog.groups.first { $0.selectionCandidate.displayName == "WebKit" }
         )
@@ -485,14 +486,14 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         )
 
         #expect(frameworkTarget.candidate.identifier == "framework:WebKit.framework")
-        #expect(frameworkTarget.artifactRoot.rawValue == "Frameworks/WebKit")
+        #expect(frameworkTarget.artifactRoot == "Frameworks/WebKit")
         #expect(frameworkTarget.inputPath == frameworkLink.path)
         #expect(frameworkTarget.runtimeInputPath == "/System/Library/Frameworks/WebKit.framework")
         #expect(frameworkGroup.childTargets.map(\.candidate.displayName) == [
             "Frameworks/WebKit.framework/XPCServices/WebKitHelper.xpc",
         ])
         #expect(bundleTarget.candidate.identifier == "system-library:CoreServices/CoreGlyphs.bundle")
-        #expect(bundleTarget.artifactRoot.rawValue == "SystemLibrary/CoreServices/CoreGlyphs.bundle")
+        #expect(bundleTarget.artifactRoot == "SystemLibrary/CoreServices/CoreGlyphs.bundle")
         #expect(bundleTarget.inputPath == bundleLink.path)
         #expect(bundleTarget.runtimeInputPath == "/System/Library/CoreServices/CoreGlyphs.bundle")
     }
@@ -520,7 +521,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             ofItemAtPath: protectedDirectory.path
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(
             catalog.groups.contains {
@@ -542,7 +543,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             failingLastPathComponent: protectedName
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let catalog = try TargetDiscovery.discover(
             in: root,
             fileManager: fileManager
         )
@@ -575,7 +576,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             in: root
         )
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
         let framework = try #require(
             catalog.groups.first { $0.selectionCandidate.displayName == "Foo" }
         )
@@ -589,14 +590,14 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             "Frameworks/Foo.framework/PlugIns/FooExtension.appex",
             "Frameworks/Foo.framework/XPCServices/FooHelper.xpc",
         ])
-        #expect(framework.childTargets.map(\.artifactRoot.rawValue) == [
+        #expect(framework.childTargets.map(\.artifactRoot) == [
             "Frameworks/Foo/PlugIns/FooExtension.appex",
             "Frameworks/Foo/XPCServices/FooHelper.xpc",
         ])
         #expect(systemBundle.childTargets.map(\.candidate.displayName) == [
             "PreferenceBundles/Prefs.bundle/XPCServices/PrefsHelper.xpc",
         ])
-        #expect(systemBundle.childTargets.map(\.artifactRoot.rawValue) == [
+        #expect(systemBundle.childTargets.map(\.artifactRoot) == [
             "SystemLibrary/PreferenceBundles/Prefs.bundle/XPCServices/PrefsHelper.xpc",
         ])
         #expect(catalog.resolverCandidates.map(\.displayName) == [
@@ -632,7 +633,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         let fileManager = FailingContentsFileManager(failingPath: plugInsURL.path)
 
         do {
-            _ = try PrivateHeaderGeneration.TargetDiscovery.discover(
+            _ = try TargetDiscovery.discover(
                 in: root,
                 fileManager: fileManager
             )
@@ -656,12 +657,12 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try createLoadableBundle("System/Library/PreferenceBundles/Foo.bundle", in: root)
         try writeFile("usr/lib/libobjc.A.dylib", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(
             catalog.resolver.resolve(try PrivateHeaderGeneration.TargetQuery(commaSeparated: "UIKit"))
                 == .selected(.targets([
-                    try PrivateHeaderGeneration.TargetCandidate(
+                    try TargetCandidate(
                         identifier: "framework:UIKit.framework",
                         displayName: "UIKit",
                         kind: .framework,
@@ -677,7 +678,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             catalog.resolver.resolve(
                 try PrivateHeaderGeneration.TargetQuery(commaSeparated: "PreferenceBundles/Foo.bundle")
             ) == .selected(.targets([
-                try PrivateHeaderGeneration.TargetCandidate(
+                try TargetCandidate(
                     identifier: "system-library:PreferenceBundles/Foo.bundle",
                     displayName: "PreferenceBundles/Foo.bundle",
                     kind: .systemBundle,
@@ -693,7 +694,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
                     commaSeparated: "/System/Library/PreferenceBundles/Foo.bundle"
                 )
             ) == .selected(.targets([
-                try PrivateHeaderGeneration.TargetCandidate(
+                try TargetCandidate(
                     identifier: "system-library:PreferenceBundles/Foo.bundle",
                     displayName: "PreferenceBundles/Foo.bundle",
                     kind: .systemBundle,
@@ -707,7 +708,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             catalog.resolver.resolve(
                 try PrivateHeaderGeneration.TargetQuery(commaSeparated: "usr/lib/libobjc.A.dylib")
             ) == .selected(.targets([
-                try PrivateHeaderGeneration.TargetCandidate(
+                try TargetCandidate(
                     identifier: "usr-lib:libobjc.A.dylib",
                     displayName: "libobjc.A.dylib",
                     kind: .usrLibDylib,
@@ -761,7 +762,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
             try? FileManager.default.removeItem(at: root)
         }
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(in: root)
+        let catalog = try TargetDiscovery.discover(in: root)
 
         #expect(catalog.groups.isEmpty)
         #expect(catalog.resolverCandidates.isEmpty)
@@ -775,7 +776,7 @@ struct PrivateHeaderGenerationTargetDiscoveryTests {
         try writeFile("usr/lib/libFilesystem.dylib", in: root)
         try writeFile("usr/lib/libBoth.dylib", in: root)
 
-        let catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+        let catalog = try TargetDiscovery.discover(
             in: root,
             sharedCacheImagePaths: [
                 "/usr/lib/libCacheOnly.dylib",

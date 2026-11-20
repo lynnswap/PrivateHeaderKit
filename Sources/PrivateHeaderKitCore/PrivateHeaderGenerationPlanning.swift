@@ -1,5 +1,6 @@
 import Foundation
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 
 extension PrivateHeaderGeneration.GenerationExecutor {
   static func preparePlan(
@@ -29,7 +30,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       sharedCacheCohort = nil
     }
 
-    let catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
+    let catalog: TargetDiscovery.Catalog
     if let application = plan.options.applicationSource {
       catalog = try application.catalog()
     } else if case .ssh = executionMode {
@@ -43,7 +44,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
       }
       catalog = try deviceSource.catalog()
     } else {
-      catalog = try PrivateHeaderGeneration.TargetDiscovery.discover(
+      catalog = try TargetDiscovery.discover(
         in: systemRoot,
         sharedCacheImagePaths: sharedCacheCohort?.imagePaths ?? []
       )
@@ -101,8 +102,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 extension PrivateHeaderGeneration.GenerationExecutor {
   fileprivate static func selectedExecutionTargets(
     request: PrivateHeaderGeneration.TargetRequest,
-    catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
-  ) throws -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
+    catalog: TargetDiscovery.Catalog
+  ) throws -> [TargetDiscovery.DiscoveredTarget] {
     switch request {
     case .allAvailable:
       return deduplicated(catalog.allExecutionTargets)
@@ -136,8 +137,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
 
   fileprivate static func expandTarget(
     identifier: String,
-    catalog: PrivateHeaderGeneration.TargetDiscovery.Catalog
-  ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
+    catalog: TargetDiscovery.Catalog
+  ) -> [TargetDiscovery.DiscoveredTarget] {
     for group in catalog.groups where group.selectionCandidate.identifier == identifier {
       return group.executionTargets
     }
@@ -145,8 +146,8 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   }
 
   fileprivate static func deduplicated(
-    _ targets: [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget]
-  ) -> [PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget] {
+    _ targets: [TargetDiscovery.DiscoveredTarget]
+  ) -> [TargetDiscovery.DiscoveredTarget] {
     var seen: Set<String> = []
     return targets.filter { seen.insert($0.candidate.identifier).inserted }
   }

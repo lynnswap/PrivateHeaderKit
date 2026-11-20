@@ -1,5 +1,6 @@
 import Foundation
 import PrivateHeaderKitHelperProtocol
+import PrivateHeaderKitSourceInspection
 import Testing
 
 @testable import PrivateHeaderKitCore
@@ -49,7 +50,7 @@ struct PrivateHeaderGenerationDeviceSourceTests {
     defer { fixture.cleanup() }
     let snapshot = try fixture.snapshot()
     let roundTrip = try JSONDecoder().decode(
-      PrivateHeaderGeneration.DeviceSourceSnapshot.self,
+      DeviceSourceSnapshot.self,
       from: JSONEncoder().encode(snapshot)
     )
     let source = try roundTrip.source()
@@ -145,7 +146,7 @@ private struct DeviceSourceFixture {
     try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0).write(to: url)
   }
 
-  func snapshot() throws -> PrivateHeaderGeneration.DeviceSourceSnapshot {
+  func snapshot() throws -> DeviceSourceSnapshot {
     try .collect(
       systemRoot: root, architecture: "cpu16777228-sub2",
       inventory: .init(cacheUUID: cacheUUID, imagePaths: [
