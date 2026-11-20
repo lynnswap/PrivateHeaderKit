@@ -1,7 +1,7 @@
 import Foundation
-import PrivateHeaderKitCore
 import PrivateHeaderKitHelperProtocol
 import PrivateHeaderKitRawDumpCore
+import PrivateHeaderKitSourceInspection
 
 @main
 struct PrivateHeaderKitDeviceHelperMain {
@@ -9,7 +9,7 @@ struct PrivateHeaderKitDeviceHelperMain {
     let arguments = Array(CommandLine.arguments.dropFirst())
     if arguments.first == PrivateHeaderKitHelperCommand.runningApplication.rawValue {
       do {
-        let report = try PrivateHeaderGeneration.RunningApplicationResolver.resolve(
+        let report = try RunningApplicationResolver.resolve(
           arguments: arguments,
           imageInventory: { pid in
             try LoadedProcessImages.withProcess(processIdentifier: pid) { try $0.images() }
@@ -43,7 +43,7 @@ struct PrivateHeaderKitDeviceHelperMain {
     if arguments == [PrivateHeaderKitHelperCommand.deviceSource.rawValue] {
       do {
         let inventory = try PrivateHeaderKitRawDumpCLI.deviceSharedCacheInventory()
-        let snapshot = try PrivateHeaderGeneration.DeviceSourceSnapshot.collect(
+        let snapshot = try DeviceSourceSnapshot.collect(
           architecture: PrivateHeaderKitRawDumpCLI.deviceCacheArchitecture(), inventory: inventory
         )
         let data = try JSONEncoder().encode(snapshot)
