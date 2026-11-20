@@ -1,3 +1,4 @@
+import PrivateHeaderKitSourceInspection
 import Testing
 
 @testable import PrivateHeaderKitCore
@@ -286,10 +287,10 @@ struct PrivateHeaderGenerationTargetResolverTests {
 
 private func candidate(
     _ displayName: String,
-    kind: PrivateHeaderGeneration.TargetKind,
+    kind: TargetKind,
     aliases: [String] = []
-) throws -> PrivateHeaderGeneration.TargetCandidate {
-    try PrivateHeaderGeneration.TargetCandidate(
+) throws -> TargetCandidate {
+    try TargetCandidate(
         identifier: "target.\(displayName)",
         displayName: displayName,
         kind: kind,

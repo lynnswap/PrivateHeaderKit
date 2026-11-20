@@ -1,4 +1,5 @@
 import Foundation
+import PrivateHeaderKitSourceInspection
 
 extension PrivateHeaderGeneration.GenerationExecutor {
   struct StagedArtifacts {
@@ -21,10 +22,10 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   ///   directory the target publishes from. Publishing the rest would mark an incomplete
   ///   target as completed.
   static func collectStagedArtifacts(
-    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    for target: TargetDiscovery.DiscoveredTarget,
     in targetStagingDirectory: URL,
     runtimeRoot: String,
-    artifactRoot: PrivateHeaderGeneration.ArtifactPath,
+    artifactRoot: String,
     includesAnalysisBinary: Bool = false
   ) throws -> StagedArtifacts {
     var files: [PrivateHeaderGeneration.ArtifactPath: URL] = [:]
@@ -39,7 +40,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
         guard isHeaderArtifact(url)
           || (includesAnalysisBinary && relative == "Analysis/Executable.macho")
         else { continue }
-        files[try PrivateHeaderGeneration.ArtifactPath(artifactRoot.rawValue + "/" + relative)] =
+        files[try PrivateHeaderGeneration.ArtifactPath(artifactRoot + "/" + relative)] =
           url
       }
       if !files.isEmpty { break }
@@ -88,7 +89,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   }
 
   static func stagedSourceDirectoryCandidates(
-    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    for target: TargetDiscovery.DiscoveredTarget,
     in targetStagingDirectory: URL,
     runtimeRoot: String
   ) -> [URL] {
@@ -113,7 +114,7 @@ extension PrivateHeaderGeneration.GenerationExecutor {
   }
 
   static func inputPath(
-    for target: PrivateHeaderGeneration.TargetDiscovery.DiscoveredTarget,
+    for target: TargetDiscovery.DiscoveredTarget,
     executionMode: PrivateHeaderGeneration.RawDumping.ExecutionMode
   ) -> String {
     switch executionMode {
