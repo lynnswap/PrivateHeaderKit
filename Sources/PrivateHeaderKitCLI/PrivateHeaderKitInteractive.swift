@@ -9,8 +9,6 @@ import Glibc
 #endif
 
 typealias PrivateHeaderKitInteractiveScreenClearer = () -> Void
-typealias PrivateHeaderKitInteractiveSourceProvider = @Sendable () async throws
-    -> PrivateHeaderKitSourceDiscovery
 
 struct PrivateHeaderKitSourceDiscovery: Equatable, Sendable {
     struct Failure: Equatable, Sendable {
@@ -85,12 +83,7 @@ private enum PrivateHeaderKitIncompatibleResumeAction {
 func runPrivateHeaderKitInteractiveGenerate(
     invokedProgramName: String,
     currentExecutableURL: URL?,
-    generationClient: PrivateHeaderKitGenerationClient,
-    simulatorResolver: PrivateHeaderKitSimulatorResolver,
-    simulatorCleaner: @escaping PrivateHeaderKitSimulatorCleaner,
-    helperResolver: PrivateHeaderKitHelperResolver,
-    releaseMetadataResolver: PrivateHeaderKitReleaseMetadataResolver,
-    sourceProvider: PrivateHeaderKitInteractiveSourceProvider,
+    processRunner: any CommandRunning,
     outputBaseDirectoryProvider: () -> String,
     screenClearer: @escaping PrivateHeaderKitInteractiveScreenClearer,
     inputReader: @escaping PrivateHeaderKitInputReader,
@@ -99,7 +92,7 @@ func runPrivateHeaderKitInteractiveGenerate(
     errorLogger: @escaping PrivateHeaderKitOutputLogger
 ) async throws -> Int32 {
     do {
-        let discovery = try await sourceProvider()
+        let discovery = try await discoverPrivateHeaderKitInteractiveSources(runner: processRunner)
         let sources = discovery.sources
         guard !sources.isEmpty else {
             for failure in discovery.failures { errorLogger("error: \(failure.description)") }
@@ -180,8 +173,7 @@ func runPrivateHeaderKitInteractiveGenerate(
                 do {
                     let outcome = try await withPrivateHeaderKitSimulatorSession(
                         command,
-                        resolver: simulatorResolver,
-                        cleaner: simulatorCleaner,
+                        runner: processRunner,
                         outputLogger: outputLogger
                     ) { simulatorResolution in
                         var request = try await preparePrivateHeaderKitGenerationRequest(
@@ -189,14 +181,17 @@ func runPrivateHeaderKitInteractiveGenerate(
                             invokedProgramName: invokedProgramName,
                             currentExecutableURL: currentExecutableURL,
                             simulatorResolution: simulatorResolution,
-                            helperResolver: helperResolver,
-                            releaseMetadataResolver: releaseMetadataResolver
+                            processRunner: processRunner
                         )
                         var query = command.targetQuery
                         while true {
                             let preparedGeneration: PrivateHeaderKitPreparedGeneration
                             do {
-                                preparedGeneration = try await generationClient.prepare(request)
+                                preparedGeneration = try await preparePrivateHeaderGeneration(
+                                    request: request,
+                                    processRunner: processRunner,
+                                    recoveryReporter: errorLogger
+                                )
                             } catch let error as PrivateHeaderGeneration.GenerationError {
                                 guard case .unresolvedTargetQuery = error else { throw error }
                                 errorLogger("error: \(error.description)")

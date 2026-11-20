@@ -26,32 +26,9 @@ struct PrivateHeaderKitPreparedGeneration: Sendable {
     let run: Run
 }
 
-struct PrivateHeaderKitGenerationClient: Sendable {
-    typealias Prepare = @Sendable (
-        PrivateHeaderKitGenerationRequest
-    ) async throws -> PrivateHeaderKitPreparedGeneration
-
-    let prepare: Prepare
-
-    static let live = live(processRunner: ProcessRunner())
-
-    static func live(
-        processRunner: any CommandRunning,
-        recoveryReporter: @escaping PrivateHeaderKitOutputLogger = logCLIError
-    ) -> PrivateHeaderKitGenerationClient {
-        PrivateHeaderKitGenerationClient(
-            prepare: { request in
-                try await preparePrivateHeaderGeneration(
-                    request: request,
-                    processRunner: processRunner,
-                    recoveryReporter: recoveryReporter
-                )
-            }
-        )
-    }
-}
-
-private func preparePrivateHeaderGeneration(
+/// Resolves the request's targets and returns the generation that runs them through
+/// `processRunner`.
+func preparePrivateHeaderGeneration(
     request: PrivateHeaderKitGenerationRequest,
     processRunner: any CommandRunning,
     recoveryReporter: @escaping PrivateHeaderKitOutputLogger

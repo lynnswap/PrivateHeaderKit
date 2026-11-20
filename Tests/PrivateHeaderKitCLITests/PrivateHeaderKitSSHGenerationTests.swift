@@ -87,7 +87,7 @@ struct PrivateHeaderKitSSHGenerationTests {
     let output = SSHTestMessages()
     let status = await runPrivateHeaderKitCommand(
       ["privateheaderkit", "--tool-version", "--ssh", "iphone-se"],
-      currentExecutableURL: nil, sshProcessRunner: runner,
+      currentExecutableURL: nil, processRunner: runner,
       outputLogger: output.append, errorLogger: { _ in }
     )
     #expect(status == 0)
@@ -228,32 +228,50 @@ struct PrivateHeaderKitSSHGenerationTests {
     await fixture.stubDeployment(using: runner)
     await runner.setSimpleHandler { command, _, _ in
       if command.first == "tar" {
-        try fixture.bundleData.write(to: URL(fileURLWithPath: command[2]))
-      } else {
+        if command[1] == "-cf" { try fixture.bundleData.write(to: URL(fileURLWithPath: command[2])) }
+      } else if command.last?.contains("uncollected helper attempt remains") == true {
         throw ToolingError.message("SSH unavailable during cleanup")
       }
     }
-    let client = PrivateHeaderKitGenerationClient(prepare: { request in
-      #expect(request.source.version == "26.0.1")
-      #expect(request.source.build == "23A355")
-      #expect(request.source.artifactPlatformDirectoryName == "iPhoneOS")
-      #expect(request.options.deviceSource?.cacheUUID == fixture.cacheUUID)
-      #expect(request.options.targetRequest == .query("SpringBoard"))
-      #expect(request.options.rawDumpingOptions.useSharedCache)
-      throw ToolingError.message("fixture preparation failed")
-    })
+    let inventory = try JSONEncoder().encode(PrivateHeaderKitSharedCacheInventory(
+      cacheUUID: fixture.cacheUUID, imagePaths: ["/usr/lib/libobjc.A.dylib"]
+    ))
+    await runner.setCaptureHandler { command, _, _ in
+      String(
+        decoding: command.last?.contains("__shared-cache-inventory") == true ? inventory : fixture.snapshotData,
+        as: UTF8.self
+      )
+    }
+    await runner.setCaptureChunksHandler { _, _, _, _ in }
+    await runner.setStreamingHandler { _, _, _ in
+      .init(status: 1, wasKilled: false, lastLines: ["fixture helper failed"])
+    }
+    let errors = SSHTestMessages()
     do {
       _ = try await runPrivateHeaderKitSSHGenerateCommand(
-        .init(destination: "iphone-se", outputBaseDirectory: fixture.output.path, targetQuery: "SpringBoard", continuationMode: nil),
-        currentExecutableURL: fixture.executable, processRunner: runner, generationClient: client,
-        outputLogger: { _ in }, errorLogger: { _ in }
+        .init(destination: "iphone-se", outputBaseDirectory: fixture.output.path, targetQuery: "libobjc.A.dylib", continuationMode: nil),
+        currentExecutableURL: fixture.executable, processRunner: runner,
+        outputLogger: { _ in }, errorLogger: errors.append
       )
       Issue.record("a failed SSH run unexpectedly succeeded")
     } catch let error as PrivateHeaderKitSSHCleanupFailure {
-      #expect(error.description.contains("fixture preparation failed"))
+      #expect(error.description.contains("failed for 1 targets"))
       #expect(error.description.contains("SSH unavailable during cleanup"))
       #expect(error.description.contains(error.remoteDirectory))
     }
+    let source = try JSONDecoder().decode(
+      DeviceSourceSnapshot.self, from: fixture.snapshotData
+    ).source()
+    #expect(source.artifactPlatformDirectoryName == "iPhoneOS")
+    #expect(errors.text.contains(source.label.displayName))
+    #expect(errors.text.contains("libobjc.A.dylib (failed)"))
+    #expect(FileManager.default.fileExists(
+      atPath: PrivateHeaderGeneration.Output(baseDirectory: fixture.output)
+        .stateDirectory(for: source).appendingPathComponent("generation.sqlite").path
+    ))
+    let helperCommand = try #require(await runner.streamingCommandSnapshot().first?.command)
+    #expect(helperCommand.contains("iphone-se"))
+    #expect(helperCommand.last?.contains(fixture.cacheUUID.uuidString) == true)
   }
 
   @Test func receiverRejectingFileInputReportsItsFailureAndStillCleansUpTheSSHSession() async throws {
@@ -283,11 +301,7 @@ struct PrivateHeaderKitSSHGenerationTests {
     let status = await runPrivateHeaderKitCommand(
       ["privateheaderkit", "--ssh", "iphone-se", "--out", fixture.output.path, "--target", "SpringBoard"],
       currentExecutableURL: fixture.executable,
-      generationClient: .init(prepare: { _ in
-        Issue.record("rejected deployment unexpectedly prepared generation")
-        throw ToolingError.message("unexpected generation")
-      }),
-      sshProcessRunner: runner, outputLogger: { _ in }, errorLogger: errors.append
+      processRunner: runner, outputLogger: { _ in }, errorLogger: errors.append
     )
 
     #expect(status == 2)
@@ -414,9 +428,9 @@ struct PrivateHeaderKitSSHGenerationTests {
       try await consume(Data("retained partial archive".utf8))
       throw ToolingError.message("fixture archive transfer failed")
     }
-    let prepared = try await PrivateHeaderKitGenerationClient.live(
-      processRunner: runner, recoveryReporter: { _ in }
-    ).prepare(request)
+    let prepared = try await preparePrivateHeaderGeneration(
+      request: request, processRunner: runner, recoveryReporter: { _ in }
+    )
     let progressDetails = SSHTestMessages()
     let errors = SSHTestMessages()
     let output = SSHTestMessages()

@@ -286,10 +286,11 @@ struct PrivateHeaderKitSimulatorRecoveryTests {
                 throw ToolingError.commandFailed(command: command, status: 1, stderr: "boot failed")
             }
         }
-        let prepared = try await PrivateHeaderKitGenerationClient.live(
+        let prepared = try await preparePrivateHeaderGeneration(
+            request: request,
             processRunner: runner,
             recoveryReporter: { _ in }
-        ).prepare(request)
+        )
         let operation = Task {
             try await bootGate.track { try await prepared.run(.init(continuation: .restart), { _ in }) }
         }
