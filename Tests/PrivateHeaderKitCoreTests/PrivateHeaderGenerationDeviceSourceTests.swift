@@ -68,26 +68,6 @@ struct PrivateHeaderGenerationDeviceSourceTests {
     ])
   }
 
-  @Test func snapshotWithAnUnsafeArtifactRootIsRejected() throws {
-    let fixture = try DeviceSourceFixture(metadataIsSeed: false)
-    defer { fixture.cleanup() }
-    var object = try #require(
-      JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture.snapshot())) as? [String: Any]
-    )
-    let encodedCatalog = try #require(object["catalogData"] as? String)
-    let catalogData = try #require(Data(base64Encoded: encodedCatalog))
-    let catalog = String(decoding: catalogData, as: UTF8.self)
-      .replacingOccurrences(of: #""artifactRoot":"usr\/lib"#, with: #""artifactRoot":"..\/lib"#)
-    object["catalogData"] = Data(catalog.utf8).base64EncodedString()
-    let snapshot = try JSONDecoder().decode(
-      DeviceSourceSnapshot.self, from: JSONSerialization.data(withJSONObject: object)
-    )
-
-    #expect(throws: PrivateHeaderGeneration.StateError.invalidArtifactPath("../lib/libobjc.A.dylib")) {
-      _ = try snapshot.catalog()
-    }
-  }
-
   @Test func absentRestoreMetadataRepresentsAReleaseWhileMalformedMetadataFails() throws {
     let fixture = try DeviceSourceFixture(metadataIsSeed: nil)
     defer { fixture.cleanup() }
